@@ -100,12 +100,14 @@ Astra/
 All documentation lives in `Documentacion/`:
 
 - **[Architecture Specification](Documentacion/ARCHITECTURE.md)** — The complete technical specification (41 sections, ~85KB)
+- **[Compiler Strategy](Documentacion/COMPILER_STRATEGY.md)** — Why C and Zig, the bootstrap process, every decision explained
 - **[Design Philosophy](Documentacion/PHILOSOPHY.md)** — Why Astra exists and the principles behind it
 - **[Comparative Analysis](Documentacion/COMPARATIVE_ANALYSIS.md)** — How Astra compares to Mojo, Nim, Zig, Julia, Vale, Swift
 - **[Research Reports](Documentacion/research/)** — 19 deep-dive reports on compilers, runtimes, and language design
 
 ## Roadmap
 
+### Design & Research (Complete)
 - [x] Language design and architecture specification
 - [x] Cross-platform research (Linux, macOS, Windows, Android, iOS, visionOS)
 - [x] Compiler architecture (multi-IR, query system, dual backend)
@@ -114,10 +116,12 @@ All documentation lives in `Documentacion/`:
 - [x] Standard library design (~64 modules)
 - [x] Package manager design
 - [x] Formal grammar (EBNF)
-- [ ] **Phase 1**: Seed compiler in C (Astra-0)
-- [ ] **Phase 2**: Self-hosting compiler (Astra-1)
-- [ ] **Phase 3**: Full language with all features
-- [ ] **Phase 4**: LLVM backend and production toolchain
+- [x] Compiler strategy (C → Zig → Astra bootstrapping)
+
+### Implementation
+- [ ] **Phase 1**: Seed compiler in C (Astra-0) — compiles minimal subset
+- [ ] **Phase 2**: Self-hosting compiler in Zig — compiles full Astra
+- [ ] **Phase 3**: Astra compiles itself — the proof
 
 ## Contributing
 
