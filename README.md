@@ -101,6 +101,7 @@ All documentation lives in `Documentacion/`:
 
 - **[Architecture Specification](Documentacion/ARCHITECTURE.md)** — The complete technical specification (41 sections, ~85KB)
 - **[Compiler Strategy](Documentacion/COMPILER_STRATEGY.md)** — Why C and Zig, the bootstrap process, every decision explained
+- **[Compiler Toolchain](Documentacion/COMPILER_TOOLCHAIN.md)** — Tools, libraries, and workflows for building the compiler
 - **[Design Philosophy](Documentacion/PHILOSOPHY.md)** — Why Astra exists and the principles behind it
 - **[Comparative Analysis](Documentacion/COMPARATIVE_ANALYSIS.md)** — How Astra compares to Mojo, Nim, Zig, Julia, Vale, Swift
 - **[Research Reports](Documentacion/research/)** — 19 deep-dive reports on compilers, runtimes, and language design
