@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astra — Programming Language</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f23;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2rem;
+        }
+        .logo { width: 120px; margin-bottom: 2rem; }
+        h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #6366f1, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1rem;
+        }
+        .tagline {
+            font-size: 1.25rem;
+            color: #94a3b8;
+            margin-bottom: 2rem;
+            max-width: 500px;
+        }
+        .status {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            background: rgba(251, 191, 36, 0.15);
+            color: #fbbf24;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-bottom: 2rem;
+            border: 1px solid rgba(251, 191, 36, 0.3);
+        }
+        .links {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        a {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .primary {
+            background: #6366f1;
+            color: white;
+        }
+        .primary:hover { background: #4f46e5; }
+        .secondary {
+            background: rgba(148, 163, 184, 0.1);
+            color: #94a3b8;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+        .secondary:hover { background: rgba(148, 163, 184, 0.2); }
+        .features {
+            margin-top: 3rem;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            max-width: 800px;
+            width: 100%;
+        }
+        .feature {
+            padding: 1.5rem;
+            border-radius: 12px;
+            background: rgba(99, 102, 241, 0.08);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            text-align: left;
+        }
+        .feature h3 {
+            font-size: 0.9rem;
+            color: #a5b4fc;
+            margin-bottom: 0.5rem;
+        }
+        .feature p {
+            font-size: 0.8rem;
+            color: #64748b;
+            line-height: 1.5;
+        }
+        footer {
+            margin-top: 3rem;
+            color: #475569;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+    <svg class="logo" viewBox="0 0 400 120" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#6366f1"/>
+                <stop offset="100%" style="stop-color:#8b5cf6"/>
+            </linearGradient>
+        </defs>
+        <g transform="translate(60, 60)">
+            <polygon points="0,-35 8,-10 35,-10 13,7 22,32 0,17 -22,32 -13,7 -35,-10 -8,-10" fill="url(#g)"/>
+            <circle cx="0" cy="0" r="8" fill="#a5b4fc"/>
+        </g>
+        <text x="110" y="75" font-family="sans-serif" font-size="64" font-weight="700" fill="#e2e8f0" letter-spacing="-2">Astra</text>
+    </svg>
+
+    <h1>Astra</h1>
+    <p class="tagline">Multi-paradigm programming language with Python ergonomics and C performance</p>
+    
+    <div class="status">Pre-implementation — Design phase</div>
+
+    <div class="links">
+        <a href="https://github.com/AsterrZep/Astra" class="primary">GitHub Repository</a>
+        <a href="https://github.com/AsterrZep/Astra/blob/main/Documentacion/ARCHITECTURE.md" class="secondary">Architecture Spec</a>
+        <a href="https://github.com/AsterrZep/Astra/discussions" class="secondary">Discussions</a>
+    </div>
+
+    <div class="features">
+        <div class="feature">
+            <h3>ARC/ORC Memory</h3>
+            <p>Automatic reference counting with cycle detection. No GC pauses.</p>
+        </div>
+        <div class="feature">
+            <h3>Green Threads</h3>
+            <p>M:N fiber scheduling. Synchronous-looking code, async execution.</p>
+        </div>
+        <div class="feature">
+            <h3>Zero-Copy FFI</h3>
+            <p>Direct memory mapping to C, Python, and Julia.</p>
+        </div>
+        <div class="feature">
+            <h3>Dual Backend</h3>
+            <p>VM for development, LLVM for production. Same source.</p>
+        </div>
+    </div>
+
+    <footer>
+        <p>Licensed under MIT &middot; Built with dedication to simplicity, safety, and performance.</p>
+    </footer>
+</body>
+</html>
