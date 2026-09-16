@@ -1,0 +1,74 @@
+# Astra Language — .gitignore
+
+# Build artifacts
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.lib
+
+# Build directories
+build/
+build-*/
+out/
+target/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+*.cache
+
+# LLVM
+*.bc
+*.ll
+*.opt.bc
+
+# Seed compiler
+astra-seed
+astra-seed.exe
+
+# Compiled Astra files
+*.ao
+*.astra.o
+
+# Package manager
+.astra/
+astra.lock
+
+# Test artifacts
+tests/output/
+*.profraw
+*.profdata
+
+# Coverage
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Documentation build
+docs/html/
+docs/_build/
+
+# Environment
+.env
+.env.local
