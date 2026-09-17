@@ -1,0 +1,23 @@
+// A function body is an expression: its trailing expression is the return
+// value, with no `return` needed (research/010 §4.2).
+// EXPECT: 42
+// EXPECT: 101
+// EXPECT: 7
+fn forty_two() -> i32 {
+    42
+}
+
+fn after_statements() -> i32 {
+    let t = 100;
+    t + 1
+}
+
+fn explicit() -> i32 {
+    return 7;
+}
+
+fn main() {
+    print(forty_two());
+    print(after_statements());
+    print(explicit());
+}

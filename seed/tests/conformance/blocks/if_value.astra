@@ -1,0 +1,20 @@
+// `if` is an expression (research/010 §3.2). Both arms must supply a value,
+// including when the arm body has statements before its tail expression.
+// EXPECT: 6
+// EXPECT: 10
+// EXPECT: 20
+fn main() {
+    let a = if true {
+        let t = 5;
+        t + 1
+    } else {
+        0
+    };
+    print(a);
+
+    let b = if true { 10 } else { 20 };
+    print(b);
+
+    let c = if false { 10 } else { 20 };
+    print(c);
+}

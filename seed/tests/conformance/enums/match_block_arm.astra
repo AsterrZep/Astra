@@ -1,0 +1,27 @@
+// A match arm may be a block, and the arm's value is that block's tail
+// expression even when the block has statements first.
+// EXPECT: true
+// EXPECT: 42
+enum C {
+    A
+    B
+}
+
+fn main() {
+    let c = C.B;
+
+    let s = match c {
+        C.A => "uno",
+        C.B => "dos",
+    };
+    print(s == "dos");
+
+    let n = match c {
+        C.A => 1,
+        C.B => {
+            let t = 40;
+            t + 2
+        },
+    };
+    print(n);
+}

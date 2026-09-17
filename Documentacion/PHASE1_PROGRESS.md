@@ -75,7 +75,7 @@ acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (27 casos, todos en verde):
+los casos de conformidad. Cobertura actual (33 casos, todos en verde):
 
 | Área | Casos |
 |:-----|:------|
@@ -85,9 +85,10 @@ los casos de conformidad. Cobertura actual (27 casos, todos en verde):
 | loops | `range_exclusive`, `range_inclusive`, `break_continue`, `for_array` |
 | arrays | `literal_index` |
 | structs | `literal_fields`, `field_order`, `struct_in_function` |
-| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement` |
-| functions | `recursion` (factorial + parámetros) |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `match_guard_unsupported` |
+| blocks | `tail_expression`, `if_value` |
+| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm` |
+| functions | `recursion` (factorial + parámetros), `implicit_return` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `match_guard_unsupported`, `void_initializer`, `missing_return_value` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
@@ -97,21 +98,31 @@ La auditoría de coherencia (`COHERENCE_AUDIT.md`) encontró fallos que producen
 **respuestas incorrectas silenciosas**. Están documentados aquí para que nadie
 los herede al escribir el compilador en Zig:
 
-| # | Qué | Estado real | Debería |
-|:-:|:----|:------------|:--------|
-| A | Valor de bloque en posición de valor | `{ let t = 100; 7 }` → `100` | `7` |
-| A | Regla del `;` (§4.2 de `research/010`) | `{ 7; }` → `7` | error o ausencia de valor |
-| A | `if` como expresión con sentencias en la rama | `if c { let t = 5; t + 1 }` → `5` | `6` |
-| C | Retorno implícito de función | `fn f() -> i32 { 42 }` → `nil` | `42` |
-| C | Tipo de retorno declarado sin valor | `fn f() -> i32 { }` → `nil` | error de compilación |
-| B | `LValue` acotado a identificadores | `xs[0] = 9;` → error de parseo | asignación |
-| B | Mismo caso en campos | `p.x = 5;` → error de parseo | asignación |
+| # | Qué | Antes | Ahora |
+|:-:|:----|:------|:------|
+| A | Valor de bloque en posición de valor | `{ let t = 100; 7 }` → `100` | ✅ `7` |
+| A | Regla del `;` (§4.2 de `research/010`) | `{ 7; }` → `7` | ✅ error de tipos |
+| A | `if` como expresión con sentencias en la rama | `if c { let t = 5; t + 1 }` → `5` | ✅ `6` |
+| C | Retorno implícito de función | `fn f() -> i32 { 42 }` → `nil` | ✅ `42` |
+| C | Tipo de retorno declarado sin valor | `fn f() -> i32 { }` → `nil` | ✅ error de compilación |
+| B | `LValue` acotado a identificadores | `xs[0] = 9;` → error de parseo | ⛔ pendiente |
+| B | Mismo caso en campos | `p.x = 5;` → error de parseo | ⛔ pendiente |
 
-Causa raíz común de A y C: el invariante de "stack balance" que `AGENTS.md`
-documenta **no se verifica en ninguna parte**. El emisor no lleva un modelo de
-altura de pila, así que un desbalance se convierte en una lectura de una ranura
-obsoleta en vez de un error de compilación. Añadir esa comprobación en
-`emitter.c` (activa en `make debug`) es el paso previo a arreglar A y C.
+### Causa raíz de A y C (arreglada)
+
+El invariante de *stack balance* que `AGENTS.md` documentaba **no se verificaba
+en ninguna parte**. El emisor ahora lleva un modelo de altura de pila: cada
+instrucción lo actualiza según su efecto real (contrastado con `vm.c`), y
+`emit_expr` / `emit_stmt` comprueban el efecto que su nodo debe tener. Los
+constructos con ramas (`if`, `match`, `&&`, `||`) resincronizan el modelo donde
+sus caminos se reencuentran. Un desbalance es ahora un **error de compilación,
+no una respuesta incorrecta silenciosa**; verificado por inyección de fallo.
+
+Ese modelo destapó de paso tres bugs que nadie había visto: `pop_scope` emitía
+un `POP n` que borraba el valor del bloque en lugar de sus ranuras locales;
+`const` dentro de una función no se almacenaba nunca, dejando su valor en la
+pila; y el `match` terminaba con un `SWAP; POP` que consumía una ranura local
+viva.
 
 Hallazgo B en cambio tiene una causa localizada: `parse_assignment` rechaza
 todo lo que no sea `NODE_IDENT`.

@@ -123,6 +123,14 @@ struct Emitter {
     EnumInfo       enums[EMITTER_MAX_ENUMS];
     size_t         enum_count;
 
+    /* Compile-time model of the VM stack height, relative to the current
+     * frame base. Every emitted instruction updates it and every emit_expr /
+     * emit_stmt call asserts the effect its node must have, so an unbalanced
+     * path becomes a compile error instead of a silent stale-slot read at run
+     * time. See the "stack-height model" block in emitter.c. */
+    int32_t        sp;
+    int32_t        sp_high;
+
     int            error_count;
 };
 

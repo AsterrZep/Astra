@@ -1,0 +1,25 @@
+// A block's value is its trailing expression (research/010 §4.2). A block that
+// ends in a statement has no value at all.
+// EXPECT: 3
+// EXPECT: 12
+// EXPECT: 101
+fn main() {
+    let a = { 1 + 2 };
+    print(a);
+
+    let b = {
+        let t = 3;
+        t * 4
+    };
+    print(b);
+
+    let c = {
+        let t = 100;
+        t + 1
+    };
+    print(c);
+
+    // A `;` ends a statement, so this block is void and the value 7 is
+    // discarded rather than becoming the block's value. Verified separately in
+    // tests/conformance/ui/void_initializer.astra.
+}

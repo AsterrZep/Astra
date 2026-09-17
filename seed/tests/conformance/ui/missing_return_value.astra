@@ -1,0 +1,9 @@
+// A declared return type must actually be produced by the body
+// EXPECT-ERROR: produces no value
+fn f() -> i32 {
+    let t = 1;
+}
+
+fn main() {
+    print(f());
+}

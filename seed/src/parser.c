@@ -16,6 +16,12 @@ struct Parser {
      * construct itself (if/while/for conditions), so an identifier followed
      * by `{` is not mistaken for a struct literal. */
     bool          no_struct_lit;
+    /* True when the statement just parsed was terminated by a `;`. A block's
+     * trailing expression must NOT be: `Block ::= "{" Statement* Expression?
+     * "}"` is how research/010 §4.2 says a value is discarded. Without this
+     * flag an expression statement ending in `;` was indistinguishable from a
+     * tail expression, because optional_semi swallows both `;` and newlines. */
+    bool          last_stmt_semi;
 };
 
 /* -----------------------------------------------------------
@@ -79,9 +85,13 @@ static void synchronize(Parser *p) {
     }
 }
 
-/* Consume optional semicolons and newlines */
+/* Consume optional semicolons and newlines, recording whether a real `;` was
+ * seen: a statement terminated by one has no value (research/010 §4.2). */
 static void optional_semi(Parser *p) {
-    while (check(p, TOKEN_NEWLINE) || check(p, TOKEN_SEMICOLON)) advance(p);
+    while (check(p, TOKEN_NEWLINE) || check(p, TOKEN_SEMICOLON)) {
+        if (check(p, TOKEN_SEMICOLON)) p->last_stmt_semi = true;
+        advance(p);
+    }
 }
 
 /* -----------------------------------------------------------
@@ -475,8 +485,11 @@ static Node *parse_block(Parser *p) {
 
         Node *stmt = parse_statement(p);
         if (stmt) {
-            /* Check if this is the last expression (no semicolon) */
-            if (check(p, TOKEN_RBRACE) || check(p, TOKEN_EOF)) {
+            /* This is the block's tail expression only when it is the last item
+             * in the block AND was not terminated by a `;`. A `;` discards the
+             * value, which is what makes `{ 7; }` void and `{ 7 }` an i32. */
+            if (!p->last_stmt_semi &&
+                (check(p, TOKEN_RBRACE) || check(p, TOKEN_EOF))) {
                 if (stmt->kind != NODE_FN_DECL && stmt->kind != NODE_STRUCT_DECL &&
                     stmt->kind != NODE_ENUM_DECL && stmt->kind != NODE_CONST_DECL &&
                     stmt->kind != NODE_VAR_DECL && stmt->kind != NODE_RETURN &&
@@ -1018,6 +1031,8 @@ static Node *parse_type(Parser *p) {
 
 static Node *parse_statement(Parser *p) {
     skip_newlines(p);
+
+    p->last_stmt_semi = false;
 
     if (check(p, TOKEN_EOF)) return NULL;
 

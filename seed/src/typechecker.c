@@ -684,20 +684,27 @@ static Type *typecheck_field_access(TypeChecker *tc, Node *node) {
                          (int)field.len, field.str);
 }
 
+/* A block's value is its trailing expression
+ * (`Block ::= "{" Statement* Expression? "}"`, research/010 §12.1 and §4.2).
+ * A block that ends in a statement — including an expression statement
+ * terminated by `;`, which is how §4.2 says a value is discarded — has no
+ * value at all, so its type is void and it cannot be bound. Tracking the type
+ * of the last *statement* instead made `let b = { 7; };` look like an i32
+ * while the emitter correctly produced nothing. */
 static Type *typecheck_block(TypeChecker *tc, Node *node) {
     symbol_table_push_scope(tc->symbols);
 
-    Type *last_type = type_new(tc->arena, TYPE_VOID);
     for (size_t i = 0; i < node->as.block.stmts.len; i++) {
-        last_type = typecheck_node(tc, node->as.block.stmts.data[i]);
+        typecheck_node(tc, node->as.block.stmts.data[i]);
     }
 
+    Type *type = type_new(tc->arena, TYPE_VOID);
     if (node->as.block.last_expr) {
-        last_type = typecheck_node(tc, node->as.block.last_expr);
+        type = typecheck_node(tc, node->as.block.last_expr);
     }
 
     symbol_table_pop_scope(tc->symbols);
-    return last_type;
+    return type;
 }
 
 static Type *typecheck_if(TypeChecker *tc, Node *node) {
@@ -999,6 +1006,15 @@ static void typecheck_var_decl(TypeChecker *tc, Node *node) {
         if (type_is_error(val_type)) return;
     }
 
+    if (val_type && val_type->kind == TYPE_VOID) {
+        tc_error(tc, node->loc,
+                 "variable '%.*s' cannot be initialized with a void expression: "
+                 "a block whose last statement ends in `;` has no value, "
+                 "so leave the trailing expression without a semicolon",
+                 (int)name.len, name.str);
+        return;
+    }
+
     Type *final_type;
     if (decl_type && val_type) {
         if (!type_eq(decl_type, val_type)) {
@@ -1119,6 +1135,46 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
     }
 }
 
+/* True when `node` contains a `return` anywhere. A function whose body
+ * produces no tail value is still legitimate if some path returns
+ * explicitly, so the check for a missing return value has to look inside
+ * statements. */
+static bool node_contains_return(Node *node) {
+    if (!node) return false;
+
+    switch (node->kind) {
+    case NODE_RETURN:
+        return true;
+
+    case NODE_BLOCK: {
+        for (size_t i = 0; i < node->as.block.stmts.len; i++) {
+            if (node_contains_return(node->as.block.stmts.data[i])) return true;
+        }
+        return node_contains_return(node->as.block.last_expr);
+    }
+
+    case NODE_IF:
+        return node_contains_return(node->as.if_expr.then_block) ||
+               node_contains_return(node->as.if_expr.else_block);
+
+    case NODE_WHILE:
+        return node_contains_return(node->as.while_expr.body);
+
+    case NODE_FOR:
+        return node_contains_return(node->as.for_expr.body);
+
+    case NODE_MATCH: {
+        for (size_t i = 0; i < node->as.match_expr.arms.len; i++) {
+            if (node_contains_return(node->as.match_expr.arms.data[i].body)) return true;
+        }
+        return false;
+    }
+
+    default:
+        return false;
+    }
+}
+
 static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
     symbol_table_push_scope(tc->symbols);
 
@@ -1144,7 +1200,37 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
 
     /* Type-check body */
     if (fn_node->as.fn_decl.body) {
-        typecheck_node(tc, fn_node->as.fn_decl.body);
+        Type *body_type = typecheck_node(tc, fn_node->as.fn_decl.body);
+
+        /* The body's value must satisfy the declared return type, whether it
+         * arrives through the tail expression (research/010 §4.2) or through an
+         * explicit `return`. Without this `fn f() -> i32 { }` compiled cleanly
+         * and returned nil at run time — the declared type simply lied. */
+        Type *declared = tc->current_fn_return;
+        bool declared_real = declared && declared->kind != TYPE_VOID &&
+                             declared->kind != TYPE_ERROR &&
+                             declared->kind != TYPE_UNKNOWN;
+
+        if (declared_real) {
+            if (body_type->kind != TYPE_VOID) {
+                if (!type_eq(declared, body_type)) {
+                    tc_error(tc, fn_node->loc,
+                             "function '%.*s' returns %s but its body has type %s",
+                             (int)fn_node->as.fn_decl.name.len,
+                             fn_node->as.fn_decl.name.str,
+                             type_kind_name(declared->kind),
+                             type_kind_name(body_type->kind));
+                }
+            } else if (!node_contains_return(fn_node->as.fn_decl.body)) {
+                tc_error(tc, fn_node->loc,
+                         "function '%.*s' declares that it returns %s but its body "
+                         "produces no value: end the body with an expression "
+                         "without a trailing `;`, or add a `return`",
+                         (int)fn_node->as.fn_decl.name.len,
+                         fn_node->as.fn_decl.name.str,
+                         type_kind_name(declared->kind));
+            }
+        }
     }
 
     tc->current_fn_return = prev_return;

@@ -4,6 +4,80 @@
  * Helper: emit a single instruction
  * ----------------------------------------------------------- */
 
+/* -----------------------------------------------------------
+ * Compile-time stack-height model
+ * -----------------------------------------------------------
+ * AGENTS.md invariant #1 requires every emitter path to leave the VM stack
+ * at a predictable height. It was documented but never checked, which is why
+ * an imbalance surfaced as a silent read of a stale stack slot rather than a
+ * compile error. Every emitted instruction updates a model of the height and
+ * emit_expr / emit_stmt assert the effect their node must have.
+ *
+ * The model is linear, so branchy constructs (`if`, `match`, `&&`, `||`,
+ * loops) resynchronise it explicitly where their paths rejoin.
+ * ----------------------------------------------------------- */
+
+/* Net effect of one instruction on the VM stack height. Checked against the
+ * real semantics in vm.c: SET_LOCAL/SET_GLOBAL pop, NEW_ARRAY pops N and
+ * pushes one, NEW_STRUCT pops N, GET_FIELD pops one and pushes one, CALL pops
+ * the callee and its arguments and pushes the result. */
+static int opcode_stack_effect(OpCode op, uint32_t operand) {
+    switch (op) {
+    case OPCODE_CONST:
+    case OPCODE_DUP:
+    case OPCODE_GET_LOCAL:
+    case OPCODE_GET_GLOBAL:
+        return 1;
+
+    case OPCODE_POP:
+        return -(int)(operand ? operand : 1);
+
+    case OPCODE_SET_LOCAL:
+    case OPCODE_SET_GLOBAL:
+    case OPCODE_JUMP_IF_FALSE:
+    case OPCODE_JUMP_IF_TRUE:
+    case OPCODE_INDEX:
+    case OPCODE_PRINT:
+    case OPCODE_ADD:
+    case OPCODE_SUB:
+    case OPCODE_MUL:
+    case OPCODE_DIV:
+    case OPCODE_MOD:
+    case OPCODE_EQ:
+    case OPCODE_NEQ:
+    case OPCODE_LT:
+    case OPCODE_GT:
+    case OPCODE_LE:
+    case OPCODE_GE:
+    case OPCODE_AND:
+    case OPCODE_OR:
+    case OPCODE_RET:
+        return -1;
+
+    case OPCODE_NEW_ARRAY:
+        return 1 - (int)operand;
+
+    case OPCODE_NEW_STRUCT:
+    case OPCODE_CALL:
+        return -(int)operand;
+
+    case OPCODE_SWAP:
+    case OPCODE_NEG:
+    case OPCODE_NOT:
+    case OPCODE_LEN:
+    case OPCODE_GET_FIELD:
+    case OPCODE_JUMP:
+    case OPCODE_HALT:
+        return 0;
+    }
+    return 0;
+}
+
+static void sp_advance(Emitter *e, int32_t delta) {
+    e->sp += delta;
+    if (e->sp > e->sp_high) e->sp_high = e->sp;
+}
+
 static void emit_inst(Emitter *e, OpCode op, uint32_t line) {
     if (e->code_len >= EMITTER_MAX_CODE) {
         return;
@@ -22,12 +96,31 @@ static void emit_inst(Emitter *e, OpCode op, uint32_t line) {
     inst.op  = op;
     inst.line = line;
     e->code[e->code_len++] = inst;
+    sp_advance(e, opcode_stack_effect(op, 0));
+}
+
+/* Some operands are counts of values, so patching one changes the stack
+ * effect. These two helpers keep the model honest about that. */
+static void sp_set_index(Emitter *e, size_t code_index, uint32_t value) {
+    if (code_index >= e->code_len) return;
+    OpCode op = e->code[code_index].op;
+    uint32_t old = e->code[code_index].arg.index;
+    e->code[code_index].arg.index = value;
+    sp_advance(e, opcode_stack_effect(op, value) - opcode_stack_effect(op, old));
+}
+
+static void sp_set_argcount(Emitter *e, size_t code_index, uint8_t value) {
+    if (code_index >= e->code_len) return;
+    OpCode op = e->code[code_index].op;
+    uint8_t old = e->code[code_index].arg.arg_count;
+    e->code[code_index].arg.arg_count = value;
+    sp_advance(e, opcode_stack_effect(op, value) - opcode_stack_effect(op, old));
 }
 
 static void emit_inst_index(Emitter *e, OpCode op, uint32_t index, uint32_t line) {
     size_t base = e->code_len;
     emit_inst(e, op, line);
-    e->code[base].arg.index = index;
+    sp_set_index(e, base, index);
 }
 
 static void emit_inst_offset(Emitter *e, OpCode op, int32_t offset, uint32_t line) {
@@ -94,16 +187,19 @@ static int find_local(Emitter *e, InternedString name) {
     return -1;
 }
 
+/* Release the slots of the locals declared in the scope being left.
+ *
+ * This deliberately emits no POP. Locals live in VM stack slots *below* sp
+ * (SET_LOCAL writes stack[base+slot] and pads with nil to get there), so a
+ * `POP n` here would not remove them: it would remove the n values sitting on
+ * top, which is exactly the block's result. That POP was the reason a block
+ * used as a value lost its tail expression and the enclosing binding then
+ * read a stale slot. Dropping the slot index from the local table is enough; a
+ * later binding reuses the slot and SET_LOCAL overwrites it. */
 static void pop_scope(Emitter *e) {
-    uint8_t popped = 0;
     while (e->local_count > 0 &&
            e->locals[e->local_count - 1].depth >= e->scope_depth) {
         e->local_count--;
-        popped++;
-    }
-    if (popped > 0) {
-        emit_inst(e, OPCODE_POP, 0);
-        e->code[e->code_len - 1].arg.index = popped;
     }
 }
 
@@ -250,6 +346,19 @@ static void emit_value_branch(Emitter *e, Node *n) {
     }
 }
 
+/* A branch body must leave exactly one value, which is what `if` and `match`
+ * require of every arm. */
+static void emit_branch_value(Emitter *e, Node *n, const char *where, uint32_t line) {
+    int32_t before = e->sp;
+    emit_value_branch(e, n);
+    if (e->sp != before + 1) {
+        fprintf(stderr, "error:%u: internal: %s body left %d values, expected 1\n",
+                line, where, e->sp - before);
+        e->error_count++;
+        e->sp = before + 1;
+    }
+}
+
 /* Emit a loop body, discarding its tail value if the block has one.
  * Loop bodies are statements: any value they produce must not accumulate
  * on the VM stack across iterations. */
@@ -342,11 +451,105 @@ static InternedString hidden_local(Emitter *e, const char *tag) {
 }
 
 /* -----------------------------------------------------------
+ * Stack-height assertions
+ * ----------------------------------------------------------- */
+
+static const char *node_kind_name(NodeKind kind) {
+    switch (kind) {
+    case NODE_INT_LIT:           return "IntLit";
+    case NODE_FLOAT_LIT:         return "FloatLit";
+    case NODE_STRING_LIT:        return "StringLit";
+    case NODE_BOOL_LIT:          return "BoolLit";
+    case NODE_NULL_LIT:          return "NullLit";
+    case NODE_IDENT:             return "Ident";
+    case NODE_BINARY_OP:         return "BinaryOp";
+    case NODE_UNARY_OP:          return "UnaryOp";
+    case NODE_CALL:              return "Call";
+    case NODE_INDEX:             return "Index";
+    case NODE_ARRAY_LIT:         return "ArrayLit";
+    case NODE_RANGE:             return "Range";
+    case NODE_STRUCT_LIT:        return "StructLit";
+    case NODE_FIELD_ACCESS:      return "FieldAccess";
+    case NODE_PATTERN_WILDCARD:  return "PatternWildcard";
+    case NODE_PATTERN_OR:        return "PatternOr";
+    case NODE_OPTIONAL_CHAIN:    return "OptionalChain";
+    case NODE_BLOCK:             return "Block";
+    case NODE_IF:                return "If";
+    case NODE_WHILE:             return "While";
+    case NODE_FOR:               return "For";
+    case NODE_MATCH:             return "Match";
+    case NODE_RETURN:            return "Return";
+    case NODE_BREAK:             return "Break";
+    case NODE_CONTINUE:          return "Continue";
+    case NODE_ASSIGN:            return "Assign";
+    case NODE_COMPOUND_ASSIGN:   return "CompoundAssign";
+    case NODE_FN_DECL:           return "FnDecl";
+    case NODE_STRUCT_DECL:       return "StructDecl";
+    case NODE_ENUM_DECL:         return "EnumDecl";
+    case NODE_CONST_DECL:        return "ConstDecl";
+    case NODE_VAR_DECL:          return "VarDecl";
+    case NODE_TYPE_IDENT:        return "TypeIdent";
+    case NODE_TYPE_OPTIONAL:     return "TypeOptional";
+    case NODE_TYPE_ARRAY:        return "TypeArray";
+    case NODE_TYPE_FN:           return "TypeFn";
+    case NODE_MODULE:            return "Module";
+    case NODE_USE:               return "Use";
+    case NODE_IMPL:              return "Impl";
+    }
+    return "?";
+}
+
+/* Height a node is required to leave behind when emitted as an expression:
+ * one value when it produces one, zero for declarations and for constructs
+ * that are statements (`while`, `for`, `return`, `break`, `continue`). */
+static int node_value_effect(Node *node) {
+    if (!node) return 0;
+    switch (node->kind) {
+    case NODE_WHILE:
+    case NODE_FOR:
+    case NODE_RETURN:
+    case NODE_BREAK:
+    case NODE_CONTINUE:
+    case NODE_FN_DECL:
+    case NODE_STRUCT_DECL:
+    case NODE_ENUM_DECL:
+    case NODE_CONST_DECL:
+    case NODE_VAR_DECL:
+    case NODE_USE:
+    case NODE_IMPL:
+    case NODE_MODULE:
+    case NODE_RANGE:
+        return 0;
+    case NODE_BLOCK:
+        return node->as.block.last_expr ? 1 : 0;
+    default:
+        return 1;
+    }
+}
+
+/* Assert the height a node was required to produce, then resynchronise so a
+ * single bug does not cascade into a flood of follow-on reports. */
+static void sp_check(Emitter *e, Node *node, int32_t before, int expected,
+                     const char *where) {
+    int32_t want = before + expected;
+    if (e->sp == want) return;
+
+    fprintf(stderr, "error:%s:%u: internal: stack imbalance in %s %s: "
+                    "expected height %d, emitter computed %d\n",
+            node->loc.filename ? node->loc.filename : "?", node->loc.line,
+            where, node_kind_name(node->kind), want, e->sp);
+    e->error_count++;
+    e->sp = want;
+}
+
+/* -----------------------------------------------------------
  * Expression emitter — leaves a value on the stack
  * ----------------------------------------------------------- */
 
 static void emit_expr(Emitter *e, Node *node) {
     if (!node) return;
+
+    int32_t sp_before = e->sp;
 
     switch (node->kind) {
     case NODE_INT_LIT: {
@@ -387,7 +590,10 @@ static void emit_expr(Emitter *e, Node *node) {
     case NODE_BINARY_OP: {
         uint32_t line = node->loc.line;
         if (node->as.binary.op == OP_AND) {
-            /* Short-circuit AND: if left is false, skip right and return false */
+            /* Short-circuit AND: any false operand decides the result. Each
+             * skip target is entered right after a JUMP_IF_FALSE popped its
+             * condition, so both rejoin at the same height. */
+            int32_t base = e->sp;
             emit_expr(e, node->as.binary.left);
             emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
             size_t patch_false = e->code_len - 1;
@@ -398,14 +604,21 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_inst_index(e, OPCODE_CONST, true_idx, line);
             emit_inst_offset(e, OPCODE_JUMP, 0, line);
             size_t patch_end = e->code_len - 1;
+
             e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
+            e->sp = base;
             uint32_t false_idx = add_constant(e, value_bool(false));
             emit_inst_index(e, OPCODE_CONST, false_idx, line);
+
             e->code[patch_right_false].arg.offset = (int32_t)(e->code_len - patch_right_false);
+            e->sp = base;
             emit_inst_index(e, OPCODE_CONST, false_idx, line);
+
             e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
+            e->sp = base + 1;
         } else if (node->as.binary.op == OP_OR) {
-            /* Short-circuit OR: if left is true, skip right and return true */
+            /* Short-circuit OR: any true operand decides the result. */
+            int32_t base = e->sp;
             emit_expr(e, node->as.binary.left);
             emit_inst_offset(e, OPCODE_JUMP_IF_TRUE, 0, line);
             size_t patch_true = e->code_len - 1;
@@ -416,12 +629,18 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_inst_index(e, OPCODE_CONST, false_idx, line);
             emit_inst_offset(e, OPCODE_JUMP, 0, line);
             size_t patch_end = e->code_len - 1;
+
             e->code[patch_true].arg.offset = (int32_t)(e->code_len - patch_true);
+            e->sp = base;
             uint32_t true_idx = add_constant(e, value_bool(true));
             emit_inst_index(e, OPCODE_CONST, true_idx, line);
+
             e->code[patch_right_true].arg.offset = (int32_t)(e->code_len - patch_right_true);
+            e->sp = base;
             emit_inst_index(e, OPCODE_CONST, true_idx, line);
+
             e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
+            e->sp = base + 1;
         } else {
             emit_expr(e, node->as.binary.left);
             emit_expr(e, node->as.binary.right);
@@ -457,7 +676,7 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_expr(e, node->as.call.args.data[i]);
         }
         emit_inst(e, OPCODE_CALL, node->loc.line);
-        e->code[e->code_len - 1].arg.arg_count = (uint8_t)node->as.call.args.len;
+        sp_set_argcount(e, e->code_len - 1, (uint8_t)node->as.call.args.len);
     } break;
 
     case NODE_ARRAY_LIT: {
@@ -465,7 +684,7 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_expr(e, node->as.array_lit.elems.data[i]);
         }
         emit_inst(e, OPCODE_NEW_ARRAY, node->loc.line);
-        e->code[e->code_len - 1].arg.index = (uint32_t)node->as.array_lit.elems.len;
+        sp_set_index(e, e->code_len - 1, (uint32_t)node->as.array_lit.elems.len);
     } break;
 
     case NODE_INDEX: {
@@ -529,7 +748,7 @@ static void emit_expr(Emitter *e, Node *node) {
         }
         (void)ok;
         emit_inst(e, OPCODE_NEW_STRUCT, line);
-        e->code[e->code_len - 1].arg.index = (uint32_t)si->field_count;
+        sp_set_index(e, e->code_len - 1, (uint32_t)si->field_count);
     } break;
 
     case NODE_FIELD_ACCESS: {
@@ -559,6 +778,7 @@ static void emit_expr(Emitter *e, Node *node) {
     case NODE_MATCH: {
         uint32_t line = node->loc.line;
         size_t n_arms = node->as.match_expr.arms.len;
+        int32_t base = e->sp;
 
         /* The matched value lives in a hidden local; every arm tests against
          * it and the arm body supplies the match's result. */
@@ -579,9 +799,15 @@ static void emit_expr(Emitter *e, Node *node) {
             Node *pat  = node->as.match_expr.arms.data[i].pattern;
             Node *body = node->as.match_expr.arms.data[i].body;
 
+            /* Each arm is entered after the previous arm's body jumped away, so
+             * it starts at the height the scrutinee store left behind. The
+             * pattern tests are net zero: GET_LOCAL, push the pattern, EQ,
+             * JUMP_IF_TRUE. */
+            e->sp = base;
+
             if (pat && pat->kind == NODE_PATTERN_WILDCARD) {
                 has_wildcard = true;
-                emit_value_branch(e, body);
+                emit_branch_value(e, body, "match arm", line);
                 emit_inst_offset(e, OPCODE_JUMP, 0, line);
                 patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
                 break; /* a wildcard makes later arms unreachable */
@@ -599,7 +825,7 @@ static void emit_expr(Emitter *e, Node *node) {
                 e->code[hits[k]].arg.offset = (int32_t)(body_start - hits[k]);
             }
 
-            emit_value_branch(e, body);
+            emit_branch_value(e, body, "match arm", line);
             emit_inst_offset(e, OPCODE_JUMP, 0, line);
             patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
 
@@ -609,6 +835,7 @@ static void emit_expr(Emitter *e, Node *node) {
 
         if (!has_wildcard) {
             /* No arm matched: yield nil so a match always produces a value. */
+            e->sp = base;
             uint32_t z = add_constant(e, value_nil());
             emit_inst_index(e, OPCODE_CONST, z, line);
         }
@@ -618,12 +845,12 @@ static void emit_expr(Emitter *e, Node *node) {
             e->code[end_jumps[k]].arg.offset = (int32_t)(end_target - end_jumps[k]);
         }
 
-        /* Stack is [.., target, result]: swap then pop to keep only the
-         * result. */
-        emit_inst(e, OPCODE_SWAP, line);
-        emit_inst(e, OPCODE_POP, line);
-        e->code[e->code_len - 1].arg.index = 1;
-        e->local_count--; /* the hidden local was consumed manually */
+        /* The hidden local occupied a stack slot *below* the result, and
+         * slots are reclaimed by dropping the index from the local table, not
+         * by popping the values on top of them. The old SWAP+POP here removed
+         * one value at the join, which happened to be a live local slot. */
+        e->local_count--;
+        e->sp = base + 1;
     } break;
 
     case NODE_RANGE: {
@@ -646,20 +873,26 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_IF: {
         uint32_t line2 = node->loc.line;
+        int32_t base = e->sp;
         emit_expr(e, node->as.if_expr.cond);
         emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line2);
         size_t patch_false = e->code_len - 1;
-        emit_value_branch(e, node->as.if_expr.then_block);
+        emit_branch_value(e, node->as.if_expr.then_block, "if", line2);
         emit_inst_offset(e, OPCODE_JUMP, 0, line2);
         size_t patch_over = e->code_len - 1;
         e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
+        /* The else arm is entered after JUMP_IF_FALSE popped the condition, so
+         * it starts at the height the then arm did. Both arms must then agree,
+         * which emit_branch_value enforces. */
+        e->sp = base;
         if (node->as.if_expr.else_block) {
-            emit_value_branch(e, node->as.if_expr.else_block);
+            emit_branch_value(e, node->as.if_expr.else_block, "else", line2);
         } else {
             uint32_t z = add_constant(e, value_nil());
             emit_inst_index(e, OPCODE_CONST, z, line2);
         }
         e->code[patch_over].arg.offset = (int32_t)(e->code_len - patch_over);
+        e->sp = base + 1;
     } break;
 
     case NODE_WHILE: {
@@ -830,6 +1063,8 @@ static void emit_expr(Emitter *e, Node *node) {
     default:
         break;
     }
+
+    sp_check(e, node, sp_before, node_value_effect(node), "expression");
 }
 
 /* -----------------------------------------------------------
@@ -838,6 +1073,8 @@ static void emit_expr(Emitter *e, Node *node) {
 
 static void emit_stmt(Emitter *e, Node *node) {
     if (!node) return;
+
+    int32_t sp_before = e->sp;
 
     switch (node->kind) {
     case NODE_FN_DECL: {
@@ -851,6 +1088,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         size_t saved_clen = e->const_len;
         uint16_t saved_local_count = e->local_count;
         uint8_t saved_scope_depth = e->scope_depth;
+        int32_t saved_sp = e->sp;
 
         e->code = NULL;
         e->code_len = 0;
@@ -860,6 +1098,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         e->const_cap = 0;
         e->scope_depth = 1;
         e->local_count = 0;
+        e->sp = 0;   /* the callee starts with an empty frame of its own */
 
         /* Reserve slot 0 for the callee/return value: the VM reuses the
          * function-value slot as the return-value slot, so parameters must
@@ -871,14 +1110,38 @@ static void emit_stmt(Emitter *e, Node *node) {
             add_local(e, node->as.fn_decl.params.data[i]);
         }
 
+        /* A block ending in a tail expression already left that value on the
+         * stack, so it becomes the return value: this is the Rust-style
+         * implicit tail return of research/010 §4.2. Without this the body's
+         * value was thrown away and the function returned nil. */
+        bool body_is_block = node->as.fn_decl.body &&
+                             node->as.fn_decl.body->kind == NODE_BLOCK;
+        bool implicit_return = body_is_block &&
+            node->as.fn_decl.body->as.block.last_expr != NULL;
+
         if (node->as.fn_decl.body) {
             emit_expr(e, node->as.fn_decl.body);
         }
 
         if (e->code_len == 0 || e->code[e->code_len - 1].op != OPCODE_RET) {
-            uint32_t nil_idx = add_constant(e, value_nil());
-            emit_inst_index(e, OPCODE_CONST, nil_idx, line);
+            if (!implicit_return) {
+                uint32_t nil_idx = add_constant(e, value_nil());
+                emit_inst_index(e, OPCODE_CONST, nil_idx, line);
+            }
             emit_inst(e, OPCODE_RET, line);
+        }
+
+        /* RET hands exactly one value back to the caller, so a function frame
+         * must be empty at that point. Leaving something behind means some
+         * path inside the body unbalanced the stack — which is how the missing
+         * implicit return used to pass unnoticed. */
+        if (e->sp != 0) {
+            fprintf(stderr, "error:%s:%u: internal: function '%.*s' leaves %d "
+                            "value(s) on the stack at return\n",
+                    node->loc.filename ? node->loc.filename : "?", node->loc.line,
+                    (int)node->as.fn_decl.name.len, node->as.fn_decl.name.str,
+                    (int)e->sp);
+            e->error_count++;
         }
 
         fn->local_count = e->local_count;
@@ -895,6 +1158,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         e->const_cap = saved_clen;
         e->local_count = saved_local_count;
         e->scope_depth = saved_scope_depth;
+        e->sp = saved_sp;
 
         /* Top-level functions become globals so any function can call them
          * (function frames reset their local table). */
@@ -954,6 +1218,11 @@ static void emit_stmt(Emitter *e, Node *node) {
             if (slot == 0xFF) {
                 uint32_t name_idx = add_constant(e, value_string(node->as.const_decl.name.str));
                 emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
+            } else {
+                /* Without this store a `const` declared inside a function left
+                 * its value on the stack, unbalancing every following
+                 * statement. */
+                emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
             }
         }
     } break;
@@ -992,10 +1261,15 @@ static void emit_stmt(Emitter *e, Node *node) {
     default: {
         emit_expr(e, node);
         /* Pop unused expression result from statement context */
-        emit_inst(e, OPCODE_POP, node->loc.line);
-        e->code[e->code_len - 1].arg.index = 1;
+        if (node_value_effect(node) != 0) {
+            emit_inst(e, OPCODE_POP, node->loc.line);
+            sp_set_index(e, e->code_len - 1, 1);
+        }
     } break;
     }
+
+    /* A statement is stack neutral by definition. */
+    sp_check(e, node, sp_before, 0, "statement");
 }
 
 /* -----------------------------------------------------------

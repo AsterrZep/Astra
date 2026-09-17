@@ -1,0 +1,9 @@
+// A block whose last statement ends in `;` has no value, so it cannot
+// initialise a binding (research/010 §4.2).
+// EXPECT-ERROR: has no value
+fn main() {
+    let b = {
+        7;
+    };
+    print(b);
+}
