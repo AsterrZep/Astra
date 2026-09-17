@@ -72,3 +72,6 @@ docs/_build/
 # Environment
 .env
 .env.local
+
+# Agent skills (symlinked per-tool views)
+.claude/
