@@ -862,6 +862,9 @@ static Node *parse_struct_decl(Parser *p) {
     expect(p, TOKEN_LBRACE, "'{'");
     skip_newlines(p);
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        /* An iteration that consumes nothing would report the same error
+         * forever; the guard at the bottom of the loop bails instead. */
+        uint32_t iter_start = p->current.loc.offset;
         expect(p, TOKEN_IDENT, "field name");
         /* field name */
         if (n->as.struct_decl.field_names.len >= n->as.struct_decl.field_names.cap) {
@@ -892,7 +895,17 @@ static Node *parse_struct_decl(Parser *p) {
 
         optional_semi(p);
         skip_newlines(p);
+        if (p->current.loc.offset == iter_start) {
+            fprintf(stderr, "error:");
+            srcloc_print(p->current.loc);
+            fprintf(stderr, ": aborting struct body after parse error\n");
+            break;
+        }
     }
+    /* A malformed body is swallowed up to its closing brace (the expect
+     * below consumes it) so the stray '}' is not re-reported at module
+     * level. */
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) advance(p);
     expect(p, TOKEN_RBRACE, "'}'");
     return n;
 }
@@ -913,6 +926,7 @@ static Node *parse_enum_decl(Parser *p) {
     expect(p, TOKEN_LBRACE, "'{'");
     skip_newlines(p);
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        uint32_t iter_start = p->current.loc.offset;
         expect(p, TOKEN_IDENT, "variant name");
         if (n->as.enum_decl.variants.len >= n->as.enum_decl.variants.cap) {
             size_t new_cap = n->as.enum_decl.variants.cap == 0 ? 8 : n->as.enum_decl.variants.cap * 2;
@@ -927,7 +941,14 @@ static Node *parse_enum_decl(Parser *p) {
         n->as.enum_decl.variants.data[n->as.enum_decl.variants.len++] = p->previous.text;
         optional_semi(p);
         skip_newlines(p);
+        if (p->current.loc.offset == iter_start) {
+            fprintf(stderr, "error:");
+            srcloc_print(p->current.loc);
+            fprintf(stderr, ": aborting enum body after parse error\n");
+            break;
+        }
     }
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) advance(p);
     expect(p, TOKEN_RBRACE, "'}'");
     return n;
 }

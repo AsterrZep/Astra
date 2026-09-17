@@ -1,0 +1,12 @@
+// Comma-separated field declarations are not Astra syntax (fields are
+// newline-separated, like ARCHITECTURE.md §10.1). The parser used to report
+// the same error forever; now it aborts the body and terminates.
+// EXPECT-ERROR: aborting struct body after parse error
+struct P {
+    x: i32,
+    y: i32
+}
+
+fn main() {
+    print("x");
+}

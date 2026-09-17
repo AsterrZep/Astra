@@ -1,0 +1,12 @@
+// Comma-separated variants are not Astra-0 syntax yet (ADT enums use
+// space/paren payloads, unit variants are newline-separated). The parser used
+// to loop forever here; now it aborts the body and terminates.
+// EXPECT-ERROR: aborting enum body after parse error
+enum E {
+    Rojo,
+    Verde
+}
+
+fn main() {
+    print("x");
+}
