@@ -18,6 +18,7 @@ programas Astra-0 de principio a fin.
 
 | Componente | Estado | Notas |
 |:-----------|:-------|:------|
+| Registro de constructos | ✅ | `src/constructs/`, un archivo por producción EBNF; `--check-constructs` valida 14 invariantes contra léxico y parser |
 | Arena allocator | ✅ | `arena.c`, liberación en bloque |
 | Interning de strings | ✅ | `string_table.c`, igualdad por puntero |
 | Lexer | ✅ | `..`/`..=`, literales numéricos (hex/bin/oct), strings con escapes, comentarios |
@@ -73,10 +74,12 @@ acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
 // EXPECT-ERROR: <texto de error>     (el programa debe fallar)
 ```
 
-Cobertura actual (26 casos, todos en verde):
+La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
+los casos de conformidad. Cobertura actual (27 casos, todos en verde):
 
 | Área | Casos |
 |:-----|:------|
+| registro | invariantes de constructos, palabras clave y tabla de operadores |
 | expressions | `arithmetic` (precedencia, unarios, `%`) |
 | control | `if_else`, `while_break`, `while_continue` |
 | loops | `range_exclusive`, `range_inclusive`, `break_continue`, `for_array` |
@@ -113,6 +116,15 @@ Ordenado por valor para el objetivo de bootstrap.
 - [ ] Traits con despacho simple (Tier 3).
 - [ ] Unidades de medida (fuera del alcance del seed).
 
+### Arquitectura interna
+- [x] **Registro de constructos**: un archivo por producción EBNF, con gramática
+      y cita de investigación obligatorias, y 14 invariantes verificadas
+      automáticamente. Ver `CONSTRUCT_REGISTRY.md` y `MULTI_AGENT_SETUP.md`.
+- [ ] **Migrar los hooks** `parse` / `emit` / `check` a los archivos de
+      constructo, fase por fase. Hoy el registro describe los 44 constructos
+      pero no ejecuta ninguno (`migrated: 0 / 44`); la migración empieza por
+      `if` + `else`, que es el par que motivó el diseño.
+
 ### Tooling
 - [ ] Subcomando `--emit-c` (ruta de bootstrap a C del diseño original).
 - [ ] `--dump-bytecode` como flag estable (hoy vía `ASTRA_DUMP_VM`).
@@ -121,9 +133,12 @@ Ordenado por valor para el objetivo de bootstrap.
 
 ## 5. Cómo continuar
 
-Ver `AGENTS.md` para comandos y **workstreams de sub-agentes** (frontend,
-semantics, codegen, runtime, tests, docs), con la propiedad de archivos y el
-protocolo de handoff.
+Ver `AGENTS.md` para comandos y **workstreams de sub-agentes** (registry, un
+constructo, frontend, types, codegen, runtime, tests, docs), con la propiedad de
+archivos y el protocolo de handoff. Ver `CONSTRUCT_REGISTRY.md` para el diseño
+por constructo y `MULTI_AGENT_SETUP.md` para activar los multi-agentes
+(verificado: en Freebuff están forzados a `LITE` y no hay forma de activarlos;
+con Codebuff en `mode: "MAX"` sí).
 
 Regla de oro al tocar el emisor: **cada camino debe dejar la pila de la VM a una
 altura predecible**. La mayoría de los bugs encontrados en la Fase 1

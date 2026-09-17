@@ -13,7 +13,9 @@ INCDIR  = include
 BUILDDIR = build
 TARGET  = astra-seed
 
-SRCS    = $(wildcard $(SRCDIR)/*.c)
+# Sources are every .c under src/, including the one-file-per-construct
+# modules in src/constructs/.
+SRCS    = $(wildcard $(SRCDIR)/*.c) $(wildcard $(SRCDIR)/constructs/*.c)
 OBJS    = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SRCS))
 DEPS    = $(OBJS:.o=.d)
 
@@ -37,8 +39,11 @@ $(TARGET): $(OBJS)
 	@echo "Built: $(TARGET)"
 
 # Compile
+# -I$(SRCDIR) lets construct modules include "constructs/construct.h"
+# and "priv.h" without relative-path gymnastics.
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
-	$(CC) $(CFLAGS) -I$(INCDIR) -MMD -MP -c $< -o $@
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCDIR) -I$(SRCDIR) -MMD -MP -c $< -o $@
 
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
@@ -49,7 +54,7 @@ clean:
 
 # Format
 format:
-	clang-format -i $(SRCDIR)/*.c $(INCDIR)/astra/*.h
+	clang-format -i $(SRCDIR)/*.c $(SRCDIR)/*.h $(SRCDIR)/constructs/*.c $(SRCDIR)/constructs/*.h $(INCDIR)/astra/*.h
 
 # Test
 test: $(TARGET)

@@ -50,6 +50,13 @@ static TokenKind check_keyword(const char *text, size_t len) {
     return TOKEN_IDENT;
 }
 
+/* Exposed so the construct registry can prove that every construct's
+ * declared keyword is really lexed to the token it claims
+ * (see src/constructs/construct.c). */
+TokenKind lexer_keyword_token(const char *text, size_t len) {
+    return check_keyword(text, len);
+}
+
 static Token make_token(Lexer *l, TokenKind kind, uint32_t line, uint32_t col,
                         uint32_t offset, const char *text, size_t len) {
     Token t = {0};

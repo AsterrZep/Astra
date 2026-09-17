@@ -207,6 +207,10 @@ Token   lexer_next(Lexer *l);
 Token   lexer_peek(Lexer *l);
 void    lexer_destroy(Lexer *l);
 
+/* Token a keyword lexes to, or TOKEN_IDENT when `text` is not a keyword.
+ * Used by the construct registry self-check (src/constructs/construct.c). */
+TokenKind lexer_keyword_token(const char *text, size_t len);
+
 /* -----------------------------------------------------------
  * §7: AST Node Types
  * ----------------------------------------------------------- */

@@ -39,10 +39,19 @@ ASTRA_TRACE=1   ./astra-seed file.astra   # trace VM stack per instruction
 ./astra-seed --dump-ast file.astra        # AST output
 ```
 
+Compiler-introspection switches (no input file, they describe the compiler):
+
+```bash
+./astra-seed --check-constructs   # construct registry invariants; exit 1 on drift
+./astra-seed --dump-constructs    # every construct: EBNF, research, deps, phases
+./astra-seed --dump-operators     # operator precedence table + documented deviations
+```
+
 ## Seed compiler layout (`seed/src`)
 
 | File | Responsibility |
 |:-----|:---------------|
+| `constructs/` | **one file per grammar production** — the construct registry; see `Documentacion/CONSTRUCT_REGISTRY.md` |
 | `arena.c` | bump/arena allocator; all compiler memory is freed in bulk |
 | `string_table.c` | string interning (pointer-compare equality) |
 | `lexer.c` | hand-written tokenizer, keyword table |
@@ -75,6 +84,10 @@ These are easy to break and expensive to debug:
    insertion sequence, never by hash-bucket order.
 5. **Arena-only allocation.** Compiler phases do not `free()`; everything is
    arena-allocated and released together.
+6. **Registry agreement.** A construct's keyword must lex to the token it
+   declares, and the operator table in `constructs/operator_table.c` must match
+   the parser's precedence table. `--check-constructs` enforces both; never
+   silence it.
 
 ## Sub-agent workstreams
 
@@ -85,12 +98,20 @@ agreed up front).
 
 | Workstream | Owns | Verifies with |
 |:-----------|:-----|:--------------|
+| **registry** | `constructs/construct.{h,c}`, `constructs/registry.c`, `constructs/operator_table.c` | `--check-constructs` |
+| **one construct** | a single `constructs/<name>.c` | `--check-constructs` + conformance |
 | **frontend** (lexer + parser + AST) | `lexer.c`, `parser.c`, `ast.c` | `--dump-tokens`, `--dump-ast` |
 | **types** (semantics) | `typechecker.c` | `tests/conformance/ui/*` |
 | **codegen** (emitter + VM) | `emitter.c`, `vm.c` | `ASTRA_DUMP_VM=1`, conformance |
 | **runtime** (values, builtins) | `vm.c` value helpers | conformance |
 | **tests** (conformance suite) | `tests/**` | `make test` |
 | **docs** | `Documentacion/**`, `AGENTS.md` | review |
+
+The construct workstreams are the finest-grained split: 44 independent files,
+so several can run at once. They have exactly one shared contract —
+`constructs/construct.h` — and the self-check is the arbiter: if two of them
+claim the same node kind, token or keyword, `--check-constructs` fails the suite
+before anything is compiled.
 
 Shared-contract files (`include/astra/astra.h`, `src/priv.h`) are the
 integration points: changes to them must be done by the workstream that needs

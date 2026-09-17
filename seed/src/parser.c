@@ -1240,3 +1240,18 @@ bool parser_had_error(Parser *p) {
 void parser_destroy(Parser *p) {
     (void)p; /* arena handles cleanup */
 }
+
+/* -----------------------------------------------------------
+ * Exposed for the construct registry self-check, so that the
+ * operator table in src/constructs/operator_table.c and this
+ * parser cannot drift apart (see ConstructSpec up in
+ * src/constructs/construct.h).
+ * ----------------------------------------------------------- */
+
+uint8_t parser_precedence_of(TokenKind kind) {
+    return (uint8_t)token_to_prec(kind);
+}
+
+BinaryOp parser_binary_op_of(TokenKind kind) {
+    return token_to_binary_op(kind);
+}

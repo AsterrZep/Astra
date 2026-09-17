@@ -1,4 +1,5 @@
 #include "priv.h"
+#include "constructs/construct.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +14,10 @@ static void print_usage(const char *prog) {
         "  --help           Show this help message\n"
         "  --version        Show version\n"
         "  --dump-tokens    Lex and dump all tokens\n"
-        "  --dump-ast       Parse and dump the AST\n",
+        "  --dump-ast       Parse and dump the AST\n"
+        "  --dump-constructs  Dump the construct registry (grammar, research, deps)\n"
+        "  --dump-operators   Dump the operator precedence table\n"
+        "  --check-constructs Check registry invariants; exit 1 on any failure\n",
         prog);
 }
 
@@ -59,6 +63,29 @@ static int read_file(const char *filename, char **out_src, size_t *out_len) {
     return 0;
 }
 
+/* Diagnostics that describe the compiler itself rather than a program.
+ * They take no input file and terminate immediately. */
+static int run_registry_diagnostic(const char *flag) {
+    static char buf[512 * 1024];
+
+    if (strcmp(flag, "--dump-constructs") == 0) {
+        construct_dump(buf, sizeof(buf));
+        fputs(buf, stdout);
+        return 0;
+    }
+    if (strcmp(flag, "--dump-operators") == 0) {
+        operator_table_dump(buf, sizeof(buf));
+        fputs(buf, stdout);
+        return 0;
+    }
+    if (strcmp(flag, "--check-constructs") == 0) {
+        int failures = construct_self_check(buf, sizeof(buf));
+        fputs(buf, stdout);
+        return failures == 0 ? 0 : 1;
+    }
+    return -1;
+}
+
 int main(int argc, char **argv) {
     bool dump_tokens = false;
     bool dump_ast    = false;
@@ -71,6 +98,10 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("astra-seed %s\n", ASTRA_VERSION);
             return 0;
+        } else if (strcmp(argv[i], "--dump-constructs") == 0 ||
+                   strcmp(argv[i], "--dump-operators") == 0 ||
+                   strcmp(argv[i], "--check-constructs") == 0) {
+            return run_registry_diagnostic(argv[i]);
         } else if (strcmp(argv[i], "--dump-tokens") == 0) {
             dump_tokens = true;
         } else if (strcmp(argv[i], "--dump-ast") == 0) {

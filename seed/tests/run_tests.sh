@@ -25,6 +25,23 @@ fi
 pass=0
 fail=0
 
+# ------------------------------------------------------------
+# Construct registry invariants
+# ------------------------------------------------------------
+# The registry is the single source of truth for what a construct is.
+# This gate fails the whole suite if the registry, the lexer's keyword
+# table, the parser's operator precedence table and the per-construct
+# phase bits have drifted apart.
+if registry_out="$("$ASTRA" --check-constructs 2>&1)"; then
+    summary="$(printf '%s\n' "$registry_out" | grep -E 'constructs:|migrated' | tr '\n' ' ')"
+    echo "ok   construct registry ($summary)"
+    pass=$((pass + 1))
+else
+    echo "FAIL construct registry:"
+    printf '%s\n' "$registry_out" | sed 's/^/      /'
+    fail=$((fail + 1))
+fi
+
 while IFS= read -r file; do
     rel="${file#"$ROOT"/}"
 
