@@ -1,0 +1,8 @@
+// Immutable bindings reject writes through them (Hallazgo B keeps the
+// mutability check that already existed for identifiers).
+// EXPECT-ERROR: cannot assign through immutable variable 'xs'
+fn main() {
+    let xs = [1, 2];
+    xs[0] = 9;
+    print(xs[0]);
+}

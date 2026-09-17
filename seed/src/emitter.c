@@ -69,6 +69,15 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
     case OPCODE_JUMP:
     case OPCODE_HALT:
         return 0;
+
+    /* SET_FIELD pops value + object and pushes the value back; SET_INDEX
+     * additionally pops the index. In both the aggregate handle is consumed
+     * by the store, which is exactly why the NODE_ASSIGN path below needs no
+     * resynchronisation. */
+    case OPCODE_SET_FIELD:
+        return -1;
+    case OPCODE_SET_INDEX:
+        return -2;
     }
     return 0;
 }
@@ -76,6 +85,32 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
 static void sp_advance(Emitter *e, int32_t delta) {
     e->sp += delta;
     if (e->sp > e->sp_high) e->sp_high = e->sp;
+}
+
+/* Emit a store into the last link of an lvalue chain. `place` is the final
+ * `.field` / `[index]` link with its `object` stripped: the caller already
+ * emitted the read of the aggregate the chain walks to. Both store forms
+ * consume the handle and push the stored value back, so the node's net effect
+ * stays "one value" and no stack-model resync is needed. */
+static void emit_expr(Emitter *e, Node *node);
+static void emit_inst(Emitter *e, OpCode op, uint32_t line);
+static void emit_inst_index(Emitter *e, OpCode op, uint32_t index, uint32_t line);
+static uint32_t add_constant(Emitter *e, Value value);
+
+static void emit_assign_into(Emitter *e, Node *place, Node *value, uint32_t line) {
+    if (place->kind == NODE_INDEX) {
+        emit_expr(e, place->as.index.index);
+        emit_expr(e, value);
+        emit_inst(e, OPCODE_SET_INDEX, line);
+    } else if (place->kind == NODE_FIELD_ACCESS) {
+        uint32_t idx = add_constant(e, value_string(place->as.field_access.field.str));
+        emit_expr(e, value);
+        emit_inst_index(e, OPCODE_SET_FIELD, idx, line);
+    } else {
+        fprintf(stderr, "error: invalid assignment target\n");
+        e->error_count++;
+        return;
+    }
 }
 
 static void emit_inst(Emitter *e, OpCode op, uint32_t line) {
@@ -1014,17 +1049,48 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_ASSIGN: {
         /* Assignment is an expression: it yields the assigned value so it can
-         * safely be the tail of a block. */
+         * safely be the tail of a block. The target is an LValue
+         * (`Identifier | LValue "." Identifier | LValue "[" Expression"]"`);
+         * plain identifiers store into the binding, anything else stores
+         * through the binding into the aggregate it names. */
         uint32_t line = node->loc.line;
-        emit_expr(e, node->as.assign.value);
-        int slot = find_local(e, node->as.assign.name);
-        if (slot >= 0) {
-            emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)slot, line);
-            emit_inst_index(e, OPCODE_GET_LOCAL, (uint32_t)slot, line);
+        Node *target = node->as.assign.target;
+        if (!target) {
+            fprintf(stderr, "error: assignment without a target\n");
+            e->error_count++;
+            break;
+        }
+        if (target->kind == NODE_IDENT) {
+            emit_expr(e, node->as.assign.value);
+            InternedString name = target->as.ident.name;
+            int slot = find_local(e, name);
+            if (slot >= 0) {
+                emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)slot, line);
+                emit_inst_index(e, OPCODE_GET_LOCAL, (uint32_t)slot, line);
+            } else {
+                uint32_t idx = add_constant(e, value_string(name.str));
+                emit_inst_index(e, OPCODE_SET_GLOBAL, idx, line);
+                emit_inst_index(e, OPCODE_GET_GLOBAL, idx, line);
+            }
+        } else if (target->kind == NODE_INDEX || target->kind == NODE_FIELD_ACCESS) {
+            /* The chain may be deeper than one link (`xs[i].f = v`), so emit
+             * the read of everything above the *last* link, reusing emit_expr:
+             * that keeps one path for how a node reads, instead of a second
+             * emitter that can drift from it. */
+            Node *inner = target->kind == NODE_INDEX
+                ? target->as.index.object
+                : target->as.field_access.object;
+            emit_expr(e, inner);                       /* aggregate handle */
+            Node leaf = *target;                       /* detached last link */
+            if (target->kind == NODE_INDEX) {
+                leaf.as.index.object = NULL;
+            } else {
+                leaf.as.field_access.object = NULL;
+            }
+            emit_assign_into(e, &leaf, node->as.assign.value, line);
         } else {
-            uint32_t idx = add_constant(e, value_string(node->as.assign.name.str));
-            emit_inst_index(e, OPCODE_SET_GLOBAL, idx, line);
-            emit_inst_index(e, OPCODE_GET_GLOBAL, idx, line);
+            fprintf(stderr, "error: invalid assignment target\n");
+            e->error_count++;
         }
     } break;
 

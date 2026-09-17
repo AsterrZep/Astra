@@ -956,35 +956,89 @@ static Type *typecheck_continue(TypeChecker *tc, Node *node) {
     return type_new(tc->arena, TYPE_VOID);
 }
 
+/* The root binding of an lvalue chain: `xs[i].name` → `xs`. Mutating through
+ * an lvalue mutates the binding's referent, so the binding itself has to be
+ * declared mutable — `let xs = ...; xs[0] = 9` is rejected.
+ * `LValue ::= Identifier | LValue "." Identifier | LValue "[" Expression "]"`
+ * (see constructs/assign.c, which owns the Assignment production;
+ * research/010 §12.1 uses LValue without defining it). */
+static Node *lvalue_root(Node *n) {
+    while (n) {
+        if (n->kind == NODE_FIELD_ACCESS)  { n = n->as.field_access.object; continue; }
+        if (n->kind == NODE_INDEX)         { n = n->as.index.object;        continue; }
+        return n;
+    }
+    return NULL;
+}
+
 static Type *typecheck_assign(TypeChecker *tc, Node *node) {
-    InternedString name = node->as.assign.name;
+    Node *target = node->as.assign.target;
+    if (!target) {
+        return tc_error_type(tc, node->loc, "assignment without a target");
+    }
+
+    /* `Color.Rojo = x` parses as a field access on a type name; reject it
+     * before typecheck_field_access mistakes it for a valid enum value. */
+    if (target->kind == NODE_FIELD_ACCESS) {
+        Type *obj = typecheck_node(tc, target->as.field_access.object);
+        if (type_is_error(obj)) return obj;
+        if (obj->kind == TYPE_ENUM) {
+            return tc_error_type(tc, target->loc, "cannot assign to enum variant '%.*s.%.*s'",
+                                 (int)obj->as.enumeration.name.len,
+                                 obj->as.enumeration.name.str,
+                                 (int)target->as.field_access.field.len,
+                                 target->as.field_access.field.str);
+        }
+    }
+
+    Node *root = lvalue_root(target);
+    if (!root || root->kind != NODE_IDENT) {
+        return tc_error_type(tc, target->loc, "invalid assignment target");
+    }
+
+    InternedString name = root->as.ident.name;
     Symbol *sym = symbol_table_lookup(tc->symbols, name);
     if (!sym) {
-        return tc_error_type(tc, node->loc, "undefined variable '%.*s'",
+        return tc_error_type(tc, root->loc, "undefined variable '%.*s'",
                              (int)name.len, name.str);
     }
 
     if (sym->is_fn) {
-        return tc_error_type(tc, node->loc, "cannot reassign function '%.*s'",
+        return tc_error_type(tc, root->loc, "cannot reassign function '%.*s'",
                              (int)name.len, name.str);
     }
 
     if (!sym->is_mut) {
-        return tc_error_type(tc, node->loc, "cannot assign to immutable variable '%.*s'",
+        /* For `xs[0] = 9` the binding is the problem, not the element, so the
+         * diagnostic points at the binding and says so. */
+        if (target->kind != NODE_IDENT) {
+            return tc_error_type(tc, root->loc,
+                                 "cannot assign through immutable variable '%.*s'"
+                                 " (declare it with 'let mut')",
+                                 (int)name.len, name.str);
+        }
+        return tc_error_type(tc, root->loc, "cannot assign to immutable variable '%.*s'",
                              (int)name.len, name.str);
     }
+
+    /* Type of the place being written. */
+    Type *target_type = typecheck_node(tc, target);
+    if (type_is_error(target_type)) return target_type;
 
     Type *val_type = typecheck_node(tc, node->as.assign.value);
     if (type_is_error(val_type)) return val_type;
 
-    if (!type_eq(sym->type, val_type)) {
+    if (!type_eq(target_type, val_type)) {
+        const char *what = target->kind == NODE_INDEX ? "array element"
+                         : target->kind == NODE_FIELD_ACCESS ? "struct field"
+                         : "variable";
         return tc_error_type(tc, node->loc,
-                             "type mismatch: cannot assign %s to variable of type %s",
-                             type_kind_name(val_type->kind),
-                             type_kind_name(sym->type->kind));
+                             "type mismatch: cannot assign %s to %s of type %s",
+                             type_kind_name(val_type->kind), what,
+                             type_kind_name(target_type->kind));
     }
 
-    return sym->type;
+    return target_type;
 }
 
 /* ============================================================

@@ -342,6 +342,8 @@ static const char *opname(OpCode op) {
     case OPCODE_LEN:          return "LEN";
     case OPCODE_NEW_STRUCT:   return "NEW_STRUCT";
     case OPCODE_GET_FIELD:    return "GET_FIELD";
+    case OPCODE_SET_FIELD:    return "SET_FIELD";
+    case OPCODE_SET_INDEX:    return "SET_INDEX";
     case OPCODE_CALL:         return "CALL";
     case OPCODE_RET:          return "RET";
     case OPCODE_PRINT:        return "PRINT";
@@ -906,6 +908,66 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             vm->sp = (uint16_t)(vm->sp - n - 1);
             if (!vm_push(vm, value_struct(obj))) return VM_RUNTIME_ERROR;
+        } break;
+
+        /* Store into an aggregate *element*, not into a binding: `xs[i] = v`.
+         * The array is a shared handle, so the write goes through the handle
+         * and is visible to every copy of it (see PHASE1_PROGRESS §3bis). */
+        case OPCODE_SET_INDEX: {
+            if (vm->sp < 3) {
+                vm_runtime_error(vm, line, "stack underflow on set_index");
+                return VM_RUNTIME_ERROR;
+            }
+            Value val = vm_pop(vm);
+            Value idx = vm_pop(vm);
+            Value obj = vm_pop(vm);
+            if (obj.kind != VAL_ARRAY || !obj.as.array_val) {
+                vm_runtime_error(vm, line, "cannot index %s", type_name(obj));
+                return VM_RUNTIME_ERROR;
+            }
+            if (idx.kind != VAL_INT) {
+                vm_runtime_error(vm, line, "array index must be int, got %s", type_name(idx));
+                return VM_RUNTIME_ERROR;
+            }
+            ArrayObj *arr = obj.as.array_val;
+            if (idx.as.int_val < 0 || (uint64_t)idx.as.int_val >= arr->len) {
+                vm_runtime_error(vm, line, "index %ld out of bounds (len %zu)",
+                    (long)idx.as.int_val, arr->len);
+                return VM_RUNTIME_ERROR;
+            }
+            arr->elems[idx.as.int_val] = val;
+            if (!vm_push(vm, val)) return VM_RUNTIME_ERROR;
+        } break;
+
+        /* Store into a struct *field*: `p.x = v`. Like SET_INDEX, the struct
+         * is a shared handle and the write is visible through every copy. */
+        case OPCODE_SET_FIELD: {
+            if (inst.arg.index >= vm->const_len) {
+                vm_runtime_error(vm, line, "field name index %u out of range", inst.arg.index);
+                return VM_RUNTIME_ERROR;
+            }
+            if (vm->sp < 2) {
+                vm_runtime_error(vm, line, "stack underflow on set_field");
+                return VM_RUNTIME_ERROR;
+            }
+            Value val = vm_pop(vm);
+            Value obj = vm_pop(vm);
+            const char *field = vm->constants[inst.arg.index].as.string_val;
+            if (obj.kind != VAL_STRUCT || !obj.as.struct_val) {
+                vm_runtime_error(vm, line, "cannot access field on %s", type_name(obj));
+                return VM_RUNTIME_ERROR;
+            }
+            StructObj *s = obj.as.struct_val;
+            int found = -1;
+            for (size_t i = 0; i < s->def->field_count; i++) {
+                if (strcmp(s->def->field_names[i], field) == 0) { found = (int)i; break; }
+            }
+            if (found < 0) {
+                vm_runtime_error(vm, line, "struct '%s' has no field '%s'", s->def->name, field);
+                return VM_RUNTIME_ERROR;
+            }
+            s->fields[found] = val;
+            if (!vm_push(vm, val)) return VM_RUNTIME_ERROR;
         } break;
 
         case OPCODE_GET_FIELD: {

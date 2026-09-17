@@ -390,7 +390,12 @@ typedef struct {
 } ReturnExpr;
 
 typedef struct {
-    InternedString name;
+    /* The assignment target. `Assignment ::= LValue "=" Assignment`
+     * (research/010 §12.1) where
+     * `LValue ::= Identifier | LValue "." Identifier | LValue "[" Expression "]"`.
+     * The report names LValue but never defines it; see constructs/lvalue.c. */
+    Node          *target;  /* NODE_IDENT | NODE_FIELD_ACCESS | NODE_INDEX */
+    InternedString name;    /* mirror of target->as.ident.name when target is an ident */
     Node          *value;
     BinaryOp       op;  /* used by NODE_COMPOUND_ASSIGN */
 } AssignExpr;
@@ -646,6 +651,8 @@ typedef enum {
     OPCODE_LEN,           /* pop array; push length */
     OPCODE_NEW_STRUCT,    /* pop layout + N field values, push struct */
     OPCODE_GET_FIELD,     /* pop field name, struct; push field value */
+    OPCODE_SET_INDEX,     /* pop value, index, array; store, push value */
+    OPCODE_SET_FIELD,     /* operand: field-name constant; pop value, struct; store, push value */
 
     /* Functions */
     OPCODE_CALL,          /* call function */

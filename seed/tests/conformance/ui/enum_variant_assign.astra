@@ -1,0 +1,12 @@
+// Enum variants are values, not places: assignment to them is rejected
+// before field access is attempted on the type name.
+// EXPECT-ERROR: cannot assign to enum variant
+fn main() {
+    Color.Rojo = 1;
+    print(Color.Rojo);
+}
+
+enum Color {
+    Rojo
+    Verde
+}

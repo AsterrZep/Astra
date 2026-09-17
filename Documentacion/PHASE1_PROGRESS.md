@@ -75,7 +75,8 @@ acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (33 casos, todos en verde):
+los casos de conformidad. Cobertura actual (38 casos, todos en verde, también
+bajo ASan/UBSan):
 
 | Área | Casos |
 |:-----|:------|
@@ -83,12 +84,12 @@ los casos de conformidad. Cobertura actual (33 casos, todos en verde):
 | expressions | `arithmetic` (precedencia, unarios, `%`) |
 | control | `if_else`, `while_break`, `while_continue` |
 | loops | `range_exclusive`, `range_inclusive`, `break_continue`, `for_array` |
-| arrays | `literal_index` |
-| structs | `literal_fields`, `field_order`, `struct_in_function` |
+| arrays | `literal_index`, `element_assign`, `alias_write` (compartición de handles) |
+| structs | `literal_fields`, `field_order`, `struct_in_function`, `field_assign` (cadenas anidadas) |
 | blocks | `tail_expression`, `if_value` |
 | enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm` |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `match_guard_unsupported`, `void_initializer`, `missing_return_value` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `match_guard_unsupported`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
@@ -105,8 +106,8 @@ los herede al escribir el compilador en Zig:
 | A | `if` como expresión con sentencias en la rama | `if c { let t = 5; t + 1 }` → `5` | ✅ `6` |
 | C | Retorno implícito de función | `fn f() -> i32 { 42 }` → `nil` | ✅ `42` |
 | C | Tipo de retorno declarado sin valor | `fn f() -> i32 { }` → `nil` | ✅ error de compilación |
-| B | `LValue` acotado a identificadores | `xs[0] = 9;` → error de parseo | ⛔ pendiente |
-| B | Mismo caso en campos | `p.x = 5;` → error de parseo | ⛔ pendiente |
+| B | `LValue` acotado a identificadores | `xs[0] = 9;` → error de parseo | ✅ asigna el elemento |
+| B | Mismo caso en campos | `p.x = 5;` → error de parseo | ✅ asigna el campo |
 
 ### Causa raíz de A y C (arreglada)
 
@@ -124,8 +125,36 @@ un `POP n` que borraba el valor del bloque en lugar de sus ranuras locales;
 pila; y el `match` terminaba con un `SWAP; POP` que consumía una ranura local
 viva.
 
-Hallazgo B en cambio tiene una causa localizada: `parse_assignment` rechaza
-todo lo que no sea `NODE_IDENT`.
+Hallazgo B en cambio tenía la causa localizada que decía la auditoría:
+`parse_assignment` rechazaba todo lo que no fuera `NODE_IDENT`. Cerrado en dos
+mitades:
+
+- **Frontend**: `parse_assignment` acepta la forma `LValue ::= Identifier |
+  LValue "." Identifier | LValue "[" Expression "]"` (el reporte usa `LValue`
+  sin definirlo; esa es la lectura que el AST puede representar) y
+  `AssignExpr` guarda el `target` completo, no solo el nombre.
+- **Codegen**: la VM gana `SET_INDEX` (pop valor/índice/array, escribe, devuelve
+  el valor) y `SET_FIELD` (pop valor/struct, escribe, devuelve el valor). El
+  emisor recorre la cadena hasta el penúltimo enlace con `emit_expr` —una sola
+  ruta de lectura, reutilizada— y almacena con el último enlace desmontado;
+  ambos stores consumen el handle del agregado y devuelven el valor, así que el
+  efecto neto del nodo sigue siendo "un valor" y no hay resincronización del
+  modelo de pila.
+
+El checker exige que el binding raíz de la cadena sea `let mut` y rechaza
+asignar a una variante de enum (`Color.Rojo = x`), que el parser ve como acceso
+de campo sobre un nombre de tipo.
+
+**Semántica de agregados (de facto, Hallazgo G)**: `let b = a` copia el
+*handle*, no los elementos. `arrays/alias_write.astra` fija el comportamiento:
+escribir a través de un binding es visible por el otro. Es la semántica que la
+filosofía espera de ARC/ORC (compartir con contabilidad); queda escrito aquí
+para que el compilador en Zig no la herede por accidente.
+
+Bug aparte descubierto al sondear (preexistente, de recuperación de errores):
+el parser de `struct` declarations espera campos separados por saltos de línea y,
+ante una coma, entra en un bucle de errores infinito en vez de abortar. No lo
+toca este hito; es frontend puro.
 
 ## 4. Pendiente para completar la Fase 1
 

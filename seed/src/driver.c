@@ -300,9 +300,16 @@ static void dump_node(Node *node, int indent) {
         printf("Continue\n");
         break;
     case NODE_ASSIGN:
-        printf("Assign(%.*s)\n",
-               (int)node->as.assign.name.len,
-               node->as.assign.name.str);
+        printf("Assign\n");
+        if (node->as.assign.target) {
+            dump_node(node->as.assign.target, indent + 1);
+        } else {
+            /* Ident targets keep the name mirror for cheap dumps. */
+            indent_print(indent + 1);
+            printf("Assign(%.*s)\n",
+                   (int)node->as.assign.name.len,
+                   node->as.assign.name.str);
+        }
         dump_node(node->as.assign.value, indent + 1);
         break;
     case NODE_FN_DECL:

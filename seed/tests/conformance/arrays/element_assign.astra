@@ -1,0 +1,31 @@
+// Assignment into an array element (Hallazgo B: LValue extends past identifiers)
+// EXPECT: 9
+// EXPECT: 2
+// EXPECT: 42
+// EXPECT: 42
+// EXPECT: 42
+// EXPECT: 0
+// EXPECT: 10
+// EXPECT: 20
+fn main() {
+    let mut xs = [1, 2, 3];
+    xs[0] = 9;
+    print(xs[0]);
+    print(xs[1]);
+
+    let mut i = 2;
+    xs[i] = 42;              // dynamic index
+    print(xs[2]);
+
+    let y = { xs[1] = 42 };  // assignment is an expression
+    print(y);
+    print(xs[1]);
+
+    let mut acc = [0, 0, 0];
+    for i in 0..3 {
+        acc[i] = i * 10;
+    }
+    print(acc[0]);
+    print(acc[1]);
+    print(acc[2]);
+}

@@ -1,0 +1,13 @@
+// Aggregate assignment shares the handle: a write through one binding is
+// visible through the other. This is the de facto seed semantics for
+// ARC/ORC value sharing (COHERENCE_AUDIT.md Hallazgo G says it must be
+// specified before the Zig compiler inherits it).
+// EXPECT: 99
+// EXPECT: 99
+fn main() {
+    let mut a = [1, 2, 3];
+    let mut b = a;
+    b[0] = 99;
+    print(a[0]);
+    print(b[0]);
+}

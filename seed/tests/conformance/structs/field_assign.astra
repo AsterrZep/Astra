@@ -1,0 +1,32 @@
+// Assignment into a struct field, and through a nested chain (Hallazgo B).
+// Struct declarations separate fields with newlines, not commas.
+// EXPECT: 5
+// EXPECT: 2
+// EXPECT: 99
+// EXPECT: 7
+// EXPECT: Punto { x: 0, y: 6 }
+fn main() {
+    let mut p = Punto { x: 1, y: 2 };
+    p.x = 5;
+    print(p.x);
+    print(p.y);
+
+    let mut m = Matriz { fila: [7, 8], alto: 2 };
+    m.fila[1] = 99;          // nested chain: field then index
+    print(m.fila[1]);
+    print(m.fila[0]);
+
+    let mut q = Punto { x: 0, y: 0 };
+    q.y = { p.y + 4 };       // expression as the assigned value
+    print(q);
+}
+
+struct Punto {
+    x: i32
+    y: i32
+}
+
+struct Matriz {
+    fila: [i32]
+    alto: i32
+}

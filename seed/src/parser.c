@@ -290,16 +290,42 @@ static Node *parse_binary(Parser *p, Node *left, Precedence prec) {
     return n;
 }
 
+/* `LValue ::= Identifier | LValue "." Identifier | LValue "[" Expression "]"`
+ *
+ * research/010 §12.1 writes `Assignment ::= LValue "=" Assignment` but never
+ * defines LValue anywhere in the report. The shape above is the one the AST can
+ * actually represent, and the typechecker enforces the mutability of the root
+ * binding. See src/constructs/assign.c, which owns the Assignment production. */
+static bool node_is_lvalue(Node *n) {
+    while (n) {
+        switch (n->kind) {
+        case NODE_IDENT:
+            return true;
+        case NODE_FIELD_ACCESS:
+            n = n->as.field_access.object;
+            break;
+        case NODE_INDEX:
+            n = n->as.index.object;
+            break;
+        default:
+            return false;
+        }
+    }
+    return false;
+}
+
 static Node *parse_assignment(Parser *p, Node *left, Precedence prec) {
-    if (left->kind != NODE_IDENT) {
+    if (!node_is_lvalue(left)) {
         parser_error(p, "invalid assignment target");
         return left;
     }
     SrcLoc loc = left->loc;
-    InternedString name = left->as.ident.name;
     Node *value = parse_expression_with_prec(p, prec);
     Node *n = node_new(p->arena, NODE_ASSIGN, loc);
-    n->as.assign.name  = name;
+    n->as.assign.target = left;
+    if (left->kind == NODE_IDENT) {
+        n->as.assign.name = left->as.ident.name;
+    }
     n->as.assign.value = value;
     return n;
 }

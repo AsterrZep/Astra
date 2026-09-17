@@ -35,7 +35,10 @@ const ConstructSpec construct_assign = {
                   "| \"&=\" | \"|=\" | \"^=\" | \"<<=\" | \">>=\" | \"**=\") Assignment | LogicOr",
     .research   = "research/010 §12.1 (Assignment), §2.4 (operator registration), §12.2",
     .note       = "Binding power 1 = loosest, following §12.1 rather than the §12.2 "
-                  "row. The compound-assignment tokens are lexed but only `=` and the "
-                  "arithmetic forms are wired through to the emitter.",
+                  "row. The report never defines LValue; the seed reads it as "
+                  "`Identifier | LValue \".\" Identifier | LValue \"[\" Expression \"]\"` "
+                  "(parser checks the shape, the checker enforces mutability of the "
+                  "root binding). The compound-assignment tokens are lexed but the "
+                  "parser does not build NODE_COMPOUND_ASSIGN yet.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };
