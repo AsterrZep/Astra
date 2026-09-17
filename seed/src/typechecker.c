@@ -243,13 +243,49 @@ void symbol_table_pop_scope(SymbolTable *st) {
  * §3: Type Checker
  * ============================================================ */
 
+/* One entry per declared variant, in registration order. Variant names do
+ * not live in the symbol table (they are not bindings), so a data-carrying
+ * construction `Paso(x)` cannot resolve through it; this flat registry is
+ * the checker's view of "which enum does this variant name belong to". */
+typedef struct {
+    InternedString variant;
+    Type          *enum_type;
+} VariantEntry;
+
 struct TypeChecker {
     Arena     *arena;
     StringTable *strings;
     SymbolTable *symbols;
     Type      *current_fn_return; /* return type of enclosing fn, or NULL */
     int        error_count;
+    VariantEntry *variants;
+    size_t     variant_count;
+    size_t     variant_cap;
 };
+
+static void checker_add_variant(TypeChecker *tc, InternedString variant, Type *et) {
+    if (tc->variant_count >= tc->variant_cap) {
+        size_t nc = tc->variant_cap == 0 ? 16 : tc->variant_cap * 2;
+        VariantEntry *nd = arena_new_array(tc->arena, VariantEntry, nc);
+        if (tc->variants) {
+            memcpy(nd, tc->variants, sizeof(VariantEntry) * tc->variant_count);
+        }
+        tc->variants = nd;
+        tc->variant_cap = nc;
+    }
+    tc->variants[tc->variant_count].variant   = variant;
+    tc->variants[tc->variant_count].enum_type = et;
+    tc->variant_count++;
+}
+
+static Type *checker_find_variant(TypeChecker *tc, InternedString name) {
+    for (size_t i = 0; i < tc->variant_count; i++) {
+        if (string_eq(tc->variants[i].variant, name)) {
+            return tc->variants[i].enum_type;
+        }
+    }
+    return NULL;
+}
 
 TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
     TypeChecker *tc = arena_new(arena, TypeChecker);
@@ -520,6 +556,56 @@ static Type *typecheck_unary(TypeChecker *tc, Node *node) {
 }
 
 static Type *typecheck_call(TypeChecker *tc, Node *node) {
+    Node *callee_node = node->as.call.callee;
+
+    /* A bare identifier callee may name a data-carrying enum variant:
+     * `Paso(x)` / `PasoDoble(1, 2)` (research/04 §9.2). The grammar cannot
+     * tell it from a function call, so resolution is by name: the variant
+     * registry wins unless the name also binds a function. */
+    if (callee_node->kind == NODE_IDENT) {
+        Type *et = checker_find_variant(tc, callee_node->as.ident.name);
+        Symbol *sym = symbol_table_lookup(tc->symbols, callee_node->as.ident.name);
+        if (type_is_error(et)) return et;
+        if (et && !(sym && sym->is_fn)) {
+            InternedString vname = callee_node->as.ident.name;
+            int vi = enum_variant_index(et, vname);
+            if (vi >= 0) {
+                const VariantLayout *vl =
+                    et->as.enumeration.payloads ? &et->as.enumeration.payloads[vi] : NULL;
+                size_t nf = vl ? vl->field_count : 0;
+
+                if (node->as.call.args.len != nf) {
+                    return tc_error_type(tc, node->loc,
+                                         "variant '%.*s.%.*s' expects %zu field(s), got %zu",
+                                         (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
+                                         (int)vname.len, vname.str, nf, node->as.call.args.len);
+                }
+                /* Construction is positional in Astra-0: `PasoDoble(1, 2)`.
+                 * Declared field names are kept for pattern bindings, not
+                 * for named construction — the shared call grammar has no
+                 * `name:` argument form yet. */
+                if (vl) {
+                    for (size_t i = 0; i < node->as.call.args.len; i++) {
+                        Type *at = typecheck_node(tc, node->as.call.args.data[i]);
+                        if (type_is_error(at)) return at;
+                        Type *expected = vl->types[i];
+                        if (expected && expected->kind == TYPE_UNKNOWN) expected = NULL;
+                        if (expected && !type_eq(at, expected)) {
+                            return tc_error_type(tc, node->loc,
+                                                 "field %zu of '%.*s.%.*s' expects %s, got %s",
+                                                 i + 1,
+                                                 (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
+                                                 (int)vname.len, vname.str,
+                                                 type_kind_name(expected->kind),
+                                                 type_kind_name(at->kind));
+                        }
+                    }
+                }
+                return et;
+            }
+        }
+    }
+
     Type *callee = typecheck_node(tc, node->as.call.callee);
     if (type_is_error(callee)) return callee;
 
@@ -869,6 +955,86 @@ static void check_pattern(TypeChecker *tc, Node *pat, Type *target,
         return;
     }
 
+    case NODE_PATTERN_BIND: {
+        /* Binding pattern: captures the whole matched value. */
+        Symbol sym = {
+            .name    = pat->as.pattern_bind.name,
+            .type    = target,
+            .is_mut  = false,
+            .is_fn   = false,
+            .def_loc = pat->loc,
+        };
+        symbol_table_insert(tc->symbols, sym);
+        return;
+    }
+
+    case NODE_PATTERN_VARIANT_BIND: {
+        /* Enum variant with payload bindings: Color.Rgb(r, g, b) */
+        Node *var_path = pat->as.pattern_variant_bind.variant;
+        if (!var_path || var_path->kind != NODE_FIELD_ACCESS) {
+            tc_error(tc, pat->loc, "pattern must be a literal, `_` or Enum.Variant");
+            return;
+        }
+        Node *obj = var_path->as.field_access.object;
+        if (!obj || obj->kind != NODE_IDENT) {
+            tc_error(tc, pat->loc, "pattern must be a literal, `_` or Enum.Variant");
+            return;
+        }
+        Type *et = typecheck_ident(tc, obj);
+        if (type_is_error(et)) return;
+        if (et->kind != TYPE_ENUM) {
+            tc_error(tc, pat->loc, "pattern must be a literal, `_` or Enum.Variant");
+            return;
+        }
+        if (!type_eq(et, target)) {
+            tc_error(tc, pat->loc,
+                     "pattern type %s does not match match target type %s",
+                     type_kind_name(et->kind), type_kind_name(target->kind));
+            return;
+        }
+        InternedString v = var_path->as.field_access.field;
+        int vi = enum_variant_index(et, v);
+        if (vi < 0) {
+            tc_error(tc, pat->loc, "enum '%.*s' has no variant '%.*s'",
+                     (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
+                     (int)v.len, v.str);
+            return;
+        }
+        if (covered && (size_t)vi < covered_n) covered[vi] = true;
+
+        /* Bind each name to the corresponding payload field type. */
+        VariantLayout *vl = et->as.enumeration.payloads
+            ? &et->as.enumeration.payloads[vi] : NULL;
+        size_t bind_count = pat->as.pattern_variant_bind.bindings.len;
+        if (vl) {
+            if (bind_count != vl->field_count) {
+                tc_error(tc, pat->loc,
+                         "variant '%.*s' has %zu fields but pattern binds %zu",
+                         (int)v.len, v.str, vl->field_count, bind_count);
+                return;
+            }
+            for (size_t i = 0; i < bind_count; i++) {
+                Symbol sym = {
+                    .name    = pat->as.pattern_variant_bind.bindings.data[i],
+                    .type    = vl->types[i],
+                    .is_mut  = false,
+                    .is_fn   = false,
+                    .def_loc = pat->loc,
+                };
+                symbol_table_insert(tc->symbols, sym);
+            }
+        } else {
+            /* Unit variant: no bindings expected. */
+            if (bind_count > 0) {
+                tc_error(tc, pat->loc,
+                         "variant '%.*s' has no payload but pattern binds %zu names",
+                         (int)v.len, v.str, bind_count);
+                return;
+            }
+        }
+        return;
+    }
+
     default:
         tc_error(tc, pat->loc, "unsupported pattern in match arm");
         return;
@@ -891,6 +1057,15 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
         symbol_table_push_scope(tc->symbols);
 
         check_pattern(tc, arm->pattern, target, &has_wildcard, covered, covered_n);
+
+        if (arm->guard) {
+            Type *guard_type = typecheck_node(tc, arm->guard);
+            if (!type_is_error(guard_type) && guard_type->kind != TYPE_BOOL) {
+                tc_error(tc, arm->guard->loc,
+                         "match guard must be bool, got %s",
+                         type_kind_name(guard_type->kind));
+            }
+        }
 
         Type *arm_type = typecheck_node(tc, arm->body);
 
@@ -1344,6 +1519,31 @@ static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
         nv > 0 ? arena_new_array(tc->arena, InternedString, nv) : NULL;
     for (size_t i = 0; i < nv; i++) {
         en_type->as.enumeration.variants[i] = node->as.enum_decl.variants.data[i];
+        checker_add_variant(tc, node->as.enum_decl.variants.data[i], en_type);
+    }
+
+    /* Payload layouts run parallel to the variants: index i describes
+     * variants[i]. A unit variant carries zero fields. */
+    en_type->as.enumeration.payloads =
+        nv > 0 ? arena_new_array(tc->arena, VariantLayout, nv) : NULL;
+    for (size_t i = 0; i < nv; i++) {
+        VariantLayout *vl = &en_type->as.enumeration.payloads[i];
+        vl->names = NULL;
+        vl->types = NULL;
+        vl->field_count = 0;
+        Node *payload = node->as.enum_decl.variant_payloads.len > i
+            ? node->as.enum_decl.variant_payloads.data[i] : NULL;
+        if (!payload) continue;
+        size_t nf = payload->as.payload.fields.len;
+        vl->field_count = nf;
+        vl->types = nf > 0 ? arena_new_array(tc->arena, Type *, nf) : NULL;
+        vl->names = nf > 0 ? arena_new_array(tc->arena, InternedString, nf) : NULL;
+        for (size_t j = 0; j < nf; j++) {
+            PayloadField *pf = &payload->as.payload.fields.data[j];
+            vl->names[j] = pf->name;
+            vl->types[j] = resolve_type_node(tc, pf->type);
+            if (type_is_error(vl->types[j])) return;
+        }
     }
 
     Symbol sym = {
@@ -1445,6 +1645,24 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_INDEX:      return typecheck_index(tc, node);
     case NODE_ARRAY_LIT:  return typecheck_array_lit(tc, node);
     case NODE_STRUCT_LIT: return typecheck_struct_lit(tc, node);
+    case NODE_SOME_EXPR: {
+        Type *inner = typecheck_node(tc, node->as.some_expr.value);
+        if (type_is_error(inner)) return inner;
+        return inner;
+    }
+    case NODE_NONE_EXPR: {
+        return type_new(tc->arena, TYPE_VOID);
+    }
+    case NODE_OK_EXPR: {
+        Type *inner = typecheck_node(tc, node->as.ok_expr.value);
+        if (type_is_error(inner)) return inner;
+        return inner;
+    }
+    case NODE_ERR_EXPR: {
+        Type *inner = typecheck_node(tc, node->as.err_expr.value);
+        if (type_is_error(inner)) return inner;
+        return inner;
+    }
     case NODE_RANGE:      return tc_error_type(tc, node->loc,
                                 "range expression is only valid as a for-loop iterator");
     case NODE_FIELD_ACCESS: return typecheck_field_access(tc, node);
@@ -1481,6 +1699,11 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_ENUM_DECL:    typecheck_enum_decl(tc, node); return type_new(tc->arena, TYPE_VOID);
     case NODE_VAR_DECL:     typecheck_var_decl(tc, node); return type_new(tc->arena, TYPE_VOID);
     case NODE_CONST_DECL:   typecheck_const_decl(tc, node); return type_new(tc->arena, TYPE_VOID);
+
+    /* Declaration-only payload of a data-carrying enum variant. Checked when
+     * the enum itself is; appearing anywhere else is a grammar bug. */
+    case NODE_PAYLOAD:      return tc_error_type(tc, node->loc,
+                                "variant payload outside an enum declaration");
 
     /* Module */
     case NODE_MODULE:

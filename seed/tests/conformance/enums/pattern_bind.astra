@@ -1,0 +1,22 @@
+// Pattern binding in match arms (enum destructuring)
+// EXPECT: 10
+// EXPECT: 20
+// EXPECT: 30
+enum Color {
+    Rgb(i32, i32, i32)
+    Named(string)
+}
+
+fn main() {
+    let c = Rgb(10, 20, 30);
+    match c {
+        Color.Rgb(r, g, b) => {
+            print(r);
+            print(g);
+            print(b);
+        },
+        Color.Named(name) => {
+            print(name);
+        },
+    }
+}

@@ -1,0 +1,20 @@
+// Mix of binding patterns and unit variants in match
+// EXPECT: 1
+// EXPECT: third
+// EXPECT: 2
+enum Item {
+    First(i32)
+    Second(i32)
+    Third
+}
+
+fn main() {
+    let items = [First(1), Item.Third, Second(2)];
+    for item in items {
+        match item {
+            Item.First(x) => print(x),
+            Item.Second(y) => print(y),
+            Item.Third => print("third"),
+        }
+    }
+}

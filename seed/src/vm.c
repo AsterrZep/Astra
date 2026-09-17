@@ -78,6 +78,35 @@ Value value_enum(const char *enum_name, const char *variant_name) {
     return v;
 }
 
+Value value_enum_def(EnumDef *d) {
+    Value v = {0};
+    v.kind = VAL_ENUM_DEF;
+    v.as.enum_def = d;
+    return v;
+}
+
+Value value_enum_with_payload(EnumObj *obj) {
+    Value v = {0};
+    v.kind = VAL_ENUM_DATA;
+    v.as.enum_obj = obj;
+    return v;
+}
+
+/* Materialise a data-carrying enum: clone the packed layout (the constant is
+ * shared by every construction site) and take the payload from the stack. */
+static EnumObj *enum_obj_new(Arena *a, const EnumDef *def, size_t variant,
+                             Value *fields) {
+    EnumObj *obj = arena_new(a, EnumObj);
+    if (!obj) return NULL;
+    obj->def = def;
+    obj->variant = variant;
+    size_t n = (def && variant < def->variant_count)
+        ? def->variants[variant].field_count : 0;
+    obj->fields = n > 0 ? arena_new_array(a, Value, n) : NULL;
+    for (size_t i = 0; i < n; i++) obj->fields[i] = fields[i];
+    return obj;
+}
+
 StructObj *struct_obj_new(Arena *a, const StructDef *def) {
     StructObj *obj = arena_new(a, StructObj);
     if (!obj) return NULL;
@@ -109,6 +138,8 @@ bool value_is_truthy(Value v) {
     case VAL_STRUCT: return v.as.struct_val != NULL;
     case VAL_STRUCT_DEF: return v.as.struct_def != NULL;
     case VAL_ENUM:   return true;
+    case VAL_ENUM_DATA: return v.as.enum_obj != NULL;
+    case VAL_ENUM_DEF: return v.as.enum_def != NULL;
     case VAL_FN:     return v.as.fn_val != NULL;
     }
     return false;
@@ -125,6 +156,8 @@ static const char *type_name(Value v) {
     case VAL_STRUCT: return "struct";
     case VAL_STRUCT_DEF: return "struct_def";
     case VAL_ENUM:   return "enum";
+    case VAL_ENUM_DATA: return "enum";
+    case VAL_ENUM_DEF: return "enum_def";
     case VAL_FN:     return "function";
     }
     return "unknown";
@@ -165,6 +198,29 @@ void value_print(Value v) {
                v.as.enum_val.enum_name ? v.as.enum_val.enum_name : "?",
                v.as.enum_val.variant_name ? v.as.enum_val.variant_name : "?");
         break;
+    case VAL_ENUM_DATA: {
+        /* Data-carrying value: print with a Rust-like constructor form. */
+        const EnumDef *d = v.as.enum_obj->def;
+        size_t vi = v.as.enum_obj->variant;
+        printf("%s.%s",
+               (d && d->name) ? d->name : "?",
+               (d && vi < d->variant_count && d->variants[vi].name)
+                   ? d->variants[vi].name : "?");
+        size_t nf = (d && vi < d->variant_count) ? d->variants[vi].field_count : 0;
+        if (nf == 1) {
+            printf("(");
+            value_print(v.as.enum_obj->fields[0]);
+            printf(")");
+        } else if (nf > 1) {
+            printf("(");
+            for (size_t i = 0; i < nf; i++) {
+                if (i > 0) printf(", ");
+                value_print(v.as.enum_obj->fields[i]);
+            }
+            printf(")");
+        }
+    } break;
+    case VAL_ENUM_DEF: printf("<enum_def>"); break;
     case VAL_FN:     printf("<fn>"); break;
     }
 }
@@ -181,7 +237,34 @@ static bool value_eq(Value a, Value b) {
         }
         return true;
     }
-    if (a.kind != b.kind) return false;
+    /* Handle cross-kind comparison between VAL_ENUM and VAL_ENUM_DATA:
+     * pattern constants are VAL_ENUM but runtime values are VAL_ENUM_DATA. */
+    if (a.kind != b.kind) {
+        if ((a.kind == VAL_ENUM && b.kind == VAL_ENUM_DATA) ||
+            (a.kind == VAL_ENUM_DATA && b.kind == VAL_ENUM)) {
+            const char *an, *av, *bn, *bv;
+            if (a.kind == VAL_ENUM) {
+                an = a.as.enum_val.enum_name;
+                av = a.as.enum_val.variant_name;
+                EnumObj *y = b.as.enum_obj;
+                if (!y || !y->def) return false;
+                bn = y->def->name;
+                bv = (y->variant < y->def->variant_count)
+                    ? y->def->variants[y->variant].name : NULL;
+            } else {
+                EnumObj *x = a.as.enum_obj;
+                if (!x || !x->def) return false;
+                an = x->def->name;
+                av = (x->variant < x->def->variant_count)
+                    ? x->def->variants[x->variant].name : NULL;
+                bn = b.as.enum_val.enum_name;
+                bv = b.as.enum_val.variant_name;
+            }
+            if (!an || !av || !bn || !bv) return false;
+            return strcmp(an, bn) == 0 && strcmp(av, bv) == 0;
+        }
+        return false;
+    }
     switch (a.kind) {
     case VAL_NIL:    return true;
     case VAL_BOOL:   return a.as.bool_val == b.as.bool_val;
@@ -205,6 +288,7 @@ static bool value_eq(Value a, Value b) {
         return true;
     }
     case VAL_STRUCT_DEF: return a.as.struct_def == b.as.struct_def;
+    case VAL_ENUM_DEF:  return a.as.enum_def == b.as.enum_def;
     case VAL_ENUM: {
         const char *an = a.as.enum_val.enum_name;
         const char *bn = b.as.enum_val.enum_name;
@@ -213,6 +297,21 @@ static bool value_eq(Value a, Value b) {
         if (an == av && bn == bv) return true;
         if (!an || !bn || !av || !bv) return false;
         return strcmp(an, bn) == 0 && strcmp(av, bv) == 0;
+    }
+    case VAL_ENUM_DATA: {
+        /* Structural: same enum, same tag, equal payloads. */
+        EnumObj *x = a.as.enum_obj;
+        EnumObj *y = b.as.enum_obj;
+        if (x == y) return true;
+        if (!x || !y || !x->def || !y->def) return false;
+        if (strcmp(x->def->name, y->def->name) != 0) return false;
+        if (x->variant != y->variant) return false;
+        size_t nf = (x->variant < x->def->variant_count)
+            ? x->def->variants[x->variant].field_count : 0;
+        for (size_t i = 0; i < nf; i++) {
+            if (!value_eq(x->fields[i], y->fields[i])) return false;
+        }
+        return true;
     }
     case VAL_FN:     return a.as.fn_val == b.as.fn_val;
     }
@@ -344,6 +443,8 @@ static const char *opname(OpCode op) {
     case OPCODE_GET_FIELD:    return "GET_FIELD";
     case OPCODE_SET_FIELD:    return "SET_FIELD";
     case OPCODE_SET_INDEX:    return "SET_INDEX";
+    case OPCODE_NEW_ENUM:     return "NEW_ENUM";
+    case OPCODE_GET_ENUM_FIELD: return "GET_ENUM_FIELD";
     case OPCODE_CALL:         return "CALL";
     case OPCODE_RET:          return "RET";
     case OPCODE_PRINT:        return "PRINT";
@@ -968,6 +1069,65 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             s->fields[found] = val;
             if (!vm_push(vm, val)) return VM_RUNTIME_ERROR;
+        } break;
+
+        /* Construct a data-carrying enum value. The operand packs the
+         * variant tag and the payload count: `(variant << 16) | count`. The
+         * layout arrives as a constant and is cloned per value. */
+        case OPCODE_NEW_ENUM: {
+            size_t n = inst.arg.index & 0xFFFF;
+            size_t variant = inst.arg.index >> 16;
+            if (vm->sp < n + 1) {
+                vm_runtime_error(vm, line, "stack underflow building enum");
+                return VM_RUNTIME_ERROR;
+            }
+            Value def_val = vm->stack[vm->sp - n - 1];
+            if (def_val.kind != VAL_ENUM_DEF || !def_val.as.enum_def) {
+                vm_runtime_error(vm, line, "invalid enum layout on stack");
+                return VM_RUNTIME_ERROR;
+            }
+            const EnumDef *def = def_val.as.enum_def;
+            if (variant >= def->variant_count) {
+                vm_runtime_error(vm, line, "enum '%s' has no variant %zu",
+                    def->name ? def->name : "?", variant);
+                return VM_RUNTIME_ERROR;
+            }
+            if (n != def->variants[variant].field_count) {
+                vm_runtime_error(vm, line,
+                    "variant '%s.%s' expects %zu fields, got %zu",
+                    def->name ? def->name : "?",
+                    def->variants[variant].name ? def->variants[variant].name : "?",
+                    def->variants[variant].field_count, n);
+                return VM_RUNTIME_ERROR;
+            }
+            EnumObj *obj = enum_obj_new(vm->arena, def, variant,
+                                        &vm->stack[vm->sp - n]);
+            vm->sp = (uint16_t)(vm->sp - n - 1);
+            if (!vm_push(vm, value_enum_with_payload(obj))) return VM_RUNTIME_ERROR;
+        } break;
+
+        /* Extract a payload field from a data-carrying enum by numeric index.
+         * The operand is the field index (0-based). */
+        case OPCODE_GET_ENUM_FIELD: {
+            if (vm->sp == 0) {
+                vm_runtime_error(vm, line, "stack underflow on get_enum_field");
+                return VM_RUNTIME_ERROR;
+            }
+            Value obj = vm_pop(vm);
+            if (obj.kind != VAL_ENUM_DATA || !obj.as.enum_obj) {
+                vm_runtime_error(vm, line, "cannot extract field from %s", type_name(obj));
+                return VM_RUNTIME_ERROR;
+            }
+            EnumObj *eo = obj.as.enum_obj;
+            size_t fi = inst.arg.index;
+            const EnumDef *def = eo->def;
+            size_t nf = (def && eo->variant < def->variant_count)
+                ? def->variants[eo->variant].field_count : 0;
+            if (fi >= nf) {
+                vm_runtime_error(vm, line, "enum field index %zu out of range (have %zu)", fi, nf);
+                return VM_RUNTIME_ERROR;
+            }
+            if (!vm_push(vm, eo->fields[fi])) return VM_RUNTIME_ERROR;
         } break;
 
         case OPCODE_GET_FIELD: {

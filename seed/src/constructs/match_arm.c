@@ -2,9 +2,9 @@
  * ============================================================
  * `MatchArm ::= Pattern ("if" Expression)? "=>" (Expression | Block) ","?`
  *
- * The guard form is specified (research/04 §9.4) but not part of
- * Astra-0; the parser rejects it explicitly rather than silently
- * dropping the condition, and this file records the gap.
+ * Guards are now supported: the parser stores the guard expression
+ * in MatchArm.guard (NULL if absent), the typechecker verifies it
+ * is bool, and the emitter emits a JUMP_IF_FALSE past the arm body.
  * ============================================================ */
 
 #include "constructs/construct.h"
@@ -23,9 +23,8 @@ const ConstructSpec construct_match_arm = {
     .deps      = deps,
     .grammar   = "MatchArm ::= Pattern (\"if\" Expression)? \"=>\" (Expression | Block) \",\"?",
     .research  = "research/010 §5.2-5.3, §12.1; research/04 §9.4 (guards, or-patterns, nesting)",
-    .note      = "Arms are stored as (pattern, body) pairs on NODE_MATCH, so this "
-                  "production owns no node. Guards are NOT implemented: the parser "
-                  "reports \"match guards are not supported in Astra-0\" instead of "
-                  "accepting and ignoring them. The trailing comma is optional.",
+    .note      = "Arms are stored as (pattern, guard, body) triples on NODE_MATCH, "
+                  "so this production owns no node. The guard is an optional expression "
+                  "node (NULL when absent). The trailing comma is optional.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

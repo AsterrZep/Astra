@@ -1,0 +1,14 @@
+// Pattern binding with wrong type should error
+// EXPECT-ERROR: type mismatch
+enum Color {
+    Rgb(i32, i32, i32)
+}
+
+fn main() {
+    let c = Rgb(1, 2, 3);
+    match c {
+        Color.Rgb(x, y, z) => {
+            let n: string = x;
+        }
+    }
+}

@@ -78,6 +78,17 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
         return -1;
     case OPCODE_SET_INDEX:
         return -2;
+
+    /* GET_ENUM_FIELD pops an enum data value and pushes one field; net +0. */
+    case OPCODE_GET_ENUM_FIELD:
+        return 0;
+
+    /* The layout constant sits under the N payload values; the VM consumes
+     * layout + fields and pushes the finished enum handle. Emission sets the
+     * packed operand afterwards, which is why the extra sp_advance lives at
+     * the construction site. */
+    case OPCODE_NEW_ENUM:
+        return 1;
     }
     return 0;
 }
@@ -265,11 +276,39 @@ static int enum_variant_index(EnumInfo *ei, InternedString variant) {
     return -1;
 }
 
+/* Which enum declares this variant name, or NULL. */
+static EnumInfo *find_enum_by_variant(Emitter *e, InternedString variant) {
+    for (size_t i = 0; i < e->variant_index_count; i++) {
+        if (string_eq(e->variant_index[i].variant, variant)) {
+            return &e->enums[e->variant_index[i].enum_idx];
+        }
+    }
+    return NULL;
+}
+
+static bool is_known_fn(Emitter *e, InternedString name) {
+    for (size_t i = 0; i < e->fn_count; i++) {
+        if (string_eq(e->fns[i].name, name)) return true;
+    }
+    return false;
+}
+
 /* Collect struct/enum declarations before emitting code so literals, field
  * accesses and variants can be resolved without a type table. */
 static void register_types(Emitter *e, Node *module) {
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
+
+        if (item->kind == NODE_FN_DECL) {
+            if (e->fn_count >= EMITTER_MAX_FNS) {
+                fprintf(stderr, "error: too many functions (max %d)\n",
+                        EMITTER_MAX_FNS);
+                e->error_count++;
+                continue;
+            }
+            e->fns[e->fn_count++].name = item->as.fn_decl.name;
+            continue;
+        }
 
         if (item->kind == NODE_ENUM_DECL) {
             if (e->enum_count >= EMITTER_MAX_ENUMS) {
@@ -283,8 +322,33 @@ static void register_types(Emitter *e, Node *module) {
             ei->name          = item->as.enum_decl.name;
             ei->variant_count = nv;
             ei->variants      = nv > 0 ? arena_new_array(e->arena, InternedString, nv) : NULL;
+            ei->field_names   = nv > 0 ? arena_new_array(e->arena, const char **, nv) : NULL;
+            ei->field_counts  = nv > 0 ? arena_new_array(e->arena, uint32_t, nv) : NULL;
             for (size_t j = 0; j < nv; j++) {
                 ei->variants[j] = item->as.enum_decl.variants.data[j];
+                Node *payload = item->as.enum_decl.variant_payloads.len > j
+                    ? item->as.enum_decl.variant_payloads.data[j] : NULL;
+                size_t nf = payload ? payload->as.payload.fields.len : 0;
+                ei->field_counts[j] = (uint32_t)nf;
+                ei->field_names[j]  = nf > 0
+                    ? arena_new_array(e->arena, const char *, nf) : NULL;
+                for (size_t k = 0; k < nf; k++) {
+                    PayloadField *pf = &payload->as.payload.fields.data[k];
+                    ei->field_names[j][k] = pf->name.str ? pf->name.str : NULL;
+                }
+            }
+            /* Only data-carrying variants need construction resolution. */
+            for (size_t j = 0; j < nv; j++) {
+                if (ei->field_counts[j] == 0) continue;
+                if (e->variant_index_count >= EMITTER_MAX_VARIANTS) {
+                    fprintf(stderr, "error: too many enum variants (max %d)\n",
+                            EMITTER_MAX_VARIANTS);
+                    e->error_count++;
+                    break;
+                }
+                e->variant_index[e->variant_index_count].variant  = ei->variants[j];
+                e->variant_index[e->variant_index_count].enum_idx = e->enum_count - 1;
+                e->variant_index_count++;
             }
             continue;
         }
@@ -470,6 +534,47 @@ static void emit_pattern_tests(Emitter *e, Node *pat, uint8_t slot,
         return;
     }
 
+    /* Binding pattern: always matches, no comparison needed. The caller
+     * will create the local and store the value before emitting the body. */
+    if (pat->kind == NODE_PATTERN_BIND) {
+        emit_inst_offset(e, OPCODE_JUMP, 0, line);
+        patch_push(e, hits, hit_len, hit_cap, e->code_len - 1);
+        return;
+    }
+
+    /* Enum variant with payload bindings: check the variant tag, then let
+     * the caller extract payload fields into binding locals. */
+    if (pat->kind == NODE_PATTERN_VARIANT_BIND) {
+        Node *var_path = pat->as.pattern_variant_bind.variant;
+        if (!var_path || var_path->kind != NODE_FIELD_ACCESS) {
+            fprintf(stderr, "error: pattern must be a literal, `_` or Enum.Variant\n");
+            e->error_count++;
+            return;
+        }
+        Node *obj = var_path->as.field_access.object;
+        EnumInfo *ei = (obj && obj->kind == NODE_IDENT)
+            ? find_enum(e, obj->as.ident.name) : NULL;
+        if (!ei) {
+            fprintf(stderr, "error: pattern must be a literal, `_` or Enum.Variant\n");
+            e->error_count++;
+            return;
+        }
+        InternedString variant = var_path->as.field_access.field;
+        if (enum_variant_index(ei, variant) < 0) {
+            fprintf(stderr, "error: enum '%.*s' has no variant '%.*s'\n",
+                    (int)ei->name.len, ei->name.str,
+                    (int)variant.len, variant.str);
+            e->error_count++;
+        }
+        uint32_t idx = add_constant(e, value_enum(ei->name.str, variant.str));
+        emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
+        emit_inst_index(e, OPCODE_CONST, idx, line);
+        emit_inst(e, OPCODE_EQ, line);
+        emit_inst_offset(e, OPCODE_JUMP_IF_TRUE, 0, line);
+        patch_push(e, hits, hit_len, hit_cap, e->code_len - 1);
+        return;
+    }
+
     emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
     emit_pattern_value(e, pat, line);
     emit_inst(e, OPCODE_EQ, line);
@@ -496,6 +601,10 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_STRING_LIT:        return "StringLit";
     case NODE_BOOL_LIT:          return "BoolLit";
     case NODE_NULL_LIT:          return "NullLit";
+    case NODE_SOME_EXPR:         return "SomeExpr";
+    case NODE_NONE_EXPR:         return "NoneExpr";
+    case NODE_OK_EXPR:           return "OkExpr";
+    case NODE_ERR_EXPR:          return "ErrExpr";
     case NODE_IDENT:             return "Ident";
     case NODE_BINARY_OP:         return "BinaryOp";
     case NODE_UNARY_OP:          return "UnaryOp";
@@ -504,9 +613,12 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_ARRAY_LIT:         return "ArrayLit";
     case NODE_RANGE:             return "Range";
     case NODE_STRUCT_LIT:        return "StructLit";
+    case NODE_PAYLOAD:           return "Payload";
     case NODE_FIELD_ACCESS:      return "FieldAccess";
-    case NODE_PATTERN_WILDCARD:  return "PatternWildcard";
-    case NODE_PATTERN_OR:        return "PatternOr";
+    case NODE_PATTERN_WILDCARD:    return "PatternWildcard";
+    case NODE_PATTERN_BIND:        return "PatternBind";
+    case NODE_PATTERN_VARIANT_BIND: return "PatternVariantBind";
+    case NODE_PATTERN_OR:          return "PatternOr";
     case NODE_OPTIONAL_CHAIN:    return "OptionalChain";
     case NODE_BLOCK:             return "Block";
     case NODE_IF:                return "If";
@@ -706,6 +818,54 @@ static void emit_expr(Emitter *e, Node *node) {
     } break;
 
     case NODE_CALL: {
+        /* A bare-identifier callee may name a data-carrying enum variant
+         * (`Paso(x)`); the checker already decided, so mirror its rule here:
+         * variant first, function call otherwise. */
+        Node *callee = node->as.call.callee;
+        if (callee->kind == NODE_IDENT && !is_known_fn(e, callee->as.ident.name)) {
+            EnumInfo *ei = find_enum_by_variant(e, callee->as.ident.name);
+            if (ei) {
+                int vi = enum_variant_index(ei, callee->as.ident.name);
+                if (vi >= 0) {
+                    size_t nf = (size_t)ei->field_counts[vi];
+                    if (node->as.call.args.len != nf) {
+                        fprintf(stderr,
+                                "error: variant '%.*s.%.*s' expects %zu field(s), got %zu\n",
+                                (int)ei->name.len, ei->name.str,
+                                (int)callee->as.ident.name.len, callee->as.ident.name.str,
+                                nf, node->as.call.args.len);
+                        e->error_count++;
+                        break;
+                    }
+                    /* Pack the runtime layout: shared by value_print/equality.
+                     * The value stack only ever sees the finished handle. */
+                    EnumDef *ed = arena_new(e->arena, EnumDef);
+                    ed->name = ei->name.str;
+                    ed->variant_count = ei->variant_count;
+                    ed->variants = arena_new_array(e->arena, VariantDef, ei->variant_count);
+                    for (size_t v = 0; v < ei->variant_count; v++) {
+                        ed->variants[v].name = ei->variants[v].str;
+                        ed->variants[v].field_count = ei->field_counts[v];
+                        ed->variants[v].field_names = ei->field_names
+                            ? ei->field_names[v] : NULL;
+                    }
+                    uint32_t def_idx = add_constant(e, value_enum_def(ed));
+                    emit_inst_index(e, OPCODE_CONST, def_idx, node->loc.line);
+                    for (size_t i = 0; i < node->as.call.args.len; i++) {
+                        emit_expr(e, node->as.call.args.data[i]);
+                    }
+                    emit_inst(e, OPCODE_NEW_ENUM, node->loc.line);
+                    e->code[e->code_len - 1].arg.index =
+                        ((uint32_t)vi << 16) | (uint32_t)nf;
+                    /* emit_inst applied opcode_stack_effect(op, 0) = +1, but
+                     * the real effect is -(nf) [pops nf+1, pushes 1]. Correct
+                     * the model: +1 already applied, need total -(nf), so
+                     * adjust by -(nf) - (+1) = -(nf+1). */
+                    sp_advance(e, -(int)nf - 1);
+                    break;
+                }
+            }
+        }
         emit_expr(e, node->as.call.callee);
         for (size_t i = 0; i < node->as.call.args.len; i++) {
             emit_expr(e, node->as.call.args.data[i]);
@@ -842,10 +1002,110 @@ static void emit_expr(Emitter *e, Node *node) {
 
             if (pat && pat->kind == NODE_PATTERN_WILDCARD) {
                 has_wildcard = true;
+                Node *guard = node->as.match_expr.arms.data[i].guard;
+                if (guard) {
+                    emit_expr(e, guard);
+                    emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+                    size_t guard_false = e->code_len - 1;
+                    emit_branch_value(e, body, "match arm", line);
+                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                    patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                    /* Guard failed: push nil as the arm result. */
+                    uint32_t z = add_constant(e, value_nil());
+                    emit_inst_index(e, OPCODE_CONST, z, line);
+                    e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
+                } else {
+                    emit_branch_value(e, body, "match arm", line);
+                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                    patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                }
+                break; /* a wildcard makes later arms unreachable */
+            }
+
+            /* Binding pattern: always matches. Bind the scrutinee to a local
+             * and jump directly to the arm body. */
+            if (pat && pat->kind == NODE_PATTERN_BIND) {
+                uint8_t bind_slot = add_local(e, pat->as.pattern_bind.name);
+                if (bind_slot == 0xFF) {
+                    fprintf(stderr, "error: too many locals for match\n");
+                    e->error_count++;
+                    break;
+                }
+                emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
+                emit_inst_index(e, OPCODE_SET_LOCAL, bind_slot, line);
+                Node *guard = node->as.match_expr.arms.data[i].guard;
+                if (guard) {
+                    emit_expr(e, guard);
+                    emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+                    size_t guard_false = e->code_len - 1;
+                    emit_branch_value(e, body, "match arm", line);
+                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                    patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                    /* Guard failed: push nil as the arm result. */
+                    uint32_t z = add_constant(e, value_nil());
+                    emit_inst_index(e, OPCODE_CONST, z, line);
+                    e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
+                } else {
+                    emit_branch_value(e, body, "match arm", line);
+                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                    patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                }
+                break; /* binding makes later arms unreachable */
+            }
+
+            /* Enum variant with payload bindings: check the variant tag, then
+             * extract payload fields into binding locals. */
+            if (pat && pat->kind == NODE_PATTERN_VARIANT_BIND) {
+                size_t *hits = NULL;
+                size_t  hit_len = 0, hit_cap = 0;
+                emit_pattern_tests(e, pat, slot, line, &hits, &hit_len, &hit_cap);
+
+                emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                size_t no_match = e->code_len - 1;
+
+                size_t body_start = e->code_len;
+                for (size_t k = 0; k < hit_len; k++) {
+                    e->code[hits[k]].arg.offset = (int32_t)(body_start - hits[k]);
+                }
+
+                /* Extract payload fields into binding locals. We re-fetch the
+                 * enum value from the match local for each field extraction
+                 * to avoid stack corruption: SET_LOCAL writes to a fixed stack
+                 * slot, which can overwrite the enum data if the binding slot
+                 * happens to coincide with the enum value's stack position. */
+                size_t bind_count = pat->as.pattern_variant_bind.bindings.len;
+                for (size_t b = 0; b < bind_count; b++) {
+                    emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
+                    emit_inst_index(e, OPCODE_GET_ENUM_FIELD, (uint32_t)b, line);
+
+                    uint8_t bind_slot = add_local(e, pat->as.pattern_variant_bind.bindings.data[b]);
+                    if (bind_slot == 0xFF) {
+                        fprintf(stderr, "error: too many locals for match\n");
+                        e->error_count++;
+                        break;
+                    }
+                    emit_inst_index(e, OPCODE_SET_LOCAL, bind_slot, line);
+                }
+
+                /* Guard: after binding extraction, evaluate the guard. */
+                Node *guard = node->as.match_expr.arms.data[i].guard;
+                size_t guard_false_jump = 0;
+                bool has_guard = (guard != NULL);
+                if (has_guard) {
+                    emit_expr(e, guard);
+                    emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+                    guard_false_jump = e->code_len - 1;
+                }
+
                 emit_branch_value(e, body, "match arm", line);
                 emit_inst_offset(e, OPCODE_JUMP, 0, line);
                 patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
-                break; /* a wildcard makes later arms unreachable */
+
+                size_t next_arm = e->code_len;
+                e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
+                if (has_guard) {
+                    e->code[guard_false_jump].arg.offset = (int32_t)(next_arm - guard_false_jump);
+                }
             }
 
             size_t *hits = NULL;
@@ -860,12 +1120,26 @@ static void emit_expr(Emitter *e, Node *node) {
                 e->code[hits[k]].arg.offset = (int32_t)(body_start - hits[k]);
             }
 
+            /* Guard: after pattern match, evaluate the guard expression.
+             * If false, jump past the arm body to the next arm. */
+            Node *guard = node->as.match_expr.arms.data[i].guard;
+            size_t guard_false_jump = 0;
+            bool has_guard = (guard != NULL);
+            if (has_guard) {
+                emit_expr(e, guard);
+                emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+                guard_false_jump = e->code_len - 1;
+            }
+
             emit_branch_value(e, body, "match arm", line);
             emit_inst_offset(e, OPCODE_JUMP, 0, line);
             patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
 
             size_t next_arm = e->code_len;
             e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
+            if (has_guard) {
+                e->code[guard_false_jump].arg.offset = (int32_t)(next_arm - guard_false_jump);
+            }
         }
 
         if (!has_wildcard) {
@@ -1124,6 +1398,23 @@ static void emit_expr(Emitter *e, Node *node) {
         emit_inst_offset(e, OPCODE_JUMP, 0, node->loc.line);
         LoopPatch *lp = &e->loops[e->loop_depth - 1];
         patch_push(e, &lp->conts, &lp->cont_len, &lp->cont_cap, e->code_len - 1);
+    } break;
+
+    case NODE_SOME_EXPR: {
+        emit_expr(e, node->as.some_expr.value);
+    } break;
+
+    case NODE_NONE_EXPR: {
+        uint32_t idx = add_constant(e, value_nil());
+        emit_inst_index(e, OPCODE_CONST, idx, node->loc.line);
+    } break;
+
+    case NODE_OK_EXPR: {
+        emit_expr(e, node->as.ok_expr.value);
+    } break;
+
+    case NODE_ERR_EXPR: {
+        emit_expr(e, node->as.err_expr.value);
     } break;
 
     default:

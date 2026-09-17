@@ -1,0 +1,16 @@
+// Nested enum destructuring
+// EXPECT: 5
+// EXPECT: 10
+enum Point {
+    Pt(i32, i32)
+}
+
+fn main() {
+    let p = Pt(5, 10);
+    match p {
+        Point.Pt(x, y) => {
+            print(x);
+            print(y);
+        },
+    }
+}

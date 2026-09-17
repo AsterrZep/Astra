@@ -1,0 +1,27 @@
+// Match guards - conditional pattern matching
+// EXPECT: small
+// EXPECT: medium
+// EXPECT: large
+enum Size {
+    XS
+    S
+    M
+    L
+    XL
+}
+
+fn classify(s: Size) -> string {
+    return match s {
+        Size.XS => "extra small",
+        Size.S => "small",
+        Size.M => "medium",
+        Size.L => "large",
+        Size.XL => "extra large",
+    };
+}
+
+fn main() {
+    print(classify(Size.S));
+    print(classify(Size.M));
+    print(classify(Size.L));
+}

@@ -1,0 +1,20 @@
+// Match guard — verify guard mechanism works
+// EXPECT: matched
+// EXPECT: fallback
+enum Tag {
+    A
+    B
+}
+
+fn classify(t: Tag, flag: bool) -> string {
+    return match t {
+        Tag.A if flag => "matched",
+        Tag.A => "fallback",
+        Tag.B => "other",
+    };
+}
+
+fn main() {
+    print(classify(Tag.A, true));
+    print(classify(Tag.A, false));
+}

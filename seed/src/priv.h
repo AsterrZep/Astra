@@ -61,6 +61,8 @@ struct Lexer {
 #define EMITTER_MAX_CONSTS (1024 * 1024)
 #define EMITTER_MAX_STRUCTS 128
 #define EMITTER_MAX_ENUMS   128
+#define EMITTER_MAX_VARIANTS 512
+#define EMITTER_MAX_FNS     512
 
 /* Compile-time view of a struct declaration, used to emit literals and
  * resolve field access. */
@@ -71,10 +73,14 @@ typedef struct {
     const StructDef *def;
 } StructInfo;
 
-/* Compile-time view of an enum declaration, used to resolve `Enum.Variant`. */
+/* Compile-time view of an enum declaration, used to resolve `Enum.Variant`
+ * and to lower data-carrying variant construction. `payloads` is parallel to
+ * `variants`: field_names[i][j] == NULL marks an unnamed field j. */
 typedef struct {
     InternedString  name;
     InternedString *variants;
+    const char   ***field_names;
+    uint32_t       *field_counts;
     size_t          variant_count;
 } EnumInfo;
 
@@ -83,6 +89,13 @@ typedef struct {
     uint8_t        slot;
     uint8_t        depth;
 } Local;
+
+/* Top-level function names, so the emitter can apply the same
+ * "the function wins" tie-break the checker applies when a variant name
+ * collides with a function name in a call position. */
+typedef struct {
+    InternedString name;
+} FnName;
 
 /* Pending jump sites for the enclosing loop, patched once the loop
  * body finishes and the exit / continue targets are known. */
@@ -122,6 +135,15 @@ struct Emitter {
 
     EnumInfo       enums[EMITTER_MAX_ENUMS];
     size_t         enum_count;
+
+    /* Flat variant -> enum index for resolving bare-name constructions
+     * (`Paso(x)`). Only data-carrying variants are registered. */
+    struct { InternedString variant; size_t enum_idx; } variant_index[EMITTER_MAX_VARIANTS];
+    size_t          variant_index_count;
+
+    /* Top-level function names (the "the function wins" tie-break). */
+    FnName          fns[EMITTER_MAX_FNS];
+    size_t          fn_count;
 
     /* Compile-time model of the VM stack height, relative to the current
      * frame base. Every emitted instruction updates it and every emit_expr /

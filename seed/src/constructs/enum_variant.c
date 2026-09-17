@@ -28,9 +28,12 @@ const ConstructSpec construct_enum_variant = {
                  "EnumPayload ::= EnumPayloadField (\",\" EnumPayloadField)*\n"
                  "EnumPayloadField ::= Identifier \":\" Type | Type",
     .research  = "research/04 §9.2 (variants with and without data), §6.5-6.6 (tag encoding)",
-    .note      = "Unit variants only: the payload form is specified but not implemented, "
-                  "so this construct currently produces nothing but a name in the "
-                  "EnumDecl's variant list. When payloads land, this file owns the node "
-                  "and the layout decision (research/04 §6.2 ragged vs. §6.4 compact).",
+    .note      = "Data-carrying variants are implemented: the payload form "
+                  "`Paso(i32)` / `PasoDoble(x: i32, y: i32)` parses to NODE_PAYLOAD "
+                  "(this file's node), the checker stores VariantLayout parallel to "
+                  "the variants, and construction is positional through the shared "
+                  "CallExpr grammar — a bare-identifier callee that resolves to a "
+                  "variant packs NEW_ENUM instead of CALL. Pattern bindings over "
+                  "payloads are research/04 §9.4 and still need pattern_ident.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

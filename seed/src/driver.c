@@ -40,6 +40,10 @@ const char *token_kind_name(TokenKind kind) {
     case TOKEN_COMPTIME:   return "comptime";
     case TOKEN_CONST:      return "const";
     case TOKEN_IN:         return "in";
+    case TOKEN_SOME:       return "some";
+    case TOKEN_NONE:       return "none";
+    case TOKEN_OPTION:     return "option";
+    case TOKEN_RESULT:     return "result";
     case TOKEN_PLUS:       return "+";
     case TOKEN_MINUS:      return "-";
     case TOKEN_STAR:       return "*";
@@ -139,6 +143,19 @@ static void dump_node(Node *node, int indent) {
     case NODE_INT_LIT:
         printf("IntLit(%ld)\n", (long)node->as.int_lit.value);
         break;
+    case NODE_PAYLOAD: {
+        printf("Payload\n");
+        for (size_t i = 0; i < node->as.payload.fields.len; i++) {
+            indent_print(indent + 1);
+            PayloadField *pf = &node->as.payload.fields.data[i];
+            if (pf->name.str) {
+                printf("Field(%.*s:)\n", (int)pf->name.len, pf->name.str);
+            } else {
+                printf("Field\n");
+            }
+            dump_node(pf->type, indent + 2);
+        }
+    } break;
     case NODE_FLOAT_LIT:
         printf("FloatLit(%g)\n", node->as.float_lit.value);
         break;
@@ -351,6 +368,20 @@ static void dump_node(Node *node, int indent) {
             printf("Variant(%.*s)\n",
                    (int)node->as.enum_decl.variants.data[i].len,
                    node->as.enum_decl.variants.data[i].str);
+            Node *payload = node->as.enum_decl.variant_payloads.len > i
+                ? node->as.enum_decl.variant_payloads.data[i] : NULL;
+            if (payload) {
+                for (size_t j = 0; j < payload->as.payload.fields.len; j++) {
+                    indent_print(indent + 2);
+                    PayloadField *pf = &payload->as.payload.fields.data[j];
+                    if (pf->name.str) {
+                        printf("Field(%.*s:)\n", (int)pf->name.len, pf->name.str);
+                    } else {
+                        printf("Field\n");
+                    }
+                    dump_node(pf->type, indent + 3);
+                }
+            }
         }
         break;
     case NODE_CONST_DECL:

@@ -503,7 +503,9 @@ static Node *parse_block(Parser *p) {
             check(p, TOKEN_STRING_LIT) || check(p, TOKEN_TRUE) || check(p, TOKEN_FALSE) ||
             check(p, TOKEN_NULL) || check(p, TOKEN_MINUS) || check(p, TOKEN_BANG) ||
             check(p, TOKEN_LPAREN) || check(p, TOKEN_LBRACE) || check(p, TOKEN_IF) ||
-            check(p, TOKEN_WHILE) || check(p, TOKEN_FOR) || check(p, TOKEN_MATCH)) {
+            check(p, TOKEN_WHILE) || check(p, TOKEN_FOR) || check(p, TOKEN_MATCH) ||
+            check(p, TOKEN_SOME) || check(p, TOKEN_NONE) ||
+            check(p, TOKEN_OK) || check(p, TOKEN_ERR)) {
 
             /* Peek ahead: if next meaningful token is ; it's a statement */
             /* For simplicity, parse as statement and check for last expr */
@@ -669,14 +671,48 @@ static Node *parse_pattern_primary(Parser *p) {
             expect(p, TOKEN_IDENT, "variant name");
             Node *obj = node_new(p->arena, NODE_IDENT, id.loc);
             obj->as.ident.name = id.text;
-            Node *n = node_new(p->arena, NODE_FIELD_ACCESS, id.loc);
-            n->as.field_access.object = obj;
-            n->as.field_access.field  = p->previous.text;
-            return n;
+            Node *var_path = node_new(p->arena, NODE_FIELD_ACCESS, id.loc);
+            var_path->as.field_access.object = obj;
+            var_path->as.field_access.field  = p->previous.text;
+
+            /* Check for variant payload bindings: Color.Rgb(r, g, b) */
+            if (match(p, TOKEN_LPAREN)) {
+                Node *n = node_new(p->arena, NODE_PATTERN_VARIANT_BIND, id.loc);
+                n->as.pattern_variant_bind.variant = var_path;
+                n->as.pattern_variant_bind.bindings.data = NULL;
+                n->as.pattern_variant_bind.bindings.len  = 0;
+                n->as.pattern_variant_bind.bindings.cap  = 0;
+                skip_newlines(p);
+                if (!check(p, TOKEN_RPAREN)) {
+                    for (;;) {
+                        expect(p, TOKEN_IDENT, "binding name");
+                        InternedString bname = p->previous.text;
+                        if (n->as.pattern_variant_bind.bindings.len >=
+                            n->as.pattern_variant_bind.bindings.cap) {
+                            size_t new_cap = n->as.pattern_variant_bind.bindings.cap == 0
+                                ? 4 : n->as.pattern_variant_bind.bindings.cap * 2;
+                            InternedString *nd = arena_new_array(p->arena, InternedString, new_cap);
+                            if (n->as.pattern_variant_bind.bindings.data) {
+                                memcpy(nd, n->as.pattern_variant_bind.bindings.data,
+                                       sizeof(InternedString) * n->as.pattern_variant_bind.bindings.len);
+                            }
+                            n->as.pattern_variant_bind.bindings.data = nd;
+                            n->as.pattern_variant_bind.bindings.cap  = new_cap;
+                        }
+                        n->as.pattern_variant_bind.bindings.data[
+                            n->as.pattern_variant_bind.bindings.len++] = bname;
+                        if (!match(p, TOKEN_COMMA)) break;
+                        skip_newlines(p);
+                    }
+                }
+                expect(p, TOKEN_RPAREN, "')' after variant bindings");
+                return n;
+            }
+            return var_path;
         }
-        parser_error(p, "unsupported pattern: binding patterns are not supported in Astra-0");
-        Node *n = node_new(p->arena, NODE_IDENT, id.loc);
-        n->as.ident.name = id.text;
+        /* Bare identifier: binding pattern (captures whole matched value) */
+        Node *n = node_new(p->arena, NODE_PATTERN_BIND, id.loc);
+        n->as.pattern_bind.name = id.text;
         return n;
     }
 
@@ -727,10 +763,9 @@ static Node *parse_match(Parser *p) {
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
         Node *pattern = parse_pattern(p);
 
-        if (check(p, TOKEN_IF)) {
-            parser_error(p, "match guards are not supported in Astra-0");
-            advance(p);
-            (void)parse_expression(p);
+        Node *guard = NULL;
+        if (match(p, TOKEN_IF)) {
+            guard = parse_expression(p);
         }
         expect(p, TOKEN_FAT_ARROW, "'=>'");
         skip_newlines(p);
@@ -745,6 +780,7 @@ static Node *parse_match(Parser *p) {
 
         MatchArm *arm = arena_new(p->arena, MatchArm);
         arm->pattern = pattern;
+        arm->guard   = guard;
         arm->body    = body;
         if (n->as.match_expr.arms.len >= n->as.match_expr.arms.cap) {
             size_t new_cap = n->as.match_expr.arms.cap == 0 ? 8 : n->as.match_expr.arms.cap * 2;
@@ -928,20 +964,95 @@ static Node *parse_enum_decl(Parser *p) {
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
         uint32_t iter_start = p->current.loc.offset;
         expect(p, TOKEN_IDENT, "variant name");
+        /* Capture the variant name BEFORE the payload parser consumes more
+         * tokens: `previous` no longer points at the name afterwards. */
+        InternedString vname = p->previous.text;
+        if (p->had_error) {
+            /* The body loop guard: without progress one bad token would
+             * report the same error forever. */
+            if (p->current.loc.offset == iter_start) {
+                fprintf(stderr, "error:");
+                srcloc_print(p->current.loc);
+                fprintf(stderr, ": aborting enum body after parse error\n");
+                break;
+            }
+        }
+        /* Variant payload: `Paso(i32)` / `PasoDoble(x: i32, y: i32)`
+         * (research/04 §9.2; owned by constructs/enum_variant.c). */
+        Node *payload = NULL;
+        if (match(p, TOKEN_LPAREN)) {
+            payload = node_new(p->arena, NODE_PAYLOAD, p->previous.loc);
+            payload->as.payload.fields.data = NULL;
+            payload->as.payload.fields.len  = 0;
+            payload->as.payload.fields.cap  = 0;
+            skip_newlines(p);
+            if (!check(p, TOKEN_RPAREN)) {
+                for (;;) {
+                    PayloadField pf = {0};
+                    if (check(p, TOKEN_IDENT)) {
+                        advance(p);
+                        if (match(p, TOKEN_COLON)) {
+                            /* named field: consumed IDENT ':' */
+                            pf.name = p->previous.text;
+                            pf.type = parse_type(p);
+                        } else {
+                            /* unnamed field: the IDENT *was* the type */
+                            Node *tn = node_new(p->arena, NODE_TYPE_IDENT, p->previous.loc);
+                            tn->as.type_ident.name = p->previous.text;
+                            pf.type = tn;
+                        }
+                    } else {
+                        pf.type = parse_type(p);
+                    }
+                    if (payload->as.payload.fields.len >= payload->as.payload.fields.cap) {
+                        size_t new_cap = payload->as.payload.fields.cap == 0
+                            ? 4 : payload->as.payload.fields.cap * 2;
+                        PayloadField *nd = arena_new_array(p->arena, PayloadField, new_cap);
+                        if (payload->as.payload.fields.data) {
+                            memcpy(nd, payload->as.payload.fields.data,
+                                   sizeof(PayloadField) * payload->as.payload.fields.len);
+                        }
+                        payload->as.payload.fields.data = nd;
+                        payload->as.payload.fields.cap  = new_cap;
+                    }
+                    payload->as.payload.fields.data[payload->as.payload.fields.len++] = pf;
+                    if (!match(p, TOKEN_COMMA)) break;
+                    skip_newlines(p);
+                }
+            }
+            expect(p, TOKEN_RPAREN, "')' after variant payload");
+        }
+
+        /* Keep variants and payloads perfectly parallel: a unit variant is
+         * recorded with a NULL payload. */
         if (n->as.enum_decl.variants.len >= n->as.enum_decl.variants.cap) {
             size_t new_cap = n->as.enum_decl.variants.cap == 0 ? 8 : n->as.enum_decl.variants.cap * 2;
             InternedString *new_data = arena_new_array(p->arena, InternedString, new_cap);
+            Node **new_pl = arena_new_array(p->arena, Node *, new_cap);
             if (n->as.enum_decl.variants.data) {
                 memcpy(new_data, n->as.enum_decl.variants.data,
                        sizeof(InternedString) * n->as.enum_decl.variants.len);
             }
-            n->as.enum_decl.variants.data = new_data;
-            n->as.enum_decl.variants.cap  = new_cap;
+            if (n->as.enum_decl.variant_payloads.data) {
+                memcpy(new_pl, n->as.enum_decl.variant_payloads.data,
+                       sizeof(Node *) * n->as.enum_decl.variant_payloads.len);
+            }
+            n->as.enum_decl.variants.data       = new_data;
+            n->as.enum_decl.variants.cap        = new_cap;
+            n->as.enum_decl.variant_payloads.data = new_pl;
+            n->as.enum_decl.variant_payloads.cap  = new_cap;
+        } else if (n->as.enum_decl.variant_payloads.data == NULL) {
+            n->as.enum_decl.variant_payloads.data =
+                arena_new_array(p->arena, Node *, n->as.enum_decl.variants.cap > 0
+                    ? n->as.enum_decl.variants.cap : 8);
+            n->as.enum_decl.variant_payloads.cap = n->as.enum_decl.variants.cap > 0
+                ? n->as.enum_decl.variants.cap : 8;
         }
-        n->as.enum_decl.variants.data[n->as.enum_decl.variants.len++] = p->previous.text;
+        n->as.enum_decl.variants.data[n->as.enum_decl.variants.len++] = vname;
+        n->as.enum_decl.variant_payloads.data[n->as.enum_decl.variant_payloads.len++] = payload;
         optional_semi(p);
         skip_newlines(p);
-        if (p->current.loc.offset == iter_start) {
+        if (p->current.loc.offset == iter_start && !p->had_error) {
             fprintf(stderr, "error:");
             srcloc_print(p->current.loc);
             fprintf(stderr, ": aborting enum body after parse error\n");
@@ -1188,6 +1299,40 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
             advance(p);
             left = parse_unary(p);
             break;
+        case TOKEN_SOME: {
+            advance(p);
+            SrcLoc loc = p->previous.loc;
+            expect(p, TOKEN_LPAREN, "'(' after some");
+            Node *value = parse_expression(p);
+            expect(p, TOKEN_RPAREN, "')'");
+            Node *n = node_new(p->arena, NODE_SOME_EXPR, loc);
+            n->as.some_expr.value = value;
+            left = n;
+        } break;
+        case TOKEN_NONE:
+            advance(p);
+            left = node_new(p->arena, NODE_NONE_EXPR, p->previous.loc);
+            break;
+        case TOKEN_OK: {
+            advance(p);
+            SrcLoc loc = p->previous.loc;
+            expect(p, TOKEN_LPAREN, "'(' after ok");
+            Node *value = parse_expression(p);
+            expect(p, TOKEN_RPAREN, "')'");
+            Node *n = node_new(p->arena, NODE_OK_EXPR, loc);
+            n->as.ok_expr.value = value;
+            left = n;
+        } break;
+        case TOKEN_ERR: {
+            advance(p);
+            SrcLoc loc = p->previous.loc;
+            expect(p, TOKEN_LPAREN, "'(' after err");
+            Node *value = parse_expression(p);
+            expect(p, TOKEN_RPAREN, "')'");
+            Node *n = node_new(p->arena, NODE_ERR_EXPR, loc);
+            n->as.err_expr.value = value;
+            left = n;
+        } break;
         default:
             parser_error(p, "unexpected token in expression");
             advance(p);
@@ -1211,6 +1356,8 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
                 left = parse_assignment(p, left, prec);
                 break;
             case TOKEN_LPAREN:
+                /* `Paso(x)` parses as a call; the checker decides whether the
+                 * callee is a function or a data-carrying enum variant. */
                 left = parse_call(p, left, prec);
                 break;
             case TOKEN_LBRACKET:

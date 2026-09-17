@@ -137,6 +137,10 @@ typedef enum {
     TOKEN_COMPTIME,
     TOKEN_CONST,
     TOKEN_IN,
+    TOKEN_SOME,    // some
+    TOKEN_NONE,    // none
+    TOKEN_OPTION,  // option
+    TOKEN_RESULT,  // result
 
     /* Operators */
     TOKEN_PLUS,        /* + */
@@ -231,9 +235,18 @@ typedef enum {
     NODE_RANGE,
     NODE_STRUCT_LIT,
     NODE_FIELD_ACCESS,
+    NODE_SOME_EXPR,   /* some(value) — Option constructor */
+    NODE_NONE_EXPR,   /* none — None literal */
+    NODE_OK_EXPR,     /* ok(value) — Result::Ok constructor */
+    NODE_ERR_EXPR,    /* err(value) — Result::Err constructor */
+
+    /* Enum variant payload declaration (only inside NODE_ENUM_DECL) */
+    NODE_PAYLOAD,
 
     /* Patterns (only valid inside a match arm) */
     NODE_PATTERN_WILDCARD,
+    NODE_PATTERN_BIND,   /* binding pattern: captures matched value */
+    NODE_PATTERN_VARIANT_BIND, /* Enum.Variant(bind1, bind2, ...) */
     NODE_PATTERN_OR,
     NODE_OPTIONAL_CHAIN,
     NODE_BLOCK,
@@ -315,12 +328,14 @@ typedef enum {
 typedef struct {
     UnaryOp op;
     Node   *operand;
-} UnaryExpr;
-
-typedef struct {
-    Node   *callee;
+} UnaryExpr;typedef struct {
+    Node *callee;
     DYNARRAY(Node *) args;
 } CallExpr;
+
+/* Construction of a data-carrying enum variant: `Paso(x)` / `PasoDoble(x: 1, y: 2)`.
+ * Construction syntax is CallExpr with an Ident callee when the name resolves
+ * to a variant; the checker resolves it and the emitter lowers it. */
 
 typedef struct {
     Node   *object;
@@ -342,16 +357,36 @@ typedef struct {
     DYNARRAY(InternedString) field_names;
     DYNARRAY(Node *)     field_values;
 } StructLitExpr;
-
 /* Or-pattern: `A | B | C`. Each alternative is itself a pattern node. */
 typedef struct {
     DYNARRAY(Node *) alts;
 } PatternOrExpr;
 
 typedef struct {
+    InternedString name;  /* variable name to bind */
+} PatternBindExpr;
+
+typedef struct {
+    Node   *variant; /* NODE_FIELD_ACCESS for Enum.Variant */
+    DYNARRAY(InternedString) bindings; /* binding names for each payload field */
+} PatternVariantBindExpr;
+
+typedef struct {
     Node   *object;
     InternedString field;
 } FieldAccessExpr;
+
+typedef struct {
+    Node *value;
+} SomeExpr;
+
+typedef struct {
+    Node *value;
+} OkExpr;
+
+typedef struct {
+    Node *value;
+} ErrExpr;
 
 typedef struct {
     DYNARRAY(Node *) stmts;
@@ -377,6 +412,7 @@ typedef struct {
 
 typedef struct {
     Node *pattern;
+    Node *guard;    /* optional guard expression (NULL if no guard) */
     Node *body;
 } MatchArm;
 
@@ -393,7 +429,8 @@ typedef struct {
     /* The assignment target. `Assignment ::= LValue "=" Assignment`
      * (research/010 §12.1) where
      * `LValue ::= Identifier | LValue "." Identifier | LValue "[" Expression "]"`.
-     * The report names LValue but never defines it; see constructs/lvalue.c. */
+     * The report names LValue but never defines it; see constructs/assign.c,
+     * which owns the Assignment production. */
     Node          *target;  /* NODE_IDENT | NODE_FIELD_ACCESS | NODE_INDEX */
     InternedString name;    /* mirror of target->as.ident.name when target is an ident */
     Node          *value;
@@ -417,8 +454,22 @@ typedef struct {
 
 typedef struct {
     InternedString        name;
-    DYNARRAY(InternedString) variants;
+    DYNARRAY(InternedString) variants;       /* unit variant names */
+    DYNARRAY(Node *)      variant_payloads;  /* NODE_PAYLOAD, parallel to variants */
 } EnumDecl;
+
+/* Payload of a data-carrying enum variant:
+ * `enum Mover { Paso(i32) PasoDoble(x: i32, y: i32) }`.
+ * Unnamed fields (`Paso(i32)`) keep name == NULL. Cites research/04 §9.2;
+ * owned by constructs/enum_variant.c. */
+typedef struct {
+    InternedString name;                     /* may be NULL for unnamed fields */
+    Node          *type;                     /* NODE_TYPE_* */
+} PayloadField;
+
+typedef struct {
+    DYNARRAY(PayloadField) fields;
+} PayloadExpr;
 
 typedef struct {
     InternedString name;
@@ -477,8 +528,14 @@ struct Node {
         ArrayLitExpr    array_lit;
         RangeExpr       range;
         StructLitExpr   struct_lit;
+        PayloadExpr     payload;
         FieldAccessExpr field_access;
+        SomeExpr        some_expr;
+        OkExpr          ok_expr;
+        ErrExpr         err_expr;
         PatternOrExpr   pattern_or;
+        PatternBindExpr pattern_bind;
+        PatternVariantBindExpr pattern_variant_bind;
         BlockExpr       block;
         IfExpr          if_expr;
         WhileExpr       while_expr;
@@ -535,6 +592,14 @@ typedef enum {
 
 typedef struct Type Type;
 
+/* Compile-time payload layout of one data-carrying enum variant, parallel to
+ * the variant list in `Type::enumeration`. Unnamed fields keep name NULL.
+ * Cites research/04 §6.2/§9.2; owned by the checker's enum declaration pass. */
+typedef struct {
+    InternedString *names;   /* may be NULL when all fields are unnamed */
+    Type          **types;
+    size_t          field_count;
+} VariantLayout;
 typedef struct {
     InternedString name;
     Type          *type;
@@ -549,6 +614,9 @@ struct Type {
         struct {
             InternedString  name;
             InternedString *variants;
+            /* Payload layouts, parallel to `variants`. NULL when the enum has
+             * no data-carrying variant; unit variants carry field_count == 0. */
+            VariantLayout  *payloads;
             size_t          variant_count;
         } enumeration;
         struct {
@@ -653,6 +721,8 @@ typedef enum {
     OPCODE_GET_FIELD,     /* pop field name, struct; push field value */
     OPCODE_SET_INDEX,     /* pop value, index, array; store, push value */
     OPCODE_SET_FIELD,     /* operand: field-name constant; pop value, struct; store, push value */
+    OPCODE_NEW_ENUM,      /* operand: (variant << 16) | count; pop N payload values, push enum */
+    OPCODE_GET_ENUM_FIELD, /* operand: field index; pop enum data value, push field value */
 
     /* Functions */
     OPCODE_CALL,          /* call function */
@@ -708,7 +778,9 @@ typedef enum {
     VAL_ARRAY,
     VAL_STRUCT,
     VAL_STRUCT_DEF,
-    VAL_ENUM,
+    VAL_ENUM,      /* unit variant: enum_val (name pair, no payload) */
+    VAL_ENUM_DATA, /* data-carrying variant: enum_obj (tag + payload fields) */
+    VAL_ENUM_DEF,
     VAL_FN,
 } ValueKind;
 
@@ -728,6 +800,28 @@ typedef struct {
     const char **field_names;
     size_t       field_count;
 } StructDef;
+
+/* Compile-time layout of one enum variant's payload. Strings are interned.
+ * Unnamed fields keep name == NULL; position in the array is their identity. */
+typedef struct {
+    const char  *name;        /* may be NULL */
+    const char **field_names; /* parallel to field_count when named */
+    size_t       field_count;
+} VariantDef;
+
+/* Compile-time enum layout: the tag is the index into variants. */
+typedef struct {
+    const char  *name;
+    VariantDef  *variants;
+    size_t       variant_count;
+} EnumDef;
+
+/* Runtime enum value: a variant tag plus its payload fields, stored flat. */
+typedef struct {
+    const EnumDef *def;
+    size_t         variant;
+    Value         *fields;
+} EnumObj;
 
 /* Runtime struct instance: a layout plus its field values. */
 typedef struct {
@@ -756,6 +850,8 @@ struct Value {
         StructObj  *struct_val;
         StructDef  *struct_def;
         struct { const char *enum_name; const char *variant_name; } enum_val;
+        EnumObj     *enum_obj;
+        EnumDef     *enum_def;
         FnObj      *fn_val;
     } as;
 };
@@ -769,6 +865,14 @@ Value value_array(ArrayObj *a);
 Value value_struct(StructObj *s);
 Value value_struct_def(StructDef *d);
 Value value_enum(const char *enum_name, const char *variant_name);
+
+/* A data-carrying enum value: `def` carries the layout, `variant` is the tag
+ * (index into def->variants) and `fields` holds the payload values in order. */
+Value value_enum_with_payload(EnumObj *obj);
+
+/* Compile-time constant: an enum layout the emitter packs once per
+ * construction site; the VM clones it when materialising an EnumObj. */
+Value value_enum_def(EnumDef *d);
 Value value_fn(FnObj *f);
 
 /* Allocate an array object in the given arena (len may be 0) */
