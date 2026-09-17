@@ -30,8 +30,9 @@ programas Astra-0 de principio a fin.
 ## 2. Lenguaje soportado (Astra-0)
 
 ### Tipos
-`i32`, `f64`, `bool`, `string`, arrays (`[T]`), `void`, tipos nombrados
-(structs/enums se registran pero su codegen está pendiente).
+`i32`, `f64`, `bool`, `string`, arrays (`[T]`), structs (declaración, literal,
+acceso a campo) y `void`. Los enums se registran en el type checker pero su
+codegen está pendiente.
 
 ### Expresiones
 - Aritmética y comparación: `+ - * / % == != < > <= >=`
@@ -40,6 +41,8 @@ programas Astra-0 de principio a fin.
 - Unarios: `-`, `!`, `~`
 - Literales: enteros, flotantes, strings, `true`/`false`, `null`
 - Literales de array: `[1, 2, 3]`; indexado `xs[i]`
+- Literales de struct: `Point { x: 1, y: 2 }` (el orden de campos es libre)
+- Acceso a campo: `p.x`
 - Rangos: `a..b` (exclusivo), `a..=b` (inclusivo)
 - Llamadas a función, paréntesis, bloques como expresión
 
@@ -52,8 +55,8 @@ programas Astra-0 de principio a fin.
 - Funciones de nivel superior con parámetros tipados y recursión
 
 ### Runtime
-- Valores: `nil`, `bool`, `int`, `float`, `string`, `array`, `fn`
-- Igualdad estructural para arrays
+- Valores: `nil`, `bool`, `int`, `float`, `string`, `array`, `struct`, `fn`
+- Igualdad estructural para arrays y structs (mismo tipo de struct + campos)
 - Builtin `print(...)` (variádico)
 - Errores de runtime con número de línea
 
@@ -67,7 +70,7 @@ programas Astra-0 de principio a fin.
 // EXPECT-ERROR: <texto de error>     (el programa debe fallar)
 ```
 
-Cobertura actual (12 casos, todos en verde):
+Cobertura actual (18 casos, todos en verde):
 
 | Área | Casos |
 |:-----|:------|
@@ -75,16 +78,19 @@ Cobertura actual (12 casos, todos en verde):
 | control | `if_else`, `while_break`, `while_continue` |
 | loops | `range_exclusive`, `range_inclusive`, `break_continue`, `for_array` |
 | arrays | `literal_index` |
+| structs | `literal_fields`, `field_order`, `struct_in_function` |
 | functions | `recursion` (factorial + parámetros) |
-| ui | `type_mismatch`, `break_outside_loop` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type` |
+
+Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
 ## 4. Pendiente para completar la Fase 1
 
 Ordenado por valor para el objetivo de bootstrap.
 
 ### Agregados (bloquea el compilador auto-hospedado)
-- [ ] **Structs**: literal `Point { x: 1, y: 2 }`, valor `VAL_STRUCT`, acceso a
-      campo en codegen (el type checker ya resuelve campos).
+- [x] **Structs**: literal, valor `VAL_STRUCT`, acceso a campo por nombre en
+      codegen, igualdad estructural e impresión.
 - [ ] **Enums**: variantes con y sin datos, `Enum.Variant`, `VAL_ENUM`.
 - [ ] **match**: no se parsea todavía; falta `NODE_MATCH` en el parser y
       codegen de decisión por variante.

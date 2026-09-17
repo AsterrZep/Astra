@@ -1,0 +1,11 @@
+// Omitting a declared field must be a compile error
+// EXPECT-ERROR: missing field
+struct Point {
+    x: i32
+    y: i32
+}
+
+fn main() {
+    let p = Point { x: 1 };
+    print(p.x);
+}

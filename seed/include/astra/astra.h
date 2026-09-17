@@ -225,6 +225,7 @@ typedef enum {
     NODE_INDEX,
     NODE_ARRAY_LIT,
     NODE_RANGE,
+    NODE_STRUCT_LIT,
     NODE_FIELD_ACCESS,
     NODE_OPTIONAL_CHAIN,
     NODE_BLOCK,
@@ -327,6 +328,12 @@ typedef struct {
     Node *end;       /* may be NULL for open-end ranges (future) */
     bool  inclusive; /* true for `..=`, false for `..` */
 } RangeExpr;
+
+typedef struct {
+    InternedString       name; /* struct name */
+    DYNARRAY(InternedString) field_names;
+    DYNARRAY(Node *)     field_values;
+} StructLitExpr;
 
 typedef struct {
     Node   *object;
@@ -446,6 +453,7 @@ struct Node {
         IndexExpr       index;
         ArrayLitExpr    array_lit;
         RangeExpr       range;
+        StructLitExpr   struct_lit;
         FieldAccessExpr field_access;
         BlockExpr       block;
         IfExpr          if_expr;
@@ -609,6 +617,8 @@ typedef enum {
     OPCODE_NEW_ARRAY,     /* pop N values, push array */
     OPCODE_INDEX,         /* pop index, array; push element */
     OPCODE_LEN,           /* pop array; push length */
+    OPCODE_NEW_STRUCT,    /* pop layout + N field values, push struct */
+    OPCODE_GET_FIELD,     /* pop field name, struct; push field value */
 
     /* Functions */
     OPCODE_CALL,          /* call function */
@@ -662,6 +672,8 @@ typedef enum {
     VAL_FLOAT,
     VAL_STRING,
     VAL_ARRAY,
+    VAL_STRUCT,
+    VAL_STRUCT_DEF,
     VAL_FN,
 } ValueKind;
 
@@ -673,6 +685,20 @@ typedef struct {
     Value *elems;
     size_t len;
 } ArrayObj;
+
+/* Compile-time struct layout. Strings are interned, so the pointers are
+ * stable for the whole compilation and can be shared with the VM. */
+typedef struct {
+    const char  *name;
+    const char **field_names;
+    size_t       field_count;
+} StructDef;
+
+/* Runtime struct instance: a layout plus its field values. */
+typedef struct {
+    const StructDef *def;
+    Value           *fields;
+} StructObj;
 
 /* Function object */
 typedef struct {
@@ -692,6 +718,8 @@ struct Value {
         double      float_val;
         const char *string_val; /* interned */
         ArrayObj   *array_val;
+        StructObj  *struct_val;
+        StructDef  *struct_def;
         FnObj      *fn_val;
     } as;
 };
@@ -702,10 +730,15 @@ Value value_int(int64_t v);
 Value value_float(double v);
 Value value_string(const char *s);
 Value value_array(ArrayObj *a);
+Value value_struct(StructObj *s);
+Value value_struct_def(StructDef *d);
 Value value_fn(FnObj *f);
 
 /* Allocate an array object in the given arena (len may be 0) */
 ArrayObj *array_obj_new(Arena *a, size_t len);
+
+/* Allocate a struct instance for the given layout */
+StructObj *struct_obj_new(Arena *a, const StructDef *def);
 void  value_print(Value v);
 bool  value_is_truthy(Value v);
 

@@ -59,6 +59,16 @@ struct Lexer {
 #define EMITTER_MAX_LOCALS 256
 #define EMITTER_MAX_CODE   (1024 * 1024)
 #define EMITTER_MAX_CONSTS (1024 * 1024)
+#define EMITTER_MAX_STRUCTS 128
+
+/* Compile-time view of a struct declaration, used to emit literals and
+ * resolve field access. */
+typedef struct {
+    InternedString  name;
+    InternedString *fields;
+    size_t          field_count;
+    const StructDef *def;
+} StructInfo;
 
 typedef struct {
     InternedString name;
@@ -98,6 +108,9 @@ struct Emitter {
 
     LoopPatch      loops[EMITTER_MAX_LOOP_DEPTH];
     int            loop_depth;
+
+    StructInfo     structs[EMITTER_MAX_STRUCTS];
+    size_t         struct_count;
 
     int            error_count;
 };

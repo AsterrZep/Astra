@@ -56,6 +56,29 @@ ArrayObj *array_obj_new(Arena *a, size_t len) {
     return obj;
 }
 
+Value value_struct(StructObj *s) {
+    Value v = {0};
+    v.kind = VAL_STRUCT;
+    v.as.struct_val = s;
+    return v;
+}
+
+Value value_struct_def(StructDef *d) {
+    Value v = {0};
+    v.kind = VAL_STRUCT_DEF;
+    v.as.struct_def = d;
+    return v;
+}
+
+StructObj *struct_obj_new(Arena *a, const StructDef *def) {
+    StructObj *obj = arena_new(a, StructObj);
+    if (!obj) return NULL;
+    obj->def = def;
+    size_t n = def ? def->field_count : 0;
+    obj->fields = n > 0 ? arena_new_array(a, Value, n) : NULL;
+    return obj;
+}
+
 Value value_fn(FnObj *f) {
     Value v = {0};
     v.kind = VAL_FN;
@@ -75,6 +98,8 @@ bool value_is_truthy(Value v) {
     case VAL_FLOAT:  return v.as.float_val != 0.0;
     case VAL_STRING: return v.as.string_val != NULL && v.as.string_val[0] != '\0';
     case VAL_ARRAY:  return v.as.array_val != NULL && v.as.array_val->len > 0;
+    case VAL_STRUCT: return v.as.struct_val != NULL;
+    case VAL_STRUCT_DEF: return v.as.struct_def != NULL;
     case VAL_FN:     return v.as.fn_val != NULL;
     }
     return false;
@@ -88,6 +113,8 @@ static const char *type_name(Value v) {
     case VAL_FLOAT:  return "float";
     case VAL_STRING: return "string";
     case VAL_ARRAY:  return "array";
+    case VAL_STRUCT: return "struct";
+    case VAL_STRUCT_DEF: return "struct_def";
     case VAL_FN:     return "function";
     }
     return "unknown";
@@ -110,6 +137,19 @@ void value_print(Value v) {
         }
         printf("]");
         break;
+    case VAL_STRUCT: {
+        StructObj *s = v.as.struct_val;
+        if (!s || !s->def) { printf("<struct>"); break; }
+        printf("%s { ", s->def->name ? s->def->name : "?");
+        for (size_t i = 0; i < s->def->field_count; i++) {
+            if (i > 0) printf(", ");
+            printf("%s: ", s->def->field_names[i]);
+            value_print(s->fields[i]);
+        }
+        printf(" }");
+        break;
+    }
+    case VAL_STRUCT_DEF: printf("<struct_def>"); break;
     case VAL_FN:     printf("<fn>"); break;
     }
 }
@@ -137,6 +177,19 @@ static bool value_eq(Value a, Value b) {
         if (!a.as.string_val || !b.as.string_val) return false;
         return strcmp(a.as.string_val, b.as.string_val) == 0;
     case VAL_ARRAY:  return a.as.array_val == b.as.array_val;
+    case VAL_STRUCT: {
+        StructObj *x = a.as.struct_val;
+        StructObj *y = b.as.struct_val;
+        if (x == y) return true;
+        if (!x || !y || !x->def || !y->def) return false;
+        if (strcmp(x->def->name, y->def->name) != 0) return false;
+        if (x->def->field_count != y->def->field_count) return false;
+        for (size_t i = 0; i < x->def->field_count; i++) {
+            if (!value_eq(x->fields[i], y->fields[i])) return false;
+        }
+        return true;
+    }
+    case VAL_STRUCT_DEF: return a.as.struct_def == b.as.struct_def;
     case VAL_FN:     return a.as.fn_val == b.as.fn_val;
     }
     return false;
@@ -262,6 +315,8 @@ static const char *opname(OpCode op) {
     case OPCODE_NEW_ARRAY:    return "NEW_ARRAY";
     case OPCODE_INDEX:        return "INDEX";
     case OPCODE_LEN:          return "LEN";
+    case OPCODE_NEW_STRUCT:   return "NEW_STRUCT";
+    case OPCODE_GET_FIELD:    return "GET_FIELD";
     case OPCODE_CALL:         return "CALL";
     case OPCODE_RET:          return "RET";
     case OPCODE_PRINT:        return "PRINT";
@@ -787,6 +842,58 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 return VM_RUNTIME_ERROR;
             }
             if (!vm_push(vm, value_int((int64_t)n))) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_NEW_STRUCT: {
+            size_t n = inst.arg.index;
+            if (vm->sp < n + 1) {
+                vm_runtime_error(vm, line, "stack underflow building struct");
+                return VM_RUNTIME_ERROR;
+            }
+            Value def_val = vm->stack[vm->sp - n - 1];
+            if (def_val.kind != VAL_STRUCT_DEF || !def_val.as.struct_def) {
+                vm_runtime_error(vm, line, "invalid struct layout on stack");
+                return VM_RUNTIME_ERROR;
+            }
+            const StructDef *def = def_val.as.struct_def;
+            if (n != def->field_count) {
+                vm_runtime_error(vm, line, "struct '%s' expects %zu fields, got %zu",
+                    def->name, def->field_count, n);
+                return VM_RUNTIME_ERROR;
+            }
+            StructObj *obj = struct_obj_new(vm->arena, def);
+            if (!obj) {
+                vm_runtime_error(vm, line, "out of memory building struct");
+                return VM_RUNTIME_ERROR;
+            }
+            for (size_t i = 0; i < n; i++) {
+                obj->fields[i] = vm->stack[vm->sp - n + i];
+            }
+            vm->sp = (uint16_t)(vm->sp - n - 1);
+            if (!vm_push(vm, value_struct(obj))) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_GET_FIELD: {
+            if (inst.arg.index >= vm->const_len) {
+                vm_runtime_error(vm, line, "field name index %u out of range", inst.arg.index);
+                return VM_RUNTIME_ERROR;
+            }
+            Value obj = vm_pop(vm);
+            const char *field = vm->constants[inst.arg.index].as.string_val;
+            if (obj.kind != VAL_STRUCT || !obj.as.struct_val) {
+                vm_runtime_error(vm, line, "cannot access field on %s", type_name(obj));
+                return VM_RUNTIME_ERROR;
+            }
+            StructObj *s = obj.as.struct_val;
+            int found = -1;
+            for (size_t i = 0; i < s->def->field_count; i++) {
+                if (strcmp(s->def->field_names[i], field) == 0) { found = (int)i; break; }
+            }
+            if (found < 0) {
+                vm_runtime_error(vm, line, "struct '%s' has no field '%s'", s->def->name, field);
+                return VM_RUNTIME_ERROR;
+            }
+            if (!vm_push(vm, s->fields[found])) return VM_RUNTIME_ERROR;
         } break;
 
         /* ---- Control flow ---- */

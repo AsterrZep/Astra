@@ -597,6 +597,57 @@ static Type *typecheck_index(TypeChecker *tc, Node *node) {
     return object->as.array.elem;
 }
 
+static Type *typecheck_struct_lit(TypeChecker *tc, Node *node) {
+    InternedString name = node->as.struct_lit.name;
+    Symbol *sym = symbol_table_lookup(tc->symbols, name);
+    if (!sym || !sym->type || sym->type->kind != TYPE_STRUCT) {
+        return tc_error_type(tc, node->loc, "unknown struct '%.*s'",
+                             (int)name.len, name.str);
+    }
+    Type *st = sym->type;
+    size_t declared = st->as.struc.field_count;
+
+    /* No unknown fields. */
+    for (size_t i = 0; i < node->as.struct_lit.field_names.len; i++) {
+        InternedString fname = node->as.struct_lit.field_names.data[i];
+        bool found = false;
+        for (size_t j = 0; j < declared; j++) {
+            if (string_eq(st->as.struc.fields[j].name, fname)) { found = true; break; }
+        }
+        if (!found) {
+            return tc_error_type(tc, node->loc, "struct '%.*s' has no field '%.*s'",
+                                 (int)name.len, name.str, (int)fname.len, fname.str);
+        }
+    }
+
+    /* Every declared field must be initialised exactly once, with a
+     * compatible type. */
+    for (size_t i = 0; i < declared; i++) {
+        InternedString fname = st->as.struc.fields[i].name;
+        int vi = -1;
+        for (size_t j = 0; j < node->as.struct_lit.field_names.len; j++) {
+            if (string_eq(node->as.struct_lit.field_names.data[j], fname)) { vi = (int)j; break; }
+        }
+        if (vi < 0) {
+            return tc_error_type(tc, node->loc, "missing field '%.*s' in '%.*s' literal",
+                                 (int)fname.len, fname.str, (int)name.len, name.str);
+        }
+        Node *val = node->as.struct_lit.field_values.data[vi];
+        Type *vt = typecheck_node(tc, val);
+        if (type_is_error(vt)) return vt;
+        Type *expected = st->as.struc.fields[i].type;
+        if (!type_eq(expected, vt)) {
+            return tc_error_type(tc, val->loc,
+                                 "field '%.*s' expects %s, got %s",
+                                 (int)fname.len, fname.str,
+                                 type_kind_name(expected->kind),
+                                 type_kind_name(vt->kind));
+        }
+    }
+
+    return st;
+}
+
 static Type *typecheck_field_access(TypeChecker *tc, Node *node) {
     Type *object = typecheck_node(tc, node->as.field_access.object);
     if (type_is_error(object)) return object;
@@ -1138,6 +1189,7 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_CALL:       return typecheck_call(tc, node);
     case NODE_INDEX:      return typecheck_index(tc, node);
     case NODE_ARRAY_LIT:  return typecheck_array_lit(tc, node);
+    case NODE_STRUCT_LIT: return typecheck_struct_lit(tc, node);
     case NODE_RANGE:      return tc_error_type(tc, node->loc,
                                 "range expression is only valid as a for-loop iterator");
     case NODE_FIELD_ACCESS: return typecheck_field_access(tc, node);

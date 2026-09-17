@@ -1,0 +1,11 @@
+// A field initialised with the wrong type must be a compile error
+// EXPECT-ERROR: expects
+struct Point {
+    x: i32
+    y: i32
+}
+
+fn main() {
+    let p = Point { x: "bad", y: 2 };
+    print(p.y);
+}

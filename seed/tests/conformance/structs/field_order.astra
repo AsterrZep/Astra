@@ -1,0 +1,15 @@
+// Literal field order does not matter: values are stored by declaration order
+// EXPECT: 2
+// EXPECT: 1
+// EXPECT: Point { x: 2, y: 1 }
+struct Point {
+    x: i32
+    y: i32
+}
+
+fn main() {
+    let q = Point { y: 1, x: 2 };
+    print(q.x);
+    print(q.y);
+    print(q);
+}

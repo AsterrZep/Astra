@@ -221,6 +221,18 @@ static void dump_node(Node *node, int indent) {
         if (node->as.range.start) dump_node(node->as.range.start, indent + 1);
         if (node->as.range.end)   dump_node(node->as.range.end, indent + 1);
         break;
+    case NODE_STRUCT_LIT:
+        printf("StructLit(%.*s)\n",
+               (int)node->as.struct_lit.name.len,
+               node->as.struct_lit.name.str);
+        for (size_t i = 0; i < node->as.struct_lit.field_names.len; i++) {
+            indent_print(indent + 1);
+            printf("Field(%.*s)\n",
+                   (int)node->as.struct_lit.field_names.data[i].len,
+                   node->as.struct_lit.field_names.data[i].str);
+            dump_node(node->as.struct_lit.field_values.data[i], indent + 2);
+        }
+        break;
     case NODE_FIELD_ACCESS:
         printf("FieldAccess(%.*s)\n",
                (int)node->as.field_access.field.len,

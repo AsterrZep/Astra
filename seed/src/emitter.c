@@ -48,6 +48,9 @@ static uint32_t add_constant(Emitter *e, Value val) {
             case VAL_BOOL:  if (e->constants[i].as.bool_val == val.as.bool_val) return (uint32_t)i; break;
             case VAL_INT:   if (e->constants[i].as.int_val == val.as.int_val) return (uint32_t)i; break;
             case VAL_FLOAT: if (e->constants[i].as.float_val == val.as.float_val) return (uint32_t)i; break;
+            case VAL_STRUCT_DEF:
+                if (e->constants[i].as.struct_def == val.as.struct_def) return (uint32_t)i;
+                break;
             default: break;
         }
     }
@@ -101,6 +104,51 @@ static void pop_scope(Emitter *e) {
     if (popped > 0) {
         emit_inst(e, OPCODE_POP, 0);
         e->code[e->code_len - 1].arg.index = popped;
+    }
+}
+
+/* -----------------------------------------------------------
+ * Struct layout registry
+ * ----------------------------------------------------------- */
+
+static StructInfo *find_struct(Emitter *e, InternedString name) {
+    for (size_t i = 0; i < e->struct_count; i++) {
+        if (string_eq(e->structs[i].name, name)) return &e->structs[i];
+    }
+    return NULL;
+}
+
+/* Collect struct declarations before emitting code so literals and field
+ * accesses can be resolved without a type table. */
+static void register_structs(Emitter *e, Node *module) {
+    for (size_t i = 0; i < module->as.module.items.len; i++) {
+        Node *item = module->as.module.items.data[i];
+        if (item->kind != NODE_STRUCT_DECL) continue;
+
+        if (e->struct_count >= EMITTER_MAX_STRUCTS) {
+            fprintf(stderr, "error: too many struct declarations (max %d)\n",
+                    EMITTER_MAX_STRUCTS);
+            e->error_count++;
+            continue;
+        }
+
+        size_t n = item->as.struct_decl.field_names.len;
+        StructInfo *si = &e->structs[e->struct_count++];
+        si->name        = item->as.struct_decl.name;
+        si->field_count = n;
+        si->fields      = n > 0 ? arena_new_array(e->arena, InternedString, n) : NULL;
+
+        StructDef *def = arena_new(e->arena, StructDef);
+        def->name        = si->name.str;
+        def->field_count = n;
+        def->field_names = n > 0 ? arena_new_array(e->arena, const char *, n) : NULL;
+
+        for (size_t j = 0; j < n; j++) {
+            si->fields[j]      = item->as.struct_decl.field_names.data[j];
+            def->field_names[j] = si->fields[j].str;
+        }
+
+        si->def = def;
     }
 }
 
@@ -318,6 +366,70 @@ static void emit_expr(Emitter *e, Node *node) {
         emit_expr(e, node->as.index.object);
         emit_expr(e, node->as.index.index);
         emit_inst(e, OPCODE_INDEX, node->loc.line);
+    } break;
+
+    case NODE_STRUCT_LIT: {
+        uint32_t line = node->loc.line;
+        InternedString sname = node->as.struct_lit.name;
+        StructInfo *si = find_struct(e, sname);
+        if (!si) {
+            fprintf(stderr, "error: unknown struct '%.*s'\n", (int)sname.len, sname.str);
+            e->error_count++;
+            break;
+        }
+
+        bool ok = true;
+
+        /* Reject fields the struct does not declare. */
+        for (size_t j = 0; j < node->as.struct_lit.field_names.len; j++) {
+            InternedString fname = node->as.struct_lit.field_names.data[j];
+            bool found = false;
+            for (size_t i = 0; i < si->field_count; i++) {
+                if (string_eq(si->fields[i], fname)) { found = true; break; }
+            }
+            if (!found) {
+                fprintf(stderr, "error: struct '%.*s' has no field '%.*s'\n",
+                        (int)sname.len, sname.str, (int)fname.len, fname.str);
+                e->error_count++;
+                ok = false;
+            }
+        }
+
+        /* Values are pushed in declaration order, so the runtime layout and
+         * the stack always agree regardless of literal field order. The
+         * layout constant is added per function pool, since each function
+         * owns its own constant table. */
+        uint32_t def_idx = add_constant(e, value_struct_def((StructDef *)si->def));
+        emit_inst_index(e, OPCODE_CONST, def_idx, line);
+        for (size_t i = 0; i < si->field_count; i++) {
+            int vi = -1;
+            for (size_t j = 0; j < node->as.struct_lit.field_names.len; j++) {
+                if (string_eq(node->as.struct_lit.field_names.data[j], si->fields[i])) {
+                    vi = (int)j;
+                    break;
+                }
+            }
+            if (vi < 0) {
+                fprintf(stderr, "error: missing field '%.*s' in initializer of '%.*s'\n",
+                        (int)si->fields[i].len, si->fields[i].str,
+                        (int)sname.len, sname.str);
+                e->error_count++;
+                ok = false;
+                uint32_t z = add_constant(e, value_nil());
+                emit_inst_index(e, OPCODE_CONST, z, line);
+            } else {
+                emit_expr(e, node->as.struct_lit.field_values.data[vi]);
+            }
+        }
+        (void)ok;
+        emit_inst(e, OPCODE_NEW_STRUCT, line);
+        e->code[e->code_len - 1].arg.index = (uint32_t)si->field_count;
+    } break;
+
+    case NODE_FIELD_ACCESS: {
+        emit_expr(e, node->as.field_access.object);
+        uint32_t idx = add_constant(e, value_string(node->as.field_access.field.str));
+        emit_inst_index(e, OPCODE_GET_FIELD, idx, node->loc.line);
     } break;
 
     case NODE_RANGE: {
@@ -756,6 +868,7 @@ Emitter *emitter_create(Arena *arena, StringTable *strings) {
 
 void emitter_emit(Emitter *e, Node *module) {
     if (!e || !module) return;
+    register_structs(e, module);
     emit_node(e, module);
 
     /* If the module defines main(), call it. Top-level functions live in the

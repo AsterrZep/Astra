@@ -12,6 +12,10 @@ struct Parser {
     Token         current;
     Token         previous;
     bool          had_error;
+    /* Set while parsing a construct whose trailing `{` belongs to the
+     * construct itself (if/while/for conditions), so an identifier followed
+     * by `{` is not mistaken for a struct literal. */
+    bool          no_struct_lit;
 };
 
 /* -----------------------------------------------------------
@@ -104,6 +108,18 @@ static void node_list_push(Parser *p, Node ***data, size_t *len, size_t *cap, No
     (*data)[(*len)++] = n;
 }
 
+static void istring_list_push(Parser *p, InternedString **data, size_t *len,
+                              size_t *cap, InternedString s) {
+    if (*len >= *cap) {
+        size_t new_cap = *cap == 0 ? 8 : *cap * 2;
+        InternedString *nd = arena_new_array(p->arena, InternedString, new_cap);
+        if (*data) memcpy(nd, *data, sizeof(InternedString) * (*len));
+        *data = nd;
+        *cap  = new_cap;
+    }
+    (*data)[(*len)++] = s;
+}
+
 /* -----------------------------------------------------------
  * Pratt parsing — expression precedence
  * ----------------------------------------------------------- */
@@ -182,7 +198,11 @@ static Node *parse_ident(Parser *p, Node *left, Precedence prec) {
 
 static Node *parse_paren(Parser *p, Node *left, Precedence prec) {
     (void)left; (void)prec;
+    /* Parenthesised expressions may contain struct literals. */
+    bool saved = p->no_struct_lit;
+    p->no_struct_lit = false;
     Node *expr = parse_expression_with_prec(p, PREC_NONE);
+    p->no_struct_lit = saved;
     expect(p, TOKEN_RPAREN, "')'");
     return expr;
 }
@@ -346,6 +366,45 @@ static Node *parse_array_literal(Parser *p) {
     return n;
 }
 
+/* Parse `Name { field: value, ... }`. `p->current` is the `{`. */
+static Node *parse_struct_literal(Parser *p, InternedString name, SrcLoc loc) {
+    Node *n = node_new(p->arena, NODE_STRUCT_LIT, loc);
+    n->as.struct_lit.name = name;
+    n->as.struct_lit.field_names.data = NULL;
+    n->as.struct_lit.field_names.len  = 0;
+    n->as.struct_lit.field_names.cap  = 0;
+    n->as.struct_lit.field_values.data = NULL;
+    n->as.struct_lit.field_values.len  = 0;
+    n->as.struct_lit.field_values.cap  = 0;
+
+    expect(p, TOKEN_LBRACE, "'{'");
+    skip_newlines(p);
+
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        expect(p, TOKEN_IDENT, "field name");
+        InternedString fname = p->previous.text;
+        expect(p, TOKEN_COLON, "':'");
+
+        bool saved = p->no_struct_lit;
+        p->no_struct_lit = false;
+        Node *value = parse_expression(p);
+        p->no_struct_lit = saved;
+
+        istring_list_push(p, &n->as.struct_lit.field_names.data,
+                          &n->as.struct_lit.field_names.len,
+                          &n->as.struct_lit.field_names.cap, fname);
+        node_list_push(p, &n->as.struct_lit.field_values.data,
+                       &n->as.struct_lit.field_values.len,
+                       &n->as.struct_lit.field_values.cap, value);
+
+        skip_newlines(p);
+        if (!match(p, TOKEN_COMMA)) break;
+        skip_newlines(p);
+    }
+    expect(p, TOKEN_RBRACE, "'}'");
+    return n;
+}
+
 static Node *parse_index(Parser *p, Node *left, Precedence prec) {
     (void)prec;
     SrcLoc loc = left->loc;
@@ -452,7 +511,10 @@ static Node *parse_if(Parser *p) {
     SrcLoc loc = p->previous.loc;
     Node *n = node_new(p->arena, NODE_IF, loc);
     skip_newlines(p);
+    bool saved_nsl = p->no_struct_lit;
+    p->no_struct_lit = true;
     n->as.if_expr.cond = parse_expression(p);
+    p->no_struct_lit = saved_nsl;
     skip_newlines(p);
     expect(p, TOKEN_LBRACE, "'{' for if body");
     n->as.if_expr.then_block = parse_block(p);
@@ -487,7 +549,10 @@ static Node *parse_while(Parser *p) {
     SrcLoc loc = p->previous.loc;
     Node *n = node_new(p->arena, NODE_WHILE, loc);
     skip_newlines(p);
+    bool saved_nsl = p->no_struct_lit;
+    p->no_struct_lit = true;
     n->as.while_expr.cond = parse_expression(p);
+    p->no_struct_lit = saved_nsl;
     skip_newlines(p);
     expect(p, TOKEN_LBRACE, "'{' for while body");
     n->as.while_expr.body = parse_block(p);
@@ -507,7 +572,10 @@ static Node *parse_for(Parser *p) {
     skip_newlines(p);
     expect(p, TOKEN_IN, "'in'");
     skip_newlines(p);
+    bool saved_nsl = p->no_struct_lit;
+    p->no_struct_lit = true;
     n->as.for_expr.iter = parse_expression(p);
+    p->no_struct_lit = saved_nsl;
     skip_newlines(p);
     expect(p, TOKEN_LBRACE, "'{' for for body");
     n->as.for_expr.body = parse_block(p);
@@ -879,10 +947,15 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
             advance(p);
             left = parse_null_lit(p, NULL, PREC_PRIMARY);
             break;
-        case TOKEN_IDENT:
+        case TOKEN_IDENT: {
             advance(p);
-            left = parse_ident(p, NULL, PREC_PRIMARY);
-            break;
+            Token id = p->previous;
+            if (!p->no_struct_lit && check(p, TOKEN_LBRACE)) {
+                left = parse_struct_literal(p, id.text, id.loc);
+            } else {
+                left = parse_ident(p, NULL, PREC_PRIMARY);
+            }
+        } break;
         case TOKEN_LPAREN:
             advance(p);
             left = parse_paren(p, NULL, PREC_PRIMARY);
@@ -978,6 +1051,7 @@ Parser *parser_create(Lexer *lexer, Arena *arena, StringTable *strings) {
     p->arena   = arena;
     p->strings = strings;
     p->had_error = false;
+    p->no_struct_lit = false;
     /* Load first token */
     advance(p);
     return p;
