@@ -123,6 +123,33 @@ Value value_fn(FnObj *f) {
     return v;
 }
 
+Value value_ok(Arena *a, Value inner) {
+    Value v = {0};
+    v.kind = VAL_OK;
+    Value *p = arena_new(a, Value);
+    *p = inner;
+    v.as.ok_val.inner = p;
+    return v;
+}
+
+Value value_err(Arena *a, Value inner) {
+    Value v = {0};
+    v.kind = VAL_ERR;
+    Value *p = arena_new(a, Value);
+    *p = inner;
+    v.as.err_val.inner = p;
+    return v;
+}
+
+Value value_some(Arena *a, Value inner) {
+    Value v = {0};
+    v.kind = VAL_SOME;
+    Value *p = arena_new(a, Value);
+    *p = inner;
+    v.as.some_val.inner = p;
+    return v;
+}
+
 /* -----------------------------------------------------------
  * Value utilities
  * ----------------------------------------------------------- */
@@ -141,6 +168,9 @@ bool value_is_truthy(Value v) {
     case VAL_ENUM_DATA: return v.as.enum_obj != NULL;
     case VAL_ENUM_DEF: return v.as.enum_def != NULL;
     case VAL_FN:     return v.as.fn_val != NULL;
+    case VAL_OK:     return true;
+    case VAL_ERR:    return true;
+    case VAL_SOME:   return true;
     }
     return false;
 }
@@ -159,6 +189,9 @@ static const char *type_name(Value v) {
     case VAL_ENUM_DATA: return "enum";
     case VAL_ENUM_DEF: return "enum_def";
     case VAL_FN:     return "function";
+    case VAL_OK:     return "ok";
+    case VAL_ERR:    return "err";
+    case VAL_SOME:   return "some";
     }
     return "unknown";
 }
@@ -222,6 +255,9 @@ void value_print(Value v) {
     } break;
     case VAL_ENUM_DEF: printf("<enum_def>"); break;
     case VAL_FN:     printf("<fn>"); break;
+    case VAL_OK:     printf("ok("); value_print(*v.as.ok_val.inner); printf(")"); break;
+    case VAL_ERR:    printf("err("); value_print(*v.as.err_val.inner); printf(")"); break;
+    case VAL_SOME:   printf("some("); value_print(*v.as.some_val.inner); printf(")"); break;
     }
 }
 
@@ -314,6 +350,9 @@ static bool value_eq(Value a, Value b) {
         return true;
     }
     case VAL_FN:     return a.as.fn_val == b.as.fn_val;
+    case VAL_OK:     return value_eq(*a.as.ok_val.inner, *b.as.ok_val.inner);
+    case VAL_ERR:    return value_eq(*a.as.err_val.inner, *b.as.err_val.inner);
+    case VAL_SOME:   return value_eq(*a.as.some_val.inner, *b.as.some_val.inner);
     }
     return false;
 }
@@ -448,7 +487,11 @@ static const char *opname(OpCode op) {
     case OPCODE_CALL:         return "CALL";
     case OPCODE_RET:          return "RET";
     case OPCODE_PRINT:        return "PRINT";
+    case OPCODE_WRAP_OK:      return "WRAP_OK";
+    case OPCODE_WRAP_ERR:     return "WRAP_ERR";
+    case OPCODE_WRAP_SOME:    return "WRAP_SOME";
     case OPCODE_HALT:         return "HALT";
+    case OPCODE_TRY_UNWRAP:   return "TRY_UNWRAP";
     default:                  return "???";
     }
 }
@@ -1291,6 +1334,74 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             Value val = vm_pop(vm);
             value_print(val);
             printf("\n");
+        } break;
+
+        /* ---- Option/Result wrapping ---- */
+
+        case OPCODE_WRAP_OK: {
+            Value inner = vm_pop(vm);
+            if (!vm_push(vm, value_ok(vm->arena, inner))) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_WRAP_ERR: {
+            Value inner = vm_pop(vm);
+            if (!vm_push(vm, value_err(vm->arena, inner))) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_WRAP_SOME: {
+            Value inner = vm_pop(vm);
+            if (!vm_push(vm, value_some(vm->arena, inner))) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_TRY_UNWRAP: {
+            if (vm->sp == 0) {
+                vm_runtime_error(vm, line, "stack underflow on try unwrap");
+                return VM_RUNTIME_ERROR;
+            }
+            Value val = vm->stack[vm->sp - 1];
+            switch (val.kind) {
+            case VAL_OK:
+                vm->stack[vm->sp - 1] = *val.as.ok_val.inner;
+                break;
+            case VAL_SOME:
+                vm->stack[vm->sp - 1] = *val.as.some_val.inner;
+                break;
+            case VAL_ERR: {
+                if (vm->frame_count == 0) {
+                    vm_runtime_error(vm, line, "try operator outside function");
+                    return VM_RUNTIME_ERROR;
+                }
+                vm->frame_count--;
+                vm->sp = vm->frames[vm->frame_count].base;
+                vm->code      = vm->frames[vm->frame_count].saved_code;
+                vm->code_len  = vm->frames[vm->frame_count].saved_code_len;
+                vm->constants = vm->frames[vm->frame_count].saved_constants;
+                vm->const_len = vm->frames[vm->frame_count].saved_const_len;
+                if (!vm_push(vm, val)) return VM_RUNTIME_ERROR;
+                ip = vm->frames[vm->frame_count].ip - 1;
+                end = vm->code + vm->code_len;
+            } break;
+            case VAL_NIL: {
+                if (vm->frame_count == 0) {
+                    vm_runtime_error(vm, line, "try operator outside function");
+                    return VM_RUNTIME_ERROR;
+                }
+                vm->frame_count--;
+                vm->sp = vm->frames[vm->frame_count].base;
+                vm->code      = vm->frames[vm->frame_count].saved_code;
+                vm->code_len  = vm->frames[vm->frame_count].saved_code_len;
+                vm->constants = vm->frames[vm->frame_count].saved_constants;
+                vm->const_len = vm->frames[vm->frame_count].saved_const_len;
+                if (!vm_push(vm, val)) return VM_RUNTIME_ERROR;
+                ip = vm->frames[vm->frame_count].ip - 1;
+                end = vm->code + vm->code_len;
+            } break;
+            default:
+                vm_runtime_error(vm, line,
+                    "? operator requires Result or Option, got %s",
+                    type_name(val));
+                return VM_RUNTIME_ERROR;
+            }
         } break;
 
         /* ---- Special ---- */

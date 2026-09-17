@@ -239,6 +239,7 @@ typedef enum {
     NODE_NONE_EXPR,   /* none — None literal */
     NODE_OK_EXPR,     /* ok(value) — Result::Ok constructor */
     NODE_ERR_EXPR,    /* err(value) — Result::Err constructor */
+    NODE_TRY_EXPR,    /* expr? — try-propagation operator */
 
     /* Enum variant payload declaration (only inside NODE_ENUM_DECL) */
     NODE_PAYLOAD,
@@ -533,6 +534,7 @@ struct Node {
         SomeExpr        some_expr;
         OkExpr          ok_expr;
         ErrExpr         err_expr;
+        struct { Node *inner; } try_expr;
         PatternOrExpr   pattern_or;
         PatternBindExpr pattern_bind;
         PatternVariantBindExpr pattern_variant_bind;
@@ -586,6 +588,7 @@ typedef enum {
     TYPE_FN,
     TYPE_STRUCT,
     TYPE_ENUM,
+    TYPE_NIL,       /* nil literal type — unifies with any optional */
     TYPE_UNKNOWN,
     TYPE_ERROR,
 } TypeKind;
@@ -731,8 +734,14 @@ typedef enum {
     /* I/O */
     OPCODE_PRINT,         /* print value */
 
+    /* Option/Result wrapping */
+    OPCODE_WRAP_OK,       /* pop inner, push ok(inner) */
+    OPCODE_WRAP_ERR,      /* pop inner, push err(inner) */
+    OPCODE_WRAP_SOME,     /* pop inner, push some(inner) */
+
     /* Special */
     OPCODE_HALT,          /* stop execution */
+    OPCODE_TRY_UNWRAP,    /* expr? — unwrap Result/Option or early return */
 } OpCode;
 
 typedef struct {
@@ -782,6 +791,9 @@ typedef enum {
     VAL_ENUM_DATA, /* data-carrying variant: enum_obj (tag + payload fields) */
     VAL_ENUM_DEF,
     VAL_FN,
+    VAL_OK,      /* Result::Ok(value) */
+    VAL_ERR,     /* Result::Err(value) */
+    VAL_SOME,    /* Option::Some(value) */
 } ValueKind;
 
 typedef struct Value Value;
@@ -853,6 +865,9 @@ struct Value {
         EnumObj     *enum_obj;
         EnumDef     *enum_def;
         FnObj      *fn_val;
+        struct { Value *inner; } ok_val;    /* only valid for VAL_OK */
+        struct { Value *inner; } err_val;   /* only valid for VAL_ERR */
+        struct { Value *inner; } some_val;  /* only valid for VAL_SOME */
     } as;
 };
 
@@ -874,6 +889,9 @@ Value value_enum_with_payload(EnumObj *obj);
  * construction site; the VM clones it when materialising an EnumObj. */
 Value value_enum_def(EnumDef *d);
 Value value_fn(FnObj *f);
+Value value_ok(Arena *a, Value inner);
+Value value_err(Arena *a, Value inner);
+Value value_some(Arena *a, Value inner);
 
 /* Allocate an array object in the given arena (len may be 0) */
 ArrayObj *array_obj_new(Arena *a, size_t len);

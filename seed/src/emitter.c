@@ -81,6 +81,10 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
 
     /* GET_ENUM_FIELD pops an enum data value and pushes one field; net +0. */
     case OPCODE_GET_ENUM_FIELD:
+    case OPCODE_TRY_UNWRAP:
+    case OPCODE_WRAP_OK:
+    case OPCODE_WRAP_ERR:
+    case OPCODE_WRAP_SOME:
         return 0;
 
     /* The layout constant sits under the N payload values; the VM consumes
@@ -605,6 +609,7 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_NONE_EXPR:         return "NoneExpr";
     case NODE_OK_EXPR:           return "OkExpr";
     case NODE_ERR_EXPR:          return "ErrExpr";
+    case NODE_TRY_EXPR:          return "TryExpr";
     case NODE_IDENT:             return "Ident";
     case NODE_BINARY_OP:         return "BinaryOp";
     case NODE_UNARY_OP:          return "UnaryOp";
@@ -1402,6 +1407,7 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_SOME_EXPR: {
         emit_expr(e, node->as.some_expr.value);
+        emit_inst(e, OPCODE_WRAP_SOME, node->loc.line);
     } break;
 
     case NODE_NONE_EXPR: {
@@ -1411,10 +1417,17 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_OK_EXPR: {
         emit_expr(e, node->as.ok_expr.value);
+        emit_inst(e, OPCODE_WRAP_OK, node->loc.line);
     } break;
 
     case NODE_ERR_EXPR: {
         emit_expr(e, node->as.err_expr.value);
+        emit_inst(e, OPCODE_WRAP_ERR, node->loc.line);
+    } break;
+
+    case NODE_TRY_EXPR: {
+        emit_expr(e, node->as.try_expr.inner);
+        emit_inst(e, OPCODE_TRY_UNWRAP, node->loc.line);
     } break;
 
     default:

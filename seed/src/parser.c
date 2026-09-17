@@ -272,6 +272,7 @@ static Precedence token_to_prec(TokenKind kind) {
         case TOKEN_DOTDOT: case TOKEN_DOTDOT_EQ:
             return PREC_RANGE;
         case TOKEN_LPAREN: case TOKEN_LBRACKET: case TOKEN_DOT:
+        case TOKEN_QUESTION:
             return PREC_POSTFIX;
         default:
             return PREC_NONE;
@@ -1370,6 +1371,11 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
             case TOKEN_DOTDOT_EQ:
                 left = parse_range(p, left, kind);
                 break;
+            case TOKEN_QUESTION: {
+                Node *n = node_new(p->arena, NODE_TRY_EXPR, p->previous.loc);
+                n->as.try_expr.inner = left;
+                left = n;
+            } break;
             default:
                 left = parse_binary(p, left, prec);
                 break;

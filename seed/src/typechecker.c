@@ -38,6 +38,9 @@ bool type_eq(Type *a, Type *b) {
     if (!a || !b) return a == b;
     /* TYPE_UNKNOWN matches any type (for built-in polymorphic functions) */
     if (a->kind == TYPE_UNKNOWN || b->kind == TYPE_UNKNOWN) return true;
+    /* TYPE_NIL matches any TYPE_OPTIONAL (none can be assigned to any Option) */
+    if ((a->kind == TYPE_NIL && b->kind == TYPE_OPTIONAL) ||
+        (a->kind == TYPE_OPTIONAL && b->kind == TYPE_NIL)) return true;
     if (a->kind != b->kind) return false;
     switch (a->kind) {
     case TYPE_OPTIONAL:
@@ -79,6 +82,7 @@ static const char *type_kind_name(TypeKind kind) {
     case TYPE_FN:       return "fn";
     case TYPE_STRUCT:   return "struct";
     case TYPE_ENUM:     return "enum";
+    case TYPE_NIL:      return "nil";
     case TYPE_UNKNOWN:  return "unknown";
     case TYPE_ERROR:    return "<error>";
     }
@@ -117,6 +121,7 @@ void type_print(Type *t) {
     case TYPE_ENUM:
         printf("%.*s", (int)t->as.enumeration.name.len, t->as.enumeration.name.str);
         break;
+    case TYPE_NIL:      printf("nil");      break;
     case TYPE_UNKNOWN:  printf("unknown");  break;
     case TYPE_ERROR:    printf("<error>");   break;
     }
@@ -1651,7 +1656,9 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
         return inner;
     }
     case NODE_NONE_EXPR: {
-        return type_new(tc->arena, TYPE_VOID);
+        // none represents Option::None — return a special type that unifies with any Option
+        // For now, return nil type which can be assigned to any variable
+        return type_new(tc->arena, TYPE_NIL);
     }
     case NODE_OK_EXPR: {
         Type *inner = typecheck_node(tc, node->as.ok_expr.value);
@@ -1660,6 +1667,11 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     }
     case NODE_ERR_EXPR: {
         Type *inner = typecheck_node(tc, node->as.err_expr.value);
+        if (type_is_error(inner)) return inner;
+        return inner;
+    }
+    case NODE_TRY_EXPR: {
+        Type *inner = typecheck_node(tc, node->as.try_expr.inner);
         if (type_is_error(inner)) return inner;
         return inner;
     }
