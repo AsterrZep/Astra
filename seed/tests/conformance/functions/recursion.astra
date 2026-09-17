@@ -1,0 +1,16 @@
+// Recursion and function parameters
+// EXPECT: 120
+// EXPECT: 5
+fn fact(n: i32) -> i32 {
+    if n <= 1 { return 1; }
+    return n * fact(n - 1);
+}
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn main() {
+    print(fact(5));
+    print(add(2, 3));
+}

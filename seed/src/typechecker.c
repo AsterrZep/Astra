@@ -135,9 +135,11 @@ struct SymbolTable {
     size_t    count;
     /* scope tracking */
     int       scope_depth;
-    /* each scope level stores how many symbols existed at push */
-    int      *scope_counts;
+    /* each scope level stores the insertion sequence at push time;
+     * popping removes every symbol with seq >= that value */
+    uint32_t *scope_counts;
     int       scope_cap;
+    uint32_t  next_seq;
 };
 
 SymbolTable *symbol_table_create(Arena *a, size_t size) {
@@ -148,7 +150,8 @@ SymbolTable *symbol_table_create(Arena *a, size_t size) {
     st->count     = 0;
     st->scope_depth = 0;
     st->scope_cap = 16;
-    st->scope_counts = arena_alloc_zero(a, sizeof(int) * st->scope_cap, _Alignof(int));
+    st->scope_counts = arena_alloc_zero(a, sizeof(uint32_t) * st->scope_cap, _Alignof(uint32_t));
+    st->next_seq  = 0;
     return st;
 }
 
@@ -182,6 +185,7 @@ void symbol_table_insert(SymbolTable *st, Symbol sym) {
 
     Symbol *s = arena_new(st->arena, Symbol);
     *s = sym;
+    s->seq = st->next_seq++;
 
     size_t idx = st_hash(sym.name) % st->capacity;
     s->next = st->buckets[idx];
@@ -203,32 +207,34 @@ void symbol_table_push_scope(SymbolTable *st) {
     st->scope_depth++;
     if (st->scope_depth >= st->scope_cap) {
         int new_cap = st->scope_cap * 2;
-        int *new_arr = arena_alloc_zero(st->arena, sizeof(int) * new_cap, _Alignof(int));
-        memcpy(new_arr, st->scope_counts, sizeof(int) * st->scope_cap);
+        uint32_t *new_arr = arena_alloc_zero(st->arena, sizeof(uint32_t) * new_cap, _Alignof(uint32_t));
+        memcpy(new_arr, st->scope_counts, sizeof(uint32_t) * st->scope_cap);
         st->scope_counts = new_arr;
         st->scope_cap = new_cap;
     }
-    st->scope_counts[st->scope_depth] = (int)st->count;
+    st->scope_counts[st->scope_depth] = st->next_seq;
 }
 
 void symbol_table_pop_scope(SymbolTable *st) {
     if (st->scope_depth <= 0) return;
 
-    int target = st->scope_counts[st->scope_depth];
+    uint32_t cutoff = st->scope_counts[st->scope_depth];
     st->scope_depth--;
 
-    /* Remove all symbols with hash >= target count.
-     * Since we prepend, symbols from the current scope are at the front of chains.
-     * We iterate all buckets and remove the first `count - target` symbols. */
-    int to_remove = (int)st->count - target;
-    for (size_t i = 0; i < st->capacity && to_remove > 0; i++) {
+    /* Remove exactly the symbols introduced since this scope was pushed.
+     * Symbols carry a monotonic insertion sequence, so outer symbols
+     * (e.g. built-ins like `print`) can never be evicted by an inner pop. */
+    for (size_t i = 0; i < st->capacity; i++) {
         Symbol **pp = &st->buckets[i];
-        while (*pp && to_remove > 0) {
+        while (*pp) {
             Symbol *s = *pp;
-            *pp = s->next;
-            s->next = NULL;
-            st->count--;
-            to_remove--;
+            if (s->seq >= cutoff) {
+                *pp = s->next;
+                s->next = NULL;
+                st->count--;
+            } else {
+                pp = &s->next;
+            }
         }
     }
 }
@@ -271,6 +277,10 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
 
 void typechecker_destroy(TypeChecker *tc) {
     (void)tc;
+}
+
+int typechecker_error_count(TypeChecker *tc) {
+    return tc ? tc->error_count : 0;
 }
 
 /* --- Error Reporting --- */
@@ -540,6 +550,31 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
     return callee->as.fn.ret ? callee->as.fn.ret : type_new(tc->arena, TYPE_VOID);
 }
 
+static Type *typecheck_array_lit(TypeChecker *tc, Node *node) {
+    size_t n = node->as.array_lit.elems.len;
+    if (n == 0) {
+        /* Empty array: element type is unknown until context provides it. */
+        return type_new_array(tc->arena, type_new(tc->arena, TYPE_UNKNOWN), NULL);
+    }
+
+    Type *elem_type = typecheck_node(tc, node->as.array_lit.elems.data[0]);
+    if (type_is_error(elem_type)) return elem_type;
+
+    for (size_t i = 1; i < n; i++) {
+        Type *t = typecheck_node(tc, node->as.array_lit.elems.data[i]);
+        if (type_is_error(t)) return t;
+        if (!type_eq(elem_type, t)) {
+            return tc_error_type(tc, node->as.array_lit.elems.data[i]->loc,
+                                 "array element %zu has type %s, expected %s",
+                                 i + 1,
+                                 type_kind_name(t->kind),
+                                 type_kind_name(elem_type->kind));
+        }
+    }
+
+    return type_new_array(tc->arena, elem_type, NULL);
+}
+
 static Type *typecheck_index(TypeChecker *tc, Node *node) {
     Type *object = typecheck_node(tc, node->as.index.object);
     if (type_is_error(object)) return object;
@@ -642,19 +677,51 @@ static Type *typecheck_while(TypeChecker *tc, Node *node) {
 }
 
 static Type *typecheck_for(TypeChecker *tc, Node *node) {
-    Type *iter = typecheck_node(tc, node->as.for_expr.iter);
-    if (type_is_error(iter)) return iter;
+    Node *iter_node = node->as.for_expr.iter;
+    Type *var_type = NULL;
 
-    if (iter->kind != TYPE_ARRAY) {
-        return tc_error_type(tc, node->as.for_expr.iter->loc,
-                             "for loop must iterate over array, got %s",
-                             type_kind_name(iter->kind));
+    if (iter_node && iter_node->kind == NODE_RANGE) {
+        /* `for i in start..end` — bounds must be integers. */
+        Node *start = iter_node->as.range.start;
+        Node *end   = iter_node->as.range.end;
+
+        if (!end) {
+            return tc_error_type(tc, iter_node->loc,
+                                 "open-ended ranges are not supported in Astra-0");
+        }
+        if (start) {
+            Type *st = typecheck_node(tc, start);
+            if (type_is_error(st)) return st;
+            if (st->kind != TYPE_INT) {
+                return tc_error_type(tc, start->loc,
+                                     "range start must be i32, got %s",
+                                     type_kind_name(st->kind));
+            }
+        }
+        Type *et = typecheck_node(tc, end);
+        if (type_is_error(et)) return et;
+        if (et->kind != TYPE_INT) {
+            return tc_error_type(tc, end->loc,
+                                 "range end must be i32, got %s",
+                                 type_kind_name(et->kind));
+        }
+        var_type = type_new(tc->arena, TYPE_INT);
+    } else {
+        Type *iter = typecheck_node(tc, iter_node);
+        if (type_is_error(iter)) return iter;
+
+        if (iter->kind != TYPE_ARRAY) {
+            return tc_error_type(tc, iter_node->loc,
+                                 "for loop must iterate over an array or range, got %s",
+                                 type_kind_name(iter->kind));
+        }
+        var_type = iter->as.array.elem;
     }
 
     symbol_table_push_scope(tc->symbols);
     Symbol sym = {
         .name    = node->as.for_expr.var,
-        .type    = iter->as.array.elem,
+        .type    = var_type,
         .is_mut  = false,
         .is_fn   = false,
         .def_loc = node->loc,
@@ -1070,6 +1137,9 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_UNARY_OP:   return typecheck_unary(tc, node);
     case NODE_CALL:       return typecheck_call(tc, node);
     case NODE_INDEX:      return typecheck_index(tc, node);
+    case NODE_ARRAY_LIT:  return typecheck_array_lit(tc, node);
+    case NODE_RANGE:      return tc_error_type(tc, node->loc,
+                                "range expression is only valid as a for-loop iterator");
     case NODE_FIELD_ACCESS: return typecheck_field_access(tc, node);
 
     /* Control flow */

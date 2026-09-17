@@ -90,12 +90,28 @@ static Node *parse_block(Parser *p);
 static Node *parse_type(Parser *p);
 
 /* -----------------------------------------------------------
+ * Growable list helper (arena-backed)
+ * ----------------------------------------------------------- */
+
+static void node_list_push(Parser *p, Node ***data, size_t *len, size_t *cap, Node *n) {
+    if (*len >= *cap) {
+        size_t new_cap = *cap == 0 ? 8 : *cap * 2;
+        Node **nd = arena_new_array(p->arena, Node *, new_cap);
+        if (*data) memcpy(nd, *data, sizeof(Node *) * (*len));
+        *data = nd;
+        *cap  = new_cap;
+    }
+    (*data)[(*len)++] = n;
+}
+
+/* -----------------------------------------------------------
  * Pratt parsing — expression precedence
  * ----------------------------------------------------------- */
 
 typedef enum {
     PREC_NONE,
     PREC_ASSIGN,   /* = */
+    PREC_RANGE,    /* .. ..= */
     PREC_OR,       /* || */
     PREC_AND,      /* && */
     PREC_BIT_OR,   /* | */
@@ -223,6 +239,8 @@ static Precedence token_to_prec(TokenKind kind) {
             return PREC_ADD;
         case TOKEN_STAR: case TOKEN_SLASH: case TOKEN_PERCENT:
             return PREC_MUL;
+        case TOKEN_DOTDOT: case TOKEN_DOTDOT_EQ:
+            return PREC_RANGE;
         case TOKEN_LPAREN: case TOKEN_LBRACKET: case TOKEN_DOT:
             return PREC_POSTFIX;
         default:
@@ -282,6 +300,52 @@ static Node *parse_call(Parser *p, Node *left, Precedence prec) {
     return n;
 }
 
+static Node *parse_range(Parser *p, Node *left, TokenKind kind) {
+    SrcLoc loc = left->loc;
+    Precedence next = (Precedence)((int)token_to_prec(kind) + 1);
+    Node *end = NULL;
+    /* Open-ended ranges (`0..`) are allowed when the following token cannot
+     * start an expression. */
+    switch (p->current.kind) {
+        case TOKEN_RBRACE: case TOKEN_RPAREN: case TOKEN_RBRACKET:
+        case TOKEN_SEMICOLON: case TOKEN_NEWLINE: case TOKEN_EOF:
+        case TOKEN_COMMA:
+            break;
+        default:
+            end = parse_expression_with_prec(p, next);
+            break;
+    }
+    Node *n = node_new(p->arena, NODE_RANGE, loc);
+    n->as.range.start     = left;
+    n->as.range.end       = end;
+    n->as.range.inclusive = (kind == TOKEN_DOTDOT_EQ);
+    return n;
+}
+
+static Node *parse_array_literal(Parser *p) {
+    SrcLoc loc = p->previous.loc;
+    Node *n = node_new(p->arena, NODE_ARRAY_LIT, loc);
+    n->as.array_lit.elems.data = NULL;
+    n->as.array_lit.elems.len  = 0;
+    n->as.array_lit.elems.cap  = 0;
+
+    skip_newlines(p);
+    if (!check(p, TOKEN_RBRACKET)) {
+        for (;;) {
+            skip_newlines(p);
+            Node *elem = parse_expression(p);
+            node_list_push(p, &n->as.array_lit.elems.data,
+                           &n->as.array_lit.elems.len,
+                           &n->as.array_lit.elems.cap, elem);
+            skip_newlines(p);
+            if (!match(p, TOKEN_COMMA)) break;
+            if (check(p, TOKEN_RBRACKET)) break; /* trailing comma */
+        }
+    }
+    expect(p, TOKEN_RBRACKET, "']'");
+    return n;
+}
+
 static Node *parse_index(Parser *p, Node *left, Precedence prec) {
     (void)prec;
     SrcLoc loc = left->loc;
@@ -310,7 +374,8 @@ static Node *parse_field_access(Parser *p, Node *left, Precedence prec) {
 static Node *parse_unary(Parser *p) {
     TokenKind kind = p->previous.kind;
     SrcLoc loc = p->previous.loc;
-    Node *operand = parse_expression(p);
+    /* Bind the operand tightly so `-5 + 8` is `(-5) + 8`, not `-(5 + 8)`. */
+    Node *operand = parse_expression_with_prec(p, PREC_UNARY);
     Node *n = node_new(p->arena, NODE_UNARY_OP, loc);
     switch (kind) {
         case TOKEN_MINUS:  n->as.unary.op = UNOP_NEG; break;
@@ -826,6 +891,10 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
             advance(p);
             left = parse_block(p);
             break;
+        case TOKEN_LBRACKET:
+            advance(p);
+            left = parse_array_literal(p);
+            break;
         case TOKEN_IF:
             advance(p);
             left = parse_if(p);
@@ -865,6 +934,10 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
                 break;
             case TOKEN_DOT:
                 left = parse_field_access(p, left, prec);
+                break;
+            case TOKEN_DOTDOT:
+            case TOKEN_DOTDOT_EQ:
+                left = parse_range(p, left, kind);
                 break;
             default:
                 left = parse_binary(p, left, prec);

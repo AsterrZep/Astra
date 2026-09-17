@@ -1,0 +1,10 @@
+// Array literals and indexing
+// EXPECT: 10
+// EXPECT: 20
+// EXPECT: 30
+fn main() {
+    let xs = [10, 20, 30];
+    print(xs[0]);
+    print(xs[1]);
+    print(xs[2]);
+}

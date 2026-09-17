@@ -75,6 +75,8 @@ const char *token_kind_name(TokenKind kind) {
     case TOKEN_LBRACE:     return "{";
     case TOKEN_RBRACE:     return "}";
     case TOKEN_QUESTION:   return "?";
+    case TOKEN_DOTDOT:     return "..";
+    case TOKEN_DOTDOT_EQ:  return "..=";
     case TOKEN_UNDERSCORE: return "_";
     case TOKEN_NEWLINE:    return "NEWLINE";
     case TOKEN_EOF:        return "EOF";
@@ -207,6 +209,17 @@ static void dump_node(Node *node, int indent) {
         printf("Index\n");
         dump_node(node->as.index.object, indent + 1);
         dump_node(node->as.index.index, indent + 1);
+        break;
+    case NODE_ARRAY_LIT:
+        printf("ArrayLit(%zu)\n", node->as.array_lit.elems.len);
+        for (size_t i = 0; i < node->as.array_lit.elems.len; i++) {
+            dump_node(node->as.array_lit.elems.data[i], indent + 1);
+        }
+        break;
+    case NODE_RANGE:
+        printf("Range(%s)\n", node->as.range.inclusive ? "..=" : "..");
+        if (node->as.range.start) dump_node(node->as.range.start, indent + 1);
+        if (node->as.range.end)   dump_node(node->as.range.end, indent + 1);
         break;
     case NODE_FIELD_ACCESS:
         printf("FieldAccess(%.*s)\n",
@@ -450,8 +463,9 @@ static bool run_full_pipeline(Compiler *c) {
     c->checker = tc;
 
     Type *result = typecheck(tc, module);
-    if (!result) {
-        fprintf(stderr, "error: type check failed\n");
+    if (!result || typechecker_error_count(tc) > 0) {
+        fprintf(stderr, "error: type check failed with %d error(s)\n",
+                typechecker_error_count(tc));
         return false;
     }
 
@@ -463,6 +477,12 @@ static bool run_full_pipeline(Compiler *c) {
     c->emitter = emitter;
 
     emitter_emit(emitter, module);
+
+    if (emitter_error_count(emitter) > 0) {
+        fprintf(stderr, "error: code generation failed with %d error(s)\n",
+                emitter_error_count(emitter));
+        return false;
+    }
 
     size_t code_len = 0, const_len = 0;
     const Instruction *code = emitter_get_code(emitter, &code_len);
@@ -487,7 +507,13 @@ static bool run_full_pipeline(Compiler *c) {
 
     VMResult res = vm_run(vm, code, code_len, consts_copy, const_len);
     if (res != VM_OK) {
-        fprintf(stderr, "error: runtime error\n");
+        const char *file = (c->lexer && c->lexer->filename) ? c->lexer->filename : "<input>";
+        if (vm->error_msg) {
+            fprintf(stderr, "%s:%u: runtime error: %s\n",
+                    file, vm->error_line, vm->error_msg);
+        } else {
+            fprintf(stderr, "%s: runtime error\n", file);
+        }
         return false;
     }
 

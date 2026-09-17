@@ -113,6 +113,81 @@ static void emit_stmt(Emitter *e, Node *node);
 static void emit_expr(Emitter *e, Node *node);
 
 /* -----------------------------------------------------------
+ * Loop patch lists (break / continue)
+ * ----------------------------------------------------------- */
+
+static void patch_push(Emitter *e, size_t **data, size_t *len, size_t *cap, size_t idx) {
+    if (*len >= *cap) {
+        size_t new_cap = *cap == 0 ? 8 : *cap * 2;
+        size_t *nd = arena_alloc(e->arena, sizeof(size_t) * new_cap, _Alignof(size_t));
+        if (nd && *data) memcpy(nd, *data, sizeof(size_t) * (*len));
+        *data = nd;
+        *cap  = new_cap;
+    }
+    (*data)[(*len)++] = idx;
+}
+
+static LoopPatch *loop_enter(Emitter *e) {
+    if (e->loop_depth >= EMITTER_MAX_LOOP_DEPTH) {
+        fprintf(stderr, "error: loop nesting too deep (max %d)\n", EMITTER_MAX_LOOP_DEPTH);
+        e->error_count++;
+        return NULL;
+    }
+    LoopPatch *lp = &e->loops[e->loop_depth++];
+    memset(lp, 0, sizeof(*lp));
+    return lp;
+}
+
+static void loop_leave(Emitter *e, LoopPatch *lp, size_t exit_target) {
+    if (!lp) return;
+    for (size_t i = 0; i < lp->break_len; i++) {
+        e->code[lp->breaks[i]].arg.offset = (int32_t)(exit_target - lp->breaks[i]);
+    }
+    for (size_t i = 0; i < lp->cont_len; i++) {
+        e->code[lp->conts[i]].arg.offset =
+            (int32_t)(lp->continue_target - lp->conts[i]);
+    }
+    e->loop_depth--;
+}
+
+/* Emit a branch so that it always leaves exactly one value on the stack.
+ * Blocks without a tail expression would otherwise leave nothing, making
+ * `if`/`else` paths disagree on stack height. */
+static void emit_value_branch(Emitter *e, Node *n) {
+    if (n && n->kind == NODE_BLOCK && n->as.block.last_expr == NULL) {
+        emit_expr(e, n);
+        uint32_t z = add_constant(e, value_nil());
+        emit_inst_index(e, OPCODE_CONST, z, n->loc.line);
+    } else {
+        emit_expr(e, n);
+    }
+}
+
+/* Emit a loop body, discarding its tail value if the block has one.
+ * Loop bodies are statements: any value they produce must not accumulate
+ * on the VM stack across iterations. */
+static void emit_loop_body(Emitter *e, Node *body) {
+    if (body && body->kind == NODE_BLOCK) {
+        bool has_tail = body->as.block.last_expr != NULL;
+        emit_expr(e, body);
+        if (has_tail) {
+            emit_inst(e, OPCODE_POP, body->loc.line);
+            e->code[e->code_len - 1].arg.index = 1;
+        }
+    } else {
+        emit_stmt(e, body);
+    }
+}
+
+/* Hidden loop temporaries use names that cannot collide with user
+ * identifiers, so slot lookups stay unambiguous. */
+static InternedString hidden_local(Emitter *e, const char *tag) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "$%s", tag);
+    return string_intern_cstr(e->strings, buf);
+}
+
+/* -----------------------------------------------------------
  * Expression emitter — leaves a value on the stack
  * ----------------------------------------------------------- */
 
@@ -231,6 +306,25 @@ static void emit_expr(Emitter *e, Node *node) {
         e->code[e->code_len - 1].arg.arg_count = (uint8_t)node->as.call.args.len;
     } break;
 
+    case NODE_ARRAY_LIT: {
+        for (size_t i = 0; i < node->as.array_lit.elems.len; i++) {
+            emit_expr(e, node->as.array_lit.elems.data[i]);
+        }
+        emit_inst(e, OPCODE_NEW_ARRAY, node->loc.line);
+        e->code[e->code_len - 1].arg.index = (uint32_t)node->as.array_lit.elems.len;
+    } break;
+
+    case NODE_INDEX: {
+        emit_expr(e, node->as.index.object);
+        emit_expr(e, node->as.index.index);
+        emit_inst(e, OPCODE_INDEX, node->loc.line);
+    } break;
+
+    case NODE_RANGE: {
+        fprintf(stderr, "error: range expression is only valid as a for-loop iterator\n");
+        e->error_count++;
+    } break;
+
     case NODE_BLOCK: {
         uint8_t saved_depth = e->scope_depth;
         e->scope_depth++;
@@ -245,54 +339,153 @@ static void emit_expr(Emitter *e, Node *node) {
     } break;
 
     case NODE_IF: {
+        uint32_t line2 = node->loc.line;
         emit_expr(e, node->as.if_expr.cond);
-        emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, node->loc.line);
+        emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line2);
         size_t patch_false = e->code_len - 1;
-        emit_expr(e, node->as.if_expr.then_block);
+        emit_value_branch(e, node->as.if_expr.then_block);
+        emit_inst_offset(e, OPCODE_JUMP, 0, line2);
+        size_t patch_over = e->code_len - 1;
+        e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
         if (node->as.if_expr.else_block) {
-            emit_inst_offset(e, OPCODE_JUMP, 0, node->loc.line);
-            size_t patch_over = e->code_len - 1;
-            e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
-            emit_expr(e, node->as.if_expr.else_block);
-            e->code[patch_over].arg.offset = (int32_t)(e->code_len - patch_over);
+            emit_value_branch(e, node->as.if_expr.else_block);
         } else {
-            e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
+            uint32_t z = add_constant(e, value_nil());
+            emit_inst_index(e, OPCODE_CONST, z, line2);
         }
+        e->code[patch_over].arg.offset = (int32_t)(e->code_len - patch_over);
     } break;
 
     case NODE_WHILE: {
+        uint32_t line = node->loc.line;
         size_t loop_start = e->code_len;
+        LoopPatch *lp = loop_enter(e);
+        if (lp) lp->continue_target = loop_start;
         emit_expr(e, node->as.while_expr.cond);
-        emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, node->loc.line);
+        emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
         size_t patch_exit = e->code_len - 1;
-        emit_expr(e, node->as.while_expr.body);
+        emit_loop_body(e, node->as.while_expr.body);
         emit_inst_offset(e, OPCODE_JUMP,
-            (int32_t)((int64_t)loop_start - (int64_t)e->code_len), node->loc.line);
-        e->code[patch_exit].arg.offset = (int32_t)(e->code_len - patch_exit);
+            (int32_t)((int64_t)loop_start - (int64_t)e->code_len), line);
+        size_t exit_target = e->code_len;
+        e->code[patch_exit].arg.offset = (int32_t)(exit_target - patch_exit);
+        loop_leave(e, lp, exit_target);
     } break;
 
     case NODE_FOR: {
-        /* Simplified: reserve slot for loop variable, emit body */
-        emit_expr(e, node->as.for_expr.iter);
-        uint8_t var_slot = add_local(e, node->as.for_expr.var);
-        size_t loop_start = e->code_len;
-        emit_inst_index(e, OPCODE_SET_LOCAL, var_slot, node->loc.line);
-        emit_expr(e, node->as.for_expr.body);
-        /* Jump back for iteration (placeholder) */
+        uint32_t line = node->loc.line;
+        Node *iter = node->as.for_expr.iter;
+        uint8_t saved_depth = e->scope_depth;
+        e->scope_depth++;
+
+        uint8_t slot_idx = add_local(e, hidden_local(e, "for_i"));
+        size_t loop_start;
+        size_t patch_exit;
+        LoopPatch *lp;
+        uint8_t var_slot;
+
+        if (iter && iter->kind == NODE_RANGE) {
+            /* for i in start..end  /  start..=end */
+            uint8_t slot_end = add_local(e, hidden_local(e, "for_end"));
+
+            if (iter->as.range.start) {
+                emit_expr(e, iter->as.range.start);
+            } else {
+                uint32_t z = add_constant(e, value_int(0));
+                emit_inst_index(e, OPCODE_CONST, z, line);
+            }
+            emit_inst_index(e, OPCODE_SET_LOCAL, slot_idx, line);
+
+            if (iter->as.range.end) {
+                emit_expr(e, iter->as.range.end);
+            } else {
+                e->error_count++;
+                fprintf(stderr, "error: open-ended range is not supported in Astra-0\n");
+                uint32_t z = add_constant(e, value_int(0));
+                emit_inst_index(e, OPCODE_CONST, z, line);
+            }
+            emit_inst_index(e, OPCODE_SET_LOCAL, slot_end, line);
+
+            loop_start = e->code_len;
+            lp = loop_enter(e);
+
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_end, line);
+            emit_inst(e, iter->as.range.inclusive ? OPCODE_LE : OPCODE_LT, line);
+            emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+            patch_exit = e->code_len - 1;
+
+            var_slot = add_local(e, node->as.for_expr.var);
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
+            emit_inst_index(e, OPCODE_SET_LOCAL, var_slot, line);
+
+            emit_loop_body(e, node->as.for_expr.body);
+
+            if (lp) lp->continue_target = e->code_len;
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
+            uint32_t one = add_constant(e, value_int(1));
+            emit_inst_index(e, OPCODE_CONST, one, line);
+            emit_inst(e, OPCODE_ADD, line);
+            emit_inst_index(e, OPCODE_SET_LOCAL, slot_idx, line);
+        } else {
+            /* for x in array */
+            uint8_t slot_arr = add_local(e, hidden_local(e, "for_arr"));
+
+            emit_expr(e, iter);
+            emit_inst_index(e, OPCODE_SET_LOCAL, slot_arr, line);
+            uint32_t z = add_constant(e, value_int(0));
+            emit_inst_index(e, OPCODE_CONST, z, line);
+            emit_inst_index(e, OPCODE_SET_LOCAL, slot_idx, line);
+
+            loop_start = e->code_len;
+            lp = loop_enter(e);
+
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_arr, line);
+            emit_inst(e, OPCODE_LEN, line);
+            emit_inst(e, OPCODE_LT, line);
+            emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+            patch_exit = e->code_len - 1;
+
+            var_slot = add_local(e, node->as.for_expr.var);
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_arr, line);
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
+            emit_inst(e, OPCODE_INDEX, line);
+            emit_inst_index(e, OPCODE_SET_LOCAL, var_slot, line);
+
+            emit_loop_body(e, node->as.for_expr.body);
+
+            if (lp) lp->continue_target = e->code_len;
+            emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
+            uint32_t one = add_constant(e, value_int(1));
+            emit_inst_index(e, OPCODE_CONST, one, line);
+            emit_inst(e, OPCODE_ADD, line);
+            emit_inst_index(e, OPCODE_SET_LOCAL, slot_idx, line);
+        }
+
         emit_inst_offset(e, OPCODE_JUMP,
-            (int32_t)((int64_t)loop_start - (int64_t)e->code_len), node->loc.line);
+            (int32_t)((int64_t)loop_start - (int64_t)e->code_len), line);
+        size_t exit_target = e->code_len;
+        e->code[patch_exit].arg.offset = (int32_t)(exit_target - patch_exit);
+        loop_leave(e, lp, exit_target);
+
         pop_scope(e);
-        (void)loop_start;
+        e->scope_depth = saved_depth;
     } break;
 
     case NODE_ASSIGN: {
+        /* Assignment is an expression: it yields the assigned value so it can
+         * safely be the tail of a block. */
+        uint32_t line = node->loc.line;
         emit_expr(e, node->as.assign.value);
         int slot = find_local(e, node->as.assign.name);
         if (slot >= 0) {
-            emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)slot, node->loc.line);
+            emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)slot, line);
+            emit_inst_index(e, OPCODE_GET_LOCAL, (uint32_t)slot, line);
         } else {
             uint32_t idx = add_constant(e, value_string(node->as.assign.name.str));
-            emit_inst_index(e, OPCODE_SET_GLOBAL, idx, node->loc.line);
+            emit_inst_index(e, OPCODE_SET_GLOBAL, idx, line);
+            emit_inst_index(e, OPCODE_GET_GLOBAL, idx, line);
         }
     } break;
 
@@ -307,11 +500,25 @@ static void emit_expr(Emitter *e, Node *node) {
     } break;
 
     case NODE_BREAK: {
-        emit_inst(e, OPCODE_HALT, node->loc.line);
+        if (e->loop_depth == 0) {
+            fprintf(stderr, "error: 'break' used outside of a loop\n");
+            e->error_count++;
+            break;
+        }
+        emit_inst_offset(e, OPCODE_JUMP, 0, node->loc.line);
+        LoopPatch *lp = &e->loops[e->loop_depth - 1];
+        patch_push(e, &lp->breaks, &lp->break_len, &lp->break_cap, e->code_len - 1);
     } break;
 
     case NODE_CONTINUE: {
-        emit_inst(e, OPCODE_HALT, node->loc.line);
+        if (e->loop_depth == 0) {
+            fprintf(stderr, "error: 'continue' used outside of a loop\n");
+            e->error_count++;
+            break;
+        }
+        emit_inst_offset(e, OPCODE_JUMP, 0, node->loc.line);
+        LoopPatch *lp = &e->loops[e->loop_depth - 1];
+        patch_push(e, &lp->conts, &lp->cont_len, &lp->cont_cap, e->code_len - 1);
     } break;
 
     default:
@@ -348,6 +555,11 @@ static void emit_stmt(Emitter *e, Node *node) {
         e->scope_depth = 1;
         e->local_count = 0;
 
+        /* Reserve slot 0 for the callee/return value: the VM reuses the
+         * function-value slot as the return-value slot, so parameters must
+         * start at slot 1. */
+        add_local(e, hidden_local(e, "ret"));
+
         fn->param_count = (uint8_t)node->as.fn_decl.params.len;
         for (size_t i = 0; i < fn->param_count; i++) {
             add_local(e, node->as.fn_decl.params.data[i]);
@@ -378,14 +590,22 @@ static void emit_stmt(Emitter *e, Node *node) {
         e->local_count = saved_local_count;
         e->scope_depth = saved_scope_depth;
 
+        /* Top-level functions become globals so any function can call them
+         * (function frames reset their local table). */
         uint32_t fn_idx = add_constant(e, value_fn(fn));
-        uint8_t slot = add_local(e, node->as.fn_decl.name);
-        if (slot != 0xFF) {
+        uint32_t name_idx = add_constant(e, value_string(node->as.fn_decl.name.str));
+        if (e->scope_depth == 0) {
             emit_inst_index(e, OPCODE_CONST, fn_idx, line);
-            emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
+            emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
         } else {
-            emit_inst_index(e, OPCODE_CONST, fn_idx, line);
-            emit_inst_index(e, OPCODE_SET_GLOBAL, fn_idx, line);
+            uint8_t slot = add_local(e, node->as.fn_decl.name);
+            if (slot != 0xFF) {
+                emit_inst_index(e, OPCODE_CONST, fn_idx, line);
+                emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
+            } else {
+                emit_inst_index(e, OPCODE_CONST, fn_idx, line);
+                emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
+            }
         }
     } break;
 
@@ -397,12 +617,18 @@ static void emit_stmt(Emitter *e, Node *node) {
             uint32_t idx = add_constant(e, value_nil());
             emit_inst_index(e, OPCODE_CONST, idx, line);
         }
-        uint8_t slot = add_local(e, node->as.var_decl.name);
-        if (slot == 0xFF) {
+        if (e->scope_depth == 0) {
+            /* Module-level bindings are globals, visible from every function. */
             uint32_t name_idx = add_constant(e, value_string(node->as.var_decl.name.str));
             emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
         } else {
-            emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
+            uint8_t slot = add_local(e, node->as.var_decl.name);
+            if (slot == 0xFF) {
+                uint32_t name_idx = add_constant(e, value_string(node->as.var_decl.name.str));
+                emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
+            } else {
+                emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
+            }
         }
     } break;
 
@@ -414,10 +640,15 @@ static void emit_stmt(Emitter *e, Node *node) {
             uint32_t idx = add_constant(e, value_nil());
             emit_inst_index(e, OPCODE_CONST, idx, line);
         }
-        uint8_t slot = add_local(e, node->as.const_decl.name);
-        if (slot == 0xFF) {
+        if (e->scope_depth == 0) {
             uint32_t name_idx = add_constant(e, value_string(node->as.const_decl.name.str));
             emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
+        } else {
+            uint8_t slot = add_local(e, node->as.const_decl.name);
+            if (slot == 0xFF) {
+                uint32_t name_idx = add_constant(e, value_string(node->as.const_decl.name.str));
+                emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
+            }
         }
     } break;
 
@@ -432,6 +663,25 @@ static void emit_stmt(Emitter *e, Node *node) {
             emit_node(e, node->as.module.items.data[i]);
         }
     } break;
+
+    /* Block statements discard their tail value (if any). */
+    case NODE_BLOCK: {
+        bool has_tail = node->as.block.last_expr != NULL;
+        emit_expr(e, node);
+        if (has_tail) {
+            emit_inst(e, OPCODE_POP, node->loc.line);
+            e->code[e->code_len - 1].arg.index = 1;
+        }
+    } break;
+
+    /* Statements that produce no value on the stack. */
+    case NODE_WHILE:
+    case NODE_FOR:
+    case NODE_RETURN:
+    case NODE_BREAK:
+    case NODE_CONTINUE:
+        emit_expr(e, node);
+        break;
 
     default: {
         emit_expr(e, node);
@@ -508,23 +758,16 @@ void emitter_emit(Emitter *e, Node *module) {
     if (!e || !module) return;
     emit_node(e, module);
 
-    /* For Astra-0: automatically call main() if it exists */
-    /* Search for a main function in the module */
+    /* If the module defines main(), call it. Top-level functions live in the
+     * globals table, so a name lookup is enough. */
+    InternedString main_name = string_intern_cstr(e->strings, "main");
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
-        if (item->kind == NODE_FN_DECL &&
-            string_eq(item->as.fn_decl.name, string_intern_cstr(e->strings, "main"))) {
-            /* Found main, emit a call to it */
-            /* We need to find the local slot where main is stored */
-            for (uint16_t j = 0; j < e->local_count; j++) {
-                if (e->locals[j].depth == 0 &&
-                    string_eq(e->locals[j].name, string_intern_cstr(e->strings, "main"))) {
-                    emit_inst_index(e, OPCODE_GET_LOCAL, e->locals[j].slot, item->loc.line);
-                    emit_inst(e, OPCODE_CALL, item->loc.line);
-                    e->code[e->code_len - 1].arg.arg_count = 0;
-                    break;
-                }
-            }
+        if (item->kind == NODE_FN_DECL && string_eq(item->as.fn_decl.name, main_name)) {
+            uint32_t name_idx = add_constant(e, value_string(main_name.str));
+            emit_inst_index(e, OPCODE_GET_GLOBAL, name_idx, item->loc.line);
+            emit_inst(e, OPCODE_CALL, item->loc.line);
+            e->code[e->code_len - 1].arg.arg_count = 0;
             break;
         }
     }
@@ -552,4 +795,8 @@ const Value *emitter_get_constants(Emitter *e, size_t *out_len) {
     }
     if (out_len) *out_len = e->const_len;
     return e->constants;
+}
+
+int emitter_error_count(Emitter *e) {
+    return e ? e->error_count : 0;
 }

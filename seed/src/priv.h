@@ -66,6 +66,20 @@ typedef struct {
     uint8_t        depth;
 } Local;
 
+/* Pending jump sites for the enclosing loop, patched once the loop
+ * body finishes and the exit / continue targets are known. */
+#define EMITTER_MAX_LOOP_DEPTH 32
+
+typedef struct {
+    size_t *breaks;
+    size_t  break_len;
+    size_t  break_cap;
+    size_t *conts;
+    size_t  cont_len;
+    size_t  cont_cap;
+    size_t  continue_target;
+} LoopPatch;
+
 struct Emitter {
     Arena        *arena;
     StringTable  *strings;
@@ -81,6 +95,11 @@ struct Emitter {
     Local          locals[EMITTER_MAX_LOCALS];
     uint16_t       local_count;
     uint8_t        scope_depth;
+
+    LoopPatch      loops[EMITTER_MAX_LOOP_DEPTH];
+    int            loop_depth;
+
+    int            error_count;
 };
 
 /* -----------------------------------------------------------

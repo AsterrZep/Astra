@@ -1,0 +1,5 @@
+// break outside a loop must be rejected at compile time
+// EXPECT-ERROR: outside of a loop
+fn main() {
+    break;
+}

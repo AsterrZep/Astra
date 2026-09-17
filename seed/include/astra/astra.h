@@ -171,6 +171,8 @@ typedef enum {
     TOKEN_RPAREN,      /* ) */
     TOKEN_LBRACKET,    /* [ */
     TOKEN_RBRACKET,    /* ] */
+    TOKEN_DOTDOT,      /* ..  (exclusive range) */
+    TOKEN_DOTDOT_EQ,   /* ..= (inclusive range) */
     TOKEN_LBRACE,      /* { */
     TOKEN_RBRACE,      /* } */
     TOKEN_QUESTION,    /* ? */
@@ -221,6 +223,8 @@ typedef enum {
     NODE_UNARY_OP,
     NODE_CALL,
     NODE_INDEX,
+    NODE_ARRAY_LIT,
+    NODE_RANGE,
     NODE_FIELD_ACCESS,
     NODE_OPTIONAL_CHAIN,
     NODE_BLOCK,
@@ -313,6 +317,16 @@ typedef struct {
     Node   *object;
     Node   *index;
 } IndexExpr;
+
+typedef struct {
+    DYNARRAY(Node *) elems;
+} ArrayLitExpr;
+
+typedef struct {
+    Node *start;     /* may be NULL for open-start ranges (future) */
+    Node *end;       /* may be NULL for open-end ranges (future) */
+    bool  inclusive; /* true for `..=`, false for `..` */
+} RangeExpr;
 
 typedef struct {
     Node   *object;
@@ -430,6 +444,8 @@ struct Node {
         UnaryExpr       unary;
         CallExpr        call;
         IndexExpr       index;
+        ArrayLitExpr    array_lit;
+        RangeExpr       range;
         FieldAccessExpr field_access;
         BlockExpr       block;
         IfExpr          if_expr;
@@ -520,6 +536,7 @@ struct Symbol {
     bool           is_mut;
     bool           is_fn;
     SrcLoc         def_loc;
+    uint32_t       seq;  /* monotonic insertion order (for scoped removal) */
     Symbol        *next; /* for hash chain */
 };
 
@@ -540,6 +557,9 @@ typedef struct TypeChecker TypeChecker;
 TypeChecker *typechecker_create(Arena *arena, StringTable *strings);
 Type        *typecheck(TypeChecker *tc, Node *node);
 void         typechecker_destroy(TypeChecker *tc);
+
+/* Number of type errors recorded (0 = success) */
+int          typechecker_error_count(TypeChecker *tc);
 
 /* -----------------------------------------------------------
  * §14: Bytecode
@@ -585,6 +605,11 @@ typedef enum {
     OPCODE_JUMP_IF_FALSE, /* conditional jump */
     OPCODE_JUMP_IF_TRUE,
 
+    /* Aggregates */
+    OPCODE_NEW_ARRAY,     /* pop N values, push array */
+    OPCODE_INDEX,         /* pop index, array; push element */
+    OPCODE_LEN,           /* pop array; push length */
+
     /* Functions */
     OPCODE_CALL,          /* call function */
     OPCODE_RET,           /* return from function */
@@ -623,6 +648,9 @@ void     emitter_destroy(Emitter *e);
 const Instruction *emitter_get_code(Emitter *e, size_t *out_len);
 const Value       *emitter_get_constants(Emitter *e, size_t *out_len);
 
+/* Number of code-generation errors recorded (0 = success) */
+int emitter_error_count(Emitter *e);
+
 /* -----------------------------------------------------------
  * §16: Value (VM runtime)
  * ----------------------------------------------------------- */
@@ -633,11 +661,18 @@ typedef enum {
     VAL_INT,
     VAL_FLOAT,
     VAL_STRING,
+    VAL_ARRAY,
     VAL_FN,
 } ValueKind;
 
 typedef struct Value Value;
 typedef struct VM VM;
+
+/* Array object (heap-managed by the VM arena) */
+typedef struct {
+    Value *elems;
+    size_t len;
+} ArrayObj;
 
 /* Function object */
 typedef struct {
@@ -656,6 +691,7 @@ struct Value {
         int64_t     int_val;
         double      float_val;
         const char *string_val; /* interned */
+        ArrayObj   *array_val;
         FnObj      *fn_val;
     } as;
 };
@@ -665,7 +701,11 @@ Value value_bool(bool v);
 Value value_int(int64_t v);
 Value value_float(double v);
 Value value_string(const char *s);
+Value value_array(ArrayObj *a);
 Value value_fn(FnObj *f);
+
+/* Allocate an array object in the given arena (len may be 0) */
+ArrayObj *array_obj_new(Arena *a, size_t len);
 void  value_print(Value v);
 bool  value_is_truthy(Value v);
 

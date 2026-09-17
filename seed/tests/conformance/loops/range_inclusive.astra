@@ -1,0 +1,10 @@
+// Inclusive range iteration: 1..=n includes n; bound may be a variable
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 3
+fn main() {
+    let n = 3;
+    for i in 1..=n {
+        print(i);
+    }
+}

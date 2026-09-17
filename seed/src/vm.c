@@ -41,6 +41,21 @@ Value value_string(const char *s) {
     return v;
 }
 
+Value value_array(ArrayObj *a) {
+    Value v = {0};
+    v.kind = VAL_ARRAY;
+    v.as.array_val = a;
+    return v;
+}
+
+ArrayObj *array_obj_new(Arena *a, size_t len) {
+    ArrayObj *obj = arena_new(a, ArrayObj);
+    if (!obj) return NULL;
+    obj->len = len;
+    obj->elems = len > 0 ? arena_new_array(a, Value, len) : NULL;
+    return obj;
+}
+
 Value value_fn(FnObj *f) {
     Value v = {0};
     v.kind = VAL_FN;
@@ -59,6 +74,7 @@ bool value_is_truthy(Value v) {
     case VAL_INT:    return v.as.int_val != 0;
     case VAL_FLOAT:  return v.as.float_val != 0.0;
     case VAL_STRING: return v.as.string_val != NULL && v.as.string_val[0] != '\0';
+    case VAL_ARRAY:  return v.as.array_val != NULL && v.as.array_val->len > 0;
     case VAL_FN:     return v.as.fn_val != NULL;
     }
     return false;
@@ -71,6 +87,7 @@ static const char *type_name(Value v) {
     case VAL_INT:    return "int";
     case VAL_FLOAT:  return "float";
     case VAL_STRING: return "string";
+    case VAL_ARRAY:  return "array";
     case VAL_FN:     return "function";
     }
     return "unknown";
@@ -83,8 +100,46 @@ void value_print(Value v) {
     case VAL_INT:    printf("%ld", (long)v.as.int_val); break;
     case VAL_FLOAT:  printf("%g", v.as.float_val); break;
     case VAL_STRING: printf("%s", v.as.string_val); break;
+    case VAL_ARRAY:
+        printf("[");
+        if (v.as.array_val) {
+            for (size_t i = 0; i < v.as.array_val->len; i++) {
+                if (i > 0) printf(", ");
+                value_print(v.as.array_val->elems[i]);
+            }
+        }
+        printf("]");
+        break;
     case VAL_FN:     printf("<fn>"); break;
     }
+}
+
+/* Structural equality: arrays compare element-wise. */
+static bool value_eq(Value a, Value b) {
+    if (a.kind == VAL_ARRAY && b.kind == VAL_ARRAY) {
+        ArrayObj *x = a.as.array_val;
+        ArrayObj *y = b.as.array_val;
+        if (x == y) return true;
+        if (!x || !y || x->len != y->len) return false;
+        for (size_t i = 0; i < x->len; i++) {
+            if (!value_eq(x->elems[i], y->elems[i])) return false;
+        }
+        return true;
+    }
+    if (a.kind != b.kind) return false;
+    switch (a.kind) {
+    case VAL_NIL:    return true;
+    case VAL_BOOL:   return a.as.bool_val == b.as.bool_val;
+    case VAL_INT:    return a.as.int_val == b.as.int_val;
+    case VAL_FLOAT:  return a.as.float_val == b.as.float_val;
+    case VAL_STRING:
+        if (a.as.string_val == b.as.string_val) return true;
+        if (!a.as.string_val || !b.as.string_val) return false;
+        return strcmp(a.as.string_val, b.as.string_val) == 0;
+    case VAL_ARRAY:  return a.as.array_val == b.as.array_val;
+    case VAL_FN:     return a.as.fn_val == b.as.fn_val;
+    }
+    return false;
 }
 
 /* -----------------------------------------------------------
@@ -204,6 +259,9 @@ static const char *opname(OpCode op) {
     case OPCODE_JUMP:         return "JUMP";
     case OPCODE_JUMP_IF_FALSE:return "JUMP_IF_FALSE";
     case OPCODE_JUMP_IF_TRUE: return "JUMP_IF_TRUE";
+    case OPCODE_NEW_ARRAY:    return "NEW_ARRAY";
+    case OPCODE_INDEX:        return "INDEX";
+    case OPCODE_LEN:          return "LEN";
     case OPCODE_CALL:         return "CALL";
     case OPCODE_RET:          return "RET";
     case OPCODE_PRINT:        return "PRINT";
@@ -533,18 +591,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             Value b = vm_pop(vm);
             Value a = vm_pop(vm);
-            bool result = false;
-            if (a.kind == b.kind) {
-                switch (a.kind) {
-                case VAL_NIL:    result = true; break;
-                case VAL_BOOL:   result = (a.as.bool_val == b.as.bool_val); break;
-                case VAL_INT:    result = (a.as.int_val == b.as.int_val); break;
-                case VAL_FLOAT:  result = (a.as.float_val == b.as.float_val); break;
-                case VAL_STRING: result = (strcmp(a.as.string_val, b.as.string_val) == 0); break;
-                case VAL_FN:     result = (a.as.fn_val == b.as.fn_val); break;
-                }
-            }
-            if (!vm_push(vm, value_bool(result))) return VM_RUNTIME_ERROR;
+            if (!vm_push(vm, value_bool(value_eq(a, b)))) return VM_RUNTIME_ERROR;
         } break;
 
         case OPCODE_NEQ: {
@@ -554,18 +601,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             Value b = vm_pop(vm);
             Value a = vm_pop(vm);
-            bool result = true;
-            if (a.kind == b.kind) {
-                switch (a.kind) {
-                case VAL_NIL:    result = false; break;
-                case VAL_BOOL:   result = (a.as.bool_val != b.as.bool_val); break;
-                case VAL_INT:    result = (a.as.int_val != b.as.int_val); break;
-                case VAL_FLOAT:  result = (a.as.float_val != b.as.float_val); break;
-                case VAL_STRING: result = (strcmp(a.as.string_val, b.as.string_val) != 0); break;
-                case VAL_FN:     result = (a.as.fn_val != b.as.fn_val); break;
-                }
-            }
-            if (!vm_push(vm, value_bool(result))) return VM_RUNTIME_ERROR;
+            if (!vm_push(vm, value_bool(!value_eq(a, b)))) return VM_RUNTIME_ERROR;
         } break;
 
         case OPCODE_LT: {
@@ -691,6 +727,66 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             Value a = vm_pop(vm);
             if (!vm_push(vm, value_bool(!value_is_truthy(a)))) return VM_RUNTIME_ERROR;
+        } break;
+
+        /* ---- Aggregates ---- */
+
+        case OPCODE_NEW_ARRAY: {
+            size_t n = inst.arg.index;
+            if (vm->sp < n) {
+                vm_runtime_error(vm, line, "stack underflow building array of %zu", n);
+                return VM_RUNTIME_ERROR;
+            }
+            ArrayObj *arr = array_obj_new(vm->arena, n);
+            if (!arr) {
+                vm_runtime_error(vm, line, "out of memory building array");
+                return VM_RUNTIME_ERROR;
+            }
+            for (size_t i = 0; i < n; i++) {
+                arr->elems[i] = vm->stack[vm->sp - n + i];
+            }
+            vm->sp = (uint16_t)(vm->sp - n);
+            if (!vm_push(vm, value_array(arr))) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_INDEX: {
+            if (vm->sp < 2) {
+                vm_runtime_error(vm, line, "stack underflow on index");
+                return VM_RUNTIME_ERROR;
+            }
+            Value idx = vm_pop(vm);
+            Value obj = vm_pop(vm);
+            if (obj.kind != VAL_ARRAY || !obj.as.array_val) {
+                vm_runtime_error(vm, line, "cannot index %s", type_name(obj));
+                return VM_RUNTIME_ERROR;
+            }
+            if (idx.kind != VAL_INT) {
+                vm_runtime_error(vm, line, "array index must be int, got %s", type_name(idx));
+                return VM_RUNTIME_ERROR;
+            }
+            ArrayObj *arr = obj.as.array_val;
+            if (idx.as.int_val < 0 || (uint64_t)idx.as.int_val >= arr->len) {
+                vm_runtime_error(vm, line, "index %ld out of bounds (len %zu)",
+                    (long)idx.as.int_val, arr->len);
+                return VM_RUNTIME_ERROR;
+            }
+            if (!vm_push(vm, arr->elems[idx.as.int_val])) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_LEN: {
+            if (vm->sp == 0) {
+                vm_runtime_error(vm, line, "stack underflow on len");
+                return VM_RUNTIME_ERROR;
+            }
+            Value obj = vm_pop(vm);
+            size_t n = 0;
+            if (obj.kind == VAL_ARRAY && obj.as.array_val) n = obj.as.array_val->len;
+            else if (obj.kind == VAL_STRING && obj.as.string_val) n = strlen(obj.as.string_val);
+            else {
+                vm_runtime_error(vm, line, "cannot take length of %s", type_name(obj));
+                return VM_RUNTIME_ERROR;
+            }
+            if (!vm_push(vm, value_int((int64_t)n))) return VM_RUNTIME_ERROR;
         } break;
 
         /* ---- Control flow ---- */

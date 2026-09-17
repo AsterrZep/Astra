@@ -1,0 +1,12 @@
+// Iterating an array with for-in
+// EXPECT: 10
+// EXPECT: 3
+fn main() {
+    let xs = [1, 2, 3, 4];
+    let mut total = 0;
+    for x in xs {
+        total = total + x;
+    }
+    print(total);
+    print(xs[2]);
+}

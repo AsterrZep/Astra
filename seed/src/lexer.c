@@ -438,6 +438,14 @@ static Token next_token(Lexer *l) {
     case '~':
         return make_token(l, TOKEN_TILDE, start_line, start_col, start_off, "~", 1);
     case '.':
+        if (next == '.') {
+            advance(l);
+            if (peek_char(l) == '=') {
+                advance(l);
+                return make_token(l, TOKEN_DOTDOT_EQ, start_line, start_col, start_off, "..=", 3);
+            }
+            return make_token(l, TOKEN_DOTDOT, start_line, start_col, start_off, "..", 2);
+        }
         return make_token(l, TOKEN_DOT, start_line, start_col, start_off, ".", 1);
     case ',':
         return make_token(l, TOKEN_COMMA, start_line, start_col, start_off, ",", 1);

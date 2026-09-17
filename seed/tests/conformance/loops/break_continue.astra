@@ -1,0 +1,13 @@
+// break and continue inside a for loop
+// EXPECT: 0
+// EXPECT: 1
+// EXPECT: 3
+// EXPECT: 4
+// EXPECT: 5
+fn main() {
+    for i in 0..10 {
+        if i == 2 { continue; }
+        if i == 6 { break; }
+        print(i);
+    }
+}

@@ -1,0 +1,21 @@
+// if / else as statements and as expressions
+// EXPECT: small
+// EXPECT: gt5
+// EXPECT: 15
+// EXPECT: done
+fn main() {
+    let x = 7;
+
+    if x > 10 {
+        print("big");
+    } else {
+        print("small");
+    }
+
+    if x > 5 { print("gt5"); }
+
+    let y = if x > 5 { 10 } else { 20 };
+    print(y + 5);
+
+    print("done");
+}

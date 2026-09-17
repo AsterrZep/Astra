@@ -1,0 +1,6 @@
+// Type mismatch must be reported at compile time
+// EXPECT-ERROR: type mismatch
+fn main() {
+    let x: i32 = "not a number";
+    print(x);
+}

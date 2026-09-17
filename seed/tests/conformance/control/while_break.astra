@@ -1,0 +1,10 @@
+// while with break
+// EXPECT: 3
+fn main() {
+    let mut n = 0;
+    while true {
+        n = n + 1;
+        if n == 3 { break; }
+    }
+    print(n);
+}

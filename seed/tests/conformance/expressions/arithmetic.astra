@@ -1,0 +1,15 @@
+// Arithmetic and operator precedence
+// EXPECT: 14
+// EXPECT: 20
+// EXPECT: 5
+// EXPECT: 5
+// EXPECT: 1
+// EXPECT: 3
+fn main() {
+    print(2 + 3 * 4);
+    print((2 + 3) * 4);
+    print(10 - 3 - 2);
+    print(2.5 * 2.0);
+    print(7 % 3);
+    print(-5 + 8);
+}
