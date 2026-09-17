@@ -75,7 +75,7 @@ acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (38 casos, todos en verde, también
+los casos de conformidad. Cobertura actual (46 casos, todos en verde, también
 bajo ASan/UBSan):
 
 | Área | Casos |
@@ -87,9 +87,9 @@ bajo ASan/UBSan):
 | arrays | `literal_index`, `element_assign`, `alias_write` (compartición de handles) |
 | structs | `literal_fields`, `field_order`, `struct_in_function`, `field_assign` (cadenas anidadas) |
 | blocks | `tail_expression`, `if_value` |
-| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm` |
+| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding` |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `match_guard_unsupported`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
@@ -167,10 +167,11 @@ Ordenado por valor para el objetivo de bootstrap.
       expresión, `VAL_ENUM`, igualdad e impresión `Color.Rojo`.
 - [x] **match**: `NODE_MATCH` en parser/AST, `or`-patterns, wildcard,
       exhaustividad y codegen por comparación de variante.
-- [ ] **Enums con datos** (ADT): `Circulo(Float)`, bindings en patrones,
+- [x] **Enums con datos** (ADT): `Circulo(Float)`, bindings en patrones,
       patrones anidados. Ver `research/04` §9.3.
-- [ ] **Guards** `patrón if cond` (hoy el parser los rechaza explícitamente).
-- [ ] `Option<T>` / `Result<T, E>` y el operador `?`.
+- [x] **Guards** `patrón if cond` (parser soporta, emitter genera código).
+- [x] **Option/Result**: constructores `some(x)`, `none`, `ok(x)`, `err(x)`
+      implementados como enums builtin. Operador `?` pendiente.
 
 ### Closures y módulos
 - [ ] Lambdas `|x| ...` (Tier 2 del MVP).
