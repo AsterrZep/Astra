@@ -10,6 +10,10 @@ SrcLoc srcloc_make(const char *filename, uint32_t line, uint32_t column,
     return loc;
 }
 
+static size_t data_offset(void) {
+    return align_up(sizeof(Block), _Alignof(max_align_t));
+}
+
 Arena *arena_create(size_t initial_size) {
     Arena *a = malloc(sizeof(Arena));
     if (!a) return NULL;
@@ -21,7 +25,7 @@ Arena *arena_create(size_t initial_size) {
     if (!b) { free(a); return NULL; }
     b->next     = NULL;
     b->capacity = block_size;
-    b->used     = 0;
+    b->used     = data_offset();
 
     a->head = b;
     return a;
@@ -35,7 +39,7 @@ static Block *arena_grow(Arena *a, size_t min_size) {
     if (!b) return NULL;
     b->next     = a->head;
     b->capacity = block_size;
-    b->used     = 0;
+    b->used     = data_offset();
 
     a->head = b;
     return b;
@@ -51,7 +55,7 @@ void *arena_alloc(Arena *a, size_t size, size_t align) {
         size_t min_size = align_up(size, align) + align;
         b = arena_grow(a, min_size);
         if (!b) return NULL;
-        offset = 0;
+        offset = align_up(data_offset(), align);
     }
 
     void *ptr = b->data + offset;

@@ -156,24 +156,60 @@ static void emit_expr(Emitter *e, Node *node) {
     } break;
 
     case NODE_BINARY_OP: {
-        emit_expr(e, node->as.binary.left);
-        emit_expr(e, node->as.binary.right);
         uint32_t line = node->loc.line;
-        switch (node->as.binary.op) {
-            case OP_ADD: emit_inst(e, OPCODE_ADD, line); break;
-            case OP_SUB: emit_inst(e, OPCODE_SUB, line); break;
-            case OP_MUL: emit_inst(e, OPCODE_MUL, line); break;
-            case OP_DIV: emit_inst(e, OPCODE_DIV, line); break;
-            case OP_MOD: emit_inst(e, OPCODE_MOD, line); break;
-            case OP_EQ:  emit_inst(e, OPCODE_EQ,  line); break;
-            case OP_NEQ: emit_inst(e, OPCODE_NEQ, line); break;
-            case OP_LT:  emit_inst(e, OPCODE_LT,  line); break;
-            case OP_GT:  emit_inst(e, OPCODE_GT,  line); break;
-            case OP_LE:  emit_inst(e, OPCODE_LE,  line); break;
-            case OP_GE:  emit_inst(e, OPCODE_GE,  line); break;
-            case OP_AND: emit_inst(e, OPCODE_AND, line); break;
-            case OP_OR:  emit_inst(e, OPCODE_OR,  line); break;
-            default: break;
+        if (node->as.binary.op == OP_AND) {
+            /* Short-circuit AND: if left is false, skip right and return false */
+            emit_expr(e, node->as.binary.left);
+            emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+            size_t patch_false = e->code_len - 1;
+            emit_expr(e, node->as.binary.right);
+            emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+            size_t patch_right_false = e->code_len - 1;
+            uint32_t true_idx = add_constant(e, value_bool(true));
+            emit_inst_index(e, OPCODE_CONST, true_idx, line);
+            emit_inst_offset(e, OPCODE_JUMP, 0, line);
+            size_t patch_end = e->code_len - 1;
+            e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
+            uint32_t false_idx = add_constant(e, value_bool(false));
+            emit_inst_index(e, OPCODE_CONST, false_idx, line);
+            e->code[patch_right_false].arg.offset = (int32_t)(e->code_len - patch_right_false);
+            emit_inst_index(e, OPCODE_CONST, false_idx, line);
+            e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
+        } else if (node->as.binary.op == OP_OR) {
+            /* Short-circuit OR: if left is true, skip right and return true */
+            emit_expr(e, node->as.binary.left);
+            emit_inst_offset(e, OPCODE_JUMP_IF_TRUE, 0, line);
+            size_t patch_true = e->code_len - 1;
+            emit_expr(e, node->as.binary.right);
+            emit_inst_offset(e, OPCODE_JUMP_IF_TRUE, 0, line);
+            size_t patch_right_true = e->code_len - 1;
+            uint32_t false_idx = add_constant(e, value_bool(false));
+            emit_inst_index(e, OPCODE_CONST, false_idx, line);
+            emit_inst_offset(e, OPCODE_JUMP, 0, line);
+            size_t patch_end = e->code_len - 1;
+            e->code[patch_true].arg.offset = (int32_t)(e->code_len - patch_true);
+            uint32_t true_idx = add_constant(e, value_bool(true));
+            emit_inst_index(e, OPCODE_CONST, true_idx, line);
+            e->code[patch_right_true].arg.offset = (int32_t)(e->code_len - patch_right_true);
+            emit_inst_index(e, OPCODE_CONST, true_idx, line);
+            e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
+        } else {
+            emit_expr(e, node->as.binary.left);
+            emit_expr(e, node->as.binary.right);
+            switch (node->as.binary.op) {
+                case OP_ADD: emit_inst(e, OPCODE_ADD, line); break;
+                case OP_SUB: emit_inst(e, OPCODE_SUB, line); break;
+                case OP_MUL: emit_inst(e, OPCODE_MUL, line); break;
+                case OP_DIV: emit_inst(e, OPCODE_DIV, line); break;
+                case OP_MOD: emit_inst(e, OPCODE_MOD, line); break;
+                case OP_EQ:  emit_inst(e, OPCODE_EQ,  line); break;
+                case OP_NEQ: emit_inst(e, OPCODE_NEQ, line); break;
+                case OP_LT:  emit_inst(e, OPCODE_LT,  line); break;
+                case OP_GT:  emit_inst(e, OPCODE_GT,  line); break;
+                case OP_LE:  emit_inst(e, OPCODE_LE,  line); break;
+                case OP_GE:  emit_inst(e, OPCODE_GE,  line); break;
+                default: break;
+            }
         }
     } break;
 

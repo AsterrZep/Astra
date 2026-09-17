@@ -353,6 +353,7 @@ typedef struct {
 typedef struct {
     InternedString name;
     Node          *value;
+    BinaryOp       op;  /* used by NODE_COMPOUND_ASSIGN */
 } AssignExpr;
 
 /* Declaration nodes */
@@ -483,13 +484,23 @@ typedef enum {
 
 typedef struct Type Type;
 
+typedef struct {
+    InternedString name;
+    Type          *type;
+} StructField;
+
 struct Type {
     TypeKind kind;
     union {
         struct { Type *inner; } optional;
         struct { Type *elem; Node *size; } array;
         struct { Type **params; size_t param_count; Type *ret; } fn;
-        InternedString name; /* struct/enum name */
+        InternedString name; /* enum name */
+        struct {
+            InternedString  name;
+            StructField    *fields;
+            size_t          field_count;
+        } struc;
     } as;
 };
 

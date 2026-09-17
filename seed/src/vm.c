@@ -127,7 +127,7 @@ static Value vm_pop(VM *vm) {
  * Call frame management
  * ----------------------------------------------------------- */
 
-static bool vm_push_frame(VM *vm, const Instruction *ret_ip, uint8_t base) {
+static bool vm_push_frame(VM *vm, const Instruction *ret_ip, uint16_t base) {
     if (vm->frame_count >= VM_CALL_DEPTH) {
         vm->error_msg = "call depth exceeded";
         vm->error_line = 0;
@@ -177,6 +177,41 @@ static void vm_runtime_error(VM *vm, uint32_t line, const char *fmt, ...) {
  * VM execution
  * ----------------------------------------------------------- */
 
+static const char *opname(OpCode op) {
+    switch (op) {
+    case OPCODE_CONST:        return "CONST";
+    case OPCODE_POP:          return "POP";
+    case OPCODE_DUP:          return "DUP";
+    case OPCODE_GET_LOCAL:    return "GET_LOCAL";
+    case OPCODE_SET_LOCAL:    return "SET_LOCAL";
+    case OPCODE_GET_GLOBAL:   return "GET_GLOBAL";
+    case OPCODE_SET_GLOBAL:   return "SET_GLOBAL";
+    case OPCODE_ADD:          return "ADD";
+    case OPCODE_SUB:          return "SUB";
+    case OPCODE_MUL:          return "MUL";
+    case OPCODE_DIV:          return "DIV";
+    case OPCODE_MOD:          return "MOD";
+    case OPCODE_NEG:          return "NEG";
+    case OPCODE_EQ:           return "EQ";
+    case OPCODE_NEQ:          return "NEQ";
+    case OPCODE_LT:           return "LT";
+    case OPCODE_GT:           return "GT";
+    case OPCODE_LE:           return "LE";
+    case OPCODE_GE:           return "GE";
+    case OPCODE_AND:          return "AND";
+    case OPCODE_OR:           return "OR";
+    case OPCODE_NOT:          return "NOT";
+    case OPCODE_JUMP:         return "JUMP";
+    case OPCODE_JUMP_IF_FALSE:return "JUMP_IF_FALSE";
+    case OPCODE_JUMP_IF_TRUE: return "JUMP_IF_TRUE";
+    case OPCODE_CALL:         return "CALL";
+    case OPCODE_RET:          return "RET";
+    case OPCODE_PRINT:        return "PRINT";
+    case OPCODE_HALT:         return "HALT";
+    default:                  return "???";
+    }
+}
+
 VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 Value *constants, size_t const_len) {
     if (!vm || !code || code_len == 0) return VM_RUNTIME_ERROR;
@@ -185,6 +220,42 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
     vm->code_len  = code_len;
     vm->constants = constants;
     vm->const_len = const_len;
+
+    /* Dump bytecode for debugging */
+    if (getenv("ASTRA_DUMP_VM")) {
+        fprintf(stderr, "=== Bytecode (%zu instructions, %zu constants) ===\n", code_len, const_len);
+        for (size_t i = 0; i < code_len; i++) {
+            fprintf(stderr, "  [%3zu] %-16s", i, opname(code[i].op));
+            switch (code[i].op) {
+            case OPCODE_CONST:
+            case OPCODE_GET_GLOBAL:
+            case OPCODE_SET_GLOBAL:
+                fprintf(stderr, " %u", code[i].arg.index);
+                if (code[i].op == OPCODE_CONST && constants && code[i].arg.index < const_len) {
+                    fprintf(stderr, " (");
+                    value_print(constants[code[i].arg.index]);
+                    fprintf(stderr, ")");
+                }
+                break;
+            case OPCODE_GET_LOCAL:
+            case OPCODE_SET_LOCAL:
+                fprintf(stderr, " slot=%u", code[i].arg.index);
+                break;
+            case OPCODE_CALL:
+                fprintf(stderr, " argc=%u", code[i].arg.arg_count);
+                break;
+            case OPCODE_JUMP:
+            case OPCODE_JUMP_IF_FALSE:
+            case OPCODE_JUMP_IF_TRUE:
+                fprintf(stderr, " offset=%d", code[i].arg.offset);
+                break;
+            default:
+                break;
+            }
+            fprintf(stderr, "\n");
+        }
+        fprintf(stderr, "=== End bytecode ===\n");
+    }
 
     const Instruction *ip   = code;
     const Instruction *end  = code + code_len;
@@ -261,17 +332,21 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             const char *name = vm->constants[inst.arg.index].as.string_val;
             /* Check built-in globals */
             if (name && strcmp(name, "print") == 0) {
-                /* Create a wrapper fn_obj for builtin print */
-                FnObj *fn = arena_alloc(vm->arena, sizeof(FnObj), _Alignof(FnObj));
-                fn->code = NULL;
-                fn->code_len = 0;
-                fn->constants = NULL;
-                fn->const_len = 0;
-                fn->param_count = 255; /* sentinel for builtins */
-                fn->local_count = 0;
-                if (!vm_push(vm, value_fn(fn))) return VM_RUNTIME_ERROR;
+                if (!vm_push(vm, value_fn(vm->builtin_print_fn))) return VM_RUNTIME_ERROR;
             } else {
-                if (!vm_push(vm, value_nil())) return VM_RUNTIME_ERROR;
+                /* Look up in globals table */
+                bool found = false;
+                for (uint16_t i = 0; i < vm->global_count; i++) {
+                    if (vm->globals[i].name && strcmp(vm->globals[i].name, name) == 0) {
+                        if (!vm_push(vm, vm->globals[i].value)) return VM_RUNTIME_ERROR;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    vm_runtime_error(vm, line, "undefined global variable '%s'", name);
+                    return VM_RUNTIME_ERROR;
+                }
             }
         } break;
 
@@ -280,10 +355,30 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 vm_runtime_error(vm, line, "global name index %u out of range", inst.arg.index);
                 return VM_RUNTIME_ERROR;
             }
-            /* Pop and discard for now (simplified) */
             if (vm->sp == 0) {
                 vm_runtime_error(vm, line, "stack underflow on set_global");
                 return VM_RUNTIME_ERROR;
+            }
+            const char *name = vm->constants[inst.arg.index].as.string_val;
+            Value val = vm_pop(vm);
+            /* Look up in globals table and update if found */
+            bool found = false;
+            for (uint16_t i = 0; i < vm->global_count; i++) {
+                if (vm->globals[i].name && strcmp(vm->globals[i].name, name) == 0) {
+                    vm->globals[i].value = val;
+                    found = true;
+                    break;
+                }
+            }
+            /* If not found, add new global */
+            if (!found) {
+                if (vm->global_count >= VM_MAX_GLOBALS) {
+                    vm_runtime_error(vm, line, "too many global variables");
+                    return VM_RUNTIME_ERROR;
+                }
+                vm->globals[vm->global_count].name = name;
+                vm->globals[vm->global_count].value = val;
+                vm->global_count++;
             }
         } break;
 
@@ -445,7 +540,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 case VAL_BOOL:   result = (a.as.bool_val == b.as.bool_val); break;
                 case VAL_INT:    result = (a.as.int_val == b.as.int_val); break;
                 case VAL_FLOAT:  result = (a.as.float_val == b.as.float_val); break;
-                case VAL_STRING: result = (a.as.string_val == b.as.string_val); break;
+                case VAL_STRING: result = (strcmp(a.as.string_val, b.as.string_val) == 0); break;
                 case VAL_FN:     result = (a.as.fn_val == b.as.fn_val); break;
                 }
             }
@@ -466,7 +561,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 case VAL_BOOL:   result = (a.as.bool_val != b.as.bool_val); break;
                 case VAL_INT:    result = (a.as.int_val != b.as.int_val); break;
                 case VAL_FLOAT:  result = (a.as.float_val != b.as.float_val); break;
-                case VAL_STRING: result = (a.as.string_val != b.as.string_val); break;
+                case VAL_STRING: result = (strcmp(a.as.string_val, b.as.string_val) != 0); break;
                 case VAL_FN:     result = (a.as.fn_val != b.as.fn_val); break;
                 }
             }
@@ -665,7 +760,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 return VM_RUNTIME_ERROR;
             }
 
-            uint8_t base = (uint8_t)fn_idx;
+            uint16_t base = (uint16_t)fn_idx;
             if (!vm_push_frame(vm, ip + 1, base)) return VM_RUNTIME_ERROR;
 
             /* Switch to function's code and constants */
@@ -676,6 +771,41 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
 
             ip = fn->code - 1;
             end = fn->code + fn->code_len;
+
+            if (getenv("ASTRA_DUMP_VM")) {
+                fprintf(stderr, "  >> CALL fn (base=%u, %zu instructions, %zu constants)\n",
+                    base, fn->code_len, fn->const_len);
+                for (size_t di = 0; di < fn->code_len; di++) {
+                    fprintf(stderr, "     [%3zu] %-16s", di, opname(fn->code[di].op));
+                    switch (fn->code[di].op) {
+                    case OPCODE_CONST:
+                    case OPCODE_GET_GLOBAL:
+                    case OPCODE_SET_GLOBAL:
+                        fprintf(stderr, " %u", fn->code[di].arg.index);
+                        if (fn->code[di].op == OPCODE_CONST && fn->constants && fn->code[di].arg.index < fn->const_len) {
+                            fprintf(stderr, " (");
+                            value_print(fn->constants[fn->code[di].arg.index]);
+                            fprintf(stderr, ")");
+                        }
+                        break;
+                    case OPCODE_GET_LOCAL:
+                    case OPCODE_SET_LOCAL:
+                        fprintf(stderr, " slot=%u", fn->code[di].arg.index);
+                        break;
+                    case OPCODE_CALL:
+                        fprintf(stderr, " argc=%u", fn->code[di].arg.arg_count);
+                        break;
+                    case OPCODE_JUMP:
+                    case OPCODE_JUMP_IF_FALSE:
+                    case OPCODE_JUMP_IF_TRUE:
+                        fprintf(stderr, " offset=%d", fn->code[di].arg.offset);
+                        break;
+                    default:
+                        break;
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
         } break;
 
         case OPCODE_RET: {
@@ -713,6 +843,17 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             return VM_RUNTIME_ERROR;
         }
 
+        if (getenv("ASTRA_TRACE")) {
+            uint8_t base = vm->frame_count > 0 ? vm->frames[vm->frame_count - 1].base : 0;
+            fprintf(stderr, "  sp=%u base=%u frame=%u | ", vm->sp, base, vm->frame_count);
+            for (uint16_t s = 0; s < vm->sp && s < 20; s++) {
+                fprintf(stderr, "[");
+                value_print(vm->stack[s]);
+                fprintf(stderr, "]");
+            }
+            fprintf(stderr, "\n");
+        }
+
         ip++;
     }
 
@@ -727,6 +868,15 @@ VM *vm_create(Arena *arena) {
     VM *vm = arena_alloc_zero(arena, sizeof(VM), _Alignof(VM));
     if (!vm) return NULL;
     vm->arena = arena;
+    /* Cache built-in print function */
+    FnObj *print_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    print_fn->code = NULL;
+    print_fn->code_len = 0;
+    print_fn->constants = NULL;
+    print_fn->const_len = 0;
+    print_fn->param_count = 255;
+    print_fn->local_count = 0;
+    vm->builtin_print_fn = print_fn;
     return vm;
 }
 

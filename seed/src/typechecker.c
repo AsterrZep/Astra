@@ -51,6 +51,7 @@ bool type_eq(Type *a, Type *b) {
         }
         return type_eq(a->as.fn.ret, b->as.fn.ret);
     case TYPE_STRUCT:
+        return string_eq(a->as.struc.name, b->as.struc.name);
     case TYPE_ENUM:
         return string_eq(a->as.name, b->as.name);
     default:
@@ -111,6 +112,8 @@ void type_print(Type *t) {
         type_print(t->as.fn.ret);
         break;
     case TYPE_STRUCT:
+        printf("%.*s", (int)t->as.struc.name.len, t->as.struc.name.str);
+        break;
     case TYPE_ENUM:
         printf("%.*s", (int)t->as.name.len, t->as.name.str);
         break;
@@ -570,19 +573,16 @@ static Type *typecheck_field_access(TypeChecker *tc, Node *node) {
     }
 
     InternedString field = node->as.field_access.field;
-    Symbol *sym = symbol_table_lookup(tc->symbols, object->as.name);
-    if (!sym) {
-        return tc_error_type(tc, node->loc, "unknown struct '%.*s'",
-                             (int)object->as.name.len, object->as.name.str);
+
+    for (size_t i = 0; i < object->as.struc.field_count; i++) {
+        if (string_eq(object->as.struc.fields[i].name, field)) {
+            return object->as.struc.fields[i].type;
+        }
     }
 
-    /* For struct types, we need the struct definition.
-     * We look up the struct type's fields from the symbol table.
-     * The struct type itself is stored as a symbol. */
-    /* TODO: This needs the struct definition accessible.
-     * For now, return the struct type — field checking is done elsewhere. */
-    (void)field;
-    return type_new(tc->arena, TYPE_ERROR);
+    return tc_error_type(tc, node->loc, "struct '%.*s' has no field '%.*s'",
+                         (int)object->as.struc.name.len, object->as.struc.name.str,
+                         (int)field.len, field.str);
 }
 
 static Type *typecheck_block(TypeChecker *tc, Node *node) {
@@ -646,22 +646,9 @@ static Type *typecheck_for(TypeChecker *tc, Node *node) {
     if (type_is_error(iter)) return iter;
 
     if (iter->kind != TYPE_ARRAY) {
-        tc_error(tc, node->as.for_expr.iter->loc,
-                 "for loop must iterate over array, got %s",
-                 type_kind_name(iter->kind));
-        /* Still check body with the loop variable */
-        symbol_table_push_scope(tc->symbols);
-        Symbol sym = {
-            .name   = node->as.for_expr.var,
-            .type   = type_new(tc->arena, TYPE_INT),
-            .is_mut = false,
-            .is_fn  = false,
-            .def_loc = node->loc,
-        };
-        symbol_table_insert(tc->symbols, sym);
-        typecheck_node(tc, node->as.for_expr.body);
-        symbol_table_pop_scope(tc->symbols);
-        return type_new(tc->arena, TYPE_VOID);
+        return tc_error_type(tc, node->as.for_expr.iter->loc,
+                             "for loop must iterate over array, got %s",
+                             type_kind_name(iter->kind));
     }
 
     symbol_table_push_scope(tc->symbols);
@@ -952,7 +939,23 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
 
     /* Create struct type */
     Type *st_type = type_new(tc->arena, TYPE_STRUCT);
-    st_type->as.name = name;
+    st_type->as.struc.name = name;
+
+    /* Populate fields */
+    size_t field_count = node->as.struct_decl.field_names.len;
+    if (field_count > 0) {
+        st_type->as.struc.fields = arena_new_array(tc->arena, StructField, field_count);
+        st_type->as.struc.field_count = field_count;
+        for (size_t i = 0; i < field_count; i++) {
+            Type *ft = resolve_type_node(tc, node->as.struct_decl.field_types.data[i]);
+            if (type_is_error(ft)) return;
+            st_type->as.struc.fields[i].name = node->as.struct_decl.field_names.data[i];
+            st_type->as.struc.fields[i].type = ft;
+        }
+    } else {
+        st_type->as.struc.fields = NULL;
+        st_type->as.struc.field_count = 0;
+    }
 
     Symbol sym = {
         .name    = name,
@@ -962,12 +965,6 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
         .def_loc = node->loc,
     };
     symbol_table_insert(tc->symbols, sym);
-
-    /* Type-check field types */
-    for (size_t i = 0; i < node->as.struct_decl.field_types.len; i++) {
-        Type *ft = resolve_type_node(tc, node->as.struct_decl.field_types.data[i]);
-        if (type_is_error(ft)) return;
-    }
 }
 
 static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
@@ -1088,11 +1085,11 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     /* Assignment */
     case NODE_ASSIGN:         return typecheck_assign(tc, node);
     case NODE_COMPOUND_ASSIGN: {
-        /* Treat x += e as x = x + e */
+        /* Treat x += e as x = x + e (using the stored operator) */
         Node *ident_node = node_new(tc->arena, NODE_IDENT, node->loc);
         ident_node->as.ident.name = node->as.assign.name;
         Node *bin = node_new(tc->arena, NODE_BINARY_OP, node->loc);
-        bin->as.binary.op    = OP_ADD;
+        bin->as.binary.op    = node->as.assign.op;
         bin->as.binary.left  = ident_node;
         bin->as.binary.right = node->as.assign.value;
         Node *assign = node_new(tc->arena, NODE_ASSIGN, node->loc);

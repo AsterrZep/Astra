@@ -89,10 +89,16 @@ struct Emitter {
 
 #define VM_STACK_SIZE  1024
 #define VM_CALL_DEPTH  256
+#define VM_MAX_GLOBALS 256
+
+typedef struct {
+    const char *name;
+    Value       value;
+} Global;
 
 typedef struct {
     const Instruction *ip;
-    uint8_t            base;
+    uint16_t           base;
     /* Saved state for restoring when returning */
     const Instruction *saved_code;
     size_t             saved_code_len;
@@ -113,6 +119,11 @@ struct VM {
     size_t             code_len;
     const Value       *constants;
     size_t             const_len;
+
+    Global      globals[VM_MAX_GLOBALS];
+    uint16_t    global_count;
+
+    FnObj      *builtin_print_fn;
 
     const char *error_msg;
     uint32_t    error_line;

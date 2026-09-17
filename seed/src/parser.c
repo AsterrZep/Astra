@@ -58,6 +58,23 @@ static void skip_newlines(Parser *p) {
     while (check(p, TOKEN_NEWLINE)) advance(p);
 }
 
+/* Error recovery: skip tokens until a sync point */
+static void synchronize(Parser *p) {
+    while (!check(p, TOKEN_EOF)) {
+        if (check(p, TOKEN_SEMICOLON) || check(p, TOKEN_RBRACE)) return;
+        switch (p->current.kind) {
+            case TOKEN_FN: case TOKEN_STRUCT: case TOKEN_ENUM:
+            case TOKEN_LET: case TOKEN_CONST: case TOKEN_USE:
+            case TOKEN_IF: case TOKEN_WHILE: case TOKEN_FOR:
+            case TOKEN_RETURN: case TOKEN_BREAK: case TOKEN_CONTINUE:
+                return;
+            default:
+                break;
+        }
+        advance(p);
+    }
+}
+
 /* Consume optional semicolons and newlines */
 static void optional_semi(Parser *p) {
     while (check(p, TOKEN_NEWLINE) || check(p, TOKEN_SEMICOLON)) advance(p);
@@ -67,7 +84,6 @@ static void optional_semi(Parser *p) {
  * Forward declarations
  * ----------------------------------------------------------- */
 
-static Node *parse_expression(Parser *p);
 static Node *parse_statement(Parser *p);
 static Node *parse_declaration(Parser *p);
 static Node *parse_block(Parser *p);
@@ -82,16 +98,27 @@ typedef enum {
     PREC_ASSIGN,   /* = */
     PREC_OR,       /* || */
     PREC_AND,      /* && */
+    PREC_BIT_OR,   /* | */
+    PREC_BIT_XOR,  /* ^ */
+    PREC_BIT_AND,  /* & */
     PREC_EQ,       /* == != */
     PREC_COMP,     /* < > <= >= */
+    PREC_SHIFT,    /* << >> */
     PREC_ADD,      /* + - */
     PREC_MUL,      /* * / % */
-    PREC_UNARY,    /* - ! */
+    PREC_UNARY,    /* - ! ~ & * */
     PREC_POSTFIX,  /* () [] . */
     PREC_PRIMARY,
 } Precedence;
 
 typedef Node *(*ParseFn)(Parser *p, Node *left, Precedence prec);
+
+/* -----------------------------------------------------------
+ * Forward declarations (after Precedence)
+ * ----------------------------------------------------------- */
+
+static Node *parse_expression(Parser *p);
+static Node *parse_expression_with_prec(Parser *p, Precedence min_prec);
 
 /* -----------------------------------------------------------
  * Primary expressions
@@ -139,7 +166,7 @@ static Node *parse_ident(Parser *p, Node *left, Precedence prec) {
 
 static Node *parse_paren(Parser *p, Node *left, Precedence prec) {
     (void)left; (void)prec;
-    Node *expr = parse_expression(p);
+    Node *expr = parse_expression_with_prec(p, PREC_NONE);
     expect(p, TOKEN_RPAREN, "')'");
     return expr;
 }
@@ -180,10 +207,18 @@ static Precedence token_to_prec(TokenKind kind) {
             return PREC_OR;
         case TOKEN_AND_AND:
             return PREC_AND;
+        case TOKEN_PIPE:
+            return PREC_BIT_OR;
+        case TOKEN_CARET:
+            return PREC_BIT_XOR;
+        case TOKEN_AMP:
+            return PREC_BIT_AND;
         case TOKEN_EQ_EQ: case TOKEN_NEQ:
             return PREC_EQ;
         case TOKEN_LT: case TOKEN_GT: case TOKEN_LE: case TOKEN_GE:
             return PREC_COMP;
+        case TOKEN_SHL: case TOKEN_SHR:
+            return PREC_SHIFT;
         case TOKEN_PLUS: case TOKEN_MINUS:
             return PREC_ADD;
         case TOKEN_STAR: case TOKEN_SLASH: case TOKEN_PERCENT:
@@ -196,10 +231,10 @@ static Precedence token_to_prec(TokenKind kind) {
 }
 
 static Node *parse_binary(Parser *p, Node *left, Precedence prec) {
-    (void)prec;
     TokenKind op_kind = p->previous.kind;
     SrcLoc loc = p->previous.loc;
-    Node *right = parse_expression(p);
+    Precedence next = (Precedence)((int)prec + 1);
+    Node *right = parse_expression_with_prec(p, next);
     Node *n = node_new(p->arena, NODE_BINARY_OP, loc);
     n->as.binary.op   = token_to_binary_op(op_kind);
     n->as.binary.left  = left;
@@ -208,14 +243,13 @@ static Node *parse_binary(Parser *p, Node *left, Precedence prec) {
 }
 
 static Node *parse_assignment(Parser *p, Node *left, Precedence prec) {
-    (void)prec;
     if (left->kind != NODE_IDENT) {
         parser_error(p, "invalid assignment target");
         return left;
     }
     SrcLoc loc = left->loc;
     InternedString name = left->as.ident.name;
-    Node *value = parse_expression(p);
+    Node *value = parse_expression_with_prec(p, prec);
     Node *n = node_new(p->arena, NODE_ASSIGN, loc);
     n->as.assign.name  = name;
     n->as.assign.value = value;
@@ -756,7 +790,7 @@ static Node *parse_statement(Parser *p) {
  * Pratt parser — main expression entry
  * ----------------------------------------------------------- */
 
-static Node *parse_expression(Parser *p) {
+static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
     /* nud: prefix tokens */
     Node *left = NULL;
     switch (p->current.kind) {
@@ -810,10 +844,11 @@ static Node *parse_expression(Parser *p) {
             return left;
     }
 
-    /* led: infix operators */
+    /* led: infix operators — consume while precedence >= min_prec */
     for (;;) {
         Precedence prec = token_to_prec(p->current.kind);
         if (prec == PREC_NONE) break;
+        if ((int)prec < (int)min_prec) break;
 
         TokenKind kind = p->current.kind;
         advance(p);
@@ -840,6 +875,10 @@ static Node *parse_expression(Parser *p) {
     return left;
 }
 
+static Node *parse_expression(Parser *p) {
+    return parse_expression_with_prec(p, PREC_NONE);
+}
+
 /* -----------------------------------------------------------
  * Module (top-level)
  * ----------------------------------------------------------- */
@@ -847,7 +886,13 @@ static Node *parse_expression(Parser *p) {
 static Node *parse_declaration(Parser *p) {
     skip_newlines(p);
     if (check(p, TOKEN_EOF)) return NULL;
-    return parse_statement(p);
+    size_t err_before = p->had_error;
+    Node *decl = parse_statement(p);
+    if (p->had_error && !err_before) {
+        synchronize(p);
+        return NULL;
+    }
+    return decl;
 }
 
 /* -----------------------------------------------------------
