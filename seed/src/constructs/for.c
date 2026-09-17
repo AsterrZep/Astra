@@ -26,6 +26,10 @@ const ConstructSpec construct_for = {
     .grammar    = "ForExpr ::= \"for\" (Pattern | Identifier) \"in\" Expression Block",
     .research   = "research/010 §12.1; research/04 §9.5 (patterns in loop bindings)",
     .note       = "The iterable is evaluated once, before the loop header, so "
-                  "iterating an array does not re-evaluate it per iteration.",
+                  "iterating an array does not re-evaluate it per iteration. "
+                  "`position = STMT` reflects the implementation, not the grammar: "
+                  "§12.1 lists ForExpr under Primary, but the Pratt nud table has no "
+                  "entry for `for`, so a for-loop cannot appear in expression "
+                  "position (see while.c).",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

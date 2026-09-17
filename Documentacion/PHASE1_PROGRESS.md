@@ -91,6 +91,31 @@ los casos de conformidad. Cobertura actual (27 casos, todos en verde):
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
+## 3bis. Fallos de corrección conocidos (NO usar el seed como especificación)
+
+La auditoría de coherencia (`COHERENCE_AUDIT.md`) encontró fallos que producen
+**respuestas incorrectas silenciosas**. Están documentados aquí para que nadie
+los herede al escribir el compilador en Zig:
+
+| # | Qué | Estado real | Debería |
+|:-:|:----|:------------|:--------|
+| A | Valor de bloque en posición de valor | `{ let t = 100; 7 }` → `100` | `7` |
+| A | Regla del `;` (§4.2 de `research/010`) | `{ 7; }` → `7` | error o ausencia de valor |
+| A | `if` como expresión con sentencias en la rama | `if c { let t = 5; t + 1 }` → `5` | `6` |
+| C | Retorno implícito de función | `fn f() -> i32 { 42 }` → `nil` | `42` |
+| C | Tipo de retorno declarado sin valor | `fn f() -> i32 { }` → `nil` | error de compilación |
+| B | `LValue` acotado a identificadores | `xs[0] = 9;` → error de parseo | asignación |
+| B | Mismo caso en campos | `p.x = 5;` → error de parseo | asignación |
+
+Causa raíz común de A y C: el invariante de "stack balance" que `AGENTS.md`
+documenta **no se verifica en ninguna parte**. El emisor no lleva un modelo de
+altura de pila, así que un desbalance se convierte en una lectura de una ranura
+obsoleta en vez de un error de compilación. Añadir esa comprobación en
+`emitter.c` (activa en `make debug`) es el paso previo a arreglar A y C.
+
+Hallazgo B en cambio tiene una causa localizada: `parse_assignment` rechaza
+todo lo que no sea `NODE_IDENT`.
+
 ## 4. Pendiente para completar la Fase 1
 
 Ordenado por valor para el objetivo de bootstrap.

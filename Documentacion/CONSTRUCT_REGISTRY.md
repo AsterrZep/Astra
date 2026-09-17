@@ -110,6 +110,15 @@ const ConstructSpec construct_if = {
 | `grammar` | La producción EBNF, literal de `research/010` §12.1 |
 | `research` | Cita al reporte que la especifica |
 | `note` | Decisiones, desviaciones y huecos conocidos |
+
+**`note` no está verificado por máquina.** Es texto escrito a mano: el
+self-check comprueba que exista cuando el constructo está fuera de Astra-0, pero
+no que sea cierto. La auditoría de coherencia encontró dos notas falsas
+(`type_annotation.c` afirmaba que `T?` se parsea; `while.c` declaraba posición de
+expresión sin decir que solo existe la forma de sentencia). Ambas están
+corregidas. Cualquier afirmación de un `note` sobre lo que el compilador *hace*
+—a diferencia de lo que la gramática *dice*— hay que ejecutarla antes de
+creerla. Ver `COHERENCE_AUDIT.md` §7.
 | `parse` / `check` / `emit` | Los hooks de cada fase |
 
 `phases` y los punteros se **cruzan**: si `parse != NULL` el bit

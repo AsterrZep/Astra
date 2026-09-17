@@ -44,12 +44,17 @@ const ConstructSpec construct_type_annotation = {
                   "SimpleType ::= Identifier | \"(\" Type (\",\" Type)+\")\" "
                   "| \"[\" Type (\";\" Expression)? \"]\" | \"*\" \"const\"? Type | \"&\" \"mut\"? Type",
     .research  = "research/010 §6 (type annotation grammar), §12.1; research/011 §5.2",
-    .note      = "Implemented: builtin names, struct names, enum names, `[T]` arrays, "
-                  "`T?` optionals (parsed, TYPE_OPTIONAL exists) and `(T, T) -> T` "
-                  "function types. NOT implemented: generic arguments `T<U>`, "
-                  "fixed-size arrays `[T; N]`, tuples, raw pointers and references. "
-                  "Types are resolved by name at check time; there is no unification "
-                  "(research/011 §8.1 calls for simplified HM, which the seed does "
-                  "not yet need).",
+    .note      = "Implemented: builtin names (`i32`, `f64`, `bool`, `string`), struct "
+                  "names, enum names, `[T]` arrays and `(T, T) -> T` function types. "
+                  "NOT implemented: `T?` optionals — the node exists (TYPE_OPTIONAL) "
+                  "but parse_type never consumes the `?`, so `let x: i32? = null;` is "
+                  "a parse error even though research/010 §12.1 specifies "
+                  "`OptionalType ::= PrimaryType \"?\"` and research/011 Tier 2 lists "
+                  "it. Also missing: generic arguments `T<U>`, fixed-size arrays "
+                  "`[T; N]`, tuples, raw pointers and references. Types are resolved "
+                  "by name at check time; there is no unification (research/011 §8.1 "
+                  "calls for simplified HM, which the seed does not yet need). "
+                  "NOTE: this text is hand-written documentation, not machine-checked "
+                  "— see Documentacion/COHERENCE_AUDIT.md §7.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };
