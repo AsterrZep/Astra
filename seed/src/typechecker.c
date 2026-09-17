@@ -53,7 +53,7 @@ bool type_eq(Type *a, Type *b) {
     case TYPE_STRUCT:
         return string_eq(a->as.struc.name, b->as.struc.name);
     case TYPE_ENUM:
-        return string_eq(a->as.name, b->as.name);
+        return string_eq(a->as.enumeration.name, b->as.enumeration.name);
     default:
         return true;
     }
@@ -115,7 +115,7 @@ void type_print(Type *t) {
         printf("%.*s", (int)t->as.struc.name.len, t->as.struc.name.str);
         break;
     case TYPE_ENUM:
-        printf("%.*s", (int)t->as.name.len, t->as.name.str);
+        printf("%.*s", (int)t->as.enumeration.name.len, t->as.enumeration.name.str);
         break;
     case TYPE_UNKNOWN:  printf("unknown");  break;
     case TYPE_ERROR:    printf("<error>");   break;
@@ -314,6 +314,7 @@ static Type *resolve_type_node(TypeChecker *tc, Node *node);
 
 static Type *typecheck_node(TypeChecker *tc, Node *node);
 static void  typecheck_fn_body(TypeChecker *tc, Node *fn_node);
+static int   enum_variant_index(Type *en, InternedString variant);
 
 /* ============================================================
  * §4: Type Node Resolution
@@ -652,6 +653,18 @@ static Type *typecheck_field_access(TypeChecker *tc, Node *node) {
     Type *object = typecheck_node(tc, node->as.field_access.object);
     if (type_is_error(object)) return object;
 
+    /* `Enum.Variant` is a value of the enum's type, not a field read. */
+    if (object->kind == TYPE_ENUM) {
+        InternedString v = node->as.field_access.field;
+        if (enum_variant_index(object, v) < 0) {
+            return tc_error_type(tc, node->loc, "enum '%.*s' has no variant '%.*s'",
+                                 (int)object->as.enumeration.name.len,
+                                 object->as.enumeration.name.str,
+                                 (int)v.len, v.str);
+        }
+        return object;
+    }
+
     if (object->kind != TYPE_STRUCT) {
         return tc_error_type(tc, node->as.field_access.object->loc,
                              "cannot access field on non-struct type %s",
@@ -783,29 +796,100 @@ static Type *typecheck_for(TypeChecker *tc, Node *node) {
     return type_new(tc->arena, TYPE_VOID);
 }
 
+/* Validate one pattern against the match target. `covered` records which
+ * variants of an enum target were handled, for exhaustiveness checking. */
+static void check_pattern(TypeChecker *tc, Node *pat, Type *target,
+                          bool *has_wildcard, bool *covered, size_t covered_n) {
+    if (!pat) return;
+
+    switch (pat->kind) {
+    case NODE_PATTERN_WILDCARD:
+        *has_wildcard = true;
+        return;
+
+    case NODE_PATTERN_OR: {
+        for (size_t i = 0; i < pat->as.pattern_or.alts.len; i++) {
+            check_pattern(tc, pat->as.pattern_or.alts.data[i], target,
+                          has_wildcard, covered, covered_n);
+        }
+        return;
+    }
+
+    case NODE_FIELD_ACCESS: {
+        Node *obj = pat->as.field_access.object;
+        if (!obj || obj->kind != NODE_IDENT) {
+            tc_error(tc, pat->loc, "pattern must be a literal, `_` or Enum.Variant");
+            return;
+        }
+        Type *et = typecheck_ident(tc, obj);
+        if (type_is_error(et)) return;
+        if (et->kind != TYPE_ENUM) {
+            tc_error(tc, pat->loc, "pattern must be a literal, `_` or Enum.Variant");
+            return;
+        }
+        if (!type_eq(et, target)) {
+            tc_error(tc, pat->loc,
+                     "pattern type %s does not match match target type %s",
+                     type_kind_name(et->kind), type_kind_name(target->kind));
+            return;
+        }
+        InternedString v = pat->as.field_access.field;
+        int vi = enum_variant_index(et, v);
+        if (vi < 0) {
+            tc_error(tc, pat->loc, "enum '%.*s' has no variant '%.*s'",
+                     (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
+                     (int)v.len, v.str);
+            return;
+        }
+        if (covered && (size_t)vi < covered_n) covered[vi] = true;
+        return;
+    }
+
+    /* Literal patterns (including negated literals). */
+    case NODE_INT_LIT:
+    case NODE_FLOAT_LIT:
+    case NODE_STRING_LIT:
+    case NODE_BOOL_LIT:
+    case NODE_NULL_LIT:
+    case NODE_UNARY_OP: {
+        Type *pt = typecheck_node(tc, pat);
+        if (type_is_error(pt)) return;
+        if (!type_eq(pt, target)) {
+            tc_error(tc, pat->loc,
+                     "pattern type %s does not match match target type %s",
+                     type_kind_name(pt->kind), type_kind_name(target->kind));
+        }
+        return;
+    }
+
+    default:
+        tc_error(tc, pat->loc, "unsupported pattern in match arm");
+        return;
+    }
+}
+
 static Type *typecheck_match(TypeChecker *tc, Node *node) {
     Type *target = typecheck_node(tc, node->as.match_expr.target);
     if (type_is_error(target)) return target;
 
+    size_t covered_n = (target->kind == TYPE_ENUM)
+        ? target->as.enumeration.variant_count : 0;
+    bool *covered = arena_new_array(tc->arena, bool, covered_n > 0 ? covered_n : 1);
+    bool has_wildcard = false;
+
     Type *result_type = NULL;
 
     for (size_t i = 0; i < node->as.match_expr.arms.len; i++) {
+        MatchArm *arm = &node->as.match_expr.arms.data[i];
         symbol_table_push_scope(tc->symbols);
 
-        /* Type-check the pattern — for now patterns must match target type */
-        Type *pat_type = typecheck_node(tc, node->as.match_expr.arms.data[i].pattern);
-        if (!type_is_error(pat_type) && !type_eq(pat_type, target)) {
-            tc_error(tc, node->as.match_expr.arms.data[i].pattern->loc,
-                     "match pattern type %s does not match target type %s",
-                     type_kind_name(pat_type->kind),
-                     type_kind_name(target->kind));
-        }
+        check_pattern(tc, arm->pattern, target, &has_wildcard, covered, covered_n);
 
-        Type *arm_type = typecheck_node(tc, node->as.match_expr.arms.data[i].body);
+        Type *arm_type = typecheck_node(tc, arm->body);
 
         if (result_type) {
             if (!type_eq(result_type, arm_type)) {
-                tc_error(tc, node->as.match_expr.arms.data[i].body->loc,
+                tc_error(tc, arm->body->loc,
                          "match arm type %s does not match previous arm type %s",
                          type_kind_name(arm_type->kind),
                          type_kind_name(result_type->kind));
@@ -815,6 +899,21 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
         }
 
         symbol_table_pop_scope(tc->symbols);
+    }
+
+    /* Exhaustiveness: an enum match without a wildcard must cover every
+     * variant (research/04 §9 and ARCHITECTURE.md §11.3). */
+    if (target->kind == TYPE_ENUM && !has_wildcard) {
+        for (size_t v = 0; v < covered_n; v++) {
+            if (!covered[v]) {
+                tc_error(tc, node->loc,
+                         "non-exhaustive match: missing variant '%.*s.%.*s'",
+                         (int)target->as.enumeration.name.len,
+                         target->as.enumeration.name.str,
+                         (int)target->as.enumeration.variants[v].len,
+                         target->as.enumeration.variants[v].str);
+            }
+        }
     }
 
     return result_type ? result_type : type_new(tc->arena, TYPE_VOID);
@@ -1085,11 +1184,27 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
     symbol_table_insert(tc->symbols, sym);
 }
 
+static int enum_variant_index(Type *en, InternedString variant) {
+    if (!en || en->kind != TYPE_ENUM) return -1;
+    for (size_t i = 0; i < en->as.enumeration.variant_count; i++) {
+        if (string_eq(en->as.enumeration.variants[i], variant)) return (int)i;
+    }
+    return -1;
+}
+
 static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.enum_decl.name;
 
     Type *en_type = type_new(tc->arena, TYPE_ENUM);
-    en_type->as.name = name;
+    en_type->as.enumeration.name = name;
+
+    size_t nv = node->as.enum_decl.variants.len;
+    en_type->as.enumeration.variant_count = nv;
+    en_type->as.enumeration.variants =
+        nv > 0 ? arena_new_array(tc->arena, InternedString, nv) : NULL;
+    for (size_t i = 0; i < nv; i++) {
+        en_type->as.enumeration.variants[i] = node->as.enum_decl.variants.data[i];
+    }
 
     Symbol sym = {
         .name    = name,

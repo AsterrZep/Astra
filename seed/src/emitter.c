@@ -118,11 +118,46 @@ static StructInfo *find_struct(Emitter *e, InternedString name) {
     return NULL;
 }
 
-/* Collect struct declarations before emitting code so literals and field
- * accesses can be resolved without a type table. */
-static void register_structs(Emitter *e, Node *module) {
+static EnumInfo *find_enum(Emitter *e, InternedString name) {
+    for (size_t i = 0; i < e->enum_count; i++) {
+        if (string_eq(e->enums[i].name, name)) return &e->enums[i];
+    }
+    return NULL;
+}
+
+/* Index of a variant within an enum, or -1. */
+static int enum_variant_index(EnumInfo *ei, InternedString variant) {
+    if (!ei) return -1;
+    for (size_t i = 0; i < ei->variant_count; i++) {
+        if (string_eq(ei->variants[i], variant)) return (int)i;
+    }
+    return -1;
+}
+
+/* Collect struct/enum declarations before emitting code so literals, field
+ * accesses and variants can be resolved without a type table. */
+static void register_types(Emitter *e, Node *module) {
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
+
+        if (item->kind == NODE_ENUM_DECL) {
+            if (e->enum_count >= EMITTER_MAX_ENUMS) {
+                fprintf(stderr, "error: too many enum declarations (max %d)\n",
+                        EMITTER_MAX_ENUMS);
+                e->error_count++;
+                continue;
+            }
+            size_t nv = item->as.enum_decl.variants.len;
+            EnumInfo *ei = &e->enums[e->enum_count++];
+            ei->name          = item->as.enum_decl.name;
+            ei->variant_count = nv;
+            ei->variants      = nv > 0 ? arena_new_array(e->arena, InternedString, nv) : NULL;
+            for (size_t j = 0; j < nv; j++) {
+                ei->variants[j] = item->as.enum_decl.variants.data[j];
+            }
+            continue;
+        }
+
         if (item->kind != NODE_STRUCT_DECL) continue;
 
         if (e->struct_count >= EMITTER_MAX_STRUCTS) {
@@ -159,6 +194,10 @@ static void register_structs(Emitter *e, Node *module) {
 static void emit_node(Emitter *e, Node *node);
 static void emit_stmt(Emitter *e, Node *node);
 static void emit_expr(Emitter *e, Node *node);
+
+static void emit_pattern_tests(Emitter *e, Node *pat, uint8_t slot,
+                               uint32_t line, size_t **hits,
+                               size_t *hit_len, size_t *hit_cap);
 
 /* -----------------------------------------------------------
  * Loop patch lists (break / continue)
@@ -225,6 +264,73 @@ static void emit_loop_body(Emitter *e, Node *body) {
     } else {
         emit_stmt(e, body);
     }
+}
+
+/* Emit the value a single pattern alternative matches against. */
+static void emit_pattern_value(Emitter *e, Node *pat, uint32_t line) {
+    if (!pat) return;
+
+    switch (pat->kind) {
+    case NODE_INT_LIT:
+    case NODE_FLOAT_LIT:
+    case NODE_STRING_LIT:
+    case NODE_BOOL_LIT:
+    case NODE_NULL_LIT:
+    case NODE_UNARY_OP:
+        emit_expr(e, pat);
+        return;
+
+    case NODE_FIELD_ACCESS: {
+        Node *obj = pat->as.field_access.object;
+        EnumInfo *ei = (obj && obj->kind == NODE_IDENT)
+            ? find_enum(e, obj->as.ident.name) : NULL;
+        if (!ei) {
+            fprintf(stderr, "error: pattern must be a literal, `_` or Enum.Variant\n");
+            e->error_count++;
+            break;
+        }
+        InternedString variant = pat->as.field_access.field;
+        if (enum_variant_index(ei, variant) < 0) {
+            fprintf(stderr, "error: enum '%.*s' has no variant '%.*s'\n",
+                    (int)ei->name.len, ei->name.str,
+                    (int)variant.len, variant.str);
+            e->error_count++;
+        }
+        uint32_t idx = add_constant(e, value_enum(ei->name.str, variant.str));
+        emit_inst_index(e, OPCODE_CONST, idx, line);
+        return;
+    }
+
+    default:
+        fprintf(stderr, "error: unsupported pattern in match arm\n");
+        e->error_count++;
+        break;
+    }
+
+    /* Fall back to nil so the test is well-formed even after an error. */
+    uint32_t z = add_constant(e, value_nil());
+    emit_inst_index(e, OPCODE_CONST, z, line);
+}
+
+/* Emit `target == pattern` tests; on success jump to the arm body. */
+static void emit_pattern_tests(Emitter *e, Node *pat, uint8_t slot,
+                               uint32_t line, size_t **hits,
+                               size_t *hit_len, size_t *hit_cap) {
+    if (!pat) return;
+
+    if (pat->kind == NODE_PATTERN_OR) {
+        for (size_t i = 0; i < pat->as.pattern_or.alts.len; i++) {
+            emit_pattern_tests(e, pat->as.pattern_or.alts.data[i], slot, line,
+                               hits, hit_len, hit_cap);
+        }
+        return;
+    }
+
+    emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
+    emit_pattern_value(e, pat, line);
+    emit_inst(e, OPCODE_EQ, line);
+    emit_inst_offset(e, OPCODE_JUMP_IF_TRUE, 0, line);
+    patch_push(e, hits, hit_len, hit_cap, e->code_len - 1);
 }
 
 /* Hidden loop temporaries use names that cannot collide with user
@@ -427,9 +533,97 @@ static void emit_expr(Emitter *e, Node *node) {
     } break;
 
     case NODE_FIELD_ACCESS: {
-        emit_expr(e, node->as.field_access.object);
+        Node *obj = node->as.field_access.object;
+        /* `Enum.Variant` is a value, not a field read. */
+        if (obj && obj->kind == NODE_IDENT) {
+            EnumInfo *ei = find_enum(e, obj->as.ident.name);
+            if (ei) {
+                InternedString variant = node->as.field_access.field;
+                if (enum_variant_index(ei, variant) < 0) {
+                    fprintf(stderr, "error: enum '%.*s' has no variant '%.*s'\n",
+                            (int)ei->name.len, ei->name.str,
+                            (int)variant.len, variant.str);
+                    e->error_count++;
+                }
+                uint32_t idx = add_constant(e,
+                    value_enum(ei->name.str, variant.str));
+                emit_inst_index(e, OPCODE_CONST, idx, node->loc.line);
+                break;
+            }
+        }
+        emit_expr(e, obj);
         uint32_t idx = add_constant(e, value_string(node->as.field_access.field.str));
         emit_inst_index(e, OPCODE_GET_FIELD, idx, node->loc.line);
+    } break;
+
+    case NODE_MATCH: {
+        uint32_t line = node->loc.line;
+        size_t n_arms = node->as.match_expr.arms.len;
+
+        /* The matched value lives in a hidden local; every arm tests against
+         * it and the arm body supplies the match's result. */
+        uint8_t slot = add_local(e, hidden_local(e, "match_val"));
+        if (slot == 0xFF) {
+            fprintf(stderr, "error: too many locals for match\n");
+            e->error_count++;
+            break;
+        }
+        emit_expr(e, node->as.match_expr.target);
+        emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
+
+        size_t *end_jumps = NULL;
+        size_t  end_len = 0, end_cap = 0;
+        bool    has_wildcard = false;
+
+        for (size_t i = 0; i < n_arms; i++) {
+            Node *pat  = node->as.match_expr.arms.data[i].pattern;
+            Node *body = node->as.match_expr.arms.data[i].body;
+
+            if (pat && pat->kind == NODE_PATTERN_WILDCARD) {
+                has_wildcard = true;
+                emit_value_branch(e, body);
+                emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                break; /* a wildcard makes later arms unreachable */
+            }
+
+            size_t *hits = NULL;
+            size_t  hit_len = 0, hit_cap = 0;
+            emit_pattern_tests(e, pat, slot, line, &hits, &hit_len, &hit_cap);
+
+            emit_inst_offset(e, OPCODE_JUMP, 0, line);
+            size_t no_match = e->code_len - 1;
+
+            size_t body_start = e->code_len;
+            for (size_t k = 0; k < hit_len; k++) {
+                e->code[hits[k]].arg.offset = (int32_t)(body_start - hits[k]);
+            }
+
+            emit_value_branch(e, body);
+            emit_inst_offset(e, OPCODE_JUMP, 0, line);
+            patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+
+            size_t next_arm = e->code_len;
+            e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
+        }
+
+        if (!has_wildcard) {
+            /* No arm matched: yield nil so a match always produces a value. */
+            uint32_t z = add_constant(e, value_nil());
+            emit_inst_index(e, OPCODE_CONST, z, line);
+        }
+
+        size_t end_target = e->code_len;
+        for (size_t k = 0; k < end_len; k++) {
+            e->code[end_jumps[k]].arg.offset = (int32_t)(end_target - end_jumps[k]);
+        }
+
+        /* Stack is [.., target, result]: swap then pop to keep only the
+         * result. */
+        emit_inst(e, OPCODE_SWAP, line);
+        emit_inst(e, OPCODE_POP, line);
+        e->code[e->code_len - 1].arg.index = 1;
+        e->local_count--; /* the hidden local was consumed manually */
     } break;
 
     case NODE_RANGE: {
@@ -868,7 +1062,7 @@ Emitter *emitter_create(Arena *arena, StringTable *strings) {
 
 void emitter_emit(Emitter *e, Node *module) {
     if (!e || !module) return;
-    register_structs(e, module);
+    register_types(e, module);
     emit_node(e, module);
 
     /* If the module defines main(), call it. Top-level functions live in the

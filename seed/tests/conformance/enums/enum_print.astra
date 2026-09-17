@@ -1,0 +1,13 @@
+// Enum values print as Enum.Variant
+// EXPECT: Direction.Norte
+// EXPECT: Direction.Sur
+enum Direction {
+    Norte
+    Sur
+}
+
+fn main() {
+    print(Direction.Norte);
+    let d = Direction.Sur;
+    print(d);
+}

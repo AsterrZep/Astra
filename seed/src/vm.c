@@ -70,6 +70,14 @@ Value value_struct_def(StructDef *d) {
     return v;
 }
 
+Value value_enum(const char *enum_name, const char *variant_name) {
+    Value v = {0};
+    v.kind = VAL_ENUM;
+    v.as.enum_val.enum_name    = enum_name;
+    v.as.enum_val.variant_name = variant_name;
+    return v;
+}
+
 StructObj *struct_obj_new(Arena *a, const StructDef *def) {
     StructObj *obj = arena_new(a, StructObj);
     if (!obj) return NULL;
@@ -100,6 +108,7 @@ bool value_is_truthy(Value v) {
     case VAL_ARRAY:  return v.as.array_val != NULL && v.as.array_val->len > 0;
     case VAL_STRUCT: return v.as.struct_val != NULL;
     case VAL_STRUCT_DEF: return v.as.struct_def != NULL;
+    case VAL_ENUM:   return true;
     case VAL_FN:     return v.as.fn_val != NULL;
     }
     return false;
@@ -115,6 +124,7 @@ static const char *type_name(Value v) {
     case VAL_ARRAY:  return "array";
     case VAL_STRUCT: return "struct";
     case VAL_STRUCT_DEF: return "struct_def";
+    case VAL_ENUM:   return "enum";
     case VAL_FN:     return "function";
     }
     return "unknown";
@@ -150,6 +160,11 @@ void value_print(Value v) {
         break;
     }
     case VAL_STRUCT_DEF: printf("<struct_def>"); break;
+    case VAL_ENUM:
+        printf("%s.%s",
+               v.as.enum_val.enum_name ? v.as.enum_val.enum_name : "?",
+               v.as.enum_val.variant_name ? v.as.enum_val.variant_name : "?");
+        break;
     case VAL_FN:     printf("<fn>"); break;
     }
 }
@@ -190,6 +205,15 @@ static bool value_eq(Value a, Value b) {
         return true;
     }
     case VAL_STRUCT_DEF: return a.as.struct_def == b.as.struct_def;
+    case VAL_ENUM: {
+        const char *an = a.as.enum_val.enum_name;
+        const char *bn = b.as.enum_val.enum_name;
+        const char *av = a.as.enum_val.variant_name;
+        const char *bv = b.as.enum_val.variant_name;
+        if (an == av && bn == bv) return true;
+        if (!an || !bn || !av || !bv) return false;
+        return strcmp(an, bn) == 0 && strcmp(av, bv) == 0;
+    }
     case VAL_FN:     return a.as.fn_val == b.as.fn_val;
     }
     return false;
@@ -290,6 +314,7 @@ static const char *opname(OpCode op) {
     case OPCODE_CONST:        return "CONST";
     case OPCODE_POP:          return "POP";
     case OPCODE_DUP:          return "DUP";
+    case OPCODE_SWAP:         return "SWAP";
     case OPCODE_GET_LOCAL:    return "GET_LOCAL";
     case OPCODE_SET_LOCAL:    return "SET_LOCAL";
     case OPCODE_GET_GLOBAL:   return "GET_GLOBAL";
@@ -406,6 +431,16 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 return VM_RUNTIME_ERROR;
             }
             if (!vm_push(vm, vm->stack[vm->sp - 1])) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_SWAP: {
+            if (vm->sp < 2) {
+                vm_runtime_error(vm, line, "stack underflow on swap");
+                return VM_RUNTIME_ERROR;
+            }
+            Value tmp = vm->stack[vm->sp - 1];
+            vm->stack[vm->sp - 1] = vm->stack[vm->sp - 2];
+            vm->stack[vm->sp - 2] = tmp;
         } break;
 
         /* ---- Local variables ---- */

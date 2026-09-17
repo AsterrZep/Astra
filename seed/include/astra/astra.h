@@ -227,6 +227,10 @@ typedef enum {
     NODE_RANGE,
     NODE_STRUCT_LIT,
     NODE_FIELD_ACCESS,
+
+    /* Patterns (only valid inside a match arm) */
+    NODE_PATTERN_WILDCARD,
+    NODE_PATTERN_OR,
     NODE_OPTIONAL_CHAIN,
     NODE_BLOCK,
     NODE_IF,
@@ -335,6 +339,11 @@ typedef struct {
     DYNARRAY(Node *)     field_values;
 } StructLitExpr;
 
+/* Or-pattern: `A | B | C`. Each alternative is itself a pattern node. */
+typedef struct {
+    DYNARRAY(Node *) alts;
+} PatternOrExpr;
+
 typedef struct {
     Node   *object;
     InternedString field;
@@ -363,8 +372,13 @@ typedef struct {
 } ForExpr;
 
 typedef struct {
+    Node *pattern;
+    Node *body;
+} MatchArm;
+
+typedef struct {
     Node *target; /* expression to match */
-    DYNARRAY(struct { Node *pattern; Node *body; }) arms;
+    DYNARRAY(MatchArm) arms;
 } MatchExpr;
 
 typedef struct {
@@ -455,6 +469,7 @@ struct Node {
         RangeExpr       range;
         StructLitExpr   struct_lit;
         FieldAccessExpr field_access;
+        PatternOrExpr   pattern_or;
         BlockExpr       block;
         IfExpr          if_expr;
         WhileExpr       while_expr;
@@ -486,6 +501,9 @@ typedef struct Parser Parser;
 Parser *parser_create(Lexer *lexer, Arena *arena, StringTable *strings);
 Node   *parser_parse_module(Parser *p);
 void    parser_destroy(Parser *p);
+
+/* True if any syntax error was reported (0 = clean parse) */
+bool    parser_had_error(Parser *p);
 
 /* -----------------------------------------------------------
  * §11: Type System
@@ -519,7 +537,11 @@ struct Type {
         struct { Type *inner; } optional;
         struct { Type *elem; Node *size; } array;
         struct { Type **params; size_t param_count; Type *ret; } fn;
-        InternedString name; /* enum name */
+        struct {
+            InternedString  name;
+            InternedString *variants;
+            size_t          variant_count;
+        } enumeration;
         struct {
             InternedString  name;
             StructField    *fields;
@@ -578,6 +600,7 @@ typedef enum {
     OPCODE_CONST,         /* push constant */
     OPCODE_POP,           /* pop top */
     OPCODE_DUP,           /* duplicate top */
+    OPCODE_SWAP,          /* swap top two values */
 
     /* Local variables */
     OPCODE_GET_LOCAL,     /* get local variable */
@@ -674,6 +697,7 @@ typedef enum {
     VAL_ARRAY,
     VAL_STRUCT,
     VAL_STRUCT_DEF,
+    VAL_ENUM,
     VAL_FN,
 } ValueKind;
 
@@ -720,6 +744,7 @@ struct Value {
         ArrayObj   *array_val;
         StructObj  *struct_val;
         StructDef  *struct_def;
+        struct { const char *enum_name; const char *variant_name; } enum_val;
         FnObj      *fn_val;
     } as;
 };
@@ -732,6 +757,7 @@ Value value_string(const char *s);
 Value value_array(ArrayObj *a);
 Value value_struct(StructObj *s);
 Value value_struct_def(StructDef *d);
+Value value_enum(const char *enum_name, const char *variant_name);
 Value value_fn(FnObj *f);
 
 /* Allocate an array object in the given arena (len may be 0) */

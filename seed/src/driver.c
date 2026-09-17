@@ -205,6 +205,15 @@ static void dump_node(Node *node, int indent) {
             dump_node(node->as.call.args.data[i], indent + 1);
         }
         break;
+    case NODE_PATTERN_WILDCARD:
+        printf("PatternWildcard\n");
+        break;
+    case NODE_PATTERN_OR:
+        printf("PatternOr(%zu)\n", node->as.pattern_or.alts.len);
+        for (size_t i = 0; i < node->as.pattern_or.alts.len; i++) {
+            dump_node(node->as.pattern_or.alts.data[i], indent + 1);
+        }
+        break;
     case NODE_INDEX:
         printf("Index\n");
         dump_node(node->as.index.object, indent + 1);
@@ -462,7 +471,7 @@ static bool run_dump_ast(Compiler *c) {
 
 static bool run_full_pipeline(Compiler *c) {
     Node *module = parser_parse_module(c->parser);
-    if (!module) {
+    if (!module || parser_had_error(c->parser)) {
         fprintf(stderr, "error: parse failed\n");
         return false;
     }

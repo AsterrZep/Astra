@@ -1,0 +1,23 @@
+// Unit enums dispatched with match (exhaustive, no wildcard)
+// EXPECT: rojo
+// EXPECT: verde
+// EXPECT: azul
+enum Color {
+    Rojo
+    Verde
+    Azul
+}
+
+fn name(c: Color) -> string {
+    return match c {
+        Color.Rojo => "rojo",
+        Color.Verde => "verde",
+        Color.Azul => "azul",
+    };
+}
+
+fn main() {
+    print(name(Color.Rojo));
+    print(name(Color.Verde));
+    print(name(Color.Azul));
+}

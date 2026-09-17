@@ -21,9 +21,9 @@ programas Astra-0 de principio a fin.
 | Arena allocator | ✅ | `arena.c`, liberación en bloque |
 | Interning de strings | ✅ | `string_table.c`, igualdad por puntero |
 | Lexer | ✅ | `..`/`..=`, literales numéricos (hex/bin/oct), strings con escapes, comentarios |
-| Parser | ✅ | descenso recursivo + Pratt; literales de array, rangos, bloques como expresión |
-| Type checker | ✅ | tabla de símbolos con ámbitos; errores con ubicación |
-| Emitter | ✅ | bytecode de pila, parcheo de saltos, locales ocultos de bucle |
+| Parser | ✅ | descenso recursivo + Pratt; literales de array, rangos, bloques como expresión, `match` y patrones |
+| Type checker | ✅ | tabla de símbolos con ámbitos; exhaustividad de `match`; errores con ubicación |
+| Emitter | ✅ | bytecode de pila, parcheo de saltos, locales ocultos de bucle, `SWAP` para el temporal de `match` |
 | VM | ✅ | ~30 opcodes, frames de llamada, globals, builtins |
 | Runner de tests | ✅ | `tests/run_tests.sh` (`EXPECT` / `EXPECT-ERROR`) |
 
@@ -31,8 +31,7 @@ programas Astra-0 de principio a fin.
 
 ### Tipos
 `i32`, `f64`, `bool`, `string`, arrays (`[T]`), structs (declaración, literal,
-acceso a campo) y `void`. Los enums se registran en el type checker pero su
-codegen está pendiente.
+acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
 
 ### Expresiones
 - Aritmética y comparación: `+ - * / % == != < > <= >=`
@@ -44,6 +43,8 @@ codegen está pendiente.
 - Literales de struct: `Point { x: 1, y: 2 }` (el orden de campos es libre)
 - Acceso a campo: `p.x`
 - Rangos: `a..b` (exclusivo), `a..=b` (inclusivo)
+- `Enum.Variant` como expresión
+- `match` como expresión (con `or`-patterns `A | B | C` y wildcard `_`)
 - Llamadas a función, paréntesis, bloques como expresión
 
 ### Sentencias y control de flujo
@@ -51,11 +52,13 @@ codegen está pendiente.
 - `if` / `else` (también como expresión)
 - `while` con `break` / `continue` reales
 - `for x in start..end`, `for x in start..=end`, `for x in array`
+- `match` como sentencia (el resultado se descarta)
 - `return` con y sin valor
+- `enum Nombre { A B C }` (variantes unitarias, sin datos aún)
 - Funciones de nivel superior con parámetros tipados y recursión
 
 ### Runtime
-- Valores: `nil`, `bool`, `int`, `float`, `string`, `array`, `struct`, `fn`
+- Valores: `nil`, `bool`, `int`, `float`, `string`, `array`, `struct`, `enum`, `fn`
 - Igualdad estructural para arrays y structs (mismo tipo de struct + campos)
 - Builtin `print(...)` (variádico)
 - Errores de runtime con número de línea
@@ -70,7 +73,7 @@ codegen está pendiente.
 // EXPECT-ERROR: <texto de error>     (el programa debe fallar)
 ```
 
-Cobertura actual (18 casos, todos en verde):
+Cobertura actual (26 casos, todos en verde):
 
 | Área | Casos |
 |:-----|:------|
@@ -79,8 +82,9 @@ Cobertura actual (18 casos, todos en verde):
 | loops | `range_exclusive`, `range_inclusive`, `break_continue`, `for_array` |
 | arrays | `literal_index` |
 | structs | `literal_fields`, `field_order`, `struct_in_function` |
+| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement` |
 | functions | `recursion` (factorial + parámetros) |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `match_guard_unsupported` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
@@ -91,9 +95,13 @@ Ordenado por valor para el objetivo de bootstrap.
 ### Agregados (bloquea el compilador auto-hospedado)
 - [x] **Structs**: literal, valor `VAL_STRUCT`, acceso a campo por nombre en
       codegen, igualdad estructural e impresión.
-- [ ] **Enums**: variantes con y sin datos, `Enum.Variant`, `VAL_ENUM`.
-- [ ] **match**: no se parsea todavía; falta `NODE_MATCH` en el parser y
-      codegen de decisión por variante.
+- [x] **Enums unitarios**: `enum Color { Rojo Verde }`, `Enum.Variant` como
+      expresión, `VAL_ENUM`, igualdad e impresión `Color.Rojo`.
+- [x] **match**: `NODE_MATCH` en parser/AST, `or`-patterns, wildcard,
+      exhaustividad y codegen por comparación de variante.
+- [ ] **Enums con datos** (ADT): `Circulo(Float)`, bindings en patrones,
+      patrones anidados. Ver `research/04` §9.3.
+- [ ] **Guards** `patrón if cond` (hoy el parser los rechaza explícitamente).
 - [ ] `Option<T>` / `Result<T, E>` y el operador `?`.
 
 ### Closures y módulos

@@ -1,0 +1,17 @@
+// Or-patterns (`A | B | C`) and the `_` wildcard
+// EXPECT: cero
+// EXPECT: bajo
+// EXPECT: alto
+fn word(n: i32) -> string {
+    return match n {
+        0 => "cero",
+        1 | 2 | 3 => "bajo",
+        _ => "alto",
+    };
+}
+
+fn main() {
+    print(word(0));
+    print(word(2));
+    print(word(7));
+}

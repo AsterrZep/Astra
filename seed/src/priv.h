@@ -60,6 +60,7 @@ struct Lexer {
 #define EMITTER_MAX_CODE   (1024 * 1024)
 #define EMITTER_MAX_CONSTS (1024 * 1024)
 #define EMITTER_MAX_STRUCTS 128
+#define EMITTER_MAX_ENUMS   128
 
 /* Compile-time view of a struct declaration, used to emit literals and
  * resolve field access. */
@@ -69,6 +70,13 @@ typedef struct {
     size_t          field_count;
     const StructDef *def;
 } StructInfo;
+
+/* Compile-time view of an enum declaration, used to resolve `Enum.Variant`. */
+typedef struct {
+    InternedString  name;
+    InternedString *variants;
+    size_t          variant_count;
+} EnumInfo;
 
 typedef struct {
     InternedString name;
@@ -111,6 +119,9 @@ struct Emitter {
 
     StructInfo     structs[EMITTER_MAX_STRUCTS];
     size_t         struct_count;
+
+    EnumInfo       enums[EMITTER_MAX_ENUMS];
+    size_t         enum_count;
 
     int            error_count;
 };

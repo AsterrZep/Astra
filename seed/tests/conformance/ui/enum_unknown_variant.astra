@@ -1,0 +1,9 @@
+// Referring to a variant the enum does not declare must be a compile error
+// EXPECT-ERROR: has no variant
+enum Color {
+    Rojo
+}
+
+fn main() {
+    print(Color.Verde);
+}

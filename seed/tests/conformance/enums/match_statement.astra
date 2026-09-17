@@ -1,0 +1,16 @@
+// match as a statement (result discarded) followed by more code
+// EXPECT: v
+// EXPECT: fin
+enum Color {
+    Rojo
+    Verde
+}
+
+fn main() {
+    let c = Color.Verde;
+    match c {
+        Color.Rojo => print("r"),
+        Color.Verde => print("v"),
+    }
+    print("fin");
+}

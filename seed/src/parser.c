@@ -583,6 +583,150 @@ static Node *parse_for(Parser *p) {
 }
 
 /* -----------------------------------------------------------
+ * Patterns (match arms)
+ * -----------------------------------------------------------
+ * Astra-0 supports: wildcard `_`, literals, enum variants `Enum.Variant`
+ * and or-patterns `A | B`. Binding patterns are a later tier.
+ */
+
+static Node *parse_pattern_primary(Parser *p) {
+    SrcLoc loc = p->current.loc;
+
+    switch (p->current.kind) {
+    case TOKEN_UNDERSCORE:
+        advance(p);
+        return node_new(p->arena, NODE_PATTERN_WILDCARD, loc);
+
+    case TOKEN_INT_LIT:
+        advance(p);
+        return parse_int_lit(p, NULL, PREC_PRIMARY);
+
+    case TOKEN_FLOAT_LIT:
+        advance(p);
+        return parse_float_lit(p, NULL, PREC_PRIMARY);
+
+    case TOKEN_STRING_LIT:
+        advance(p);
+        return parse_string_lit(p, NULL, PREC_PRIMARY);
+
+    case TOKEN_TRUE:
+    case TOKEN_FALSE:
+        advance(p);
+        return parse_bool_lit(p, NULL, PREC_PRIMARY);
+
+    case TOKEN_MINUS: {
+        advance(p);
+        if (p->current.kind != TOKEN_INT_LIT && p->current.kind != TOKEN_FLOAT_LIT) {
+            parser_error(p, "expected a numeric literal after '-' in pattern");
+            return node_new(p->arena, NODE_PATTERN_WILDCARD, loc);
+        }
+        return parse_unary(p);
+    }
+
+    case TOKEN_IDENT: {
+        advance(p);
+        Token id = p->previous;
+        if (match(p, TOKEN_DOT)) {
+            expect(p, TOKEN_IDENT, "variant name");
+            Node *obj = node_new(p->arena, NODE_IDENT, id.loc);
+            obj->as.ident.name = id.text;
+            Node *n = node_new(p->arena, NODE_FIELD_ACCESS, id.loc);
+            n->as.field_access.object = obj;
+            n->as.field_access.field  = p->previous.text;
+            return n;
+        }
+        parser_error(p, "unsupported pattern: binding patterns are not supported in Astra-0");
+        Node *n = node_new(p->arena, NODE_IDENT, id.loc);
+        n->as.ident.name = id.text;
+        return n;
+    }
+
+    default:
+        parser_error(p, "expected a pattern ('_', literal or Enum.Variant)");
+        advance(p);
+        return node_new(p->arena, NODE_PATTERN_WILDCARD, loc);
+    }
+}
+
+static Node *parse_pattern(Parser *p) {
+    Node *first = parse_pattern_primary(p);
+    if (!check(p, TOKEN_PIPE)) return first;
+
+    Node *n = node_new(p->arena, NODE_PATTERN_OR, first->loc);
+    n->as.pattern_or.alts.data = NULL;
+    n->as.pattern_or.alts.len  = 0;
+    n->as.pattern_or.alts.cap  = 0;
+    node_list_push(p, &n->as.pattern_or.alts.data,
+                   &n->as.pattern_or.alts.len,
+                   &n->as.pattern_or.alts.cap, first);
+
+    while (match(p, TOKEN_PIPE)) {
+        Node *alt = parse_pattern_primary(p);
+        node_list_push(p, &n->as.pattern_or.alts.data,
+                       &n->as.pattern_or.alts.len,
+                       &n->as.pattern_or.alts.cap, alt);
+    }
+    return n;
+}
+
+static Node *parse_match(Parser *p) {
+    SrcLoc loc = p->previous.loc;
+    Node *n = node_new(p->arena, NODE_MATCH, loc);
+    n->as.match_expr.arms.data = NULL;
+    n->as.match_expr.arms.len  = 0;
+    n->as.match_expr.arms.cap  = 0;
+
+    bool saved_nsl = p->no_struct_lit;
+    p->no_struct_lit = true;
+    n->as.match_expr.target = parse_expression(p);
+    p->no_struct_lit = saved_nsl;
+
+    skip_newlines(p);
+    expect(p, TOKEN_LBRACE, "'{' for match");
+    skip_newlines(p);
+
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        Node *pattern = parse_pattern(p);
+
+        if (check(p, TOKEN_IF)) {
+            parser_error(p, "match guards are not supported in Astra-0");
+            advance(p);
+            (void)parse_expression(p);
+        }
+        expect(p, TOKEN_FAT_ARROW, "'=>'");
+        skip_newlines(p);
+
+        Node *body;
+        if (check(p, TOKEN_LBRACE)) {
+            advance(p);
+            body = parse_block(p);
+        } else {
+            body = parse_expression(p);
+        }
+
+        MatchArm *arm = arena_new(p->arena, MatchArm);
+        arm->pattern = pattern;
+        arm->body    = body;
+        if (n->as.match_expr.arms.len >= n->as.match_expr.arms.cap) {
+            size_t new_cap = n->as.match_expr.arms.cap == 0 ? 8 : n->as.match_expr.arms.cap * 2;
+            MatchArm *nd = arena_new_array(p->arena, MatchArm, new_cap);
+            if (n->as.match_expr.arms.data) {
+                memcpy(nd, n->as.match_expr.arms.data, sizeof(MatchArm) * n->as.match_expr.arms.len);
+            }
+            n->as.match_expr.arms.data = nd;
+            n->as.match_expr.arms.cap  = new_cap;
+        }
+        n->as.match_expr.arms.data[n->as.match_expr.arms.len++] = *arm;
+
+        skip_newlines(p);
+        if (!match(p, TOKEN_COMMA)) break;
+        skip_newlines(p);
+    }
+    expect(p, TOKEN_RBRACE, "'}'");
+    return n;
+}
+
+/* -----------------------------------------------------------
  * Return statement
  * ----------------------------------------------------------- */
 
@@ -895,6 +1039,7 @@ static Node *parse_statement(Parser *p) {
     if (check(p, TOKEN_WHILE)) { advance(p); return parse_while(p); }
     if (check(p, TOKEN_FOR))   { advance(p); return parse_for(p); }
     if (check(p, TOKEN_RETURN)) { advance(p); return parse_return(p); }
+    if (check(p, TOKEN_MATCH))  { advance(p); return parse_match(p); }
 
     if (check(p, TOKEN_BREAK)) {
         advance(p);
@@ -971,6 +1116,10 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
         case TOKEN_IF:
             advance(p);
             left = parse_if(p);
+            break;
+        case TOKEN_MATCH:
+            advance(p);
+            left = parse_match(p);
             break;
         case TOKEN_MINUS: case TOKEN_BANG: case TOKEN_TILDE:
         case TOKEN_AMP: case TOKEN_STAR:
@@ -1082,6 +1231,10 @@ Node *parser_parse_module(Parser *p) {
     }
 
     return mod;
+}
+
+bool parser_had_error(Parser *p) {
+    return p ? p->had_error : true;
 }
 
 void parser_destroy(Parser *p) {

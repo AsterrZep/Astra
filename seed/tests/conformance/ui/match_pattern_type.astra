@@ -1,0 +1,9 @@
+// A pattern whose type differs from the match target must be rejected
+// EXPECT-ERROR: does not match
+fn main() {
+    let n = 3;
+    print(match n {
+        "x" => 1,
+        _ => 2,
+    });
+}
