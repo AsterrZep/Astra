@@ -32,7 +32,8 @@ programas Astra-0 de principio a fin.
 
 ### Tipos
 `i32`, `f64`, `bool`, `string`, arrays (`[T]`), structs (declaración, literal,
-acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
+acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
+`void`, `nil`.
 
 ### Expresiones
 - Aritmética y comparación: `+ - * / % == != < > <= >=`
@@ -45,7 +46,9 @@ acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
 - Acceso a campo: `p.x`
 - Rangos: `a..b` (exclusivo), `a..=b` (inclusivo)
 - `Enum.Variant` como expresión
-- `match` como expresión (con `or`-patterns `A | B | C` y wildcard `_`)
+- `match` como expresión (con `or`-patterns `A | B | C`, wildcard `_`, guards)
+- **Option/Result constructors**: `some(x)`, `none`, `ok(x)`, `err(x)`
+- **`?` operator**: early return en funciones que retornan Result/Option
 - Llamadas a función, paréntesis, bloques como expresión
 
 ### Sentencias y control de flujo
@@ -60,9 +63,11 @@ acceso a campo), enums unitarios (`Enum.Variant`) y `void`.
 
 ### Runtime
 - Valores: `nil`, `bool`, `int`, `float`, `string`, `array`, `struct`, `enum`, `fn`
-- Igualdad estructural para arrays y structs (mismo tipo de struct + campos)
+- **Option/Result tagged values**: `ok(x)`, `err(x)`, `some(x)` con igualdad estructural
+- Igualdad estructural para arrays, structs, y Option/Result
 - Builtin `print(...)` (variádico)
 - Errores de runtime con número de línea
+- **`?` operator**: early return en funciones con Result/Option
 
 ## 3. Estado de la suite de tests
 
