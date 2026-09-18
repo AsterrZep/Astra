@@ -1,0 +1,9 @@
+// Basic Option constructors
+// EXPECT: some(42)
+// EXPECT: nil
+fn main() {
+    let x = some(42)
+    let y = none
+    print(x)
+    print(y)
+}

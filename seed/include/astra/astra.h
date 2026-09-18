@@ -248,6 +248,7 @@ typedef enum {
     NODE_PATTERN_WILDCARD,
     NODE_PATTERN_BIND,   /* binding pattern: captures matched value */
     NODE_PATTERN_VARIANT_BIND, /* Enum.Variant(bind1, bind2, ...) */
+    NODE_PATTERN_BUILTIN_VARIANT, /* ok(v), err(e), some(x), none */
     NODE_PATTERN_OR,
     NODE_OPTIONAL_CHAIN,
     NODE_BLOCK,
@@ -371,6 +372,18 @@ typedef struct {
     Node   *variant; /* NODE_FIELD_ACCESS for Enum.Variant */
     DYNARRAY(InternedString) bindings; /* binding names for each payload field */
 } PatternVariantBindExpr;
+
+typedef enum {
+    BUILTIN_VARIANT_OK,
+    BUILTIN_VARIANT_ERR,
+    BUILTIN_VARIANT_SOME,
+    BUILTIN_VARIANT_NONE,
+} BuiltinVariantKind;
+
+typedef struct {
+    BuiltinVariantKind kind;
+    Node *payload; /* inner pattern (NODE_PATTERN_BIND etc.), NULL for none */
+} PatternBuiltinVariantExpr;
 
 typedef struct {
     Node   *object;
@@ -538,6 +551,7 @@ struct Node {
         PatternOrExpr   pattern_or;
         PatternBindExpr pattern_bind;
         PatternVariantBindExpr pattern_variant_bind;
+        PatternBuiltinVariantExpr pattern_builtin_variant;
         BlockExpr       block;
         IfExpr          if_expr;
         WhileExpr       while_expr;
@@ -742,6 +756,8 @@ typedef enum {
     /* Special */
     OPCODE_HALT,          /* stop execution */
     OPCODE_TRY_UNWRAP,    /* expr? — unwrap Result/Option or early return */
+    OPCODE_TAG_IS,        /* pop value, push bool: is it the given tag? (operand: 0=Ok,1=Err,2=Some,3=None) */
+    OPCODE_UNWRAP,        /* pop VAL_OK/VAL_ERR/VAL_SOME, push inner value */
 } OpCode;
 
 typedef struct {

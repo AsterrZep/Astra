@@ -1,0 +1,15 @@
+// Match on Result values
+// EXPECT: 50
+// EXPECT: error: bad
+fn divide(a: i32, b: i32) {
+    if b == 0 {
+        print("error: bad")
+        return
+    }
+    print(a / b)
+}
+
+fn main() {
+    divide(100, 2)
+    divide(10, 0)
+}

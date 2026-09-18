@@ -1,0 +1,11 @@
+// Option/Result structural equality
+// EXPECT: true
+// EXPECT: true
+// EXPECT: false
+// EXPECT: true
+fn main() {
+    print(some(42) == some(42))
+    print(ok("hi") == ok("hi"))
+    print(some(1) == some(2))
+    print(none == none)
+}

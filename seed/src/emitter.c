@@ -85,6 +85,8 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
     case OPCODE_WRAP_OK:
     case OPCODE_WRAP_ERR:
     case OPCODE_WRAP_SOME:
+    case OPCODE_TAG_IS:
+    case OPCODE_UNWRAP:
         return 0;
 
     /* The layout constant sits under the N payload values; the VM consumes
@@ -579,6 +581,24 @@ static void emit_pattern_tests(Emitter *e, Node *pat, uint8_t slot,
         return;
     }
 
+    /* Builtin variant pattern: ok(v), err(e), some(x), none.
+     * Check the value tag and jump to the arm body on match. */
+    if (pat->kind == NODE_PATTERN_BUILTIN_VARIANT) {
+        uint32_t tag;
+        switch (pat->as.pattern_builtin_variant.kind) {
+            case BUILTIN_VARIANT_OK:   tag = 0; break;
+            case BUILTIN_VARIANT_ERR:  tag = 1; break;
+            case BUILTIN_VARIANT_SOME: tag = 2; break;
+            case BUILTIN_VARIANT_NONE: tag = 3; break;
+            default: tag = 3; break;
+        }
+        emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
+        emit_inst_index(e, OPCODE_TAG_IS, tag, line);
+        emit_inst_offset(e, OPCODE_JUMP_IF_TRUE, 0, line);
+        patch_push(e, hits, hit_len, hit_cap, e->code_len - 1);
+        return;
+    }
+
     emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
     emit_pattern_value(e, pat, line);
     emit_inst(e, OPCODE_EQ, line);
@@ -623,6 +643,7 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_PATTERN_WILDCARD:    return "PatternWildcard";
     case NODE_PATTERN_BIND:        return "PatternBind";
     case NODE_PATTERN_VARIANT_BIND: return "PatternVariantBind";
+    case NODE_PATTERN_BUILTIN_VARIANT: return "PatternBuiltinVariant";
     case NODE_PATTERN_OR:          return "PatternOr";
     case NODE_OPTIONAL_CHAIN:    return "OptionalChain";
     case NODE_BLOCK:             return "Block";
@@ -1093,6 +1114,60 @@ static void emit_expr(Emitter *e, Node *node) {
                 }
 
                 /* Guard: after binding extraction, evaluate the guard. */
+                Node *guard = node->as.match_expr.arms.data[i].guard;
+                size_t guard_false_jump = 0;
+                bool has_guard = (guard != NULL);
+                if (has_guard) {
+                    emit_expr(e, guard);
+                    emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
+                    guard_false_jump = e->code_len - 1;
+                }
+
+                emit_branch_value(e, body, "match arm", line);
+                emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+
+                size_t next_arm = e->code_len;
+                e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
+                if (has_guard) {
+                    e->code[guard_false_jump].arg.offset = (int32_t)(next_arm - guard_false_jump);
+                }
+            }
+
+            /* Builtin variant pattern: ok(v), err(e), some(x), none.
+             * Check the tag, unwrap, and bind the payload. */
+            if (pat && pat->kind == NODE_PATTERN_BUILTIN_VARIANT) {
+                size_t *hits = NULL;
+                size_t  hit_len = 0, hit_cap = 0;
+                emit_pattern_tests(e, pat, slot, line, &hits, &hit_len, &hit_cap);
+
+                emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                size_t no_match = e->code_len - 1;
+
+                size_t body_start = e->code_len;
+                for (size_t k = 0; k < hit_len; k++) {
+                    e->code[hits[k]].arg.offset = (int32_t)(body_start - hits[k]);
+                }
+
+                /* Extract payload: unwrap the value and bind to a local. */
+                Node *payload = pat->as.pattern_builtin_variant.payload;
+                if (payload && payload->kind == NODE_PATTERN_BIND) {
+                    emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
+                    emit_inst(e, OPCODE_UNWRAP, line);
+                    uint8_t bind_slot = add_local(e, payload->as.pattern_bind.name);
+                    if (bind_slot == 0xFF) {
+                        fprintf(stderr, "error: too many locals for match\n");
+                        e->error_count++;
+                    } else {
+                        emit_inst_index(e, OPCODE_SET_LOCAL, bind_slot, line);
+                    }
+                } else if (payload && payload->kind == NODE_PATTERN_WILDCARD) {
+                    /* ok(_) — unwrap and discard */
+                    emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
+                    emit_inst(e, OPCODE_UNWRAP, line);
+                    emit_inst(e, OPCODE_POP, line);
+                }
+
                 Node *guard = node->as.match_expr.arms.data[i].guard;
                 size_t guard_false_jump = 0;
                 bool has_guard = (guard != NULL);

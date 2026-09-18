@@ -492,6 +492,8 @@ static const char *opname(OpCode op) {
     case OPCODE_WRAP_SOME:    return "WRAP_SOME";
     case OPCODE_HALT:         return "HALT";
     case OPCODE_TRY_UNWRAP:   return "TRY_UNWRAP";
+    case OPCODE_TAG_IS:       return "TAG_IS";
+    case OPCODE_UNWRAP:       return "UNWRAP";
     default:                  return "???";
     }
 }
@@ -1408,6 +1410,49 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
 
         case OPCODE_HALT:
             return VM_OK;
+
+        /* ---- Builtin variant pattern matching ---- */
+
+        case OPCODE_TAG_IS: {
+            if (vm->sp == 0) {
+                vm_runtime_error(vm, line, "stack underflow on tag_is");
+                return VM_RUNTIME_ERROR;
+            }
+            Value val = vm->stack[vm->sp - 1];
+            uint32_t tag = inst.arg.index;
+            bool match = false;
+            switch (tag) {
+                case 0: match = (val.kind == VAL_OK);   break;
+                case 1: match = (val.kind == VAL_ERR);  break;
+                case 2: match = (val.kind == VAL_SOME); break;
+                case 3: match = (val.kind == VAL_NIL);  break;
+            }
+            vm->stack[vm->sp - 1] = value_bool(match);
+        } break;
+
+        case OPCODE_UNWRAP: {
+            if (vm->sp == 0) {
+                vm_runtime_error(vm, line, "stack underflow on unwrap");
+                return VM_RUNTIME_ERROR;
+            }
+            Value val = vm->stack[vm->sp - 1];
+            switch (val.kind) {
+                case VAL_OK:
+                    vm->stack[vm->sp - 1] = *val.as.ok_val.inner;
+                    break;
+                case VAL_ERR:
+                    vm->stack[vm->sp - 1] = *val.as.err_val.inner;
+                    break;
+                case VAL_SOME:
+                    vm->stack[vm->sp - 1] = *val.as.some_val.inner;
+                    break;
+                default:
+                    vm_runtime_error(vm, line,
+                        "unwrap requires ok, err, or some, got %s",
+                        type_name(val));
+                    return VM_RUNTIME_ERROR;
+            }
+        } break;
 
         default:
             vm_runtime_error(vm, line, "unknown opcode %d", (int)inst.op);

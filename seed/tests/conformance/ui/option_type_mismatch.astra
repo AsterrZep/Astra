@@ -1,0 +1,5 @@
+// Type mismatch with Option/Result
+// EXPECT-ERROR: type mismatch
+fn main() {
+    let x: i32 = ok("hello")
+}

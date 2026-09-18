@@ -313,6 +313,53 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         symbol_table_insert(tc->symbols, sym);
     }
 
+    /* Register built-in Option enum: some(T) -> Option[T], none -> Option[T] */
+    {
+        Type *opt_type = type_new(arena, TYPE_ENUM);
+        opt_type->as.enumeration.name = string_intern_cstr(strings, "Option");
+        opt_type->as.enumeration.variant_count = 2;
+        opt_type->as.enumeration.variants = arena_new_array(arena, InternedString, 2);
+        opt_type->as.enumeration.variants[0] = string_intern_cstr(strings, "some");
+        opt_type->as.enumeration.variants[1] = string_intern_cstr(strings, "none");
+        opt_type->as.enumeration.payloads = arena_new_array(arena, VariantLayout, 2);
+        /* some(T): one payload of unknown type */
+        opt_type->as.enumeration.payloads[0].field_count = 1;
+        opt_type->as.enumeration.payloads[0].types = arena_new_array(arena, Type *, 1);
+        opt_type->as.enumeration.payloads[0].types[0] = type_new(arena, TYPE_UNKNOWN);
+        opt_type->as.enumeration.payloads[0].names = NULL;
+        /* none: unit variant, no payload */
+        opt_type->as.enumeration.payloads[1].field_count = 0;
+        opt_type->as.enumeration.payloads[1].types = NULL;
+        opt_type->as.enumeration.payloads[1].names = NULL;
+
+        checker_add_variant(tc, string_intern_cstr(strings, "some"), opt_type);
+        checker_add_variant(tc, string_intern_cstr(strings, "none"), opt_type);
+    }
+
+    /* Register built-in Result enum: ok(T) -> Result[T, E], err(E) -> Result[T, E] */
+    {
+        Type *res_type = type_new(arena, TYPE_ENUM);
+        res_type->as.enumeration.name = string_intern_cstr(strings, "Result");
+        res_type->as.enumeration.variant_count = 2;
+        res_type->as.enumeration.variants = arena_new_array(arena, InternedString, 2);
+        res_type->as.enumeration.variants[0] = string_intern_cstr(strings, "ok");
+        res_type->as.enumeration.variants[1] = string_intern_cstr(strings, "err");
+        res_type->as.enumeration.payloads = arena_new_array(arena, VariantLayout, 2);
+        /* ok(T): one payload of unknown type */
+        res_type->as.enumeration.payloads[0].field_count = 1;
+        res_type->as.enumeration.payloads[0].types = arena_new_array(arena, Type *, 1);
+        res_type->as.enumeration.payloads[0].types[0] = type_new(arena, TYPE_UNKNOWN);
+        res_type->as.enumeration.payloads[0].names = NULL;
+        /* err(E): one payload of unknown type */
+        res_type->as.enumeration.payloads[1].field_count = 1;
+        res_type->as.enumeration.payloads[1].types = arena_new_array(arena, Type *, 1);
+        res_type->as.enumeration.payloads[1].types[0] = type_new(arena, TYPE_UNKNOWN);
+        res_type->as.enumeration.payloads[1].names = NULL;
+
+        checker_add_variant(tc, string_intern_cstr(strings, "ok"), res_type);
+        checker_add_variant(tc, string_intern_cstr(strings, "err"), res_type);
+    }
+
     return tc;
 }
 
@@ -1036,6 +1083,21 @@ static void check_pattern(TypeChecker *tc, Node *pat, Type *target,
                          (int)v.len, v.str, bind_count);
                 return;
             }
+        }
+        return;
+    }
+
+    case NODE_PATTERN_BUILTIN_VARIANT: {
+        /* ok(v), err(e), some(x), none — builtin variant patterns */
+        BuiltinVariantKind bvk = pat->as.pattern_builtin_variant.kind;
+        Node *payload = pat->as.pattern_builtin_variant.payload;
+        if (bvk == BUILTIN_VARIANT_NONE) {
+            /* none matches nil (no payload to bind) */
+            return;
+        }
+        /* ok/err/some: bind payload pattern to target type */
+        if (payload) {
+            check_pattern(tc, payload, target, has_wildcard, covered, covered_n);
         }
         return;
     }

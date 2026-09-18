@@ -102,6 +102,7 @@ static Node *parse_statement(Parser *p);
 static Node *parse_declaration(Parser *p);
 static Node *parse_block(Parser *p);
 static Node *parse_type(Parser *p);
+static Node *parse_pattern(Parser *p);
 
 /* -----------------------------------------------------------
  * Growable list helper (arena-backed)
@@ -665,6 +666,36 @@ static Node *parse_pattern_primary(Parser *p) {
         return parse_unary(p);
     }
 
+    case TOKEN_OK:
+    case TOKEN_ERR:
+    case TOKEN_SOME: {
+        BuiltinVariantKind bvk;
+        switch (p->current.kind) {
+            case TOKEN_OK:   bvk = BUILTIN_VARIANT_OK;   break;
+            case TOKEN_ERR:  bvk = BUILTIN_VARIANT_ERR;  break;
+            default:         bvk = BUILTIN_VARIANT_SOME;  break;
+        }
+        advance(p);
+        Token kw = p->previous;
+        Node *n = node_new(p->arena, NODE_PATTERN_BUILTIN_VARIANT, kw.loc);
+        n->as.pattern_builtin_variant.kind = bvk;
+        n->as.pattern_builtin_variant.payload = NULL;
+        if (match(p, TOKEN_LPAREN)) {
+            Node *inner = parse_pattern(p);
+            expect(p, TOKEN_RPAREN, "')' after pattern");
+            n->as.pattern_builtin_variant.payload = inner;
+        }
+        return n;
+    }
+
+    case TOKEN_NONE: {
+        advance(p);
+        Node *n = node_new(p->arena, NODE_PATTERN_BUILTIN_VARIANT, p->previous.loc);
+        n->as.pattern_builtin_variant.kind = BUILTIN_VARIANT_NONE;
+        n->as.pattern_builtin_variant.payload = NULL;
+        return n;
+    }
+
     case TOKEN_IDENT: {
         advance(p);
         Token id = p->previous;
@@ -1132,6 +1163,18 @@ static Node *parse_type(Parser *p) {
         advance(p);
         Node *n = node_new(p->arena, NODE_TYPE_IDENT, p->previous.loc);
         n->as.type_ident.name = p->previous.text;
+        /* Handle generic type parameters: Result<T, E>, Option<T> */
+        if (check(p, TOKEN_LT)) {
+            advance(p); /* consume < */
+            /* For now, skip generic arguments until > */
+            int depth = 1;
+            while (depth > 0 && !check(p, TOKEN_EOF)) {
+                if (check(p, TOKEN_LT)) depth++;
+                if (check(p, TOKEN_GT)) depth--;
+                if (depth > 0) advance(p);
+            }
+            if (depth == 0) advance(p); /* consume > */
+        }
         return n;
     }
     if (match(p, TOKEN_LBRACKET)) {
@@ -1266,7 +1309,7 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
             advance(p);
             left = parse_null_lit(p, NULL, PREC_PRIMARY);
             break;
-        case TOKEN_IDENT: {
+    case TOKEN_IDENT: {
             advance(p);
             Token id = p->previous;
             if (!p->no_struct_lit && check(p, TOKEN_LBRACE)) {

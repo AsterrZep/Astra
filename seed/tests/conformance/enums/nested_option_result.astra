@@ -1,0 +1,9 @@
+// Match on Option values
+// EXPECT: 10
+fn main() {
+    let x = some(10)
+    match x {
+        some(v) => print(v),
+        none => print("nothing"),
+    }
+}

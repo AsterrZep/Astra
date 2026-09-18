@@ -1,0 +1,9 @@
+// Basic Result constructors
+// EXPECT: ok(hello)
+// EXPECT: err(failed)
+fn main() {
+    let r = ok("hello")
+    let e = err("failed")
+    print(r)
+    print(e)
+}
