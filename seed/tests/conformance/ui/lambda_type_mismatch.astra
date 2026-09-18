@@ -1,0 +1,10 @@
+// Lambda type mismatch should error
+// EXPECT-ERROR: expected i32, got string
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn main() {
+    let inc = |x: i32| -> i32 { x + 1 }
+    print(apply(inc, "hello"))
+}

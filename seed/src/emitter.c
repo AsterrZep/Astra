@@ -1505,6 +1505,92 @@ static void emit_expr(Emitter *e, Node *node) {
         emit_inst(e, OPCODE_TRY_UNWRAP, node->loc.line);
     } break;
 
+    case NODE_LAMBDA: {
+        uint32_t line = node->loc.line;
+        FnObj *fn = arena_alloc_zero(e->arena, sizeof(FnObj), _Alignof(FnObj));
+        if (!fn) return;
+
+        Instruction *saved_code = e->code;
+        size_t saved_len = e->code_len;
+        Value *saved_consts = e->constants;
+        size_t saved_clen = e->const_len;
+        uint16_t saved_local_count = e->local_count;
+        uint8_t saved_scope_depth = e->scope_depth;
+        int32_t saved_sp = e->sp;
+
+        /* Save the local slots we're about to overwrite (indices 0..N-1) */
+        Local saved_locals[EMITTER_MAX_LOCALS];
+        for (uint16_t i = 0; i < saved_local_count && i < EMITTER_MAX_LOCALS; i++) {
+            saved_locals[i] = e->locals[i];
+        }
+
+        e->code = NULL;
+        e->code_len = 0;
+        e->code_cap = 0;
+        e->constants = NULL;
+        e->const_len = 0;
+        e->const_cap = 0;
+        e->scope_depth = 1;
+        e->local_count = 0;
+        e->sp = 0;
+
+        add_local(e, hidden_local(e, "ret"));
+
+        fn->param_count = (uint8_t)node->as.lambda.params.len;
+        for (size_t i = 0; i < fn->param_count; i++) {
+            add_local(e, node->as.lambda.params.data[i]);
+        }
+
+        bool body_is_block = node->as.lambda.body &&
+                             node->as.lambda.body->kind == NODE_BLOCK;
+        bool implicit_return = body_is_block &&
+            node->as.lambda.body->as.block.last_expr != NULL;
+
+        if (node->as.lambda.body) {
+            emit_expr(e, node->as.lambda.body);
+        }
+
+        if (e->code_len == 0 || e->code[e->code_len - 1].op != OPCODE_RET) {
+            if (!implicit_return) {
+                uint32_t nil_idx = add_constant(e, value_nil());
+                emit_inst_index(e, OPCODE_CONST, nil_idx, line);
+            }
+            emit_inst(e, OPCODE_RET, line);
+        }
+
+        if (e->sp != 0) {
+            fprintf(stderr, "error:%s:%u: internal: lambda leaves %d "
+                            "value(s) on the stack at return\n",
+                    node->loc.filename ? node->loc.filename : "?", node->loc.line,
+                    (int)e->sp);
+            e->error_count++;
+        }
+
+        fn->local_count = e->local_count;
+        fn->code     = e->code;
+        fn->code_len = e->code_len;
+        fn->constants     = e->constants;
+        fn->const_len     = e->const_len;
+
+        e->code = saved_code;
+        e->code_len = saved_len;
+        e->code_cap = saved_len;
+        e->constants = saved_consts;
+        e->const_len = saved_clen;
+        e->const_cap = saved_clen;
+        e->local_count = saved_local_count;
+        e->scope_depth = saved_scope_depth;
+        e->sp = saved_sp;
+
+        /* Restore the local slots we overwrote */
+        for (uint16_t i = 0; i < saved_local_count && i < EMITTER_MAX_LOCALS; i++) {
+            e->locals[i] = saved_locals[i];
+        }
+
+        uint32_t fn_idx = add_constant(e, value_fn(fn));
+        emit_inst_index(e, OPCODE_CONST, fn_idx, line);
+    } break;
+
     default:
         break;
     }

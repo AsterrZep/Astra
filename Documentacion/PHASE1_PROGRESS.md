@@ -92,9 +92,10 @@ bajo ASan/UBSan):
 | arrays | `literal_index`, `element_assign`, `alias_write` (compartición de handles) |
 | structs | `literal_fields`, `field_order`, `struct_in_function`, `field_assign` (cadenas anidadas) |
 | blocks | `tail_expression`, `if_value` |
-| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding` |
+| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding`, `option_basic`, `option_equality`, `result_basic`, `result_match`, `nested_option_result` |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error` |
+| lambda | `lambda_basic`, `lambda_multi` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
@@ -176,11 +177,13 @@ Ordenado por valor para el objetivo de bootstrap.
       patrones anidados. Ver `research/04` §9.3.
 - [x] **Guards** `patrón if cond` (parser soporta, emitter genera código).
 - [x] **Option/Result**: constructores `some(x)`, `none`, `ok(x)`, `err(x)`
-      implementados como enums builtin. Operador `?` pendiente.
+      implementados como enums builtin. Operador `?` implementado.
 
 ### Closures y módulos
-- [ ] Lambdas `|x| ...` (Tier 2 del MVP).
-- [ ] Cierre de variables capturadas.
+- [x] **Lambdas** `|params| { body }`: parse, typecheck (con inferencia de retorno),
+      emit como FnObj interno. Soporta parámetros tipados, return type annotations
+      y return statements. Sin captura de variables (closures) aún.
+- [ ] Cierre de variables capturadas (Tier 2 del MVP).
 
 ### Sistema de tipos
 - [ ] Genéricos básicos por monomorfización (Tier 3).

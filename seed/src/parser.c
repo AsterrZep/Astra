@@ -1377,6 +1377,65 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
             n->as.err_expr.value = value;
             left = n;
         } break;
+        case TOKEN_PIPE: {
+            /* Lambda expression: |params| body */
+            advance(p);
+            SrcLoc loc = p->previous.loc;
+            Node *n = node_new(p->arena, NODE_LAMBDA, loc);
+            n->as.lambda.params.data    = NULL;
+            n->as.lambda.params.len     = 0;
+            n->as.lambda.params.cap     = 0;
+            n->as.lambda.param_types.data = NULL;
+            n->as.lambda.param_types.len  = 0;
+            n->as.lambda.param_types.cap  = 0;
+            n->as.lambda.return_type = NULL;
+            n->as.lambda.body = NULL;
+
+            /* Parse parameters: |x, y: i32, z| */
+            if (!check(p, TOKEN_PIPE)) {
+                do {
+                    expect(p, TOKEN_IDENT, "parameter name");
+                    if (n->as.lambda.params.len >= n->as.lambda.params.cap) {
+                        size_t new_cap = n->as.lambda.params.cap == 0 ? 8 : n->as.lambda.params.cap * 2;
+                        InternedString *new_data = arena_new_array(p->arena, InternedString, new_cap);
+                        if (n->as.lambda.params.data) {
+                            memcpy(new_data, n->as.lambda.params.data, sizeof(InternedString) * n->as.lambda.params.len);
+                        }
+                        n->as.lambda.params.data = new_data;
+                        n->as.lambda.params.cap  = new_cap;
+                    }
+                    n->as.lambda.params.data[n->as.lambda.params.len++] = p->previous.text;
+
+                    /* Optional type annotation */
+                    Node *ptype = NULL;
+                    if (match(p, TOKEN_COLON)) {
+                        ptype = parse_type(p);
+                    }
+                    if (n->as.lambda.param_types.len >= n->as.lambda.param_types.cap) {
+                        size_t new_cap = n->as.lambda.param_types.cap == 0 ? 8 : n->as.lambda.param_types.cap * 2;
+                        Node **new_data = arena_new_array(p->arena, Node *, new_cap);
+                        if (n->as.lambda.param_types.data) {
+                            memcpy(new_data, n->as.lambda.param_types.data, sizeof(Node *) * n->as.lambda.param_types.len);
+                        }
+                        n->as.lambda.param_types.data = new_data;
+                        n->as.lambda.param_types.cap  = new_cap;
+                    }
+                    n->as.lambda.param_types.data[n->as.lambda.param_types.len++] = ptype;
+                } while (match(p, TOKEN_COMMA));
+            }
+            expect(p, TOKEN_PIPE, "'|' after lambda parameters");
+
+            /* Optional return type: -> Type */
+            if (match(p, TOKEN_ARROW)) {
+                n->as.lambda.return_type = parse_type(p);
+            }
+
+            /* Parse body: must be a block */
+            skip_newlines(p);
+            expect(p, TOKEN_LBRACE, "'{' for lambda body");
+            n->as.lambda.body = parse_block(p);
+            left = n;
+        } break;
         default:
             parser_error(p, "unexpected token in expression");
             advance(p);

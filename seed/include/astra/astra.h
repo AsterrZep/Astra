@@ -264,6 +264,7 @@ typedef enum {
 
     /* Declarations */
     NODE_FN_DECL,
+    NODE_LAMBDA,       /* |params| body */
     NODE_STRUCT_DECL,
     NODE_ENUM_DECL,
     NODE_CONST_DECL,
@@ -461,6 +462,13 @@ typedef struct {
 } FnDecl;
 
 typedef struct {
+    DYNARRAY(InternedString) params; /* param names */
+    DYNARRAY(Node *)      param_types;
+    Node                 *return_type; /* may be NULL */
+    Node                 *body;        /* BlockExpr */
+} LambdaExpr;
+
+typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) field_names;
     DYNARRAY(Node *)      field_types;
@@ -560,6 +568,7 @@ struct Node {
         ReturnExpr      return_expr;
         AssignExpr      assign;
         FnDecl          fn_decl;
+        LambdaExpr      lambda;
         StructDecl      struct_decl;
         EnumDecl        enum_decl;
         ConstDecl       const_decl;

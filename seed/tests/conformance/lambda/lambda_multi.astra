@@ -1,0 +1,15 @@
+// Multiple lambdas used as values
+// EXPECT: 6
+// EXPECT: 10
+// EXPECT: 11
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn main() {
+    let inc = |x: i32| -> i32 { x + 1 }
+    let double = |x: i32| -> i32 { x * 2 }
+    print(apply(inc, 5))
+    print(apply(double, 5))
+    print(apply(inc, apply(double, 5)))
+}

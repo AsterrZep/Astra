@@ -1769,6 +1769,64 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
 
     /* Declarations */
     case NODE_FN_DECL:      typecheck_fn_decl(tc, node); return type_new(tc->arena, TYPE_VOID);
+    case NODE_LAMBDA: {
+        /* Resolve parameter types */
+        size_t param_count = node->as.lambda.params.len;
+        Type **param_types = arena_new_array(tc->arena, Type *, param_count);
+        for (size_t i = 0; i < param_count; i++) {
+            param_types[i] = resolve_type_node(tc, node->as.lambda.param_types.data[i]);
+            if (type_is_error(param_types[i])) return type_new(tc->arena, TYPE_VOID);
+        }
+        /* Resolve return type from annotation */
+        Type *ret_type = NULL;
+        if (node->as.lambda.return_type) {
+            ret_type = resolve_type_node(tc, node->as.lambda.return_type);
+            if (type_is_error(ret_type)) return type_new(tc->arena, TYPE_VOID);
+        }
+        /* Enter scope and bind parameters */
+        symbol_table_push_scope(tc->symbols);
+        for (size_t i = 0; i < param_count; i++) {
+            Symbol sym = {
+                .name    = node->as.lambda.params.data[i],
+                .type    = param_types[i],
+                .is_mut  = false,
+                .is_fn   = false,
+                .def_loc = node->loc,
+            };
+            symbol_table_insert(tc->symbols, sym);
+        }
+        /* Save and set current function return type for return statements.
+         * If we don't have an explicit return type, leave it NULL for now;
+         * we'll infer it after type-checking the body. */
+        Type *saved_return = tc->current_fn_return;
+        tc->current_fn_return = ret_type;
+        /* Type-check body */
+        Type *body_type = NULL;
+        if (node->as.lambda.body) {
+            body_type = typecheck_node(tc, node->as.lambda.body);
+        }
+        tc->current_fn_return = saved_return;
+        symbol_table_pop_scope(tc->symbols);
+        /* Infer return type: if not annotated, use body type. For blocks
+         * ending in return statements the body_type is void, so walk the
+         * body to find the return value type. */
+        if (!ret_type) {
+            /* No explicit return type: try to infer from body.
+             * For blocks ending in tail expressions, body_type is the expr type.
+             * For blocks ending in return, we need to check. */
+            if (body_type && body_type->kind != TYPE_VOID) {
+                ret_type = body_type;
+            } else if (body_type && body_type->kind == TYPE_VOID) {
+                /* Block is void — likely ends with return statements.
+                 * For now, require explicit return type annotation. */
+                return tc_error_type(tc, node->loc,
+                    "lambda requires explicit return type annotation");
+            } else {
+                ret_type = type_new(tc->arena, TYPE_VOID);
+            }
+        }
+        return type_new_fn(tc->arena, param_types, param_count, ret_type);
+    }
     case NODE_STRUCT_DECL:  typecheck_struct_decl(tc, node); return type_new(tc->arena, TYPE_VOID);
     case NODE_ENUM_DECL:    typecheck_enum_decl(tc, node); return type_new(tc->arena, TYPE_VOID);
     case NODE_VAR_DECL:     typecheck_var_decl(tc, node); return type_new(tc->arena, TYPE_VOID);

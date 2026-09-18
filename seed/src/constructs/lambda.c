@@ -14,20 +14,19 @@ const ConstructSpec construct_lambda = {
     .role       = CONSTRUCT_LEAD,
     .keyword    = NULL,
     .token      = TOKEN_PIPE,
-    .node_kind  = CONSTRUCT_NO_NODE,
+    .node_kind  = NODE_LAMBDA,
     .position   = CONSTRUCT_EXPR,
     .phases     = 0,
     .has_braces = true,
-    .in_astra0  = false,
+    .in_astra0  = true,
     .deps       = deps,
     .grammar    = "LambdaExpr ::= \"|\" LambdaParams? \"|\" (\"->\" Type)? Block\n"
                   "LambdaParam ::= Identifier (\":\" Type)?",
     .research   = "research/010 §12.1 (lambda/closure); research/011 §5.2 (Tier 2 of the MVP)",
-    .note       = "Excluded from Astra-0: closures need capture analysis and a heap "
-                  "representation for the captured environment, and the seed has no ARC "
-                  "or GC to own that memory (research/011 §5.4 - the seed uses arena "
-                  "allocation only). `|` is currently parsed as bitwise-or, so there is "
-                  "no ambiguity in practice yet; the parser will need lookahead when "
-                  "this lands.",
+    .note       = "Lambdas compile to inner FnObj values, like regular functions. "
+                  "Closures (captured variables) are not supported in Astra-0; "
+                  "the lambda body may only reference its own parameters and globals. "
+                  "`|` is disambiguated from bitwise-or by context: a `|` at expression "
+                  "start is always a lambda, while `|` after an expression is bitwise-or.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };
