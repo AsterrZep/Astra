@@ -11,10 +11,16 @@ subconjunto **Astra-0**, suficiente para arrancar la Fase 2 (compilador en Zig).
 ```
 .astra ─▶ Lexer ─▶ Parser ─▶ Type Checker ─▶ Emitter ─▶ Bytecode ─▶ VM
           lexer.c  parser.c  typechecker.c    emitter.c               vm.c
+                                                                          │
+                                              ─── --emit-c ───────────────┘
+                                                                          │
+                                                          Bytecode ─▶ C Codegen ─▶ .c
+                                                                   codegen.c
 ```
 
 Todos los componentes están conectados y el binario `seed/astra-seed` ejecuta
-programas Astra-0 de principio a fin.
+programas Astra-0 de principio a fin. El pipeline `--emit-c` genera código C
+ejecutable desde el bytecode, compilable con `gcc`/`clang`.
 
 | Componente | Estado | Notas |
 |:-----------|:-------|:------|
@@ -26,6 +32,7 @@ programas Astra-0 de principio a fin.
 | Type checker | ✅ | tabla de símbolos con ámbitos; exhaustividad de `match`; errores con ubicación |
 | Emitter | ✅ | bytecode de pila, parcheo de saltos, locales ocultos de bucle, `SWAP` para el temporal de `match` |
 | VM | ✅ | ~30 opcodes, frames de llamada, globals, builtins |
+| C Codegen | 🟡 | `--emit-c` genera .c compilable; aritmética, control, funciones, structs, enums, arrays. Ver §3c |
 | Runner de tests | ✅ | `tests/run_tests.sh` (`EXPECT` / `EXPECT-ERROR`) |
 
 ## 2. Lenguaje soportado (Astra-0)
@@ -80,7 +87,7 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (46 casos, todos en verde, también
+los casos de conformidad. Cobertura actual (55 casos, todos en verde, también
 bajo ASan/UBSan):
 
 | Área | Casos |
@@ -162,6 +169,78 @@ el parser de `struct` declarations espera campos separados por saltos de línea 
 ante una coma, entra en un bucle de errores infinito en vez de abortar. No lo
 toca este hito; es frontend puro.
 
+## 3c. Estado del C Codegen (`--emit-c`)
+
+Pipeline: `.astra → Lexer → Parser → Typecheck → Emitter → Bytecode → C Codegen → .c → gcc`
+
+Enfoque: **Bytecode→C** (estilo Haxe/HashLink), reutiliza el backend de bytecode
+existente. El C codegen lee las instrucciones del bytecode y genera código C
+equivalente que se compila con el compilador del sistema.
+
+### Archivos
+
+| Archivo | Responsabilidad |
+|:--------|:----------------|
+| `seed/src/codegen_runtime.h` | Runtime C incluido por los .c generados: tipos (AstraValue, AstraStruct, AstraEnumObj), constructores, operaciones aritméticas/comparación/lógica, print, manejo de errores con setjmp/longjmp |
+| `seed/src/codegen.h` | API pública: `codegen_create()`, `codegen_emit_to_file()`, `codegen_destroy()` |
+| `seed/src/codegen.c` | Driver de codegen: detección de globals, declaración de tipos, forward declarations de funciones, emisión de cuerpos de función, código de módulo, emisión de main() |
+
+### Lo que funciona (verificado contra VM)
+
+| Feature | Estado | Notas |
+|:--------|:-------|:------|
+| Aritmética (`+`, `-`, `*`, `/`, `%`, unario `-`) | ✅ | Salida idéntica a VM |
+| Comparaciones (`==`, `!=`, `<`, `>`, `<=`, `>=`) | ✅ | |
+| Lógicos (`&&`, `\|\|`, `!`) | ✅ | Cortocircuito generado |
+| Literales (int, float, string, bool, nil) | ✅ | |
+| `let` variables (locales y globales) | ✅ | |
+| `if` / `else` | ✅ | Como statement y expresión |
+| `for..in` (rangos exclusivos) | ✅ | Requiere cómputo correcto de max_slot para separar stack de locals |
+| Builtins (`print`) | ✅ | Detectado por `param_count==255 && code==NULL` |
+| Llamadas a función | ✅ | Frame offset correcto para builtins vs usuario |
+| Recursión | ✅ | `OPCODE_RET` manejado en codegen de función |
+| Arrays (literal + indexado) | ✅ | `astra_array_new` + `astra_array_get` |
+| Structs (literal + acceso a campo) | ✅ | `AstraStructDef`/`AstraStruct` estáticos, lookup por nombre en runtime |
+| Enums unitarios | ✅ | `Color.Red` como `{enum_name, variant_name}` |
+
+### Bugs corregidos durante el desarrollo
+
+1. **Stack-local overlap**: `sp` iniciaba en 0, sobreponiéndose con slots de variables locales. Fix: calcular `max_slot` del bytecode.
+2. **Jump offset off-by-one**: El target del salto en C debe ser `ip + offset` (no `ip + 1 + offset`). Corregido en 6 ubicaciones.
+3. **`OPCODE_RET` faltante**: El switch de codegen de función no manejaba RET, causando crash en recursión.
+4. **Struct codegen**: Reescrito para usar `AstraStructDef`/`AstraStruct` matching VM, con lookup por nombre en runtime.
+5. **GET_FIELD/SET_FIELD**: Ahora hacen lookup por nombre (strcmp) en lugar de índice hardcodeado.
+6. **Struct def constants**: `VAL_STRUCT_DEF` no era emitido; agregado `register_struct_def()` + `emit_struct_def_globals()`.
+7. **Enum variant constants**: `VAL_ENUM` no era emitido; agregado handler.
+8. **Runtime header**: `astra_struct_new()` movido después de definición de `AstraValue` (tipo incompleto).
+
+### Lo que falta (bloqueado o pendiente)
+
+| Feature | Problema | Esfuerzo estimado |
+|:--------|:---------|:-------------------|
+| **Lambdas** | Emite `astra_fn_new(NULL, 0)` — no genera cuerpo C para el FnObj del lambda | Medio: necesita generar funciones C estáticas para cada lambda FnObj |
+| **Match** | Falla con "cannot call non-function" — probablemente porque el desugaramiento genera CALL sobre valor no-función | Medio: investigar bytecode generado para match |
+| **Option/Result** | TRY_UNWRAP, TAG_IS, UNWRAP no testeados | Bajo: son opcodes simples |
+| **Enums con datos** | NEW_ENUM emite pero `enum_obj` no se maneja correctamente | Medio: necesita AstraEnumObj con campos |
+| **`?` operator** | No testado en codegen | Bajo: setjmp/longjmp ya está en runtime |
+| **`astra_runtime_error` en module code** | Se usa fuera de contexto setjmp | Bajo: cambiar a fprintf+exit en module code |
+
+### Cómo usar
+
+```bash
+cd seed
+make debug                        # compila astra-seed con ASan+UBSan
+./astra-seed --emit-c input.astra # genera input.c
+gcc -Wall -Wextra -o output input.c -lm  # compila el C generado
+./output                          # ejecuta
+```
+
+Flags de debug del codegen:
+```bash
+ASAN_OPTIONS=detect_leaks=0 ./astra-seed --emit-c input.astra  # sin leak detection
+./astra-seed --emit-c input.astra 2>err.txt                    # errores en stderr
+```
+
 ## 4. Pendiente para completar la Fase 1
 
 Ordenado por valor para el objetivo de bootstrap.
@@ -190,6 +269,18 @@ Ordenado por valor para el objetivo de bootstrap.
 - [ ] Traits con despacho simple (Tier 3).
 - [ ] Unidades de medida (fuera del alcance del seed).
 
+### C Codegen (`--emit-c`)
+- [x] **Fundamentos**: `codegen_runtime.h`, `codegen.h`, `codegen.c`, integración CLI.
+- [x] **Literales y operaciones**: aritmética, comparación, lógicos, strings.
+- [x] **Variables y control flow**: locales, globales, if/else, for..in.
+- [x] **Funciones**: forward declarations, llamadas, return, recursión.
+- [x] **Agregados básicos**: arrays, structs con acceso a campo, enums unitarios.
+- [ ] **Lambdas**: generar funciones C estáticas para cada lambda FnObj.
+- [ ] **Match**: investigar por qué falla el desugaramiento en C codegen.
+- [ ] **Option/Result**: probar TRY_UNWRAP, TAG_IS, UNWRAP.
+- [ ] **Enums con datos**: AstraEnumObj con campos.
+- [ ] **55 tests vía C codegen**: ejecutar la suite completa y corregir diferencias.
+
 ### Arquitectura interna
 - [x] **Registro de constructos**: un archivo por producción EBNF, con gramática
       y cita de investigación obligatorias, y 14 invariantes verificadas
@@ -200,7 +291,7 @@ Ordenado por valor para el objetivo de bootstrap.
       `if` + `else`, que es el par que motivó el diseño.
 
 ### Tooling
-- [ ] Subcomando `--emit-c` (ruta de bootstrap a C del diseño original).
+- [x] **`--emit-c`** (ruta de bootstrap a C del diseño original).
 - [ ] `--dump-bytecode` como flag estable (hoy vía `ASTRA_DUMP_VM`).
 - [ ] Fuzzing del lexer/parser (`clang -fsanitize=fuzzer`).
 - [ ] CI multiplataforma (Linux/macOS/Windows).

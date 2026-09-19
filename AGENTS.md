@@ -51,7 +51,7 @@ Compiler-introspection switches (no input file, they describe the compiler):
 
 | File | Responsibility |
 |:-----|:---------------|
-| `constructs/` | **one file per grammar production** — the construct registry; see `Documentacion/CONSTRUCT_REGISTRY.md` |
+| `constructs/` | **one file per grammar production** — the construct registry |
 | `arena.c` | bump/arena allocator; all compiler memory is freed in bulk |
 | `string_table.c` | string interning (pointer-compare equality) |
 | `lexer.c` | hand-written tokenizer, keyword table |
@@ -60,6 +60,9 @@ Compiler-introspection switches (no input file, they describe the compiler):
 | `typechecker.c` | symbol table (scoped) + type checking |
 | `emitter.c` | AST → stack bytecode; loop/jump patching |
 | `vm.c` | stack VM, value model, builtins |
+| `codegen.c` | `--emit-c`: bytecode → C code generation |
+| `codegen.h` | public codegen API |
+| `codegen_runtime.h` | C runtime included by generated .c files |
 | `driver.c`, `main.c` | pipeline wiring and CLI |
 
 Interfaces between phases are declared in `seed/include/astra/astra.h`.
@@ -89,6 +92,63 @@ These are easy to break and expensive to debug:
    the parser's precedence table. `--check-constructs` enforces both; never
    silence it.
 
+## C Codegen (`--emit-c`)
+
+The C codegen generates executable C from Astra bytecode. The pipeline is:
+
+```
+.astra → Lexer → Parser → Typecheck → Emitter → Bytecode → [C Codegen] → .c → gcc
+```
+
+### Architecture
+
+1. **Runtime header** (`codegen_runtime.h`): Types (AstraValue, AstraStruct,
+   AstraEnumObj, AstraFn), constructors, arithmetic/comparison/logic ops,
+   print, error handling with setjmp/longjmp.
+2. **API** (`codegen.h`): `codegen_create()`, `codegen_emit_to_file()`,
+   `codegen_destroy()`.
+3. **Driver** (`codegen.c`): Scans bytecodes for globals, emits struct/enum
+   type declarations, struct def static globals, function forward declarations,
+   function bodies, module-level code, and main().
+
+### What works (verified against VM)
+
+- Arithmetic, comparisons, booleans, strings, nil
+- `let` variables (local and global)
+- `if`/`else` (as statement and expression)
+- `for..in` (exclusive ranges)
+- Builtins (`print`)
+- Function calls, recursion
+- Arrays (literal + indexed access)
+- Structs (literal + field access by name)
+- Enums (unit variants like `Color.Red`)
+
+### Key codegen invariants
+
+1. **Stack-local separation**: `sp` must start at `max_slot` (not 0) so stack
+   operations don't overwrite local variable slots. The max slot is computed
+   by scanning GET_LOCAL/SET_LOCAL instructions in the bytecode.
+2. **Jump target**: C jump target = `ip + offset` (VM does `ip += offset; ip--`).
+3. **Function call frame**: Builtins use `frame + _fn_slot + 1`, user functions
+   use `frame + _fn_slot`. Detection: `param_count == 255 && code == NULL`.
+4. **Struct def emission**: StructDefs are emitted as static globals with field
+   name arrays. They're discovered by scanning module + function bytecodes for
+   VAL_STRUCT_DEF constants.
+5. **Field access**: GET_FIELD/SET_FIELD use runtime strcmp lookup (not index),
+   matching the VM's behavior.
+
+### What remains for Phase 1 completion
+
+| Feature | Issue | Effort |
+|:--------|:------|:-------|
+| Lambdas | No C function body generated for lambda FnObjs | Medium |
+| Match expressions | "cannot call non-function" at runtime | Medium |
+| Option/Result | TRY_UNWRAP, TAG_IS, UNWRAP not tested | Low |
+| Data-carrying enums | AstraEnumObj not properly handled | Medium |
+| `?` operator | Not tested in C codegen | Low |
+| Module-level errors | `astra_runtime_error` used without setjmp context | Low |
+| Full test suite | 55 conformance tests via C codegen | High |
+
 ## Sub-agent workstreams
 
 When a spawner agent is available, Phase 1 work splits cleanly along these
@@ -103,6 +163,7 @@ agreed up front).
 | **frontend** (lexer + parser + AST) | `lexer.c`, `parser.c`, `ast.c` | `--dump-tokens`, `--dump-ast` |
 | **types** (semantics) | `typechecker.c` | `tests/conformance/ui/*` |
 | **codegen** (emitter + VM) | `emitter.c`, `vm.c` | `ASTRA_DUMP_VM=1`, conformance |
+| **c-codegen** | `codegen.c`, `codegen.h`, `codegen_runtime.h` | `--emit-c` + gcc round-trip |
 | **runtime** (values, builtins) | `vm.c` value helpers | conformance |
 | **tests** (conformance suite) | `tests/**` | `make test` |
 | **docs** | `Documentacion/**`, `AGENTS.md` | review |
@@ -129,5 +190,5 @@ Every workstream must, before handing off:
 - C11, Clang for development, `-Wall -Wextra -Wpedantic` must stay warning-free.
 - Match the existing style: `snake_case`, 4-space indent, block comments
   describing the *why* above non-obvious code.
-- Conventional-commit messages (`feat(seed): …`, `fix(seed): …`, `docs: …`).
+- Conventional-commit messages (`feat(seed): ...`, `fix(seed): ...`, `docs: ...`).
 - New language behaviour requires a conformance test in `seed/tests/`.

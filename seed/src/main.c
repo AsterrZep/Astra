@@ -1,4 +1,5 @@
 #include "priv.h"
+#include "codegen.h"
 #include "constructs/construct.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +18,8 @@ static void print_usage(const char *prog) {
         "  --dump-ast       Parse and dump the AST\n"
         "  --dump-constructs  Dump the construct registry (grammar, research, deps)\n"
         "  --dump-operators   Dump the operator precedence table\n"
-        "  --check-constructs Check registry invariants; exit 1 on any failure\n",
+        "  --check-constructs Check registry invariants; exit 1 on failure\n"
+        "  --emit-c         Generate C code to <file>.c\n",
         prog);
 }
 
@@ -89,6 +91,7 @@ static int run_registry_diagnostic(const char *flag) {
 int main(int argc, char **argv) {
     bool dump_tokens = false;
     bool dump_ast    = false;
+    bool emit_c      = false;
     const char *filename = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -106,6 +109,8 @@ int main(int argc, char **argv) {
             dump_tokens = true;
         } else if (strcmp(argv[i], "--dump-ast") == 0) {
             dump_ast = true;
+        } else if (strcmp(argv[i], "--emit-c") == 0) {
+            emit_c = true;
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "error: unknown option '%s'\n", argv[i]);
             fprintf(stderr, "Usage: %s [options] <file.astra>\n", argv[0]);
@@ -138,6 +143,81 @@ int main(int argc, char **argv) {
         fprintf(stderr, "error: failed to initialize compiler\n");
         free(source);
         return 1;
+    }
+
+    if (emit_c) {
+        /* Run pipeline up to emitter, then generate C */
+        Node *module = parser_parse_module(c->parser);
+        if (!module || parser_had_error(c->parser)) {
+            fprintf(stderr, "error: parse failed\n");
+            free(source);
+            compiler_destroy(c);
+            return 1;
+        }
+
+        TypeChecker *tc = typechecker_create(c->arena, c->strings);
+        if (!tc) {
+            fprintf(stderr, "error: out of memory\n");
+            free(source);
+            compiler_destroy(c);
+            return 1;
+        }
+        c->checker = tc;
+
+        Type *result = typecheck(tc, module);
+        if (!result || typechecker_error_count(tc) > 0) {
+            fprintf(stderr, "error: type check failed with %d error(s)\n",
+                    typechecker_error_count(tc));
+            free(source);
+            compiler_destroy(c);
+            return 1;
+        }
+
+        Emitter *emitter = emitter_create(c->arena, c->strings);
+        if (!emitter) {
+            fprintf(stderr, "error: out of memory\n");
+            free(source);
+            compiler_destroy(c);
+            return 1;
+        }
+        c->emitter = emitter;
+
+        emitter_emit(emitter, module);
+
+        if (emitter_error_count(emitter) > 0) {
+            fprintf(stderr, "error: code generation failed with %d error(s)\n",
+                    emitter_error_count(emitter));
+            free(source);
+            compiler_destroy(c);
+            return 1;
+        }
+
+        /* Generate output path: replace .astra with .c */
+        size_t fn_len = strlen(filename);
+        char *out_path = malloc(fn_len + 4);
+        memcpy(out_path, filename, fn_len);
+        /* Strip .astra extension if present */
+        if (fn_len >= 6 && strcmp(filename + fn_len - 6, ".astra") == 0) {
+            memcpy(out_path + fn_len - 6, ".c", 3);
+        } else {
+            memcpy(out_path + fn_len, ".c", 4);
+        }
+
+        Codegen *cg = codegen_create(module, emitter, filename);
+        if (!cg) {
+            fprintf(stderr, "error: out of memory\n");
+            free(out_path);
+            free(source);
+            compiler_destroy(c);
+            return 1;
+        }
+
+        bool ok = codegen_emit_to_file(cg, out_path);
+        codegen_destroy(cg);
+        free(out_path);
+        free(source);
+        compiler_destroy(c);
+        return ok ? 0 : 1;
     }
 
     VMResult result = compiler_run(c);
