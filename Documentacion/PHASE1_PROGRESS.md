@@ -88,7 +88,8 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
 los casos de conformidad. Cobertura actual (60 casos, todos en verde, también
-bajo ASan/UBSan):
+bajo ASan/UBSan). El C codegen (`--emit-c`) reproduce **40/40** tests no-UI
+con output idéntico al VM:
 
 | Área | Casos |
 |:-----|:------|

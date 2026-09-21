@@ -36,6 +36,14 @@ struct Codegen {
     /* Struct def registry: maps StructDef pointer to generated C name */
     struct { const StructDef *def; const char *c_name; } struct_defs[256];
     size_t struct_def_count;
+
+    /* Enum def registry: maps EnumDef pointer to generated C name */
+    struct { const EnumDef *def; const char *c_name; } enum_defs[256];
+    size_t enum_def_count;
+
+    /* Lambda/non-builtin FnObj registry: maps FnObj pointer to generated C name */
+    struct { const FnObj *fn; const char *c_name; uint8_t param_count; } fn_obj_reg[512];
+    size_t fn_obj_reg_count;
 };
 
 /* -----------------------------------------------------------
@@ -110,6 +118,72 @@ static const char *make_global_cname(Codegen *cg, InternedString name) {
 }
 
 /* -----------------------------------------------------------
+ * FnObj registry helpers (lambdas and non-builtin FnObjs)
+ * ----------------------------------------------------------- */
+
+static const char *register_fn_obj(Codegen *cg, const FnObj *fn) {
+    if (!fn) return NULL;
+    for (size_t i = 0; i < cg->fn_obj_reg_count; i++) {
+        if (cg->fn_obj_reg[i].fn == fn) return cg->fn_obj_reg[i].c_name;
+    }
+    if (cg->fn_obj_reg_count >= 512) return "astra_too_many_fns";
+    size_t idx = cg->fn_obj_reg_count;
+    char *buf = malloc(32);
+    snprintf(buf, 32, "astra_lambda_%zu", idx);
+    cg->fn_obj_reg[idx].fn = fn;
+    cg->fn_obj_reg[idx].c_name = buf;
+    cg->fn_obj_reg[idx].param_count = fn->param_count;
+    cg->fn_obj_reg_count++;
+    return buf;
+}
+
+static const char *find_fn_obj_cname(Codegen *cg, const FnObj *fn) {
+    if (!fn) return NULL;
+    for (size_t i = 0; i < cg->fn_obj_reg_count; i++) {
+        if (cg->fn_obj_reg[i].fn == fn) return cg->fn_obj_reg[i].c_name;
+    }
+    return NULL;
+}
+
+/* Recursively scan constants for non-builtin, non-named FnObjs (lambdas).
+ * Named functions (CONST + SET_GLOBAL at module level) are excluded. */
+static void scan_lambda_fns(Codegen *cg, const Value *constants, size_t const_len,
+                             const bool *named_mask) {
+    for (size_t i = 0; i < const_len; i++) {
+        if (constants[i].kind == VAL_FN && constants[i].as.fn_val) {
+            FnObj *fn = constants[i].as.fn_val;
+            if (fn->param_count == 255 && fn->code == NULL) continue;
+            if (!named_mask || !named_mask[i]) {
+                register_fn_obj(cg, fn);
+            }
+            /* Recurse into nested FnObj constants (finds lambdas inside lambdas) */
+            scan_lambda_fns(cg, fn->constants, fn->const_len, NULL);
+        }
+    }
+}
+
+static void scan_all_lambda_fns(Codegen *cg) {
+    size_t code_len = 0;
+    const Instruction *code = emitter_get_code(cg->emitter, &code_len);
+    size_t const_len = 0;
+    const Value *constants = emitter_get_constants(cg->emitter, &const_len);
+
+    /* Build mask of named FnObjs (CONST + SET_GLOBAL at module level) */
+    bool *named_mask = const_len > 0 ? calloc(const_len, sizeof(bool)) : NULL;
+    for (size_t i = 0; i < code_len - 1; i++) {
+        if (code[i].op == OPCODE_CONST && code[i+1].op == OPCODE_SET_GLOBAL) {
+            uint32_t fn_idx = code[i].arg.index;
+            if (fn_idx < const_len && constants[fn_idx].kind == VAL_FN) {
+                named_mask[fn_idx] = true;
+            }
+        }
+    }
+
+    scan_lambda_fns(cg, constants, const_len, named_mask);
+    free(named_mask);
+}
+
+/* -----------------------------------------------------------
  * Forward declaration: emit code for one function
  * ----------------------------------------------------------- */
 static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn);
@@ -169,7 +243,7 @@ static void emit_enum_decls(Codegen *cg) {
                 if (ei->field_counts[j] == 0) continue;
                 cg_writef(cg, "        struct { ");
                 for (uint32_t k = 0; k < ei->field_counts[j]; k++) {
-                    cg_write(cg, "AstraValue v; ");
+                    cg_writef(cg, "AstraValue v%u; ", k);
                 }
                 cg_writef(cg, "} %.*s;\n", (int)ei->variants[j].len, ei->variants[j].str);
             }
@@ -215,6 +289,57 @@ static void emit_struct_def_globals(Codegen *cg) {
     }
 }
 
+/* -----------------------------------------------------------
+ * Register and emit enum defs as static globals
+ * ----------------------------------------------------------- */
+
+static const char *register_enum_def(Codegen *cg, const EnumDef *def) {
+    if (!def) return NULL;
+    for (size_t i = 0; i < cg->enum_def_count; i++) {
+        if (cg->enum_defs[i].def == def) return cg->enum_defs[i].c_name;
+    }
+    if (cg->enum_def_count >= 256) return NULL;
+    char *cname = (char *)malloc(64);
+    snprintf(cname, 64, "g_enumdef_%zu", cg->enum_def_count);
+    cg->enum_defs[cg->enum_def_count].def = def;
+    cg->enum_defs[cg->enum_def_count].c_name = cname;
+    cg->enum_def_count++;
+    return cname;
+}
+
+static void emit_enum_def_fwd_decls(Codegen *cg) {
+    /* No forward declarations needed — enum defs are emitted before functions */
+}
+
+static void emit_enum_def_globals(Codegen *cg) {
+    /* We need the C runtime to have an EnumDef struct. Since codegen_runtime.h
+     * doesn't define it, we emit a compatible layout inline. */
+    for (size_t i = 0; i < cg->enum_def_count; i++) {
+        const EnumDef *def = cg->enum_defs[i].def;
+        const char *cname = cg->enum_defs[i].c_name;
+        /* Emit variant names array */
+        cg_writef(cg, "static const char *%s_variant_names[] = { ", cname);
+        for (size_t j = 0; j < def->variant_count; j++) {
+            cg_writef(cg, "\"%s\"", def->variants[j].name ? def->variants[j].name : "?");
+            if (j < def->variant_count - 1) cg_write(cg, ", ");
+        }
+        cg_write(cg, " };\n");
+        /* Emit field counts array */
+        cg_writef(cg, "static const size_t %s_field_counts[] = { ", cname);
+        for (size_t j = 0; j < def->variant_count; j++) {
+            cg_writef(cg, "%zu", def->variants[j].field_count);
+            if (j < def->variant_count - 1) cg_write(cg, ", ");
+        }
+        cg_write(cg, " };\n");
+        /* Emit a simple struct: { name, variant_count, variant_names, field_counts }.
+         * We define a local CEnumDef type that matches what the generated code needs. */
+        cg_writef(cg, "static const struct { const char *name; size_t variant_count; "
+                  "const char **variant_names; const size_t *field_counts; } %s = "
+                  "{ \"%s\", %zu, %s_variant_names, %s_field_counts };\n\n",
+                  cname, def->name ? def->name : "?", def->variant_count, cname, cname);
+    }
+}
+
 static void emit_struct_def_fwd_decls(Codegen *cg) {
     for (size_t i = 0; i < cg->struct_def_count; i++) {
         const char *cname = cg->struct_defs[i].c_name;
@@ -250,6 +375,31 @@ static void scan_all_struct_defs(Codegen *cg) {
 
     /* Scan module-level constants (may contain FnObjs with nested struct defs) */
     scan_struct_defs(cg, NULL, 0, constants, const_len);
+}
+
+/* Scan bytecodes to discover all enum defs upfront */
+static void scan_enum_defs(Codegen *cg, const Instruction *code, size_t code_len,
+                           const Value *constants, size_t const_len) {
+    for (size_t i = 0; i < code_len; i++) {
+        if (code[i].op == OPCODE_CONST && code[i].arg.index < const_len) {
+            Value v = constants[code[i].arg.index];
+            if (v.kind == VAL_ENUM_DEF) {
+                register_enum_def(cg, v.as.enum_def);
+            } else if (v.kind == VAL_FN && v.as.fn_val) {
+                FnObj *fn = v.as.fn_val;
+                scan_enum_defs(cg, fn->code, fn->code_len, fn->constants, fn->const_len);
+            }
+        }
+    }
+}
+
+static void scan_all_enum_defs(Codegen *cg) {
+    size_t code_len = 0;
+    const Instruction *code = emitter_get_code(cg->emitter, &code_len);
+    size_t const_len = 0;
+    const Value *constants = emitter_get_constants(cg->emitter, &const_len);
+    scan_enum_defs(cg, code, code_len, constants, const_len);
+    scan_enum_defs(cg, NULL, 0, constants, const_len);
 }
 
 /* -----------------------------------------------------------
@@ -388,12 +538,40 @@ static void emit_fn_bodies(Codegen *cg) {
 }
 
 /* -----------------------------------------------------------
+ * Emit forward declarations for lambda/non-builtin FnObjs
+ * ----------------------------------------------------------- */
+
+static void emit_fnobj_forward_decls(Codegen *cg) {
+    for (size_t i = 0; i < cg->fn_obj_reg_count; i++) {
+        cg_writef(cg, "static AstraValue %s(AstraValue*, uint8_t);\n",
+                  cg->fn_obj_reg[i].c_name);
+    }
+    if (cg->fn_obj_reg_count > 0) cg_write(cg, "\n");
+}
+
+/* -----------------------------------------------------------
+ * Emit all lambda/non-builtin FnObj bodies
+ * ----------------------------------------------------------- */
+
+static void emit_fnobj_bodies(Codegen *cg) {
+    for (size_t i = 0; i < cg->fn_obj_reg_count; i++) {
+        emit_fn_body(cg, cg->fn_obj_reg[i].c_name, (FnObj *)cg->fn_obj_reg[i].fn);
+    }
+}
+
+/* -----------------------------------------------------------
  * Emit a single function body
  * ----------------------------------------------------------- */
 
 static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
     /* Forward declare */
     cg_writef(cg, "static AstraValue %s(AstraValue *frame, uint8_t argc) {\n", c_name);
+
+    /* Check if this function uses TRY_UNWRAP */
+    bool uses_try = false;
+    for (size_t i = 0; i < fn->code_len; i++) {
+        if (fn->code[i].op == OPCODE_TRY_UNWRAP) { uses_try = true; break; }
+    }
 
     /* Local variable declarations: slot 0 = ret, slots 1..param_count = params,
      * slots param_count+1..local_count-1 = locals */
@@ -416,6 +594,11 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
     cg_write(cg, "    (void)argc;\n");
     for (uint16_t i = 0; i < max_slot; i++) {
         cg_writef(cg, "    (void)frame[%u];\n", i);
+    }
+
+    /* If this function uses ?, set up error recovery context */
+    if (uses_try) {
+        cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { return astra_error_value; }\n");
     }
 
     /* First pass: emit labels for jump targets */
@@ -471,6 +654,14 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
                     FnObj *fn_obj = v.as.fn_val;
                     if (fn_obj && fn_obj->param_count == 255 && fn_obj->code == NULL) {
                         cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)astra_builtin_print, 255); sp++;\n");
+                    } else if (fn_obj) {
+                        const char *cname = find_fn_obj_cname(cg, fn_obj);
+                        if (cname) {
+                            cg_writef(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)%s, %u); sp++;\n",
+                                      cname, (unsigned)fn_obj->param_count);
+                        } else {
+                            cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)NULL, 0); sp++;\n");
+                        }
                     } else {
                         cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)NULL, 0); sp++;\n");
                     }
@@ -478,6 +669,15 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
                 case VAL_STRUCT_DEF: {
                     const StructDef *def = v.as.struct_def;
                     const char *cname = register_struct_def(cg, def);
+                    if (cname) {
+                        cg_writef(cg, "    frame[sp].tag = AST_PTR; frame[sp].as.ptr_val = (void *)&%s; sp++;\n", cname);
+                    } else {
+                        cg_write(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                    }
+                } break;
+                case VAL_ENUM_DEF: {
+                    const EnumDef *def = v.as.enum_def;
+                    const char *cname = register_enum_def(cg, def);
                     if (cname) {
                         cg_writef(cg, "    frame[sp].tag = AST_PTR; frame[sp].as.ptr_val = (void *)&%s; sp++;\n", cname);
                     } else {
@@ -724,24 +924,51 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             uint32_t packed = inst.arg.index;
             uint32_t variant_idx = packed >> 16;
             uint32_t field_count = packed & 0xFFFF;
-            cg_writef(cg, "    {\n");
-            cg_writef(cg, "        AstraEnum *_e = malloc(sizeof(AstraEnum));\n");
-            cg_writef(cg, "        _e->tag = %u;\n", variant_idx);
-            for (uint32_t j = 0; j < field_count; j++) {
-                cg_writef(cg, "        _e->payload.variant_%u[%u] = frame[sp - %u];\n",
-                          variant_idx, j, field_count - j);
+
+            /* Scan backwards to find the CONST that pushed the enum def */
+            const char *enum_name = "";
+            const char *variant_name = "";
+            for (size_t back = 1; back <= ip; back++) {
+                if (fn->code[ip - back].op == OPCODE_CONST) {
+                    uint32_t def_idx = fn->code[ip - back].arg.index;
+                    if (def_idx < fn->const_len && fn->constants[def_idx].kind == VAL_ENUM_DEF) {
+                        const EnumDef *def = fn->constants[def_idx].as.enum_def;
+                        if (def) {
+                            enum_name = def->name ? def->name : "";
+                            if (variant_idx < def->variant_count && def->variants[variant_idx].name)
+                                variant_name = def->variants[variant_idx].name;
+                        }
+                        break;
+                    }
+                    /* If we hit a non-CONST opcode, stop */
+                    if (fn->code[ip - back].op != OPCODE_CONST) break;
+                }
             }
+
+            cg_writef(cg, "    {\n");
+            cg_writef(cg, "        AstraEnumObj *_e = malloc(sizeof(AstraEnumObj));\n");
+            cg_writef(cg, "        _e->def = NULL;\n");
+            cg_writef(cg, "        _e->variant = %u;\n", variant_idx);
+            cg_writef(cg, "        _e->fields = malloc(%u * sizeof(AstraValue));\n", field_count);
+            for (uint32_t j = 0; j < field_count; j++) {
+                cg_writef(cg, "        _e->fields[%u] = frame[sp - %u];\n",
+                          j, field_count - j);
+            }
+            cg_writef(cg, "        _e->enum_name = \"%s\";\n", enum_name);
+            cg_writef(cg, "        _e->variant_name = \"%s\";\n", variant_name);
             cg_writef(cg, "        sp -= %u;\n", field_count);
+            /* Pop the enum def that was pushed by CONST */
+            cg_writef(cg, "        sp--;\n");
             cg_writef(cg, "        frame[sp].tag = AST_ENUM_DATA; "
-                     "frame[sp].as.enum_val = _e; sp++;\n");
+                     "frame[sp].as.enum_obj = _e; sp++;\n");
             cg_writef(cg, "    }\n");
         } break;
 
         case OPCODE_GET_ENUM_FIELD: {
             uint32_t field_idx = inst.arg.index;
             cg_writef(cg, "    {\n");
-            cg_writef(cg, "        AstraEnum *_e = frame[sp-1].as.enum_val;\n");
-            cg_writef(cg, "        frame[sp-1] = _e->payload.variant_fields[%u];\n", field_idx);
+            cg_writef(cg, "        AstraEnumObj *_e = (AstraEnumObj *)frame[sp-1].as.enum_obj;\n");
+            cg_writef(cg, "        frame[sp-1] = _e->fields[%u];\n", field_idx);
             cg_writef(cg, "    }\n");
         } break;
 
@@ -755,8 +982,12 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             cg_write(cg, "    frame[sp-1] = astra_wrap_some(frame[sp-1]);\n");
         } break;
         case OPCODE_TAG_IS: {
+            /* VM indices: 0=OK, 1=ERR, 2=SOME, 3=NONE.
+             * C runtime AstraTag: AST_OK=10, AST_ERR=11, AST_SOME=12, AST_NIL=0. */
+            static const unsigned tag_map[] = {10, 11, 12, 0};
+            unsigned real_tag = (inst.arg.index < 4) ? tag_map[inst.arg.index] : 0;
             cg_writef(cg, "    frame[sp-1] = astra_bool(frame[sp-1].tag == %u);\n",
-                      inst.arg.index);
+                      real_tag);
         } break;
         case OPCODE_UNWRAP: {
             cg_write(cg, "    frame[sp-1] = astra_unwrap(frame[sp-1]);\n");
@@ -792,6 +1023,17 @@ static void emit_module_code(Codegen *cg) {
     cg_write(cg, "    uint16_t sp = 0;\n");
     cg_write(cg, "    (void)frame; (void)sp;\n\n");
 
+    /* Check if module code uses TRY_UNWRAP */
+    size_t code_len = 0;
+    const Instruction *code = emitter_get_code(cg->emitter, &code_len);
+    bool uses_try = false;
+    for (size_t i = 0; i < code_len; i++) {
+        if (code[i].op == OPCODE_TRY_UNWRAP) { uses_try = true; break; }
+    }
+    if (uses_try) {
+        cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { return 1; }\n");
+    }
+
     /* Initialize builtins */
     for (size_t i = 0; i < cg->global_map_count; i++) {
         if (strcmp(cg->global_map[i].name.str, "print") == 0) {
@@ -801,8 +1043,6 @@ static void emit_module_code(Codegen *cg) {
     }
     cg_write(cg, "\n");
 
-    size_t code_len = 0;
-    const Instruction *code = emitter_get_code(cg->emitter, &code_len);
     size_t const_len = 0;
     const Value *constants = emitter_get_constants(cg->emitter, &const_len);
 
@@ -860,23 +1100,47 @@ static void emit_module_code(Codegen *cg) {
                     if (fn_obj && fn_obj->param_count == 255 && fn_obj->code == NULL) {
                         /* Print builtin */
                         cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)astra_builtin_print, 255); sp++;\n");
-                    } else {
-                        /* Function reference — look up by name */
-                        const char *fname = "unknown_fn";
-                        for (size_t fi = 0; fi < cg->fn_map_count; fi++) {
-                            for (size_t j = 0; j < code_len - 1; j++) {
-                                if (code[j].op == OPCODE_CONST && code[j].arg.index == idx &&
-                                    code[j+1].op == OPCODE_SET_GLOBAL) {
-                                    uint32_t nidx = code[j+1].arg.index;
-                                    if (nidx < const_len && constants[nidx].kind == VAL_STRING &&
-                                        strcmp(constants[nidx].as.string_val, cg->fn_map[fi].name.str) == 0) {
-                                        fname = cg->fn_map[fi].c_name;
-                                        break;
+                    } else if (fn_obj) {
+                        /* Try lambda/non-builtin lookup first */
+                        const char *cname = find_fn_obj_cname(cg, fn_obj);
+                        if (cname) {
+                            cg_writef(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)%s, %u); sp++;\n",
+                                      cname, (unsigned)fn_obj->param_count);
+                        } else {
+                            /* Fall back to named function lookup by scanning bytecode */
+                            const char *fname = "unknown_fn";
+                            for (size_t fi = 0; fi < cg->fn_map_count; fi++) {
+                                for (size_t j = 0; j < code_len - 1; j++) {
+                                    if (code[j].op == OPCODE_CONST && code[j].arg.index == idx &&
+                                        code[j+1].op == OPCODE_SET_GLOBAL) {
+                                        uint32_t nidx = code[j+1].arg.index;
+                                        if (nidx < const_len && constants[nidx].kind == VAL_STRING &&
+                                            strcmp(constants[nidx].as.string_val, cg->fn_map[fi].name.str) == 0) {
+                                            fname = cg->fn_map[fi].c_name;
+                                            break;
+                                        }
                                     }
                                 }
                             }
+                            cg_writef(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)%s, 0); sp++;\n", fname);
                         }
-                        cg_writef(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)%s, 0); sp++;\n", fname);
+                    } else {
+                        cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)NULL, 0); sp++;\n");
+                    }
+                } break;
+                case VAL_ENUM: {
+                    const char *ename = v.as.enum_val.enum_name ? v.as.enum_val.enum_name : "";
+                    const char *vname = v.as.enum_val.variant_name ? v.as.enum_val.variant_name : "";
+                    cg_writef(cg, "    frame[sp].tag = AST_ENUM; frame[sp].as.enum_val.enum_name = \"%s\"; frame[sp].as.enum_val.variant_name = \"%s\"; sp++;\n",
+                              ename, vname);
+                } break;
+                case VAL_ENUM_DEF: {
+                    const EnumDef *def = v.as.enum_def;
+                    const char *cname = register_enum_def(cg, def);
+                    if (cname) {
+                        cg_writef(cg, "    frame[sp].tag = AST_PTR; frame[sp].as.ptr_val = (void *)&%s; sp++;\n", cname);
+                    } else {
+                        cg_write(cg, "    frame[sp] = astra_nil(); sp++;\n");
                     }
                 } break;
                 default:
@@ -884,11 +1148,6 @@ static void emit_module_code(Codegen *cg) {
                     break;
                 }
             }
-        } break;
-
-        case OPCODE_POP: {
-            uint8_t n = inst.arg.index ? inst.arg.index : 1;
-            cg_writef(cg, "    sp -= %u;\n", n);
         } break;
 
         case OPCODE_DUP:
@@ -1068,10 +1327,13 @@ static void emit_module_code(Codegen *cg) {
         case OPCODE_WRAP_SOME:
             cg_write(cg, "    frame[sp-1] = astra_wrap_some(frame[sp-1]);\n");
             break;
-        case OPCODE_TAG_IS:
+        case OPCODE_TAG_IS: {
+            static const unsigned tag_map_mod[] = {10, 11, 12, 0};
+            unsigned real_tag = (inst.arg.index < 4) ? tag_map_mod[inst.arg.index] : 0;
             cg_writef(cg, "    frame[sp-1] = astra_bool(frame[sp-1].tag == %u);\n",
-                      inst.arg.index);
+                      real_tag);
             break;
+        }
         case OPCODE_UNWRAP:
             cg_write(cg, "    frame[sp-1] = astra_unwrap(frame[sp-1]);\n");
             break;
@@ -1124,6 +1386,12 @@ bool codegen_emit_to_file(Codegen *cg, const char *output_path) {
     /* Phase 1b: Scan for struct defs */
     scan_all_struct_defs(cg);
 
+    /* Phase 1c: Scan for enum defs */
+    scan_all_enum_defs(cg);
+
+    /* Phase 1d: Scan for lambda/non-builtin FnObjs */
+    scan_all_lambda_fns(cg);
+
     /* Phase 2: Type declarations */
     emit_struct_decls(cg);
     emit_enum_decls(cg);
@@ -1131,14 +1399,23 @@ bool codegen_emit_to_file(Codegen *cg, const char *output_path) {
     /* Phase 2b: Struct def forward declarations */
     emit_struct_def_fwd_decls(cg);
 
+    /* Phase 2c: Enum def globals (must be before functions that reference them) */
+    emit_enum_def_globals(cg);
+
     /* Phase 3: Global variables */
     emit_global_decls(cg);
 
     /* Phase 4: Function forward declarations */
     emit_fn_forward_decls(cg);
 
+    /* Phase 4b: Lambda/non-builtin FnObj forward declarations */
+    emit_fnobj_forward_decls(cg);
+
     /* Phase 5: Function bodies */
     emit_fn_bodies(cg);
+
+    /* Phase 5b: Lambda/non-builtin FnObj bodies */
+    emit_fnobj_bodies(cg);
 
     /* Phase 6: Module-level code */
     emit_module_code(cg);
@@ -1168,6 +1445,9 @@ void codegen_destroy(Codegen *cg) {
     }
     for (size_t i = 0; i < cg->global_map_count; i++) {
         free((char *)cg->global_map[i].c_name);
+    }
+    for (size_t i = 0; i < cg->fn_obj_reg_count; i++) {
+        free((char *)cg->fn_obj_reg[i].c_name);
     }
     free(cg);
 }
