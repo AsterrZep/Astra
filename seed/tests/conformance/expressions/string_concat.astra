@@ -1,0 +1,12 @@
+// String concatenation with +
+// EXPECT: hello world
+// EXPECT: abcdef
+// EXPECT: 1 items
+fn main() {
+    print("hello " + "world")
+    let a = "ab"
+    let b = "cdef"
+    print(a + b)
+    let count = "1"
+    print(count + " items")
+}

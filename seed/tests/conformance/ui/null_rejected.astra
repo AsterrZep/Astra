@@ -1,0 +1,6 @@
+// null is no longer a valid keyword
+// EXPECT-ERROR: undefined variable 'null'
+fn main() {
+    let x = null
+    print(x)
+}

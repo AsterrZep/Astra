@@ -1,0 +1,9 @@
+// T? optional type syntax
+// EXPECT: nil
+// EXPECT: nil
+fn main() {
+    let y: i32? = none
+    let t: string? = none
+    print(y)
+    print(t)
+}

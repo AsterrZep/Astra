@@ -489,7 +489,6 @@ static void emit_pattern_value(Emitter *e, Node *pat, uint32_t line) {
     case NODE_FLOAT_LIT:
     case NODE_STRING_LIT:
     case NODE_BOOL_LIT:
-    case NODE_NULL_LIT:
     case NODE_UNARY_OP:
         emit_expr(e, pat);
         return;
@@ -624,7 +623,6 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_FLOAT_LIT:         return "FloatLit";
     case NODE_STRING_LIT:        return "StringLit";
     case NODE_BOOL_LIT:          return "BoolLit";
-    case NODE_NULL_LIT:          return "NullLit";
     case NODE_SOME_EXPR:         return "SomeExpr";
     case NODE_NONE_EXPR:         return "NoneExpr";
     case NODE_OK_EXPR:           return "OkExpr";
@@ -742,11 +740,6 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_BOOL_LIT: {
         uint32_t idx = add_constant(e, value_bool(node->as.bool_lit.value));
-        emit_inst_index(e, OPCODE_CONST, idx, node->loc.line);
-    } break;
-
-    case NODE_NULL_LIT: {
-        uint32_t idx = add_constant(e, value_nil());
         emit_inst_index(e, OPCODE_CONST, idx, node->loc.line);
     } break;
 
@@ -1840,7 +1833,6 @@ static void emit_node(Emitter *e, Node *node) {
     case NODE_FLOAT_LIT:
     case NODE_STRING_LIT:
     case NODE_BOOL_LIT:
-    case NODE_NULL_LIT:
     case NODE_IDENT:
     case NODE_BINARY_OP:
     case NODE_UNARY_OP:

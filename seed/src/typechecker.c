@@ -63,7 +63,8 @@ bool type_eq(Type *a, Type *b) {
 }
 
 static bool type_is_numeric(Type *t) {
-    return t && (t->kind == TYPE_INT || t->kind == TYPE_FLOAT);
+    return t && (t->kind == TYPE_INT || t->kind == TYPE_FLOAT ||
+                 t->kind == TYPE_INT64 || t->kind == TYPE_UINT32 || t->kind == TYPE_UINT64);
 }
 
 static bool type_is_error(Type *t) {
@@ -75,6 +76,9 @@ static const char *type_kind_name(TypeKind kind) {
     case TYPE_VOID:     return "void";
     case TYPE_BOOL:     return "bool";
     case TYPE_INT:      return "i32";
+    case TYPE_INT64:    return "i64";
+    case TYPE_UINT32:   return "u32";
+    case TYPE_UINT64:   return "u64";
     case TYPE_FLOAT:    return "f64";
     case TYPE_STRING:   return "string";
     case TYPE_OPTIONAL: return "optional";
@@ -95,6 +99,9 @@ void type_print(Type *t) {
     case TYPE_VOID:     printf("void");     break;
     case TYPE_BOOL:     printf("bool");     break;
     case TYPE_INT:      printf("i32");      break;
+    case TYPE_INT64:    printf("i64");      break;
+    case TYPE_UINT32:   printf("u32");     break;
+    case TYPE_UINT64:   printf("u64");     break;
     case TYPE_FLOAT:    printf("f64");      break;
     case TYPE_STRING:   printf("string");   break;
     case TYPE_OPTIONAL:
@@ -417,6 +424,9 @@ static Type *resolve_type_node(TypeChecker *tc, Node *node) {
         if (name.len == 4 && memcmp(name.str, "void", 4) == 0) return type_new(tc->arena, TYPE_VOID);
         if (name.len == 4 && memcmp(name.str, "bool", 4) == 0) return type_new(tc->arena, TYPE_BOOL);
         if (name.len == 3 && memcmp(name.str, "i32", 3) == 0) return type_new(tc->arena, TYPE_INT);
+        if (name.len == 3 && memcmp(name.str, "i64", 3) == 0) return type_new(tc->arena, TYPE_INT64);
+        if (name.len == 3 && memcmp(name.str, "u32", 3) == 0) return type_new(tc->arena, TYPE_UINT32);
+        if (name.len == 3 && memcmp(name.str, "u64", 3) == 0) return type_new(tc->arena, TYPE_UINT64);
         if (name.len == 3 && memcmp(name.str, "f64", 3) == 0) return type_new(tc->arena, TYPE_FLOAT);
         if (name.len == 6 && memcmp(name.str, "string", 6) == 0) return type_new(tc->arena, TYPE_STRING);
 
@@ -476,12 +486,6 @@ static Type *typecheck_bool_lit(TypeChecker *tc, Node *node) {
     return type_new(tc->arena, TYPE_BOOL);
 }
 
-static Type *typecheck_null_lit(TypeChecker *tc, Node *node) {
-    (void)node;
-    /* null has type ?T (optional) — we use TYPE_OPTIONAL with NULL inner as sentinel */
-    return type_new_optional(tc->arena, NULL);
-}
-
 static Type *typecheck_ident(TypeChecker *tc, Node *node) {
     InternedString name = node->as.ident.name;
     Symbol *sym = symbol_table_lookup(tc->symbols, name);
@@ -514,6 +518,11 @@ static Type *typecheck_binary(TypeChecker *tc, Node *node) {
                                  type_kind_name(right->kind));
         }
         return type_new(tc->arena, TYPE_BOOL);
+    }
+
+    /* String concatenation: string + string -> string */
+    if (op == OP_ADD && left->kind == TYPE_STRING && right->kind == TYPE_STRING) {
+        return left;
     }
 
     /* Arithmetic operators require matching numeric types */
@@ -554,17 +563,21 @@ static Type *typecheck_binary(TypeChecker *tc, Node *node) {
     /* Bitwise operators require matching types */
     if (op == OP_BIT_AND || op == OP_BIT_OR || op == OP_BIT_XOR ||
         op == OP_SHL || op == OP_SHR) {
-        if (left->kind != TYPE_INT) {
+        bool left_int = left->kind == TYPE_INT || left->kind == TYPE_INT64 ||
+                        left->kind == TYPE_UINT32 || left->kind == TYPE_UINT64;
+        if (!left_int) {
             return tc_error_type(tc, node->as.binary.left->loc,
-                                 "bitwise operator requires i32, got %s",
+                                 "bitwise operator requires integer type, got %s",
                                  type_kind_name(left->kind));
         }
-        if (right->kind != TYPE_INT) {
+        bool right_int = right->kind == TYPE_INT || right->kind == TYPE_INT64 ||
+                         right->kind == TYPE_UINT32 || right->kind == TYPE_UINT64;
+        if (!right_int) {
             return tc_error_type(tc, node->as.binary.right->loc,
-                                 "bitwise operator requires i32, got %s",
+                                 "bitwise operator requires integer type, got %s",
                                  type_kind_name(right->kind));
         }
-        return type_new(tc->arena, TYPE_INT);
+        return type_new(tc->arena, left->kind);
     }
 
     return type_new(tc->arena, TYPE_ERROR);
@@ -592,12 +605,16 @@ static Type *typecheck_unary(TypeChecker *tc, Node *node) {
         }
         return type_new(tc->arena, TYPE_BOOL);
     case UNOP_BIT_NOT:
-        if (operand->kind != TYPE_INT) {
-            return tc_error_type(tc, node->loc,
-                                 "bitwise not requires i32, got %s",
-                                 type_kind_name(operand->kind));
+        {
+            bool is_int = operand->kind == TYPE_INT || operand->kind == TYPE_INT64 ||
+                          operand->kind == TYPE_UINT32 || operand->kind == TYPE_UINT64;
+            if (!is_int) {
+                return tc_error_type(tc, node->loc,
+                                     "bitwise not requires integer type, got %s",
+                                     type_kind_name(operand->kind));
+            }
+            return type_new(tc->arena, operand->kind);
         }
-        return type_new(tc->arena, TYPE_INT);
     case UNOP_REF:
     case UNOP_DEREF:
         /* Not supported in minimal seed */
@@ -727,9 +744,11 @@ static Type *typecheck_index(TypeChecker *tc, Node *node) {
     Type *index = typecheck_node(tc, node->as.index.index);
     if (type_is_error(index)) return index;
 
-    if (index->kind != TYPE_INT) {
+    bool idx_int = index->kind == TYPE_INT || index->kind == TYPE_INT64 ||
+                   index->kind == TYPE_UINT32 || index->kind == TYPE_UINT64;
+    if (!idx_int) {
         return tc_error_type(tc, node->as.index.index->loc,
-                             "array index must be i32, got %s",
+                             "array index must be integer type, got %s",
                              type_kind_name(index->kind));
     }
 
@@ -901,17 +920,21 @@ static Type *typecheck_for(TypeChecker *tc, Node *node) {
         if (start) {
             Type *st = typecheck_node(tc, start);
             if (type_is_error(st)) return st;
-            if (st->kind != TYPE_INT) {
+            bool st_int = st->kind == TYPE_INT || st->kind == TYPE_INT64 ||
+                          st->kind == TYPE_UINT32 || st->kind == TYPE_UINT64;
+            if (!st_int) {
                 return tc_error_type(tc, start->loc,
-                                     "range start must be i32, got %s",
+                                     "range start must be integer type, got %s",
                                      type_kind_name(st->kind));
             }
         }
         Type *et = typecheck_node(tc, end);
         if (type_is_error(et)) return et;
-        if (et->kind != TYPE_INT) {
+        bool et_int = et->kind == TYPE_INT || et->kind == TYPE_INT64 ||
+                      et->kind == TYPE_UINT32 || et->kind == TYPE_UINT64;
+        if (!et_int) {
             return tc_error_type(tc, end->loc,
-                                 "range end must be i32, got %s",
+                                 "range end must be integer type, got %s",
                                  type_kind_name(et->kind));
         }
         var_type = type_new(tc->arena, TYPE_INT);
@@ -995,7 +1018,6 @@ static void check_pattern(TypeChecker *tc, Node *pat, Type *target,
     case NODE_FLOAT_LIT:
     case NODE_STRING_LIT:
     case NODE_BOOL_LIT:
-    case NODE_NULL_LIT:
     case NODE_UNARY_OP: {
         Type *pt = typecheck_node(tc, pat);
         if (type_is_error(pt)) return;
@@ -1702,7 +1724,6 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_FLOAT_LIT:  return typecheck_float_lit(tc, node);
     case NODE_STRING_LIT: return typecheck_string_lit(tc, node);
     case NODE_BOOL_LIT:   return typecheck_bool_lit(tc, node);
-    case NODE_NULL_LIT:   return typecheck_null_lit(tc, node);
 
     /* Expressions */
     case NODE_IDENT:      return typecheck_ident(tc, node);

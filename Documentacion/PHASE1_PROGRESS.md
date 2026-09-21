@@ -87,22 +87,23 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (55 casos, todos en verde, también
+los casos de conformidad. Cobertura actual (60 casos, todos en verde, también
 bajo ASan/UBSan):
 
 | Área | Casos |
 |:-----|:------|
 | registro | invariantes de constructos, palabras clave y tabla de operadores |
-| expressions | `arithmetic` (precedencia, unarios, `%`) |
+| expressions | `arithmetic` (precedencia, unarios, `%`), `string_concat` (`+` con strings), `integer_types` (`i64`/`u32`/`u64`), `none_literal` (`none` como ausencia) |
 | control | `if_else`, `while_break`, `while_continue` |
 | loops | `range_exclusive`, `range_inclusive`, `break_continue`, `for_array` |
 | arrays | `literal_index`, `element_assign`, `alias_write` (compartición de handles) |
 | structs | `literal_fields`, `field_order`, `struct_in_function`, `field_assign` (cadenas anidadas) |
 | blocks | `tail_expression`, `if_value` |
+| types | `optional_syntax` (`T?` parseado correctamente) |
 | enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding`, `option_basic`, `option_equality`, `result_basic`, `result_match`, `nested_option_result` |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
 | lambda | `lambda_basic`, `lambda_multi` |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch`, `null_rejected` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan) sin fallos.
 
@@ -117,10 +118,13 @@ los herede al escribir el compilador en Zig:
 | A | Valor de bloque en posición de valor | `{ let t = 100; 7 }` → `100` | ✅ `7` |
 | A | Regla del `;` (§4.2 de `research/010`) | `{ 7; }` → `7` | ✅ error de tipos |
 | A | `if` como expresión con sentencias en la rama | `if c { let t = 5; t + 1 }` → `5` | ✅ `6` |
-| C | Retorno implícito de función | `fn f() -> i32 { 42 }` → `nil` | ✅ `42` |
-| C | Tipo de retorno declarado sin valor | `fn f() -> i32 { }` → `nil` | ✅ error de compilación |
-| B | `LValue` acotado a identificadores | `xs[0] = 9;` → error de parseo | ✅ asigna el elemento |
-| B | Mismo caso en campos | `p.x = 5;` → error de parseo | ✅ asigna el campo |
+| B | Retorno implícito de función | `fn f() -> i32 { 42 }` → `nil` | ✅ `42` |
+| B | Tipo de retorno declarado sin valor | `fn f() -> i32 { }` → `nil` | ✅ error de compilación |
+| C | `LValue` acotado a identificadores | `xs[0] = 9;` → error de parseo | ✅ asigna el elemento |
+| C | Mismo caso en campos | `p.x = 5;` → error de parseo | ✅ asigna el campo |
+| D | Keyword `null` violaba PHILOSOPHY.md | `null` existía como keyword | ✅ eliminado, `none` es canónico |
+| E | Tipos enteros `i64`/`u32`/`u64` faltantes | Solo `i32` y `f64` | ✅ agregados al typechecker |
+| F | Sintaxis `T?` no parseable | `let x: i32? = none` → error de parseo | ✅ parser consume `?` como postfix |
 
 ### Causa raíz de A y C (arreglada)
 
@@ -295,6 +299,66 @@ Ordenado por valor para el objetivo de bootstrap.
 - [ ] `--dump-bytecode` como flag estable (hoy vía `ASTRA_DUMP_VM`).
 - [ ] Fuzzing del lexer/parser (`clang -fsanitize=fuzzer`).
 - [ ] CI multiplataforma (Linux/macOS/Windows).
+
+## 4bis. Inventario de tareas para completar la Fase 1
+
+### Categoría A: Tareas CORTAS (< 1 día)
+
+| # | Tarea | Impacto | Estado | Archivos |
+|:-:|:------|:--------|:-------|:---------|
+| 1 | Agregar `i64`, `u32`, `u64` al typechecker | Alto | ✅ | `astra.h`, `typechecker.c` — tipos resueltos en `resolve_type_node`, aceptados en bitwise/index/ranges |
+| 2 | Permitir concatenación de strings con `+` | Alto | ✅ | `typechecker.c:519-522` — guard `string + string → string` antes del bloque aritmético |
+| 3 | Sintaxis `T?` para optional types | Alto | ✅ | `parser.c` — `parse_type()` consume `TOKEN_QUESTION` como postfix, envuelve en `NODE_TYPE_OPTIONAL` |
+| 4 | Eliminar `null`, mantener `none` canónico | Alto | ✅ | `TOKEN_NULL`/`NODE_NULL_LIT` eliminados de lexer, parser, typechecker, emitter, driver, constructs |
+| 5 | `--dump-bytecode` como flag CLI | Medio | [ ] | `main.c` |
+| 6 | Bug de coma en struct declarations | Medio | [ ] | `parser.c` |
+| 7 | Documentar semántica de agregados | Medio | [ ] | `ARCHITECTURE.md` |
+| 8 | Resolver contradicciones entre documentos | Bajo | [ ] | Varios `.md` |
+| 9 | Decidir keyword canónico (`let`/`mut` vs `val`/`mut`) | Bajo | [ ] | Varios `.md` |
+
+### Categoría B: Tareas MEDIANAS (1-3 días)
+
+| # | Tarea | Impacto | Estado | Archivos |
+|:-:|:------|:--------|:-------|:---------|
+| 10 | C codegen: Match expressions | Alto | [ ] | `codegen.c` |
+| 11 | C codegen: Lambdas | Alto | [ ] | `codegen.c` |
+| 12 | C codegen: Enums con datos | Alto | [ ] | `codegen.c`, `codegen_runtime.h` |
+| 13 | C codegen: Option/Result | Alto | [ ] | `codegen.c` |
+| 14 | C codegen: `?` operator | Alto | [ ] | `codegen.c` |
+| 15 | Suite de tests vía C codegen | Alto | [ ] | `tests/run_tests.sh` |
+| 16 | Closures (captura de variables) | Medio | [ ] | `emitter.c`, `vm.c` |
+| 17 | Migrar hooks de constructos (iniciar con `if`+`else`) | Medio | [ ] | `constructs/`, `parser.c`, `emitter.c`, `typechecker.c` |
+| 18 | C codegen: module-level errors sin setjmp | Medio | [ ] | `codegen.c` |
+| 19 | Bitwise operators en el emisor | Medio | [ ] | `emitter.c` |
+| 20 | `while`/`for` como expresión | Medio | [ ] | `parser.c`, `emitter.c` |
+| 21 | Frame dinámico en C codegen | Bajo | [ ] | `codegen.c` |
+| 22 | Manejo de opcodes desconocidos en C codegen | Bajo | [ ] | `codegen.c` |
+| 23 | Fuzzing del lexer/parser | Bajo | [ ] | Nuevo target |
+
+### Categoría C: Tareas LARGAS (4+ días)
+
+| # | Tarea | Impacto | Estado | Archivos |
+|:-:|:------|:--------|:-------|:---------|
+| 24 | Module system (File-as-Module) | Alto | [ ] | `parser.c`, `typechecker.c`, `emitter.c`, driver |
+| 25 | Full C codegen test suite | Alto | [ ] | `tests/run_tests.sh`, `codegen.c` |
+| 26 | CI multiplataforma | Alto | [ ] | `.github/workflows/` |
+| 27 | Genéricos básicos por monomorfización | Medio | [ ] | Phase 2 |
+| 28 | Traits con despacho simple | Medio | [ ] | Phase 2 |
+| 29 | Migración completa de constructos (44 hooks) | Medio | [ ] | `constructs/` |
+| 30 | Standard library mínima | Bajo | [ ] | Phase 2 |
+| 31 | LSP básico | Bajo | [ ] | Phase 2 |
+
+### Estado de hallazgos de auditoría (COHERENCE_AUDIT.md)
+
+| Hallazgo | Descripción | Estado |
+|:---------|:------------|:-------|
+| A | Valor de bloque roto | ✅ Resuelto (stack model en emisor) |
+| B | LValue restringido a identificadores | ✅ Resuelto (`SET_INDEX`, `SET_FIELD`) |
+| C | Retorno implícito `nil` | ✅ Resuelto (tail return) |
+| D | `val` keyword no existe, 3 docs discrepantes | ✅ Resuelto (`let`/`let mut` canónico) |
+| E | Tipos enteros `i64`/`u32`/`u64` faltantes | ✅ Resuelto (agregados al typechecker) |
+| F | `T?` optional type no parseable | ✅ Resuelto (parser consume `?`) |
+| G | Semántica de agregados sin especificar | [ ] Pendiente |
 
 ## 5. Cómo continuar
 

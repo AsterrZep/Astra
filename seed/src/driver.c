@@ -31,7 +31,6 @@ const char *token_kind_name(TokenKind kind) {
     case TOKEN_MUT:        return "mut";
     case TOKEN_TRUE:       return "true";
     case TOKEN_FALSE:      return "false";
-    case TOKEN_NULL:       return "null";
     case TOKEN_OK:         return "ok";
     case TOKEN_ERR:        return "err";
     case TOKEN_AND:        return "and";
@@ -166,9 +165,6 @@ static void dump_node(Node *node, int indent) {
         break;
     case NODE_BOOL_LIT:
         printf("BoolLit(%s)\n", node->as.bool_lit.value ? "true" : "false");
-        break;
-    case NODE_NULL_LIT:
-        printf("NullLit\n");
         break;
     case NODE_IDENT:
         printf("Ident(%.*s)\n",

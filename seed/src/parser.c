@@ -195,11 +195,6 @@ static Node *parse_bool_lit(Parser *p, Node *left, Precedence prec) {
     return n;
 }
 
-static Node *parse_null_lit(Parser *p, Node *left, Precedence prec) {
-    (void)left; (void)prec;
-    return node_new(p->arena, NODE_NULL_LIT, p->previous.loc);
-}
-
 static Node *parse_ident(Parser *p, Node *left, Precedence prec) {
     (void)left; (void)prec;
     Node *n = node_new(p->arena, NODE_IDENT, p->previous.loc);
@@ -503,7 +498,7 @@ static Node *parse_block(Parser *p) {
         /* Check if this is an expression that could be the last expr in the block */
         if (check(p, TOKEN_IDENT) || check(p, TOKEN_INT_LIT) || check(p, TOKEN_FLOAT_LIT) ||
             check(p, TOKEN_STRING_LIT) || check(p, TOKEN_TRUE) || check(p, TOKEN_FALSE) ||
-            check(p, TOKEN_NULL) || check(p, TOKEN_MINUS) || check(p, TOKEN_BANG) ||
+            check(p, TOKEN_MINUS) || check(p, TOKEN_BANG) ||
             check(p, TOKEN_LPAREN) || check(p, TOKEN_LBRACE) || check(p, TOKEN_IF) ||
             check(p, TOKEN_WHILE) || check(p, TOKEN_FOR) || check(p, TOKEN_MATCH) ||
             check(p, TOKEN_SOME) || check(p, TOKEN_NONE) ||
@@ -1159,9 +1154,10 @@ static Node *parse_use(Parser *p) {
  * ----------------------------------------------------------- */
 
 static Node *parse_type(Parser *p) {
+    Node *n = NULL;
     if (check(p, TOKEN_IDENT)) {
         advance(p);
-        Node *n = node_new(p->arena, NODE_TYPE_IDENT, p->previous.loc);
+        n = node_new(p->arena, NODE_TYPE_IDENT, p->previous.loc);
         n->as.type_ident.name = p->previous.text;
         /* Handle generic type parameters: Result<T, E>, Option<T> */
         if (check(p, TOKEN_LT)) {
@@ -1175,9 +1171,7 @@ static Node *parse_type(Parser *p) {
             }
             if (depth == 0) advance(p); /* consume > */
         }
-        return n;
-    }
-    if (match(p, TOKEN_LBRACKET)) {
+    } else if (match(p, TOKEN_LBRACKET)) {
         SrcLoc loc = p->previous.loc;
         Node *elem = parse_type(p);
         Node *size = NULL;
@@ -1185,45 +1179,53 @@ static Node *parse_type(Parser *p) {
             size = parse_expression(p);
         }
         expect(p, TOKEN_RBRACKET, "']'");
-        Node *n = node_new(p->arena, NODE_TYPE_ARRAY, loc);
+        n = node_new(p->arena, NODE_TYPE_ARRAY, loc);
         n->as.type_array.elem_type = elem;
         n->as.type_array.size      = size;
-        return n;
-    }
-    if (match(p, TOKEN_FN)) {
+    } else if (match(p, TOKEN_FN)) {
         SrcLoc loc = p->previous.loc;
-        Node *n = node_new(p->arena, NODE_TYPE_FN, loc);
-        n->as.type_fn.param_types.data = NULL;
-        n->as.type_fn.param_types.len  = 0;
-        n->as.type_fn.param_types.cap  = 0;
-        n->as.type_fn.return_type = NULL;
+        Node *n_fn = node_new(p->arena, NODE_TYPE_FN, loc);
+        n_fn->as.type_fn.param_types.data = NULL;
+        n_fn->as.type_fn.param_types.len  = 0;
+        n_fn->as.type_fn.param_types.cap  = 0;
+        n_fn->as.type_fn.return_type = NULL;
         expect(p, TOKEN_LPAREN, "'('");
         if (!check(p, TOKEN_RPAREN)) {
             do {
                 Node *pt = parse_type(p);
-                if (n->as.type_fn.param_types.len >= n->as.type_fn.param_types.cap) {
-                    size_t new_cap = n->as.type_fn.param_types.cap == 0 ? 8 : n->as.type_fn.param_types.cap * 2;
+                if (n_fn->as.type_fn.param_types.len >= n_fn->as.type_fn.param_types.cap) {
+                    size_t new_cap = n_fn->as.type_fn.param_types.cap == 0 ? 8 : n_fn->as.type_fn.param_types.cap * 2;
                     Node **new_data = arena_new_array(p->arena, Node *, new_cap);
-                    if (n->as.type_fn.param_types.data) {
-                        memcpy(new_data, n->as.type_fn.param_types.data,
-                               sizeof(Node *) * n->as.type_fn.param_types.len);
+                    if (n_fn->as.type_fn.param_types.data) {
+                        memcpy(new_data, n_fn->as.type_fn.param_types.data,
+                               sizeof(Node *) * n_fn->as.type_fn.param_types.len);
                     }
-                    n->as.type_fn.param_types.data = new_data;
-                    n->as.type_fn.param_types.cap  = new_cap;
+                    n_fn->as.type_fn.param_types.data = new_data;
+                    n_fn->as.type_fn.param_types.cap  = new_cap;
                 }
-                n->as.type_fn.param_types.data[n->as.type_fn.param_types.len++] = pt;
+                n_fn->as.type_fn.param_types.data[n_fn->as.type_fn.param_types.len++] = pt;
             } while (match(p, TOKEN_COMMA));
         }
         expect(p, TOKEN_RPAREN, "')'");
         if (match(p, TOKEN_ARROW)) {
-            n->as.type_fn.return_type = parse_type(p);
+            n_fn->as.type_fn.return_type = parse_type(p);
         }
+        return n_fn;  /* function types are NOT optionalizable */
+    } else {
+        parser_error(p, "expected type");
+        /* Return a void type as fallback */
+        n = node_new(p->arena, NODE_TYPE_IDENT, p->current.loc);
+        n->as.type_ident.name = string_intern_cstr(p->strings, "void");
         return n;
     }
-    parser_error(p, "expected type");
-    /* Return a void type as fallback */
-    Node *n = node_new(p->arena, NODE_TYPE_IDENT, p->current.loc);
-    n->as.type_ident.name = string_intern_cstr(p->strings, "void");
+
+    /* Postfix `?` for optional types: OptionalType ::= PrimaryType "?" */
+    if (match(p, TOKEN_QUESTION)) {
+        Node *opt = node_new(p->arena, NODE_TYPE_OPTIONAL, p->previous.loc);
+        opt->as.type_optional.inner = n;
+        n = opt;
+    }
+
     return n;
 }
 
@@ -1304,10 +1306,6 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
         case TOKEN_TRUE: case TOKEN_FALSE:
             advance(p);
             left = parse_bool_lit(p, NULL, PREC_PRIMARY);
-            break;
-        case TOKEN_NULL:
-            advance(p);
-            left = parse_null_lit(p, NULL, PREC_PRIMARY);
             break;
     case TOKEN_IDENT: {
             advance(p);

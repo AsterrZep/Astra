@@ -1,7 +1,7 @@
 /* literal — Literal
  * ============================================================
  * `Literal ::= IntegerLiteral | FloatLiteral | StringLiteral
- *            | CharLiteral | BoolLiteral | "null" | "none"
+ *            | CharLiteral | BoolLiteral | "none"
  *            | ArrayLiteral | TupleLiteral | StructLiteral`
  *
  * One production, five node kinds (also_nodes). Integer literals
@@ -16,7 +16,7 @@
 #include "constructs/construct.h"
 
 static const NodeKind also_nodes[] = {
-    NODE_FLOAT_LIT, NODE_STRING_LIT, NODE_BOOL_LIT, NODE_NULL_LIT,
+    NODE_FLOAT_LIT, NODE_STRING_LIT, NODE_BOOL_LIT,
     CONSTRUCT_NO_NODE,
 };
 
@@ -32,10 +32,10 @@ const ConstructSpec construct_literal = {
     .in_astra0  = true,
     .deps       = NULL,
     .grammar    = "Literal ::= IntegerLiteral | FloatLiteral | StringLiteral | CharLiteral "
-                  "| BoolLiteral | \"null\" | \"none\" | ArrayLiteral | TupleLiteral | StructLiteral",
+                  "| BoolLiteral | \"none\" | ArrayLiteral | TupleLiteral | StructLiteral",
     .research   = "research/010 §12.1 (literals and lexical conventions)",
     .note       = "Integer bases (hex/octal/binary) and `_` separators are implemented. "
-                  "`none` is lexed as TOKEN_IDENT: Option/Result are not in Astra-0 yet. "
+                  "`none` is lexed as TOKEN_NONE. "
                   "CharLiteral is specified but has no lexer token.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

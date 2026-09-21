@@ -26,7 +26,6 @@ static const Keyword keywords[] = {
     {"mut",      TOKEN_MUT},
     {"none",     TOKEN_NONE},
     {"not",      TOKEN_NOT},
-    {"null",     TOKEN_NULL},
     {"ok",       TOKEN_OK},
     {"option",   TOKEN_OPTION},
     {"or",       TOKEN_OR},

@@ -1,0 +1,12 @@
+// none as canonical absence literal (null removed)
+// EXPECT: nil
+// EXPECT: some(10)
+// EXPECT: nil
+fn main() {
+    let x = none
+    let y = some(10)
+    let z = none
+    print(x)
+    print(y)
+    print(z)
+}
