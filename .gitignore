@@ -79,3 +79,7 @@ docs/_build/
 # Tool artifacts
 agency-agents/
 graphify-out/
+
+# Zig
+zig/.zig-cache/
+zig/zig-out/
