@@ -1,0 +1,10 @@
+// EXPECT-RUNTIME-ERROR: index 5 out of bounds (len 3)
+//
+// The VM has always diagnosed a bad index; the C backend used to index the
+// element array directly, so this program printed a junk value (or nothing) with
+// exit 0 instead of failing. See tests/codegen/out_of_bounds.astra for the C
+// backend twin and PHASE1_PROGRESS.md §6 (S11).
+fn main() {
+    let a = [1, 2, 3]
+    print(a[5])
+}

@@ -1,0 +1,13 @@
+// EXPECT: 1.5
+// EXPECT: -1.5
+// EXPECT: 1
+//
+// Float remainder is `fmod`, and it is the only operand pair `%` accepts besides
+// int/int (the VM's OPCODE_MOD has exactly those two branches). The C backend's
+// astra_mod had only the int branch and reported "unsupported % operands" for
+// this program — an error where the VM produced a value (S13).
+fn main() {
+    print(7.5 % 2.0)
+    print(-7.5 % 2.0)
+    print(7 % 2)
+}

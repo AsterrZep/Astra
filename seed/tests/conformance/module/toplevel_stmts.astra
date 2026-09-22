@@ -1,0 +1,23 @@
+// Top-level (module) code is a sequence of statements, so an expression
+// statement's value is discarded exactly as it is inside a block.
+//
+// Every other conformance test wraps its code in `fn main`, which is why a
+// regression that broke module-level statements entirely went unnoticed: the
+// emitter had a second dispatcher (emit_node) for module items that sent
+// expressions to emit_expr without the trailing POP, so `print(...)` at top
+// level failed with "internal: stack imbalance in statement Module".
+// EXPECT: hi
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 9
+let mut counter = 0;
+counter = counter + 2;
+
+fn value() -> i32 { return 7 }
+
+print("hi");            // expression statement: value discarded
+value();                // bare call: value discarded, must not unbalance the stack
+1 + 2;                  // bare expression statement
+if true { print(1); }   // `if` as a statement at module level
+print(counter);         // assignment above must be visible here
+print(value() + counter);   // top-level expression that uses a global

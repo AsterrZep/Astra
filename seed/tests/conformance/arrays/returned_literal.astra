@@ -1,0 +1,18 @@
+// EXPECT: 1
+// EXPECT: 3
+//
+// An array literal used to be built over the *creating function's stack frame*:
+// astra_array_new adopted the `AstraValue _elems[n]` local instead of copying it,
+// so the array dangled as soon as the function returned (ASan:
+// stack-use-after-scope). Returning a literal is the natural way to write this
+// in Phase 1 code, so the VM is the baseline and tests/codegen/returned_literal
+// checks the C backend against it.
+fn first_three() -> [i32] {
+    return [1, 2, 3]
+}
+
+fn main() {
+    let a = first_three()
+    print(a[0])
+    print(a[2])
+}

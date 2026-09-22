@@ -210,6 +210,10 @@ typedef struct {
     Compiler  base;     /* must be first for pointer punning */
     bool      dump_tokens;
     bool      dump_ast;
+    /* Stop after code generation and print the bytecode instead of running it
+     * (`--dump-bytecode`). Same rendering as ASTRA_DUMP_VM, via
+     * vm_dump_bytecode(). */
+    bool      dump_bytecode;
 } CompilerDriver;
 
 /* -----------------------------------------------------------
@@ -236,6 +240,11 @@ static inline uint32_t fnv1a(const char *data, size_t len) {
 
 Compiler *driver_create(const char *filename, const char *source,
                         size_t source_len, bool dump_tokens, bool dump_ast);
+
+/* `--dump-bytecode`: after emitting, print the bytecode and stop rather than
+ * executing it. Kept as a flag rather than a parameter of driver_create so the
+ * public signature does not grow a new argument for every output mode. */
+void driver_set_dump_bytecode(Compiler *c, bool on);
 
 /* -----------------------------------------------------------
  * Internal helpers shared across compilation units

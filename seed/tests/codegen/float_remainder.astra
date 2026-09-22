@@ -1,0 +1,12 @@
+// EXPECT: 1.5
+// EXPECT: -1.5
+// EXPECT: 1
+//
+// C backend twin of conformance/expressions/float_remainder.astra (S13). The
+// runtime now uses fmod for float % like the VM, which is why this round-trip
+// exists rather than the earlier "unsupported % operands" exit.
+fn main() {
+    print(7.5 % 2.0)
+    print(-7.5 % 2.0)
+    print(7 % 2)
+}

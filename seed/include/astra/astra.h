@@ -605,6 +605,16 @@ typedef enum {
     TYPE_INT64,
     TYPE_UINT32,
     TYPE_UINT64,
+    /* An integer literal that has not been given a type yet.
+     *
+     * Integer literals are polymorphic (ARCHITECTURE.md §5.1): `5` has no type
+     * of its own, it adopts the integer type the surrounding context requires
+     * (`let x: i64 = 5`, `f(5)` with `f(x: i64)`), like Rust's literal model.
+     * Without this kind every literal was i32, so `i64`/`u32`/`u64` resolved as
+     * type names but no value could ever have one of those types
+     * (COHERENCE_AUDIT.md Hallazgo E). Where nothing else decides, a binding
+     * takes the default integer type — see typecheck_var_decl. */
+    TYPE_INT_LITERAL,
     TYPE_FLOAT,
     TYPE_STRING,
     TYPE_OPTIONAL,
@@ -734,6 +744,14 @@ typedef enum {
     OPCODE_AND,
     OPCODE_OR,
     OPCODE_NOT,
+
+    /* Bitwise */
+    OPCODE_BIT_AND,
+    OPCODE_BIT_OR,
+    OPCODE_BIT_XOR,
+    OPCODE_SHL,
+    OPCODE_SHR,
+    OPCODE_BIT_NOT,
 
     /* Control flow */
     OPCODE_JUMP,          /* unconditional jump */
@@ -939,6 +957,11 @@ typedef enum {
 VM      *vm_create(Arena *arena);
 VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 Value *constants, size_t const_len);
+
+/* Render a module's bytecode to stderr. One implementation for both the
+ * `--dump-bytecode` flag and the ASTRA_DUMP_VM environment variable. */
+void     vm_dump_bytecode(const Instruction *code, size_t code_len,
+                          const Value *constants, size_t const_len);
 VMResult vm_exec(VM *vm);
 void     vm_destroy(VM *vm);
 

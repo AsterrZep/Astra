@@ -1,0 +1,70 @@
+// Astra Language Evolution — Phase 1 (Seed Compiler)
+// Features: if/else, while, for..in, break, continue
+// Backend: VM + C codegen (--emit-c)
+// Status: ✅ Working (89/89 tests pass)
+
+fn main() {
+    // --- if/else as statement ---
+    let x = 10;
+    if x > 5 {
+        print("x is greater than 5");
+    } else {
+        print("x is 5 or less");
+    }
+
+    // --- if/else as expression ---
+    let value = if x > 5 { 100 } else { 0 };
+    print(value);    // 100
+
+    // --- while loop with break ---
+    let mut counter = 0;
+    while true {
+        counter = counter + 1;
+        if counter >= 5 {
+            break;
+        }
+    }
+    print(counter);   // 5
+
+    // --- while loop with continue ---
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 10 {
+        i = i + 1;
+        if i % 2 == 0 {
+            continue;
+        }
+        sum = sum + i;
+    }
+    print(sum);    // 25 (1+3+5+7+9)
+
+    // --- for..in range (exclusive) ---
+    let mut total = 0;
+    for j in 1..5 {
+        total = total + j;
+    }
+    print(total);   // 10 (1+2+3+4)
+
+    // --- for..in range (inclusive) ---
+    let mut total2 = 0;
+    for j in 1..=5 {
+        total2 = total2 + j;
+    }
+    print(total2);  // 15 (1+2+3+4+5)
+
+    // --- for..in array ---
+    let fruits = ["apple", "banana", "cherry"];
+    for fruit in fruits {
+        print(fruit);
+    }
+
+    // --- Nested control flow ---
+    let mut acc = 0;
+    for k in 1..=3 {
+        if k == 2 {
+            continue;
+        }
+        acc = acc + k;
+    }
+    print(acc);   // 4 (1+3, skips 2)
+}

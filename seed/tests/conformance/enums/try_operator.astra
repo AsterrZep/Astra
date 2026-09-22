@@ -1,0 +1,39 @@
+// The `?` operator: unwrap the payload, or unwind the enclosing function with
+// the absence/error value (OPCODE_TRY_UNWRAP in the VM, ASTRA_TRY_UNWRAP macro
+// in the generated C).
+//
+// This was the only documented feature with no test at all, and it was
+// unusable: `some(x)`/`ok(x)`/`err(x)` were typed as their bare payload, so
+// `expr?` had no optional layer to remove and every use was rejected by the
+// type checker with a confusing cascade ("arithmetic operator requires numeric
+// type, got optional"). Both halves are covered here.
+// EXPECT: some(4)
+// EXPECT: nil
+// EXPECT: some(18)
+// EXPECT: nil
+// EXPECT: some(2)
+fn increment(x: i32?) -> i32? {
+    let v = x?            // unwraps when present, early-returns `none` otherwise
+    return some(v + 1)
+}
+
+fn halve(x: i32) -> i32? {
+    if x < 0 {
+        return none
+    }
+    return some(x / 2)
+}
+
+fn pipeline(x: i32) -> i32? {
+    let a = halve(x)?                 // early return propagates through here
+    let b = increment(some(a))?
+    return some(b * 2)
+}
+
+fn main() {
+    print(increment(some(3)))
+    print(increment(none))
+    print(pipeline(16))
+    print(pipeline(-1))               // absence comes back out of two frames
+    print(pipeline(1))
+}

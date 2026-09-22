@@ -1,0 +1,19 @@
+// EXPECT: 200
+//
+// Regression for the frame-base truncation in the VM (2026-09-21 audit, S8).
+//
+// CallFrame.base is a 16-bit stack slot, but GET_LOCAL/SET_LOCAL read it through
+// a uint8_t, so the value wrapped at 256 — reached after about 127 nested calls,
+// each frame taking the callee slot plus its argument. From there on a local
+// read came from a different frame: this program printed nothing and failed with
+// "cannot compare function and int" at depth 127, because the slot that held the
+// parameter held a function instead. 200 is comfortably past the old wrap point
+// and comfortably below VM_CALL_DEPTH, so the correct answer here must be exact.
+fn countdown(n: i32) -> i32 {
+    if n <= 0 { return 0 }
+    return countdown(n - 1) + 1
+}
+
+fn main() {
+    print(countdown(200))
+}

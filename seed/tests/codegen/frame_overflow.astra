@@ -1,0 +1,24 @@
+// EXPECT-RUNTIME-ERROR:
+//
+// S9 regression: the generated C used to write past the frame array on deep
+// recursion, because every push was an unchecked `frame[sp] = ...; sp++`.
+// ASan-confirmed stack-buffer-overflow (READ of size 24) at about 500 frames;
+// the frame array is now a global that ASTRA_PUSH measures against, so this must
+// stop with "runtime error: frame stack overflow (recursion too deep)".
+//
+// The runner checks that the generated program exits 1 with a "runtime error"
+// line rather than a signal: a crash would exit non-zero too, so requiring the
+// clean diagnostic is the whole point of the test.
+//
+// The VM's bound is different in kind (VM_CALL_DEPTH: 256 call frames, because
+// the VM keeps a fixed frame-metadata array; the C backend has no such array,
+// the C call stack is the metadata, so its only limit is the operand stack).
+// Both stop with a diagnostic, which is what this test pins down.
+fn countdown(n: i32) -> i32 {
+    if n <= 0 { return 0 }
+    return countdown(n - 1) + 1
+}
+
+fn main() {
+    print(countdown(2000))
+}

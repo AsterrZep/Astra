@@ -1,0 +1,13 @@
+// EXPECT-RUNTIME-ERROR:
+//
+// C backend twin of conformance/arrays/out_of_bounds.astra (audit finding S11).
+// The generated code wrote `a[5]` straight through `AstraArray.elems`, so this
+// program read and wrote outside the heap buffer: the read printed garbage with
+// exit 0 and `a[5] = 99` was ASan-confirmed memory corruption. Indexing now goes
+// through astra_array_get/astra_array_set, which report the same bounds error as
+// the VM. The runner requires exit 1 with a "runtime error" line, so a crash
+// (also non-zero) cannot pass this test.
+fn main() {
+    let a = [1, 2, 3]
+    print(a[5])
+}

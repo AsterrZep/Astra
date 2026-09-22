@@ -1,0 +1,15 @@
+// --emit-c must escape string data when it writes a C string literal.
+// Before the fix a quote closed the literal early and a newline broke the
+// generated line, so a valid Astra program produced uncompilable C (and an
+// attacker-supplied string could inject arbitrary C into the output).
+// EXPECT: say "hi" now
+// EXPECT: a\b
+// EXPECT: x
+// EXPECT: y
+// EXPECT: t	ab
+fn main() {
+    print("say \"hi\" now")
+    print("a\\b")
+    print("x\ny")
+    print("t\tab")
+}

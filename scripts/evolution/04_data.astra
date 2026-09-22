@@ -1,0 +1,60 @@
+// Astra Language Evolution — Phase 1 (Seed Compiler)
+// Features: arrays, structs, field access, element assignment
+// Backend: VM + C codegen (--emit-c)
+// Status: ✅ Working (89/89 tests pass)
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+struct Person {
+    name: string
+    age: i32
+    active: bool
+}
+
+struct Line {
+    start: Point
+    end: Point
+}
+
+fn main() {
+    // --- Array literal ---
+    let numbers = [10, 20, 30, 40, 50];
+    print(numbers[0]);   // 10
+    print(numbers[4]);   // 50
+
+    // --- Array element assignment ---
+    let mut mutable = [1, 2, 3];
+    mutable[1] = 99;
+    print(mutable[1]);   // 99
+
+    // --- Array aliasing (shared handle) ---
+    let mut a = [1, 2, 3];
+    let mut b = a;
+    b[0] = 99;
+    print(a[0]);   // 99 (aliasing!)
+
+    // --- Struct literal ---
+    let origin = Point { x: 0, y: 0 };
+    let p = Point { x: 3, y: 4 };
+
+    // --- Field access ---
+    print(p.x);    // 3
+    print(p.y);    // 4
+
+    // --- Field assignment ---
+    let mut person = Person { name: "Alice", age: 30, active: true };
+    person.age = 31;
+    print(person.name);
+    print(person.age);
+
+    // --- Nested structs ---
+    let line = Line {
+        start: Point { x: 0, y: 0 },
+        end: Point { x: 10, y: 10 }
+    };
+    print(line.start.x);   // 0
+    print(line.end.x);     // 10
+}

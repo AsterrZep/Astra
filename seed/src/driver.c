@@ -431,6 +431,61 @@ static void dump_node(Node *node, int indent) {
     case NODE_COMPOUND_ASSIGN:
         printf("CompoundAssign\n");
         break;
+
+    /* Option/Result construction, try propagation and the pattern nodes were
+     * missing here, so --dump-ast silently printed nothing for them. */
+    case NODE_SOME_EXPR:
+        printf("SomeExpr\n");
+        dump_node(node->as.some_expr.value, indent + 1);
+        break;
+    case NODE_NONE_EXPR:
+        printf("NoneExpr\n");
+        break;
+    case NODE_OK_EXPR:
+        printf("OkExpr\n");
+        dump_node(node->as.ok_expr.value, indent + 1);
+        break;
+    case NODE_ERR_EXPR:
+        printf("ErrExpr\n");
+        dump_node(node->as.err_expr.value, indent + 1);
+        break;
+    case NODE_TRY_EXPR:
+        printf("TryExpr\n");
+        dump_node(node->as.try_expr.inner, indent + 1);
+        break;
+    case NODE_PATTERN_BIND:
+        printf("PatternBind(%.*s)\n",
+               (int)node->as.pattern_bind.name.len,
+               node->as.pattern_bind.name.str);
+        break;
+    case NODE_PATTERN_VARIANT_BIND:
+        printf("PatternVariantBind\n");
+        dump_node(node->as.pattern_variant_bind.variant, indent + 1);
+        for (size_t i = 0; i < node->as.pattern_variant_bind.bindings.len; i++) {
+            indent_print(indent + 1);
+            printf("Bind(%.*s)\n",
+                   (int)node->as.pattern_variant_bind.bindings.data[i].len,
+                   node->as.pattern_variant_bind.bindings.data[i].str);
+        }
+        break;
+    case NODE_PATTERN_BUILTIN_VARIANT:
+        printf("PatternBuiltinVariant(%d)\n",
+               (int)node->as.pattern_builtin_variant.kind);
+        if (node->as.pattern_builtin_variant.payload)
+            dump_node(node->as.pattern_builtin_variant.payload, indent + 1);
+        break;
+    case NODE_LAMBDA:
+        printf("Lambda\n");
+        for (size_t i = 0; i < node->as.lambda.params.len; i++) {
+            indent_print(indent + 1);
+            printf("Param(%.*s)\n",
+                   (int)node->as.lambda.params.data[i].len,
+                   node->as.lambda.params.data[i].str);
+        }
+        if (node->as.lambda.return_type)
+            dump_node(node->as.lambda.return_type, indent + 1);
+        dump_node(node->as.lambda.body, indent + 1);
+        break;
     }
 }
 
@@ -474,9 +529,14 @@ Compiler *driver_create(const char *filename, const char *source,
     d->base.checker = NULL;
     d->base.emitter = NULL;
     d->base.vm      = NULL;
-    d->dump_tokens  = dump_tokens;
-    d->dump_ast     = dump_ast;
+    d->dump_tokens   = dump_tokens;
+    d->dump_ast      = dump_ast;
+    d->dump_bytecode = false;
     return &d->base;
+}
+
+void driver_set_dump_bytecode(Compiler *c, bool on) {
+    ((CompilerDriver *)c)->dump_bytecode = on;
 }
 
 /* -----------------------------------------------------------
@@ -542,6 +602,11 @@ static bool run_full_pipeline(Compiler *c) {
     size_t code_len = 0, const_len = 0;
     const Instruction *code = emitter_get_code(emitter, &code_len);
     const Value *constants = emitter_get_constants(emitter, &const_len);
+
+    if (((CompilerDriver *)c)->dump_bytecode) {
+        vm_dump_bytecode(code, code_len, constants, const_len);
+        return true;
+    }
 
     VM *vm = vm_create(c->arena);
     if (!vm) {

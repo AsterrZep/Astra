@@ -44,6 +44,11 @@ struct Codegen {
     /* Lambda/non-builtin FnObj registry: maps FnObj pointer to generated C name */
     struct { const FnObj *fn; const char *c_name; uint8_t param_count; } fn_obj_reg[512];
     size_t fn_obj_reg_count;
+
+    /* Name registries above are fixed-size. A breach is recorded here and fails
+     * the run; it must never index past a registry (see make_fn_cname /
+     * make_global_cname). */
+    size_t error_count;
 };
 
 /* -----------------------------------------------------------
@@ -76,6 +81,26 @@ static void cg_writef(Codegen *cg, const char *fmt, ...) {
     cg_write(cg, tmp);
 }
 
+/* Write a source string as the *body* of a generated C string literal. Astra
+ * string data reaches codegen as a NUL-terminated byte sequence, so length
+ * stays strlen-based; what this guards is that a quote, backslash or control
+ * byte cannot close the literal early and inject arbitrary C into the output
+ * (the generated .c is handed to a native compiler). */
+static void cg_write_c_escaped(Codegen *cg, const char *s) {
+    for (const unsigned char *p = (const unsigned char *)s; p && *p; p++) {
+        if (*p == '"' || *p == '\\') {
+            char esc[3] = { '\\', (char)*p, '\0' };
+            cg_write(cg, esc);
+        } else if (*p < 0x20 || *p == 0x7f) {
+            /* Three octal digits: never merges with a following literal char. */
+            cg_writef(cg, "\\%03o", (unsigned)*p);
+        } else {
+            char lit[2] = { (char)*p, '\0' };
+            cg_write(cg, lit);
+        }
+    }
+}
+
 /* -----------------------------------------------------------
  * Name generation
  * ----------------------------------------------------------- */
@@ -86,9 +111,17 @@ static const char *make_fn_cname(Codegen *cg, InternedString name) {
         if (cg->fn_map[i].name.str == name.str)
             return cg->fn_map[i].c_name;
     }
+    if (cg->fn_map_count >= 512) {
+        cg->error_count++;
+        return NULL;
+    }
     /* Generate: astra_fn_<name> */
     size_t len = name.len + 16;
     char *buf = malloc(len);
+    if (!buf) {
+        cg->error_count++;
+        return NULL;
+    }
     snprintf(buf, len, "astra_fn_%.*s", (int)name.len, name.str);
     /* Replace non-identifier chars */
     for (char *p = buf + 10; *p; p++) {
@@ -105,8 +138,16 @@ static const char *make_global_cname(Codegen *cg, InternedString name) {
         if (cg->global_map[i].name.str == name.str)
             return cg->global_map[i].c_name;
     }
+    if (cg->global_map_count >= 256) {
+        cg->error_count++;
+        return NULL;
+    }
     size_t len = name.len + 16;
     char *buf = malloc(len);
+    if (!buf) {
+        cg->error_count++;
+        return NULL;
+    }
     snprintf(buf, len, "g_%.*s", (int)name.len, name.str);
     for (char *p = buf + 2; *p; p++) {
         if (*p == '.' || *p == '-' || *p == '/') *p = '_';
@@ -307,10 +348,9 @@ static const char *register_enum_def(Codegen *cg, const EnumDef *def) {
     return cname;
 }
 
-static void emit_enum_def_fwd_decls(Codegen *cg) {
-    /* No forward declarations needed — enum defs are emitted before functions */
-}
-
+/* No forward declarations are needed for enum defs: unlike struct defs, they
+ * are emitted before every function body, so nothing can reference an
+ * undefined `g_enumdef_N`. */
 static void emit_enum_def_globals(Codegen *cg) {
     /* We need the C runtime to have an EnumDef struct. Since codegen_runtime.h
      * doesn't define it, we emit a compatible layout inline. */
@@ -598,7 +638,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
 
     /* If this function uses ?, set up error recovery context */
     if (uses_try) {
-        cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { return astra_error_value; }\n");
+        cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { astra_error_active = 0; return astra_error_value; }\n");
     }
 
     /* First pass: emit labels for jump targets */
@@ -632,67 +672,67 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
                 Value v = fn->constants[idx];
                 switch (v.kind) {
                 case VAL_NIL:
-                    cg_writef(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
                     break;
                 case VAL_BOOL:
-                    cg_writef(cg, "    frame[sp] = astra_bool(%s); sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_bool(%s));\n",
                               v.as.bool_val ? "1" : "0");
                     break;
                 case VAL_INT:
-                    cg_writef(cg, "    frame[sp] = astra_int(%ldL); sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_int(%ldL));\n",
                               (long)v.as.int_val);
                     break;
                 case VAL_FLOAT:
-                    cg_writef(cg, "    frame[sp] = astra_float(%g); sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_float(%g));\n",
                               v.as.float_val);
                     break;
                 case VAL_STRING:
-                    cg_writef(cg, "    frame[sp] = astra_string_new(\"%s\", %ld); sp++;\n",
-                              v.as.string_val, (long)strlen(v.as.string_val));
+                    cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_string_new(\"");
+                    cg_write_c_escaped(cg, v.as.string_val);
+                    cg_writef(cg, "\", %ld));\n", (long)strlen(v.as.string_val));
                     break;
                 case VAL_FN: {
                     FnObj *fn_obj = v.as.fn_val;
                     if (fn_obj && fn_obj->param_count == 255 && fn_obj->code == NULL) {
-                        cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)astra_builtin_print, 255); sp++;\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)astra_builtin_print, 255));\n");
                     } else if (fn_obj) {
                         const char *cname = find_fn_obj_cname(cg, fn_obj);
                         if (cname) {
-                            cg_writef(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)%s, %u); sp++;\n",
+                            cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)%s, %u));\n",
                                       cname, (unsigned)fn_obj->param_count);
                         } else {
-                            cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)NULL, 0); sp++;\n");
+                            cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)NULL, 0));\n");
                         }
                     } else {
-                        cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)NULL, 0); sp++;\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)NULL, 0));\n");
                     }
                 } break;
                 case VAL_STRUCT_DEF: {
                     const StructDef *def = v.as.struct_def;
                     const char *cname = register_struct_def(cg, def);
                     if (cname) {
-                        cg_writef(cg, "    frame[sp].tag = AST_PTR; frame[sp].as.ptr_val = (void *)&%s; sp++;\n", cname);
+                        cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_ptr(&%s));\n", cname);
                     } else {
-                        cg_write(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
                     }
                 } break;
                 case VAL_ENUM_DEF: {
                     const EnumDef *def = v.as.enum_def;
                     const char *cname = register_enum_def(cg, def);
                     if (cname) {
-                        cg_writef(cg, "    frame[sp].tag = AST_PTR; frame[sp].as.ptr_val = (void *)&%s; sp++;\n", cname);
+                        cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_ptr(&%s));\n", cname);
                     } else {
-                        cg_write(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
                     }
                 } break;
                 case VAL_ENUM: {
                     const char *ename = v.as.enum_val.enum_name ? v.as.enum_val.enum_name : "";
                     const char *vname = v.as.enum_val.variant_name ? v.as.enum_val.variant_name : "";
-                    cg_writef(cg, "    frame[sp].tag = AST_ENUM; frame[sp].as.enum_val.enum_name = \"%s\"; frame[sp].as.enum_val.variant_name = \"%s\"; sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_enum_val(\"%s\", \"%s\"));\n",
                               ename, vname);
                 } break;
-                    break;
                 default:
-                    cg_writef(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
                     break;
                 }
             }
@@ -704,7 +744,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
         } break;
 
         case OPCODE_DUP: {
-            cg_write(cg, "    frame[sp] = frame[sp-1]; sp++;\n");
+            cg_write(cg, "    ASTRA_PUSH(frame, sp, frame[sp-1]);\n");
         } break;
 
         case OPCODE_SWAP: {
@@ -713,7 +753,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
         } break;
 
         case OPCODE_GET_LOCAL: {
-            cg_writef(cg, "    frame[sp] = frame[%u]; sp++;\n", inst.arg.index);
+            cg_writef(cg, "    ASTRA_PUSH(frame, sp, frame[%u]);\n", inst.arg.index);
         } break;
 
         case OPCODE_SET_LOCAL: {
@@ -729,7 +769,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
                 is.len = strlen(fn->constants[name_idx].as.string_val);
                 gname = make_global_cname(cg, is);
             }
-            cg_writef(cg, "    frame[sp] = %s; sp++;\n", gname);
+            cg_writef(cg, "    ASTRA_PUSH(frame, sp, %s);\n", gname);
         } break;
 
         case OPCODE_SET_GLOBAL: {
@@ -791,6 +831,24 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
         case OPCODE_NOT:
             cg_write(cg, "    frame[sp-1] = astra_not(frame[sp-1]);\n");
             break;
+        case OPCODE_BIT_AND:
+            cg_write(cg, "    frame[sp-2] = astra_bit_and(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_BIT_OR:
+            cg_write(cg, "    frame[sp-2] = astra_bit_or(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_BIT_XOR:
+            cg_write(cg, "    frame[sp-2] = astra_bit_xor(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_SHL:
+            cg_write(cg, "    frame[sp-2] = astra_shl(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_SHR:
+            cg_write(cg, "    frame[sp-2] = astra_shr(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_BIT_NOT:
+            cg_write(cg, "    frame[sp-1] = astra_bit_not(frame[sp-1]);\n");
+            break;
 
         case OPCODE_JUMP: {
             int32_t offset = inst.arg.offset;
@@ -802,7 +860,6 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             cg_writef(cg, "    if (!astra_truthy(frame[--sp])) goto L_%zu;\n",
                       ip + (size_t)offset);
         } break;
-
         case OPCODE_JUMP_IF_TRUE: {
             int32_t offset = inst.arg.offset;
             cg_writef(cg, "    if (astra_truthy(frame[--sp])) goto L_%zu;\n",
@@ -845,7 +902,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
                 cg_writef(cg, "        _elems[%u] = frame[sp - %u];\n", j, n - j);
             }
             cg_writef(cg, "        sp -= %u;\n", n);
-            cg_writef(cg, "        frame[sp] = astra_array_new(_elems, %u); sp++;\n", n);
+            cg_writef(cg, "        ASTRA_PUSH(frame, sp, astra_array_new(_elems, %u));\n", n);
             cg_writef(cg, "    }\n");
         } break;
 
@@ -853,7 +910,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             cg_write(cg, "    {\n");
             cg_write(cg, "        AstraValue _idx = frame[--sp];\n");
             cg_write(cg, "        AstraValue _arr = frame[sp - 1];\n");
-            cg_write(cg, "        frame[sp - 1] = _arr.as.array_val->elems[_idx.as.int_val];\n");
+            cg_write(cg, "        frame[sp - 1] = astra_array_get(_arr.as.array_val, _idx.as.int_val);\n");
             cg_write(cg, "    }\n");
         } break;
 
@@ -866,7 +923,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             cg_write(cg, "        AstraValue _val = frame[--sp];\n");
             cg_write(cg, "        AstraValue _idx = frame[--sp];\n");
             cg_write(cg, "        AstraValue _arr = frame[sp - 1];\n");
-            cg_write(cg, "        _arr.as.array_val->elems[_idx.as.int_val] = _val;\n");
+            cg_write(cg, "        astra_array_set(_arr.as.array_val, _idx.as.int_val, _val);\n");
             cg_write(cg, "        frame[sp - 1] = _val;\n");
             cg_write(cg, "    }\n");
         } break;
@@ -899,7 +956,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             cg_writef(cg, "        for (size_t _i = 0; _i < _s->def->field_count; _i++) {\n");
             cg_writef(cg, "            if (strcmp(_s->def->field_names[_i], \"%s\") == 0) { _fi = (int)_i; break; }\n", fname);
             cg_writef(cg, "        }\n");
-            cg_writef(cg, "        frame[sp] = (_fi >= 0) ? _s->fields[_fi] : astra_nil(); sp++;\n");
+            cg_writef(cg, "        ASTRA_PUSH(frame, sp, (_fi >= 0) ? _s->fields[_fi] : astra_nil());\n");
             cg_writef(cg, "    }\n");
         } break;
 
@@ -950,6 +1007,10 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             cg_writef(cg, "        _e->def = NULL;\n");
             cg_writef(cg, "        _e->variant = %u;\n", variant_idx);
             cg_writef(cg, "        _e->fields = malloc(%u * sizeof(AstraValue));\n", field_count);
+            /* Recorded so that structural equality of two data-carrying variants
+             * can compare payloads without the enum definition (the VM reads the
+             * count from EnumDef; the generated object has no def). */
+            cg_writef(cg, "        _e->field_count = %u;\n", field_count);
             for (uint32_t j = 0; j < field_count; j++) {
                 cg_writef(cg, "        _e->fields[%u] = frame[sp - %u];\n",
                           j, field_count - j);
@@ -1001,7 +1062,11 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
         } break;
 
         default:
-            cg_writef(cg, "    /* TODO: opcode %d */\n", inst.op);
+            /* See emit_module_code: a missing handler must fail the run, never
+             * degrade into a placeholder comment. */
+            fprintf(stderr, "error: C codegen has no handler for opcode %d"
+                            " (name it with ASTRA_DUMP_VM=1)\n", (int)inst.op);
+            cg->error_count++;
             break;
         }
 
@@ -1019,20 +1084,17 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
 
 static void emit_module_code(Codegen *cg) {
     cg_write(cg, "static int astra_module_main(void) {\n");
-    cg_write(cg, "    AstraValue frame[1024];\n");
+    cg_write(cg, "    AstraValue *frame = astra_frame;\n");
     cg_write(cg, "    uint16_t sp = 0;\n");
     cg_write(cg, "    (void)frame; (void)sp;\n\n");
 
-    /* Check if module code uses TRY_UNWRAP */
+    /* Always set up error recovery context for module code so that
+     * runtime errors (array bounds, division by zero, etc.) use longjmp
+     * instead of exit(1). */
+    cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { astra_error_active = 0; return 1; }\n");
+
     size_t code_len = 0;
     const Instruction *code = emitter_get_code(cg->emitter, &code_len);
-    bool uses_try = false;
-    for (size_t i = 0; i < code_len; i++) {
-        if (code[i].op == OPCODE_TRY_UNWRAP) { uses_try = true; break; }
-    }
-    if (uses_try) {
-        cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { return 1; }\n");
-    }
 
     /* Initialize builtins */
     for (size_t i = 0; i < cg->global_map_count; i++) {
@@ -1077,34 +1139,35 @@ static void emit_module_code(Codegen *cg) {
                 Value v = constants[idx];
                 switch (v.kind) {
                 case VAL_NIL:
-                    cg_writef(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
                     break;
                 case VAL_BOOL:
-                    cg_writef(cg, "    frame[sp] = astra_bool(%s); sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_bool(%s));\n",
                               v.as.bool_val ? "1" : "0");
                     break;
                 case VAL_INT:
-                    cg_writef(cg, "    frame[sp] = astra_int(%ldL); sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_int(%ldL));\n",
                               (long)v.as.int_val);
                     break;
                 case VAL_FLOAT:
-                    cg_writef(cg, "    frame[sp] = astra_float(%g); sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_float(%g));\n",
                               v.as.float_val);
                     break;
                 case VAL_STRING:
-                    cg_writef(cg, "    frame[sp] = astra_string_new(\"%s\", %ld); sp++;\n",
-                              v.as.string_val, (long)strlen(v.as.string_val));
+                    cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_string_new(\"");
+                    cg_write_c_escaped(cg, v.as.string_val);
+                    cg_writef(cg, "\", %ld));\n", (long)strlen(v.as.string_val));
                     break;
                 case VAL_FN: {
                     FnObj *fn_obj = v.as.fn_val;
                     if (fn_obj && fn_obj->param_count == 255 && fn_obj->code == NULL) {
                         /* Print builtin */
-                        cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)astra_builtin_print, 255); sp++;\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)astra_builtin_print, 255));\n");
                     } else if (fn_obj) {
                         /* Try lambda/non-builtin lookup first */
                         const char *cname = find_fn_obj_cname(cg, fn_obj);
                         if (cname) {
-                            cg_writef(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)%s, %u); sp++;\n",
+                            cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)%s, %u));\n",
                                       cname, (unsigned)fn_obj->param_count);
                         } else {
                             /* Fall back to named function lookup by scanning bytecode */
@@ -1122,36 +1185,50 @@ static void emit_module_code(Codegen *cg) {
                                     }
                                 }
                             }
-                            cg_writef(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)%s, 0); sp++;\n", fname);
+                            cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)%s, 0));\n", fname);
                         }
                     } else {
-                        cg_write(cg, "    frame[sp] = astra_fn_new((AstraFnPtr)NULL, 0); sp++;\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)NULL, 0));\n");
                     }
                 } break;
                 case VAL_ENUM: {
                     const char *ename = v.as.enum_val.enum_name ? v.as.enum_val.enum_name : "";
                     const char *vname = v.as.enum_val.variant_name ? v.as.enum_val.variant_name : "";
-                    cg_writef(cg, "    frame[sp].tag = AST_ENUM; frame[sp].as.enum_val.enum_name = \"%s\"; frame[sp].as.enum_val.variant_name = \"%s\"; sp++;\n",
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_enum_val(\"%s\", \"%s\"));\n",
                               ename, vname);
                 } break;
                 case VAL_ENUM_DEF: {
                     const EnumDef *def = v.as.enum_def;
                     const char *cname = register_enum_def(cg, def);
                     if (cname) {
-                        cg_writef(cg, "    frame[sp].tag = AST_PTR; frame[sp].as.ptr_val = (void *)&%s; sp++;\n", cname);
+                        cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_ptr(&%s));\n", cname);
                     } else {
-                        cg_write(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
+                    }
+                } break;
+                case VAL_STRUCT_DEF: {
+                    /* The definition object a struct literal pops. Without this
+                     * case it fell through to `default` and pushed nil, so a
+                     * top-level `let p = P { … }` built a struct from a NULL
+                     * definition pointer — a segfault in generated code, not a
+                     * diagnostic. */
+                    const StructDef *def = v.as.struct_def;
+                    const char *cname = register_struct_def(cg, def);
+                    if (cname) {
+                        cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_ptr(&%s));\n", cname);
+                    } else {
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
                     }
                 } break;
                 default:
-                    cg_writef(cg, "    frame[sp] = astra_nil(); sp++;\n");
+                    cg_writef(cg, "    ASTRA_PUSH(frame, sp, astra_nil());\n");
                     break;
                 }
             }
         } break;
 
         case OPCODE_DUP:
-            cg_write(cg, "    frame[sp] = frame[sp-1]; sp++;\n");
+            cg_write(cg, "    ASTRA_PUSH(frame, sp, frame[sp-1]);\n");
             break;
 
         case OPCODE_SWAP:
@@ -1160,7 +1237,7 @@ static void emit_module_code(Codegen *cg) {
             break;
 
         case OPCODE_GET_LOCAL:
-            cg_writef(cg, "    frame[sp] = frame[%u]; sp++;\n", inst.arg.index);
+            cg_writef(cg, "    ASTRA_PUSH(frame, sp, frame[%u]);\n", inst.arg.index);
             break;
         case OPCODE_SET_LOCAL:
             cg_writef(cg, "    frame[%u] = frame[--sp];\n", inst.arg.index);
@@ -1175,7 +1252,7 @@ static void emit_module_code(Codegen *cg) {
                 is.len = strlen(constants[name_idx].as.string_val);
                 gname = make_global_cname(cg, is);
             }
-            cg_writef(cg, "    frame[sp] = %s; sp++;\n", gname);
+            cg_writef(cg, "    ASTRA_PUSH(frame, sp, %s);\n", gname);
         } break;
 
         case OPCODE_SET_GLOBAL: {
@@ -1236,6 +1313,24 @@ static void emit_module_code(Codegen *cg) {
             break;
         case OPCODE_NOT:
             cg_write(cg, "    frame[sp-1] = astra_not(frame[sp-1]);\n");
+            break;
+        case OPCODE_BIT_AND:
+            cg_write(cg, "    frame[sp-2] = astra_bit_and(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_BIT_OR:
+            cg_write(cg, "    frame[sp-2] = astra_bit_or(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_BIT_XOR:
+            cg_write(cg, "    frame[sp-2] = astra_bit_xor(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_SHL:
+            cg_write(cg, "    frame[sp-2] = astra_shl(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_SHR:
+            cg_write(cg, "    frame[sp-2] = astra_shr(frame[sp-2], frame[sp-1]); sp--;\n");
+            break;
+        case OPCODE_BIT_NOT:
+            cg_write(cg, "    frame[sp-1] = astra_bit_not(frame[sp-1]);\n");
             break;
 
         case OPCODE_JUMP: {
@@ -1294,7 +1389,7 @@ static void emit_module_code(Codegen *cg) {
                 cg_writef(cg, "        _elems[%u] = frame[sp - %u];\n", j, n - j);
             }
             cg_writef(cg, "        sp -= %u;\n", n);
-            cg_writef(cg, "        frame[sp] = astra_array_new(_elems, %u); sp++;\n", n);
+            cg_writef(cg, "        ASTRA_PUSH(frame, sp, astra_array_new(_elems, %u));\n", n);
             cg_writef(cg, "    }\n");
         } break;
 
@@ -1341,8 +1436,136 @@ static void emit_module_code(Codegen *cg) {
             cg_write(cg, "    ASTRA_TRY_UNWRAP(frame[sp-1]);\n");
             break;
 
+        case OPCODE_POP: {
+            /* Only reachable once module-level statements discard their value
+             * (see emit_stmt's NODE_MODULE): the operand is a count and zero
+             * means one, exactly as in vm.c. */
+            uint8_t n = inst.arg.index ? inst.arg.index : 1;
+            cg_writef(cg, "    sp -= %u;\n", n);
+        } break;
+
+        /* Aggregates at module level.
+         *
+         * `let origin: P = P { x: 0, y: 0 };` / `let v = A(7);` at top level are
+         * ordinary module code, but this dispatcher did not know NEW_STRUCT,
+         * GET_FIELD, SET_FIELD, NEW_ENUM or GET_ENUM_FIELD, so the two backends
+         * disagreed about whether such a program exists at all (the hard-error
+         * default caught it instead of miscompiling it — see §6 of
+         * PHASE1_PROGRESS.md).
+         *
+         * This is the function-body emission again, with `constants`/`const_len`
+         * where the other one has `fn->`. The duplication is real debt, of the
+         * kind that has now cost four separate bugs (S4's twin, the module POP,
+         * module bitwise, and this); unifying the two dispatchers behind one
+         * parameterised emit_instructions is recorded as the follow-up in
+         * PHASE1_PROGRESS.md §4bis#32. */
+        case OPCODE_NEW_STRUCT: {
+            uint32_t n = inst.arg.index;
+            cg_writef(cg, "    /* NEW_STRUCT %u fields */\n", n);
+            cg_writef(cg, "    {\n");
+            cg_writef(cg, "        AstraValue _def = frame[sp - %u - 1];\n", n);
+            cg_writef(cg, "        AstraStruct *_s = astra_struct_new((const AstraStructDef *)_def.as.ptr_val);\n");
+            for (uint32_t i = 0; i < n; i++) {
+                cg_writef(cg, "        _s->fields[%u] = frame[sp - %u + %u];\n",
+                          i, n, i);
+            }
+            cg_writef(cg, "        sp -= %u;\n", n);
+            cg_writef(cg, "        frame[sp-1].tag = AST_STRUCT; "
+                          "frame[sp-1].as.struct_val = _s;\n");
+            cg_writef(cg, "    }\n");
+        } break;
+
+        case OPCODE_GET_FIELD: {
+            uint32_t name_idx = inst.arg.index;
+            const char *fname = (name_idx < const_len && constants[name_idx].kind == VAL_STRING)
+                               ? constants[name_idx].as.string_val : "";
+            cg_writef(cg, "    /* GET_FIELD '%s' */\n", fname);
+            cg_writef(cg, "    {\n");
+            cg_writef(cg, "        AstraValue _obj = frame[--sp];\n");
+            cg_writef(cg, "        AstraStruct *_s = (AstraStruct *)_obj.as.struct_val;\n");
+            cg_writef(cg, "        int _fi = -1;\n");
+            cg_writef(cg, "        for (size_t _i = 0; _i < _s->def->field_count; _i++) {\n");
+            cg_writef(cg, "            if (strcmp(_s->def->field_names[_i], \"%s\") == 0) { _fi = (int)_i; break; }\n", fname);
+            cg_writef(cg, "        }\n");
+            cg_writef(cg, "        ASTRA_PUSH(frame, sp, (_fi >= 0) ? _s->fields[_fi] : astra_nil());\n");
+            cg_writef(cg, "    }\n");
+        } break;
+
+        case OPCODE_SET_FIELD: {
+            uint32_t name_idx = inst.arg.index;
+            const char *fname = (name_idx < const_len && constants[name_idx].kind == VAL_STRING)
+                               ? constants[name_idx].as.string_val : "";
+            cg_writef(cg, "    /* SET_FIELD '%s' */\n", fname);
+            cg_writef(cg, "    {\n");
+            cg_writef(cg, "        AstraValue _val = frame[--sp];\n");
+            cg_writef(cg, "        AstraStruct *_s = (AstraStruct *)frame[sp-1].as.struct_val;\n");
+            cg_writef(cg, "        int _fi = -1;\n");
+            cg_writef(cg, "        for (size_t _i = 0; _i < _s->def->field_count; _i++) {\n");
+            cg_writef(cg, "            if (strcmp(_s->def->field_names[_i], \"%s\") == 0) { _fi = (int)_i; break; }\n", fname);
+            cg_writef(cg, "        }\n");
+            cg_writef(cg, "        if (_fi >= 0) _s->fields[_fi] = _val;\n");
+            cg_writef(cg, "        frame[sp-1] = _val;\n");
+            cg_writef(cg, "    }\n");
+        } break;
+
+        case OPCODE_NEW_ENUM: {
+            uint32_t packed = inst.arg.index;
+            uint32_t variant_idx = packed >> 16;
+            uint32_t field_count = packed & 0xFFFF;
+
+            /* Scan backwards for the CONST that pushed the enum definition. */
+            const char *enum_name = "";
+            const char *variant_name = "";
+            for (size_t back = 1; back <= ip; back++) {
+                if (code[ip - back].op == OPCODE_CONST) {
+                    uint32_t def_idx = code[ip - back].arg.index;
+                    if (def_idx < const_len && constants[def_idx].kind == VAL_ENUM_DEF) {
+                        const EnumDef *def = constants[def_idx].as.enum_def;
+                        if (def) {
+                            enum_name = def->name ? def->name : "";
+                            if (variant_idx < def->variant_count && def->variants[variant_idx].name)
+                                variant_name = def->variants[variant_idx].name;
+                        }
+                        break;
+                    }
+                    if (code[ip - back].op != OPCODE_CONST) break;
+                }
+            }
+
+            cg_writef(cg, "    {\n");
+            cg_writef(cg, "        AstraEnumObj *_e = malloc(sizeof(AstraEnumObj));\n");
+            cg_writef(cg, "        _e->def = NULL;\n");
+            cg_writef(cg, "        _e->variant = %u;\n", variant_idx);
+            cg_writef(cg, "        _e->fields = malloc(%u * sizeof(AstraValue));\n", field_count);
+            cg_writef(cg, "        _e->field_count = %u;\n", field_count);
+            for (uint32_t j = 0; j < field_count; j++) {
+                cg_writef(cg, "        _e->fields[%u] = frame[sp - %u];\n",
+                          j, field_count - j);
+            }
+            cg_writef(cg, "        _e->enum_name = \"%s\";\n", enum_name);
+            cg_writef(cg, "        _e->variant_name = \"%s\";\n", variant_name);
+            cg_writef(cg, "        sp -= %u;\n", field_count);
+            cg_writef(cg, "        sp--;\n");
+            cg_writef(cg, "        frame[sp].tag = AST_ENUM_DATA; "
+                          "frame[sp].as.enum_obj = _e; sp++;\n");
+            cg_writef(cg, "    }\n");
+        } break;
+
+        case OPCODE_GET_ENUM_FIELD: {
+            uint32_t field_idx = inst.arg.index;
+            cg_writef(cg, "    {\n");
+            cg_writef(cg, "        AstraEnumObj *_e = (AstraEnumObj *)frame[sp-1].as.enum_obj;\n");
+            cg_writef(cg, "        frame[sp-1] = _e->fields[%u];\n", field_idx);
+            cg_writef(cg, "    }\n");
+        } break;
+
         default:
-            cg_writef(cg, "    /* TODO: opcode %d at ip %zu */\n", inst.op, ip);
+            /* Never emit a placeholder comment: dropping an instruction yields a
+             * program that silently computes the wrong answer. Any opcode the
+             * VM knows but this backend does not must fail the whole run. */
+            fprintf(stderr, "error: C codegen has no handler for opcode %d at ip %zu"
+                            " (name it with ASTRA_DUMP_VM=1)\n", (int)inst.op, ip);
+            cg->error_count++;
             break;
         }
     }
@@ -1426,6 +1649,14 @@ bool codegen_emit_to_file(Codegen *cg, const char *output_path) {
     /* Phase 7: main() */
     emit_main(cg);
 
+    /* A registry breach is recorded, never written past: fail here rather than
+     * emitting a file that references names which were never registered. */
+    if (cg->error_count > 0) {
+        fprintf(stderr, "error: C codegen registry overflow (%zu name(s) rejected)\n",
+                cg->error_count);
+        return false;
+    }
+
     /* Write to file */
     FILE *f = fopen(output_path, "w");
     if (!f) {
@@ -1448,6 +1679,14 @@ void codegen_destroy(Codegen *cg) {
     }
     for (size_t i = 0; i < cg->fn_obj_reg_count; i++) {
         free((char *)cg->fn_obj_reg[i].c_name);
+    }
+    /* struct_defs / enum_defs also own malloc'd names: omitting them leaked one
+     * 64-byte string per struct/enum and made `--emit-c` fail under LSan. */
+    for (size_t i = 0; i < cg->struct_def_count; i++) {
+        free((char *)cg->struct_defs[i].c_name);
+    }
+    for (size_t i = 0; i < cg->enum_def_count; i++) {
+        free((char *)cg->enum_defs[i].c_name);
     }
     free(cg);
 }

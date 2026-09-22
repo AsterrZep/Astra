@@ -34,6 +34,17 @@ static Type *type_new_fn(Arena *a, Type **params, size_t param_count, Type *ret)
     return t;
 }
 
+/* True for the signed/unsigned integer kinds, including the polymorphic
+ * literal kind. Bitwise operators, indices, ranges and the length of an array all
+ * want "integer", not "numeric", and they had six copies of that enumeration
+ * between them; a literal has to be accepted by all of them or `a[0]` and
+ * `0..n` would stop working. */
+static bool type_is_integer(Type *t) {
+    return t && (t->kind == TYPE_INT || t->kind == TYPE_INT64 ||
+                 t->kind == TYPE_UINT32 || t->kind == TYPE_UINT64 ||
+                 t->kind == TYPE_INT_LITERAL);
+}
+
 bool type_eq(Type *a, Type *b) {
     if (!a || !b) return a == b;
     /* TYPE_UNKNOWN matches any type (for built-in polymorphic functions) */
@@ -41,6 +52,14 @@ bool type_eq(Type *a, Type *b) {
     /* TYPE_NIL matches any TYPE_OPTIONAL (none can be assigned to any Option) */
     if ((a->kind == TYPE_NIL && b->kind == TYPE_OPTIONAL) ||
         (a->kind == TYPE_OPTIONAL && b->kind == TYPE_NIL)) return true;
+    /* An integer literal adopts the integer type it meets. This is the whole
+     * adoption rule: it is what makes `let x: i64 = 5`, `f(5)` for `f(x: u32)`,
+     * `return 0` in `-> i64`, `P { x: 5 }` and `0..n` work without a coercion
+     * (no value changes type — the literal simply did not have one yet). */
+    if (a->kind == TYPE_INT_LITERAL && b->kind != TYPE_INT_LITERAL)
+        return type_is_integer(b);
+    if (b->kind == TYPE_INT_LITERAL && a->kind != TYPE_INT_LITERAL)
+        return type_is_integer(a);
     if (a->kind != b->kind) return false;
     switch (a->kind) {
     case TYPE_OPTIONAL:
@@ -63,8 +82,16 @@ bool type_eq(Type *a, Type *b) {
 }
 
 static bool type_is_numeric(Type *t) {
-    return t && (t->kind == TYPE_INT || t->kind == TYPE_FLOAT ||
-                 t->kind == TYPE_INT64 || t->kind == TYPE_UINT32 || t->kind == TYPE_UINT64);
+    return t && (type_is_integer(t) || t->kind == TYPE_FLOAT);
+}
+
+/* The type an arithmetic or bitwise operation yields once integer literals have
+ * adopted a type. `i64 + 1` is i64, not "still a literal": the literal takes the
+ * type of the operand that has one, and if neither has one the result stays
+ * untyped until some context gives it a type. */
+static Type *numeric_result_type(Type *left, Type *right) {
+    if (left->kind == TYPE_INT_LITERAL) return right;
+    return left;
 }
 
 static bool type_is_error(Type *t) {
@@ -76,6 +103,7 @@ static const char *type_kind_name(TypeKind kind) {
     case TYPE_VOID:     return "void";
     case TYPE_BOOL:     return "bool";
     case TYPE_INT:      return "i32";
+    case TYPE_INT_LITERAL: return "integer literal";
     case TYPE_INT64:    return "i64";
     case TYPE_UINT32:   return "u32";
     case TYPE_UINT64:   return "u64";
@@ -99,6 +127,7 @@ void type_print(Type *t) {
     case TYPE_VOID:     printf("void");     break;
     case TYPE_BOOL:     printf("bool");     break;
     case TYPE_INT:      printf("i32");      break;
+    case TYPE_INT_LITERAL: printf("integer literal"); break;
     case TYPE_INT64:    printf("i64");      break;
     case TYPE_UINT32:   printf("u32");     break;
     case TYPE_UINT64:   printf("u64");     break;
@@ -468,7 +497,8 @@ static Type *resolve_type_node(TypeChecker *tc, Node *node) {
 
 static Type *typecheck_int_lit(TypeChecker *tc, Node *node) {
     (void)node;
-    return type_new(tc->arena, TYPE_INT);
+    /* No type yet: the literal adopts one from its context (see type_eq). */
+    return type_new(tc->arena, TYPE_INT_LITERAL);
 }
 
 static Type *typecheck_float_lit(TypeChecker *tc, Node *node) {
@@ -545,7 +575,7 @@ static Type *typecheck_binary(TypeChecker *tc, Node *node) {
                                  type_kind_name(left->kind),
                                  type_kind_name(right->kind));
         }
-        return left;
+        return numeric_result_type(left, right);
     }
 
     /* Comparison operators require matching types, return bool */
@@ -563,21 +593,17 @@ static Type *typecheck_binary(TypeChecker *tc, Node *node) {
     /* Bitwise operators require matching types */
     if (op == OP_BIT_AND || op == OP_BIT_OR || op == OP_BIT_XOR ||
         op == OP_SHL || op == OP_SHR) {
-        bool left_int = left->kind == TYPE_INT || left->kind == TYPE_INT64 ||
-                        left->kind == TYPE_UINT32 || left->kind == TYPE_UINT64;
-        if (!left_int) {
+        if (!type_is_integer(left)) {
             return tc_error_type(tc, node->as.binary.left->loc,
                                  "bitwise operator requires integer type, got %s",
                                  type_kind_name(left->kind));
         }
-        bool right_int = right->kind == TYPE_INT || right->kind == TYPE_INT64 ||
-                         right->kind == TYPE_UINT32 || right->kind == TYPE_UINT64;
-        if (!right_int) {
+        if (!type_is_integer(right)) {
             return tc_error_type(tc, node->as.binary.right->loc,
                                  "bitwise operator requires integer type, got %s",
                                  type_kind_name(right->kind));
         }
-        return type_new(tc->arena, left->kind);
+        return numeric_result_type(left, right);
     }
 
     return type_new(tc->arena, TYPE_ERROR);
@@ -606,14 +632,12 @@ static Type *typecheck_unary(TypeChecker *tc, Node *node) {
         return type_new(tc->arena, TYPE_BOOL);
     case UNOP_BIT_NOT:
         {
-            bool is_int = operand->kind == TYPE_INT || operand->kind == TYPE_INT64 ||
-                          operand->kind == TYPE_UINT32 || operand->kind == TYPE_UINT64;
-            if (!is_int) {
+            if (!type_is_integer(operand)) {
                 return tc_error_type(tc, node->loc,
                                      "bitwise not requires integer type, got %s",
                                      type_kind_name(operand->kind));
             }
-            return type_new(tc->arena, operand->kind);
+            return operand;
         }
     case UNOP_REF:
     case UNOP_DEREF:
@@ -744,8 +768,7 @@ static Type *typecheck_index(TypeChecker *tc, Node *node) {
     Type *index = typecheck_node(tc, node->as.index.index);
     if (type_is_error(index)) return index;
 
-    bool idx_int = index->kind == TYPE_INT || index->kind == TYPE_INT64 ||
-                   index->kind == TYPE_UINT32 || index->kind == TYPE_UINT64;
+    bool idx_int = type_is_integer(index);
     if (!idx_int) {
         return tc_error_type(tc, node->as.index.index->loc,
                              "array index must be integer type, got %s",
@@ -920,8 +943,7 @@ static Type *typecheck_for(TypeChecker *tc, Node *node) {
         if (start) {
             Type *st = typecheck_node(tc, start);
             if (type_is_error(st)) return st;
-            bool st_int = st->kind == TYPE_INT || st->kind == TYPE_INT64 ||
-                          st->kind == TYPE_UINT32 || st->kind == TYPE_UINT64;
+            bool st_int = type_is_integer(st);
             if (!st_int) {
                 return tc_error_type(tc, start->loc,
                                      "range start must be integer type, got %s",
@@ -930,8 +952,7 @@ static Type *typecheck_for(TypeChecker *tc, Node *node) {
         }
         Type *et = typecheck_node(tc, end);
         if (type_is_error(et)) return et;
-        bool et_int = et->kind == TYPE_INT || et->kind == TYPE_INT64 ||
-                      et->kind == TYPE_UINT32 || et->kind == TYPE_UINT64;
+        bool et_int = type_is_integer(et);
         if (!et_int) {
             return tc_error_type(tc, end->loc,
                                  "range end must be integer type, got %s",
@@ -1346,7 +1367,13 @@ static void typecheck_var_decl(TypeChecker *tc, Node *node) {
     } else if (decl_type) {
         final_type = decl_type;
     } else if (val_type) {
-        final_type = val_type;
+        /* `let x = 5` with no annotation: the literal stops being polymorphic
+         * here and becomes the default integer type (i32). Without this fallback
+         * an unannotated binding would stay polymorphic forever and could later
+         * be assigned to `u64` as if it had been a u64 all along — Rust resolves
+         * the same ambiguity the same way. */
+        final_type = (val_type->kind == TYPE_INT_LITERAL)
+                   ? type_new(tc->arena, TYPE_INT) : val_type;
     } else {
         tc_error(tc, node->loc,
                  "variable '%.*s' must have a type annotation or initializer",
@@ -1392,7 +1419,10 @@ static void typecheck_const_decl(TypeChecker *tc, Node *node) {
     } else if (decl_type) {
         final_type = decl_type;
     } else if (val_type) {
-        final_type = val_type;
+        /* Same default as `let`: a bare const initialised with a literal takes
+         * the default integer type. */
+        final_type = (val_type->kind == TYPE_INT_LITERAL)
+                   ? type_new(tc->arena, TYPE_INT) : val_type;
     } else {
         tc_error(tc, node->loc,
                  "const '%.*s' must have a type annotation or initializer",
@@ -1733,29 +1763,40 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_INDEX:      return typecheck_index(tc, node);
     case NODE_ARRAY_LIT:  return typecheck_array_lit(tc, node);
     case NODE_STRUCT_LIT: return typecheck_struct_lit(tc, node);
+    /* Option/Result constructors produce *tagged* values, so their static type
+     * is an optional wrapping the payload — not the bare payload. Returning the
+     * payload type let a tagged value masquerade as a plain value (so
+     * `let x: i32 = some(3)` type-checked) and left `x?` with nothing to unwrap,
+     * which made the operator unusable. The VM agrees: OPCODE_TRY_UNWRAP errors
+     * out with "? requires Result or Option" when the value carries no tag.
+     * Static Result typing (a distinct TYPE_RESULT, so `err` cannot be confused
+     * with a present value) is Tier 2 per research/011 §5.2; here both OK/ERR
+     * carry the payload type and the distinction lives in the runtime tag. */
     case NODE_SOME_EXPR: {
         Type *inner = typecheck_node(tc, node->as.some_expr.value);
         if (type_is_error(inner)) return inner;
-        return inner;
+        return type_new_optional(tc->arena, inner);
     }
     case NODE_NONE_EXPR: {
-        // none represents Option::None — return a special type that unifies with any Option
-        // For now, return nil type which can be assigned to any variable
+        /* Absence: TYPE_NIL unifies with any TYPE_OPTIONAL (see type_eq). */
         return type_new(tc->arena, TYPE_NIL);
     }
     case NODE_OK_EXPR: {
         Type *inner = typecheck_node(tc, node->as.ok_expr.value);
         if (type_is_error(inner)) return inner;
-        return inner;
+        return type_new_optional(tc->arena, inner);
     }
     case NODE_ERR_EXPR: {
         Type *inner = typecheck_node(tc, node->as.err_expr.value);
         if (type_is_error(inner)) return inner;
-        return inner;
+        return type_new_optional(tc->arena, inner);
     }
     case NODE_TRY_EXPR: {
         Type *inner = typecheck_node(tc, node->as.try_expr.inner);
         if (type_is_error(inner)) return inner;
+        /* `expr?` unwraps one optional layer: OPCODE_TRY_UNWRAP yields the
+         * payload, or unwinds the frame when the value is absent/err. */
+        if (inner->kind == TYPE_OPTIONAL) return inner->as.optional.inner;
         return inner;
     }
     case NODE_RANGE:      return tc_error_type(tc, node->loc,

@@ -57,6 +57,38 @@ Modelo de Memoria: Secuencialmente Consistente para Programas Libres de Carreras
 | **Move Semantics** | `var` = mutable. Para transferir a otra fibra: `transfer(var)`. Invalida la variable emisora. |
 | **Barreras de Memoria** | Para modificación concurrente: `Atomic[T]` con semántica Acquire-Release. |
 
+### 2.5 Semántica de agregados en Astra-0 (decisión del 2026-09-21)
+
+**`let b = a` comparte el handle; no copia los elementos.** Escribir a través de
+un binding es visible por el otro:
+
+```astra
+let mut a = [1, 2, 3]
+let mut b = a
+b[0] = 99
+print(a[0])        # 99
+```
+
+Fijado por `seed/tests/conformance/arrays/alias_write.astra`.
+
+**Por qué compartir y no copiar:**
+
+1. Es lo que pide esta misma arquitectura. §2.1/§2.2 hacen de ARC/ORC el mecanismo
+   por defecto, y contar referencias significa *compartir con contabilidad*, no
+   duplicar. Una semántica de copia por valor obligaría a revertirla en la Fase 2.
+2. §2.4 vende la inmutabilidad por defecto como lo que hace segura la
+   compartición entre fibras. Si los agregados se copiaran, la compartición no
+   sería observable y §2.4 quedaría decorativa.
+3. El seed no tiene refcounting —está explícitamente fuera de su alcance
+   (`research/011` §5.3)—, así que "compartir" es además la única de las dos
+   opciones que hoy puede verificarse.
+
+**Lo que esta decisión NO especifica todavía**, y hay que cerrar antes de
+escribir el compilador en Zig: cuándo se libera un handle compartido, qué hace
+una copia explícita (`.copy()`), y si un agregado puede cruzar una frontera de
+fibra. Ninguna de las tres existe en el seed; se implementan con ARC/ORC en la
+Fase 2 y su contrato se añade aquí entonces.
+
 ---
 
 ## 3. Concurrencia
@@ -126,6 +158,26 @@ let resultado = a.map_native(fn(x) => x * 2.0)  // Operación SIMD sobre memoria
 - Inferencia estática agresiva (Hindley-Milner / Constraint-Based).
 - Inferencia limitada al ámbito local; anotaciones requeridas en firmas públicas.
 - Sin coerción silenciosa de tipos: `entero.to_float() + flotante`.
+- **Literales enteros polimórficos (decisión del 2026-09-21).** Un literal
+  entero no nace con tipo: lo adopta del contexto que lo exige
+  (`let x: i64 = 5`, o `f(5)` con `f(x: i64)`), como el modelo de literales de
+  Rust. No contradice la línea anterior: no se convierte un valor de un tipo a
+  otro, sino que el literal todavía no tenía tipo. Es la condición para que
+  `i64`/`u32`/`u64` —Tier 1 de `research/011` §5.2— sean usables: el typechecker
+  ya acepta esos nombres pero hoy es imposible construir un valor de esos tipos,
+  porque todo literal entero es `i32` y no existe sufijo ni cast
+  (`let x: i64 = 5` → *type mismatch*). **Implementado el mismo día** (seed,
+  `TYPE_INT_LITERAL`): `let x: i64 = 5`, `f(5)` con `f(x: i64)`, `let u: u32 =
+  4294967295` y `let zeros: [u32] = [0, 0]` compilan los cuatro. Sin contexto, un
+  binding toma el tipo por defecto (`i32`), de modo que una variable nunca queda
+  polimórfica.
+- **Las anchuras no se verifican en runtime (limitación del seed).** Los dos
+  backends llevan los enteros como un `int64_t`, así que `i64`/`u32`/`u64`
+  afectan al *chequeo de tipos*, no al valor: `let a: u32 = -1` compila y `a`
+  vale `-1`, y un `u64` mayor que `INT64_MAX` no es representable (el lexer
+  rechaza el literal). La semántica real de anchuras pertenece a la Fase 2, que
+  es donde `research/011` §9.2 la necesita. Registrado en
+  `PHASE1_PROGRESS.md` §6.3.
 
 ### 5.2 Unidades de Medida (Dimensional Types)
 
@@ -146,8 +198,19 @@ fn compute_velocity(dist: Meter, time: Second) -> Velocity {
 
 ### 5.3 Opcionales y Nulos
 
-- Sin `null`/`None` tradicional. Uso de opcionales explícitos: `let nombre: String? = None`.
-- Desempaquetado seguro: `let valor = nombre ?? "Desconocido"`.
+- Sin `null`/`None` tradicional. Uso de opcionales explícitos: `let nombre: String? = none`.
+- **Estado en Astra-0 (2026-09-21).** La ausencia se escribe `none` (`null` está
+  eliminado del lenguaje: pedirlo da `undefined variable 'null'`). `some(x)`,
+  `ok(x)`, `err(x)` y `none` producen **valores etiquetados**: su tipo estático es
+  un opcional sobre el payload y el tag vive en runtime (`research/011` §5.2 sitúa
+  Option/Result en Tier 2). El operador `?` quita la capa: devuelve el payload o
+  desenrolla el frame con la ausencia/error. Verificado en ambos backends por
+  `tests/conformance/enums/try_operator.astra`.
+- **Desviación conocida:** `Result` no tiene tipo estático propio (no existe
+  `TYPE_RESULT`), así que `ok`/`err` comparten el tipo del payload y el checker no
+  los distingue entre sí. Se cierra en la Fase 2; hasta entonces un `err` no se
+  distingue por tipo de un valor presente.
+- `??` (operador de coalescencia de nulos) **no** está implementado en Astra-0.
 
 ### 5.4 Manejo de Errores
 
@@ -253,9 +316,13 @@ astra pkg                   # Gestor de paquetes y dependencias
 
 ```
 let x = 10           # Inmutable (por defecto)
-mut y = 10           # Mutable
-val z = "constante"  # Inmutable profundo (explícito)
+let mut y = 10       # Mutable
 ```
+
+La forma canónica es `let` / `let mut`. `val` y `mut` como introductor suelto
+(§8.1 en versiones anteriores de este documento, y Tier 1 de `research/011` §5.2)
+quedaron descartados el 2026-09-16 al resolver el hallazgo D de
+`COHERENCE_AUDIT.md`; `var` sigue existiendo como token en el lexer sin uso.
 
 ### 8.2 Funciones
 

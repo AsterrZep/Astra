@@ -397,10 +397,13 @@ static Value vm_pop(VM *vm) {
  * Call frame management
  * ----------------------------------------------------------- */
 
-static bool vm_push_frame(VM *vm, const Instruction *ret_ip, uint16_t base) {
+static bool vm_push_frame(VM *vm, const Instruction *ret_ip, uint16_t base, uint32_t line) {
     if (vm->frame_count >= VM_CALL_DEPTH) {
+        /* `line` is the call site, so the diagnostic points at the recursion
+         * instead of at line 0 (which is what the frame layer could see by
+         * itself, and useless to anyone reading the message). */
         vm->error_msg = "call depth exceeded";
-        vm->error_line = 0;
+        vm->error_line = line;
         return false;
     }
     vm->frames[vm->frame_count].ip   = ret_ip;
@@ -472,6 +475,12 @@ static const char *opname(OpCode op) {
     case OPCODE_AND:          return "AND";
     case OPCODE_OR:           return "OR";
     case OPCODE_NOT:          return "NOT";
+    case OPCODE_BIT_AND:      return "BIT_AND";
+    case OPCODE_BIT_OR:       return "BIT_OR";
+    case OPCODE_BIT_XOR:      return "BIT_XOR";
+    case OPCODE_SHL:          return "SHL";
+    case OPCODE_SHR:          return "SHR";
+    case OPCODE_BIT_NOT:      return "BIT_NOT";
     case OPCODE_JUMP:         return "JUMP";
     case OPCODE_JUMP_IF_FALSE:return "JUMP_IF_FALSE";
     case OPCODE_JUMP_IF_TRUE: return "JUMP_IF_TRUE";
@@ -498,6 +507,49 @@ static const char *opname(OpCode op) {
     }
 }
 
+/* Dump a module's bytecode.
+ *
+ * Public because it is the compiler's own view of a program: `--dump-bytecode`
+ * and ASTRA_DUMP_VM both go through here, so there is exactly one place that
+ * decides how an instruction and its operands are rendered. It writes to stderr
+ * to stay out of the way of a program's stdout. */
+void vm_dump_bytecode(const Instruction *code, size_t code_len,
+                      const Value *constants, size_t const_len) {
+    fprintf(stderr, "=== Bytecode (%zu instructions, %zu constants) ===\n",
+            code_len, const_len);
+    for (size_t i = 0; i < code_len; i++) {
+        fprintf(stderr, "  [%3zu] %-16s", i, opname(code[i].op));
+        switch (code[i].op) {
+        case OPCODE_CONST:
+        case OPCODE_GET_GLOBAL:
+        case OPCODE_SET_GLOBAL:
+            fprintf(stderr, " %u", code[i].arg.index);
+            if (code[i].op == OPCODE_CONST && constants && code[i].arg.index < const_len) {
+                fprintf(stderr, " (");
+                value_print(constants[code[i].arg.index]);
+                fprintf(stderr, ")");
+            }
+            break;
+        case OPCODE_GET_LOCAL:
+        case OPCODE_SET_LOCAL:
+            fprintf(stderr, " slot=%u", code[i].arg.index);
+            break;
+        case OPCODE_CALL:
+            fprintf(stderr, " argc=%u", code[i].arg.arg_count);
+            break;
+        case OPCODE_JUMP:
+        case OPCODE_JUMP_IF_FALSE:
+        case OPCODE_JUMP_IF_TRUE:
+            fprintf(stderr, " offset=%d", code[i].arg.offset);
+            break;
+        default:
+            break;
+        }
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "=== End bytecode ===\n");
+}
+
 VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 Value *constants, size_t const_len) {
     if (!vm || !code || code_len == 0) return VM_RUNTIME_ERROR;
@@ -507,40 +559,8 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
     vm->constants = constants;
     vm->const_len = const_len;
 
-    /* Dump bytecode for debugging */
     if (getenv("ASTRA_DUMP_VM")) {
-        fprintf(stderr, "=== Bytecode (%zu instructions, %zu constants) ===\n", code_len, const_len);
-        for (size_t i = 0; i < code_len; i++) {
-            fprintf(stderr, "  [%3zu] %-16s", i, opname(code[i].op));
-            switch (code[i].op) {
-            case OPCODE_CONST:
-            case OPCODE_GET_GLOBAL:
-            case OPCODE_SET_GLOBAL:
-                fprintf(stderr, " %u", code[i].arg.index);
-                if (code[i].op == OPCODE_CONST && constants && code[i].arg.index < const_len) {
-                    fprintf(stderr, " (");
-                    value_print(constants[code[i].arg.index]);
-                    fprintf(stderr, ")");
-                }
-                break;
-            case OPCODE_GET_LOCAL:
-            case OPCODE_SET_LOCAL:
-                fprintf(stderr, " slot=%u", code[i].arg.index);
-                break;
-            case OPCODE_CALL:
-                fprintf(stderr, " argc=%u", code[i].arg.arg_count);
-                break;
-            case OPCODE_JUMP:
-            case OPCODE_JUMP_IF_FALSE:
-            case OPCODE_JUMP_IF_TRUE:
-                fprintf(stderr, " offset=%d", code[i].arg.offset);
-                break;
-            default:
-                break;
-            }
-            fprintf(stderr, "\n");
-        }
-        fprintf(stderr, "=== End bytecode ===\n");
+        vm_dump_bytecode(code, code_len, constants, const_len);
     }
 
     const Instruction *ip   = code;
@@ -594,8 +614,17 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
         /* ---- Local variables ---- */
 
         case OPCODE_GET_LOCAL: {
-            uint8_t slot = (uint8_t)inst.arg.index;
-            uint8_t base = vm->frame_count > 0 ? vm->frames[vm->frame_count - 1].base : 0;
+            /* `base` is a stack *slot number* in [0, VM_STACK_SIZE), so it must
+             * not be narrowed to 8 bits. CallFrame.base is already uint16_t, but
+             * reading it through a uint8_t silently wrapped it at 256: any
+             * program with ~127 nested calls (each frame takes at least the
+             * callee slot plus one argument) then read the wrong stack slot and
+             * returned a wrong value with no diagnostic at all — `f(127)` on a
+             * simple recursive function failed with "cannot compare function and
+             * int". Keeping the width also keeps the bound check below honest;
+             * with a truncated base it compared against the wrong slot too. */
+            uint16_t slot = (uint16_t)inst.arg.index;
+            uint16_t base = vm->frame_count > 0 ? vm->frames[vm->frame_count - 1].base : 0;
             if (base + slot >= vm->sp) {
                 vm_runtime_error(vm, line, "local variable at slot %u not initialized", slot);
                 return VM_RUNTIME_ERROR;
@@ -604,8 +633,9 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
         } break;
 
         case OPCODE_SET_LOCAL: {
-            uint8_t slot = (uint8_t)inst.arg.index;
-            uint8_t base = vm->frame_count > 0 ? vm->frames[vm->frame_count - 1].base : 0;
+            /* Same 8-bit narrowing as GET_LOCAL above. */
+            uint16_t slot = (uint16_t)inst.arg.index;
+            uint16_t base = vm->frame_count > 0 ? vm->frames[vm->frame_count - 1].base : 0;
             if (vm->sp == 0) {
                 vm_runtime_error(vm, line, "stack underflow on set_local");
                 return VM_RUNTIME_ERROR;
@@ -967,6 +997,76 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             if (!vm_push(vm, value_bool(!value_is_truthy(a)))) return VM_RUNTIME_ERROR;
         } break;
 
+        /* ---- Bitwise ---- */
+
+        case OPCODE_BIT_AND: {
+            Value b = vm_pop(vm);
+            Value a = vm_pop(vm);
+            if (a.kind == VAL_INT && b.kind == VAL_INT) {
+                if (!vm_push(vm, value_int(a.as.int_val & b.as.int_val))) return VM_RUNTIME_ERROR;
+            } else {
+                vm_runtime_error(vm, line, "bitwise & requires integer operands");
+                return VM_RUNTIME_ERROR;
+            }
+        } break;
+        case OPCODE_BIT_OR: {
+            Value b = vm_pop(vm);
+            Value a = vm_pop(vm);
+            if (a.kind == VAL_INT && b.kind == VAL_INT) {
+                if (!vm_push(vm, value_int(a.as.int_val | b.as.int_val))) return VM_RUNTIME_ERROR;
+            } else {
+                vm_runtime_error(vm, line, "bitwise | requires integer operands");
+                return VM_RUNTIME_ERROR;
+            }
+        } break;
+        case OPCODE_BIT_XOR: {
+            Value b = vm_pop(vm);
+            Value a = vm_pop(vm);
+            if (a.kind == VAL_INT && b.kind == VAL_INT) {
+                if (!vm_push(vm, value_int(a.as.int_val ^ b.as.int_val))) return VM_RUNTIME_ERROR;
+            } else {
+                vm_runtime_error(vm, line, "bitwise ^ requires integer operands");
+                return VM_RUNTIME_ERROR;
+            }
+        } break;
+        case OPCODE_SHL: {
+            Value b = vm_pop(vm);
+            Value a = vm_pop(vm);
+            if (a.kind == VAL_INT && b.kind == VAL_INT) {
+                if (b.as.int_val < 0 || b.as.int_val >= 64) {
+                    vm_runtime_error(vm, line, "shift amount out of range (must be 0..63)");
+                    return VM_RUNTIME_ERROR;
+                }
+                if (!vm_push(vm, value_int((uint64_t)a.as.int_val << (int)b.as.int_val))) return VM_RUNTIME_ERROR;
+            } else {
+                vm_runtime_error(vm, line, "bitwise << requires integer operands");
+                return VM_RUNTIME_ERROR;
+            }
+        } break;
+        case OPCODE_SHR: {
+            Value b = vm_pop(vm);
+            Value a = vm_pop(vm);
+            if (a.kind == VAL_INT && b.kind == VAL_INT) {
+                if (b.as.int_val < 0 || b.as.int_val >= 64) {
+                    vm_runtime_error(vm, line, "shift amount out of range (must be 0..63)");
+                    return VM_RUNTIME_ERROR;
+                }
+                if (!vm_push(vm, value_int(a.as.int_val >> (int)b.as.int_val))) return VM_RUNTIME_ERROR;
+            } else {
+                vm_runtime_error(vm, line, "bitwise >> requires integer operands");
+                return VM_RUNTIME_ERROR;
+            }
+        } break;
+        case OPCODE_BIT_NOT: {
+            Value a = vm_pop(vm);
+            if (a.kind == VAL_INT) {
+                if (!vm_push(vm, value_int(~a.as.int_val))) return VM_RUNTIME_ERROR;
+            } else {
+                vm_runtime_error(vm, line, "bitwise ~ requires integer operand");
+                return VM_RUNTIME_ERROR;
+            }
+        } break;
+
         /* ---- Aggregates ---- */
 
         case OPCODE_NEW_ARRAY: {
@@ -1266,7 +1366,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
 
             uint16_t base = (uint16_t)fn_idx;
-            if (!vm_push_frame(vm, ip + 1, base)) return VM_RUNTIME_ERROR;
+            if (!vm_push_frame(vm, ip + 1, base, line)) return VM_RUNTIME_ERROR;
 
             /* Switch to function's code and constants */
             vm->code      = fn->code;
@@ -1460,7 +1560,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
         }
 
         if (getenv("ASTRA_TRACE")) {
-            uint8_t base = vm->frame_count > 0 ? vm->frames[vm->frame_count - 1].base : 0;
+            uint16_t base = vm->frame_count > 0 ? vm->frames[vm->frame_count - 1].base : 0;
             fprintf(stderr, "  sp=%u base=%u frame=%u | ", vm->sp, base, vm->frame_count);
             for (uint16_t s = 0; s < vm->sp && s < 20; s++) {
                 fprintf(stderr, "[");

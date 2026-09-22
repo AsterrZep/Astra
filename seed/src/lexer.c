@@ -197,6 +197,26 @@ static Token read_string(Lexer *l, uint32_t start_line, uint32_t start_col,
     }
 }
 
+/* Fold one digit into an integer literal, refusing to overflow.
+ *
+ * All four literal forms (decimal, hex, binary, octal) accumulated into an
+ * int64_t unchecked, so a literal the language cannot represent silently turned
+ * into a different number: `9223372036854775808` printed as -9223372036854775808
+ * and `99999999999999999999999999` as garbage. The shifting forms were also
+ * signed-overflow undefined behaviour, not merely wrong.
+ *
+ * Returns false when the result would exceed INT64_MAX, so the caller can report
+ * it while the literal's text and position are still at hand. INT64_MAX (rather
+ * than UINT64_MAX) is the honest bound: the runtime models every integer as a
+ * signed 64-bit value, so a larger u64 literal could not be represented either.
+ * See PHASE1_PROGRESS.md §6 (S15). */
+static bool accumulate_digit(int64_t *val, int64_t digit, int base) {
+    int64_t v = *val;
+    if (v > (INT64_MAX - digit) / base) return false;
+    *val = v * base + digit;
+    return true;
+}
+
 static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
                          uint32_t start_offset) {
     const char *start = l->source + l->pos;
@@ -219,10 +239,12 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
             for (size_t i = 2; i < len; i++) {
                 char c = text[i];
                 if (c == '_') continue;
-                val <<= 4;
-                if (c >= '0' && c <= '9') val |= (c - '0');
-                else if (c >= 'a' && c <= 'f') val |= (c - 'a' + 10);
-                else val |= (c - 'A' + 10);
+                int64_t digit = (c >= '0' && c <= '9') ? (c - '0')
+                              : (c >= 'a' && c <= 'f') ? (c - 'a' + 10)
+                                                       : (c - 'A' + 10);
+                if (!accumulate_digit(&val, digit, 16))
+                    return make_error(l, "integer literal is out of range for i64",
+                                      start_line, start_col, start_offset);
             }
             Token t = make_token(l, TOKEN_INT_LIT, start_line, start_col,
                                  start_offset, text, len);
@@ -243,7 +265,9 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
             for (size_t i = 2; i < len; i++) {
                 char c = text[i];
                 if (c == '_') continue;
-                val = (val << 1) | (c - '0');
+                if (!accumulate_digit(&val, c - '0', 2))
+                    return make_error(l, "integer literal is out of range for i64",
+                                      start_line, start_col, start_offset);
             }
             Token t = make_token(l, TOKEN_INT_LIT, start_line, start_col,
                                  start_offset, text, len);
@@ -264,7 +288,9 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
             for (size_t i = 2; i < len; i++) {
                 char c = text[i];
                 if (c == '_') continue;
-                val = (val << 3) | (c - '0');
+                if (!accumulate_digit(&val, c - '0', 8))
+                    return make_error(l, "integer literal is out of range for i64",
+                                      start_line, start_col, start_offset);
             }
             Token t = make_token(l, TOKEN_INT_LIT, start_line, start_col,
                                  start_offset, text, len);
@@ -324,7 +350,9 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
         for (size_t i = 0; i < len; i++) {
             char c = text[i];
             if (c == '_') continue;
-            val = val * 10 + (c - '0');
+            if (!accumulate_digit(&val, c - '0', 10))
+                return make_error(l, "integer literal is out of range for i64",
+                                  start_line, start_col, start_offset);
         }
         t.literal.int_val = val;
         return t;

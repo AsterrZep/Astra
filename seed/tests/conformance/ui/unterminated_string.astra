@@ -1,0 +1,9 @@
+// EXPECT-ERROR: unterminated string literal
+//
+// The lexer had always produced this message, but the parser replaced it with
+// its own "unexpected token in expression", so no test could see it. parser_error
+// now reports the lexer's diagnostic whenever the offending token is a
+// TOKEN_ERROR, which is the one path every lexer error takes to the user.
+fn main() {
+    print("abc)
+}

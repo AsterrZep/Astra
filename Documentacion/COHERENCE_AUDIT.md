@@ -8,6 +8,18 @@ Método: 14 programas de sondeo ejecutados contra `astra-seed` (con volcado de
 AST y de bytecode para aislar la causa), más lectura dirigida de `research/010`
 §3-§12, `research/011` §2, §5, §7, §8, §11-§15 y `research/04` §6-§9.
 
+> **Segunda pasada — 2026-09-21.** Esta auditoría es de *coherencia*
+> (documento↔código). Una segunda pasada, esta vez **ejecutando** el binario y con
+> foco en seguridad de memoria, encontró diez problemas adicionales —corrupción de
+> memoria en `--emit-c`, inyección de C en el backend de C, desbordamiento de pila
+> del parser, el código de nivel de módulo entero roto, un build no reproducible y
+> el operador `?` inusable— y **verificó el cierre de los hallazgos A, B, C, D y F**
+> de esta auditoría, más el cierre parcial de E (los tipos enteros se llaman pero
+> aún no se pueden construir valores de ellos). Registro completo, con PoC
+> reproducibles y estado, en `PHASE1_PROGRESS.md` §6; las decisiones tomadas a
+> partir de esa pasada están en `ARCHITECTURE.md` §2.5, §5.1, §5.3 y §8.1 y en
+> `CONSTRUCT_REGISTRY.md` §9.
+
 ---
 
 ## 1. Veredicto

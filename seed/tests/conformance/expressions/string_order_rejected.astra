@@ -1,0 +1,13 @@
+// EXPECT-RUNTIME-ERROR: cannot compare string and string
+//
+// Ordering comparisons are numeric-only (the VM's OPCODE_LT/GT/LE/GE family).
+// The type checker currently lets `"a" < "b"` through, so this is where the
+// language says no; the C backend used to answer `false` instead, which turned an
+// unsupported operation into a plausible-looking wrong answer (S14).
+//
+// Whoever tightens the checker to reject ordering on strings at compile time
+// should move this case to tests/conformance/ui/ — the runtime error must stay
+// reachable for bytecode that does not come from this front end.
+fn main() {
+    print("a" < "b")
+}

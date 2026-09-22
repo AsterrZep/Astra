@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Seed compiler design
 - Compiler testing methodologies
 - Governance and RFC process
+- Evolution demo scripts (01_basics through 06_advanced) in `scripts/evolution/`
+- Terminal status dashboard (`scripts/status.sh`)
+- Phase 2 kickoff document (`Documentacion/PHASE2_KICKOFF.md`)
+
+### Fixed
+- **SHL/SHR undefined behavior**: Added range validation (`< 0 || >= 64`) and `uint64_t` cast in VM and C codegen runtime
+- **String concatenation memory leak**: Added `free(buf)` after `astra_string_new` in C codegen runtime
+- **Runtime errors in module code**: Modified `astra_runtime_error` to use `longjmp` when `astra_error_active` is set; updated `ASTRA_TRY_CONTEXT` macro and module-level error handlers
 
 ## [0.1.0] - 2025-XX-XX
 

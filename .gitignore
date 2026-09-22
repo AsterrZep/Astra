@@ -75,3 +75,7 @@ docs/_build/
 
 # Agent skills (symlinked per-tool views)
 .claude/
+
+# Tool artifacts
+agency-agents/
+graphify-out/

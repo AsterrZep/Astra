@@ -1,0 +1,53 @@
+// Astra Language Evolution — Phase 2+ (NOT YET IMPLEMENTED)
+// Features: unsafe blocks, pointers, manual memory, FFI
+// Backend: LLVM
+// Status: ❌ Not implemented in seed compiler
+//
+// This script documents what Phase 2 (Zig compiler) will support.
+// It CANNOT run on the seed compiler (astra-seed).
+
+// --- Unsafe blocks ---
+fn unsafe_demo() -> void {
+    // Phase 2: Direct memory manipulation
+    // let ptr: Ptr<i32> = alloc(i32)
+    // ptr.write(42)
+    // let val: i32 = ptr.read()
+    // free(ptr)
+}
+
+// --- Pointers ---
+fn pointer_demo() -> void {
+    // Phase 2: Raw pointers
+    // let x: i32 = 10
+    // let ptr: Ptr<i32> = &x
+    // print(ptr.read())   // 10
+    // ptr.write(20)
+    // print(x)            // 20
+}
+
+// --- FFI (Foreign Function Interface) ---
+// Phase 2: Call C functions directly
+// extern "C" fn printf(format: Ptr<u8>, ...) -> i32
+// extern "C" fn malloc(size: usize) -> Ptr<u8>
+// extern "C" fn free(ptr: Ptr<u8>) -> void
+
+// --- Manual memory management ---
+fn manual_memory() -> void {
+    // Phase 2: Arena allocators
+    // let arena: Arena = Arena.new()
+    // let buf: Ptr<u8> = arena.alloc(1024)
+    // arena.reset()  // frees everything at once
+}
+
+// --- Unsafe pointer arithmetic ---
+fn pointer_arithmetic() -> void {
+    // Phase 2: Pointer arithmetic
+    // let arr: [i32] = [10, 20, 30]
+    // let ptr: Ptr<i32> = &arr[0]
+    // print(ptr.add(1).read())  // 20
+}
+
+fn main() {
+    print("Phase 2 features not yet available")
+    print("These will be implemented in the Zig self-hosting compiler")
+}

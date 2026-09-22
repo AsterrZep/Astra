@@ -1,0 +1,13 @@
+// EXPECT-RUNTIME-ERROR: division by zero
+//
+// The VM rejects a zero divisor for floats as well as for ints, even though
+// IEEE-754 would give inf. The C backend only checked the int case and printed
+// `inf`, so `1.0 / 0.0` meant different things in the two backends (S14).
+//
+// This pins the current rule, not a settled design: ARCHITECTURE.md does not say
+// whether a float division by zero should be an error or inf. Whichever way
+// Phase 2 decides, both backends must change together.
+fn main() {
+    let z = 0.0
+    print(1.0 / z)
+}

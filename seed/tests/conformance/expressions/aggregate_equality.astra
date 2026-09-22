@@ -1,0 +1,30 @@
+// EXPECT: true
+// EXPECT: false
+// EXPECT: true
+// EXPECT: false
+// EXPECT: true
+// EXPECT: true
+//
+// Structural equality of aggregates: same contents compare equal, different
+// contents do not, and it nests. The C backend used to answer `false` for every
+// array and struct comparison (astra_eq had no AST_ARRAY/AST_STRUCT case), which
+// is the worst possible failure mode — a wrong answer with no diagnostic, in a
+// program that keeps running. See PHASE1_PROGRESS.md §6 (S12).
+struct Pair {
+    v: [i32]
+    tag: string
+}
+
+enum Shape {
+    Circle(i32)
+    Rect(i32, i32)
+}
+
+fn main() {
+    print([1, 2] == [1, 2])
+    print([1, 2] == [1, 3])
+    print([[1, 2], [3]] == [[1, 2], [3]])
+    print(Pair { v: [1], tag: "a" } == Pair { v: [1], tag: "b" })
+    print(Circle(1) == Circle(1))
+    print(Rect(1, 2) == Rect(1, 2))
+}

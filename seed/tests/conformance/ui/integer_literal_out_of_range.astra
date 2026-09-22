@@ -1,0 +1,10 @@
+// EXPECT-ERROR: integer literal is out of range for i64
+//
+// The lexer folded literal digits into an int64_t unchecked, so this printed
+// -9223372036854775808 instead of failing: a wrong value produced by the front
+// end, and signed-overflow undefined behaviour in the shifting forms besides.
+// The bound is INT64_MAX rather than UINT64_MAX because the runtime models every
+// integer as one signed 64-bit value — see PHASE1_PROGRESS.md §6 (S15).
+fn main() {
+    print(9223372036854775808)
+}

@@ -1,0 +1,41 @@
+// EXPECT: 0
+// EXPECT: true
+// EXPECT: 7
+// EXPECT: Color.Red
+//
+// Module-level aggregates. A `let` at top level is ordinary module code, but the
+// C backend's module dispatcher knew neither NEW_STRUCT/NEW_ENUM_DATA nor the
+// field opcodes and pushed `nil` in place of the struct definition, so a
+// top-level struct literal produced a segfault in the compiled program while the
+// VM printed values (§6, S16). Both backends must agree on which programs exist.
+struct Punto {
+    x: i32
+    y: i32
+}
+
+struct Flag {
+    on: bool
+}
+
+enum Color {
+    Red
+    Green
+}
+
+enum Tag {
+    Num(i32)
+}
+
+let origin: Punto = Punto { x: 0, y: 0 }
+let flag = Flag { on: true }
+let unit = Color.Red
+let tagged = Num(7)
+
+fn main() {
+    print(origin.x)
+    print(flag.on)
+    match tagged {
+        Tag.Num(n) => { print(n) }
+    }
+    print(unit)
+}

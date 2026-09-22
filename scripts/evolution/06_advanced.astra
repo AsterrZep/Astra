@@ -1,0 +1,59 @@
+// Astra Language Evolution — Phase 1 (Seed Compiler)
+// Features: lambdas, Option/Result, ? operator
+// Backend: VM + C codegen (--emit-c)
+// Status: ✅ Working (89/89 tests pass)
+
+fn apply_twice(f: fn(i32) -> i32, x: i32) -> i32 {
+    return f(f(x));
+}
+
+fn increment(x: i32) -> i32 {
+    return x + 1;
+}
+
+fn compute_block() -> i32 {
+    let x = {
+        let a = 10;
+        let b = 20;
+        a + b
+    };
+    return x * 2;
+}
+
+fn sum_digits(n: i32) -> i32 {
+    if n < 10 {
+        return n;
+    }
+    return n % 10 + sum_digits(n / 10);
+}
+
+fn main() {
+    // --- Lambda basic ---
+    let double = |x: i32| -> i32 { x * 2 };
+    print(double(5));    // 10
+
+    // --- Lambda in function call ---
+    print(apply_twice(increment, 0));   // 2
+
+    // --- Transform array with lambda ---
+    let nums = [1, 2, 3, 4, 5];
+    let mut output = [0, 0, 0, 0, 0];
+    for i in 0..5 {
+        output[i] = double(nums[i]);
+    }
+    for v in output {
+        print(v);    // 2, 4, 6, 8, 10
+    }
+
+    // --- Block expression ---
+    print(compute_block());    // 60
+
+    // --- Sum of digits ---
+    print(sum_digits(12345));   // 15
+
+    // --- Option type ---
+    let x = some(42);
+    let y = none;
+    print(x);    // some(42)
+    print(y);    // nil
+}

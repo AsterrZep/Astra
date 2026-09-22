@@ -5,6 +5,17 @@
  * Recursive descent + Pratt parsing
  * ============================================================ */
 
+/* Maximum recursion depth of the recursive-descent parser.
+ *
+ * Hostile or machine-generated input can nest constructs until the C stack
+ * overflows: 20k parentheses, `{` blocks, call chains, array literals or `if`
+ * chains each segfaulted the compiler (stack-overflow under ASan), and the
+ * compiler takes its input from the filesystem, so it cannot trust it.
+ * Bounding the depth here also bounds the depth the type checker and the
+ * emitter later walk, because all three traverse the same tree. 256 is far
+ * above anything readable by a human and far below the ~8 MB default stack. */
+#define PARSER_MAX_DEPTH 256
+
 struct Parser {
     Lexer        *lexer;
     Arena        *arena;
@@ -12,6 +23,13 @@ struct Parser {
     Token         current;
     Token         previous;
     bool          had_error;
+    /* Current recursion depth (see PARSER_MAX_DEPTH). Zeroed by arena_new. */
+    int           depth;
+    /* Set once the depth limit is breached. Unlike an ordinary syntax error,
+     * this is not recoverable: error recovery would re-descend the remaining
+     * input and either loop over it or overflow the stack anyway. All parse
+     * loops stop on this flag, so a deep input costs one diagnostic. */
+    bool          aborted;
     /* Set while parsing a construct whose trailing `{` belongs to the
      * construct itself (if/while/for conditions), so an identifier followed
      * by `{` is not mistaken for a struct literal. */
@@ -29,10 +47,43 @@ struct Parser {
  * ----------------------------------------------------------- */
 
 static void parser_error(Parser *p, const char *msg) {
+    /* A TOKEN_ERROR carries the lexer's own diagnostic in its text (unterminated
+     * string, integer literal out of range, bad escape…). Reporting the parser's
+     * generic "unexpected token" instead threw that away and left the caller with
+     * a position but no cause, so the lexer's message wins whenever the offending
+     * token is one — this is the single place every lexer error reaches the user
+     * through. */
+    if (p->current.kind == TOKEN_ERROR) {
+        fprintf(stderr, "error:");
+        srcloc_print(p->current.loc);
+        fprintf(stderr, ": %.*s\n", (int)p->current.text.len, p->current.text.str);
+        p->had_error = true;
+        return;
+    }
     fprintf(stderr, "error:");
     srcloc_print(p->current.loc);
     fprintf(stderr, ": %s\n", msg);
     p->had_error = true;
+}
+
+/* Enter one level of recursion, or refuse and report once. Reporting only the
+ * first breach keeps a 20k-deep input from printing 20k error lines while it
+ * unwinds. */
+static bool parser_enter(Parser *p) {
+    if (p->aborted) return false;
+    if (p->depth >= PARSER_MAX_DEPTH) {
+        p->aborted = true;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "nesting too deep (max %d)", PARSER_MAX_DEPTH);
+        parser_error(p, msg);
+        return false;
+    }
+    p->depth++;
+    return true;
+}
+
+static void parser_leave(Parser *p) {
+    if (p->depth > 0) p->depth--;
 }
 
 static void advance(Parser *p) {
@@ -101,6 +152,7 @@ static void optional_semi(Parser *p) {
 static Node *parse_statement(Parser *p);
 static Node *parse_declaration(Parser *p);
 static Node *parse_block(Parser *p);
+static Node *parse_block_impl(Parser *p);
 static Node *parse_type(Parser *p);
 static Node *parse_pattern(Parser *p);
 
@@ -162,6 +214,7 @@ typedef Node *(*ParseFn)(Parser *p, Node *left, Precedence prec);
 
 static Node *parse_expression(Parser *p);
 static Node *parse_expression_with_prec(Parser *p, Precedence min_prec);
+static Node *parse_expression_impl(Parser *p, Precedence min_prec);
 
 /* -----------------------------------------------------------
  * Primary expressions
@@ -485,7 +538,16 @@ static Node *parse_unary(Parser *p) {
  * Block expression
  * ----------------------------------------------------------- */
 
+/* Guarded entry point for every block (see PARSER_MAX_DEPTH). Nested blocks
+ * reach here from statement position, which the expression guard never sees. */
 static Node *parse_block(Parser *p) {
+    if (!parser_enter(p)) return NULL;
+    Node *n = parse_block_impl(p);
+    parser_leave(p);
+    return n;
+}
+
+static Node *parse_block_impl(Parser *p) {
     SrcLoc loc = p->previous.loc;
     Node *n = node_new(p->arena, NODE_BLOCK, loc);
     n->as.block.stmts.data = NULL;
@@ -494,7 +556,7 @@ static Node *parse_block(Parser *p) {
     n->as.block.last_expr  = NULL;
 
     skip_newlines(p);
-    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !p->aborted) {
         /* Check if this is an expression that could be the last expr in the block */
         if (check(p, TOKEN_IDENT) || check(p, TOKEN_INT_LIT) || check(p, TOKEN_FLOAT_LIT) ||
             check(p, TOKEN_STRING_LIT) || check(p, TOKEN_TRUE) || check(p, TOKEN_FALSE) ||
@@ -924,7 +986,7 @@ static Node *parse_struct_decl(Parser *p) {
 
     expect(p, TOKEN_LBRACE, "'{'");
     skip_newlines(p);
-    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !p->aborted) {
         /* An iteration that consumes nothing would report the same error
          * forever; the guard at the bottom of the loop bails instead. */
         uint32_t iter_start = p->current.loc.offset;
@@ -988,7 +1050,7 @@ static Node *parse_enum_decl(Parser *p) {
 
     expect(p, TOKEN_LBRACE, "'{'");
     skip_newlines(p);
-    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !p->aborted) {
         uint32_t iter_start = p->current.loc.offset;
         expect(p, TOKEN_IDENT, "variant name");
         /* Capture the variant name BEFORE the payload parser consumes more
@@ -1238,7 +1300,7 @@ static Node *parse_statement(Parser *p) {
 
     p->last_stmt_semi = false;
 
-    if (check(p, TOKEN_EOF)) return NULL;
+    if (check(p, TOKEN_EOF) || p->aborted) return NULL;
 
     /* Declaration keywords */
     if (check(p, TOKEN_FN))     { advance(p); return parse_fn_decl(p); }
@@ -1287,7 +1349,17 @@ static Node *parse_statement(Parser *p) {
  * Pratt parser — main expression entry
  * ----------------------------------------------------------- */
 
+/* Guarded entry point for expressions (see PARSER_MAX_DEPTH): parentheses,
+ * call chains, array literals, `if`/`match` nesting and unary chains all
+ * recurse through here. */
 static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
+    if (!parser_enter(p)) return NULL;
+    Node *node = parse_expression_impl(p, min_prec);
+    parser_leave(p);
+    return node;
+}
+
+static Node *parse_expression_impl(Parser *p, Precedence min_prec) {
     /* nud: prefix tokens */
     Node *left = NULL;
     switch (p->current.kind) {
@@ -1443,8 +1515,14 @@ static Node *parse_expression_with_prec(Parser *p, Precedence min_prec) {
             return left;
     }
 
+    /* A failed (or depth-limited) parse returns NULL, and NULL must never
+     * reach a postfix handler: parse_call reads left->loc, which crashed the
+     * compiler with a null dereference on a 20k-deep parenthesised input. */
+    if (!left || p->aborted) return NULL;
+
     /* led: infix operators — consume while precedence >= min_prec */
     for (;;) {
+        if (p->aborted) return NULL;
         Precedence prec = token_to_prec(p->current.kind);
         if (prec == PREC_NONE) break;
         if ((int)prec < (int)min_prec) break;
@@ -1528,7 +1606,7 @@ Node *parser_parse_module(Parser *p) {
     mod->as.module.items.len  = 0;
     mod->as.module.items.cap  = 0;
 
-    while (!check(p, TOKEN_EOF)) {
+    while (!check(p, TOKEN_EOF) && !p->aborted) {
         Node *decl = parse_declaration(p);
         if (decl) {
             if (mod->as.module.items.len >= mod->as.module.items.cap) {

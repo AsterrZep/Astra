@@ -1,0 +1,40 @@
+// EXPECT: 0
+// EXPECT: true
+// EXPECT: 7
+// EXPECT: Color.Red
+//
+// C backend twin of conformance/module/toplevel_aggregates.astra (S16): before
+// the module dispatcher learned the aggregate opcodes, `origin.x` dereferenced a
+// NULL struct definition in the generated program (exit 139), while --emit-c had
+// reported "no handler for opcode 35".
+struct Punto {
+    x: i32
+    y: i32
+}
+
+struct Flag {
+    on: bool
+}
+
+enum Color {
+    Red
+    Green
+}
+
+enum Tag {
+    Num(i32)
+}
+
+let origin: Punto = Punto { x: 0, y: 0 }
+let flag = Flag { on: true }
+let unit = Color.Red
+let tagged = Num(7)
+
+fn main() {
+    print(origin.x)
+    print(flag.on)
+    match tagged {
+        Tag.Num(n) => { print(n) }
+    }
+    print(unit)
+}

@@ -257,7 +257,43 @@ parar.
 
 ---
 
-## 8. Orden recomendado para lo que queda
+## 8. Decisión sobre la migración de hooks (2026-09-21)
+
+**El seed no migra los hooks `parse` / `check` / `emit`. El registro se queda
+declarativo + validado (`migrated: 0 / 44`).** La decisión se toma con la
+investigación delante, no por comodidad:
+
+- `research/011` §2.3.1 nombra la sobre-ingeniería del seed como su **primer
+  anti-patrón** (*"quick and dirty — it's used once to bootstrap, then retired"*).
+  Mover 44 hooks a un despacho por punteros es, literalmente, cambiar `switch`
+  simples por una vtable: cero cambio observable, más indirección y más superficie
+  donde romper el invariante de pila del emisor.
+- `research/011` §3.3 —la estructura de módulos que ese mismo reporte prescribe—
+  **no tiene** directorio `constructs/`: organiza por fase (`lexer.c`, `parser.c`,
+  `typechecker.c`, `codegen_c.c`…). El registro es un añadido de la
+  implementación, y el guardarraíl de §7 ya exige que ningún archivo de constructo
+  añada conceptos al lenguaje.
+- Lo que el registro **ya** aporta es valor real y está en uso: 14 invariantes
+  verificadas contra `lexer.c` y `parser.c` en cada `make test`, trazabilidad
+  gramática→reporte y siete desviaciones investigación↔código sacadas a la luz
+  (§5). Eso encaja con el anti-patrón nº4 de `research/011` §2.3 (*"the seed needs
+  rigorous tests"*), no con el nº1.
+- Coste de migrar: riesgo sobre el invariante de pila y sobre los 67 tests verdes,
+  sin ningún cambio de comportamiento que lo justifique. `research/011` §2.3.3
+  recuerda que el seed solo necesita **corrección**, no estructura.
+
+**Cuándo revisitarlo:** la Fase 2 escribe el compilador en Zig desde cero. Ahí
+"un archivo por constructo" puede adoptarse *en diseño*, sin migración: el
+registro se traduce a tablas de Zig y cada hook nace en su archivo. Migrar en C
+para reescribir en Zig después sería pagarlo dos veces.
+
+El registro sigue siendo la puerta de validación del proyecto: si dos
+workstreams reclaman el mismo nodo, token o palabra clave, `--check-constructs`
+hace fallar la suite antes de compilar nada.
+
+---
+
+## 9. Orden recomendado para lo que queda
 
 Derivado de los huecos registrados en los propios archivos:
 

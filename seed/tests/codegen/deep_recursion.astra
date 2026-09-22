@@ -1,0 +1,15 @@
+// EXPECT: 200
+//
+// C backend twin of conformance/expressions/deep_recursion.astra. The C backend
+// addresses frames as `astra_frame + _fn_slot`, so once the frame array became a
+// bounds-checked global (S9) this program is also what proves the guard did not
+// break correct addressing: depth 200 is well inside the frame budget, so the
+// answer must be exactly 200, not a diagnostic.
+fn countdown(n: i32) -> i32 {
+    if n <= 0 { return 0 }
+    return countdown(n - 1) + 1
+}
+
+fn main() {
+    print(countdown(200))
+}

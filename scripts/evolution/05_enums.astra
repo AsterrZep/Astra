@@ -1,0 +1,78 @@
+// Astra Language Evolution — Phase 1 (Seed Compiler)
+// Features: enums, match, guards, or-patterns
+// Backend: VM + C codegen (--emit-c)
+// Status: ✅ Working (89/89 tests pass)
+
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+enum Shape {
+    Circle(f64)
+    Rectangle(f64, f64)
+    Triangle(f64, f64, f64)
+}
+
+fn color_name(c: Color) -> string {
+    return match c {
+        Color.Red => "red",
+        Color.Green => "green",
+        Color.Blue => "blue",
+    };
+}
+
+fn shape_area(s: Shape) -> f64 {
+    return match s {
+        Shape.Circle(r) => r * r * 3.14159,
+        Shape.Rectangle(w, h) => w * h,
+        Shape.Triangle(a, b, c) => (a + b + c) / 2.0,
+    };
+}
+
+fn is_primary(c: Color) -> bool {
+    return match c {
+        Color.Red | Color.Green | Color.Blue => true,
+    };
+}
+
+fn classify_number(n: i32) -> string {
+    return match n {
+        0 => "zero",
+        1 | 2 | 3 => "small",
+        _ => "other",
+    };
+}
+
+fn describe_shape(s: Shape) -> string {
+    return match s {
+        Shape.Circle(r) => "circle",
+        Shape.Rectangle(w, h) => "rect",
+        Shape.Triangle(a, b, c) => "triangle",
+    };
+}
+
+fn main() {
+    // Unit enum
+    let c = Color.Red;
+    print(color_name(c));
+
+    // Data-carrying enum (constructor without prefix)
+    let s = Circle(5.0);
+    print(shape_area(s));
+
+    // Or-patterns
+    print(is_primary(Color.Red));
+    print(is_primary(Color.Blue));
+
+    // Integer matching
+    print(classify_number(0));
+    print(classify_number(2));
+    print(classify_number(7));
+
+    // Describe shapes
+    print(describe_shape(Circle(1.0)));
+    print(describe_shape(Rectangle(5.0, 5.0)));
+    print(describe_shape(Triangle(3.0, 4.0, 5.0)));
+}

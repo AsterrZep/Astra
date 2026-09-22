@@ -16,6 +16,7 @@ static void print_usage(const char *prog) {
         "  --version        Show version\n"
         "  --dump-tokens    Lex and dump all tokens\n"
         "  --dump-ast       Parse and dump the AST\n"
+        "  --dump-bytecode  Compile and dump the bytecode (does not run it)\n"
         "  --dump-constructs  Dump the construct registry (grammar, research, deps)\n"
         "  --dump-operators   Dump the operator precedence table\n"
         "  --check-constructs Check registry invariants; exit 1 on failure\n"
@@ -89,9 +90,10 @@ static int run_registry_diagnostic(const char *flag) {
 }
 
 int main(int argc, char **argv) {
-    bool dump_tokens = false;
-    bool dump_ast    = false;
-    bool emit_c      = false;
+    bool dump_tokens   = false;
+    bool dump_ast      = false;
+    bool dump_bytecode = false;
+    bool emit_c        = false;
     const char *filename = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -109,6 +111,8 @@ int main(int argc, char **argv) {
             dump_tokens = true;
         } else if (strcmp(argv[i], "--dump-ast") == 0) {
             dump_ast = true;
+        } else if (strcmp(argv[i], "--dump-bytecode") == 0) {
+            dump_bytecode = true;
         } else if (strcmp(argv[i], "--emit-c") == 0) {
             emit_c = true;
         } else if (argv[i][0] == '-') {
@@ -143,6 +147,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "error: failed to initialize compiler\n");
         free(source);
         return 1;
+    }
+
+    if (dump_bytecode) {
+        driver_set_dump_bytecode(c, true);
     }
 
     if (emit_c) {
@@ -200,7 +208,9 @@ int main(int argc, char **argv) {
         if (fn_len >= 6 && strcmp(filename + fn_len - 6, ".astra") == 0) {
             memcpy(out_path + fn_len - 6, ".c", 3);
         } else {
-            memcpy(out_path + fn_len, ".c", 4);
+            /* ".c" occupies 3 bytes including its NUL; copying 4 read one byte
+             * past the literal (-Wstringop-overread / CWE-125). */
+            memcpy(out_path + fn_len, ".c", 3);
         }
 
         Codegen *cg = codegen_create(module, emitter, filename);

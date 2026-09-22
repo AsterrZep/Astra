@@ -1,0 +1,9 @@
+// EXPECT-RUNTIME-ERROR:
+//
+// C backend twin of conformance/expressions/float_divide_by_zero.astra (S14):
+// the generated program must stop with "division by zero" like the VM, not print
+// `inf` and exit 0.
+fn main() {
+    let z = 0.0
+    print(1.0 / z)
+}

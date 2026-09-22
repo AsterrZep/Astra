@@ -1,0 +1,28 @@
+// Bitwise operators through --emit-c: the generated program must match the VM
+// byte for byte. These previously failed to compile with "implicit declaration
+// of function 'astra_bit_and'" because codegen_runtime.h had no helpers.
+// EXPECT: 1
+// EXPECT: 7
+// EXPECT: 6
+// EXPECT: 16
+// EXPECT: 8
+// EXPECT: -4
+// EXPECT: -6
+// EXPECT: 0
+// EXPECT: 7
+// EXPECT: true
+// EXPECT: 8
+fn main() {
+    print(5 & 3)
+    print(5 | 3)
+    print(5 ^ 3)
+    print(1 << 4)
+    print(32 >> 2)
+    print(-16 >> 2)      // arithmetic shift: sign is preserved
+    print(~5)
+    print(0xF0 & 0x0F)
+    let x = 6
+    print(x | 1)
+    print((x & 2) == 2)
+    print(1 << 2 + 1)    // `+` binds tighter than `<<`
+}

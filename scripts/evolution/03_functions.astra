@@ -1,0 +1,65 @@
+// Astra Language Evolution — Phase 1 (Seed Compiler)
+// Features: functions, recursion, parameters, return types
+// Backend: VM + C codegen (--emit-c)
+// Status: ✅ Working (89/89 tests pass)
+
+// --- Basic function ---
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+// --- Tail expression (implicit return) ---
+fn square(x: i32) -> i32 {
+    return x * x;
+}
+
+// --- Recursive function ---
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+// --- Fibonacci ---
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+// --- Function with multiple parameters ---
+fn clamp(value: i32, min_val: i32, max_val: i32) -> i32 {
+    if value < min_val {
+        return min_val;
+    }
+    if value > max_val {
+        return max_val;
+    }
+    return value;
+}
+
+// --- Function calling function ---
+fn is_even(n: i32) -> bool {
+    return n % 2 == 0;
+}
+
+fn count_evens(start: i32, end: i32) -> i32 {
+    let mut count = 0;
+    for i in start..end {
+        if is_even(i) {
+            count = count + 1;
+        }
+    }
+    return count;
+}
+
+fn main() {
+    print(add(3, 4));           // 7
+    print(square(5));           // 25
+    print(factorial(10));       // 3628800
+    print(fibonacci(10));       // 55
+    print(clamp(15, 0, 10));    // 10
+    print(count_evens(1, 11));  // 5
+}

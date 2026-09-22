@@ -1,0 +1,17 @@
+// EXPECT: 1
+// EXPECT: 3
+//
+// C backend twin of conformance/arrays/returned_literal.astra (audit finding
+// S10). astra_array_new used to adopt the `AstraValue _elems[n]` local of the
+// generated C function, so the array pointed into a frame that was gone as soon
+// as `first_three` returned. Copying in the constructor is what makes this print
+// the same values as the VM.
+fn first_three() -> [i32] {
+    return [1, 2, 3]
+}
+
+fn main() {
+    let a = first_three()
+    print(a[0])
+    print(a[2])
+}

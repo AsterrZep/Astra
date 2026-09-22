@@ -51,6 +51,11 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
     case OPCODE_GE:
     case OPCODE_AND:
     case OPCODE_OR:
+    case OPCODE_BIT_AND:
+    case OPCODE_BIT_OR:
+    case OPCODE_BIT_XOR:
+    case OPCODE_SHL:
+    case OPCODE_SHR:
     case OPCODE_RET:
         return -1;
 
@@ -64,6 +69,7 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
     case OPCODE_SWAP:
     case OPCODE_NEG:
     case OPCODE_NOT:
+    case OPCODE_BIT_NOT:
     case OPCODE_LEN:
     case OPCODE_GET_FIELD:
     case OPCODE_JUMP:
@@ -392,7 +398,6 @@ static void register_types(Emitter *e, Node *module) {
  * Forward declarations
  * ----------------------------------------------------------- */
 
-static void emit_node(Emitter *e, Node *node);
 static void emit_stmt(Emitter *e, Node *node);
 static void emit_expr(Emitter *e, Node *node);
 
@@ -635,6 +640,7 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_INDEX:             return "Index";
     case NODE_ARRAY_LIT:         return "ArrayLit";
     case NODE_RANGE:             return "Range";
+    case NODE_LAMBDA:            return "Lambda";
     case NODE_STRUCT_LIT:        return "StructLit";
     case NODE_PAYLOAD:           return "Payload";
     case NODE_FIELD_ACCESS:      return "FieldAccess";
@@ -822,6 +828,11 @@ static void emit_expr(Emitter *e, Node *node) {
                 case OP_GT:  emit_inst(e, OPCODE_GT,  line); break;
                 case OP_LE:  emit_inst(e, OPCODE_LE,  line); break;
                 case OP_GE:  emit_inst(e, OPCODE_GE,  line); break;
+                case OP_BIT_AND: emit_inst(e, OPCODE_BIT_AND, line); break;
+                case OP_BIT_OR:  emit_inst(e, OPCODE_BIT_OR,  line); break;
+                case OP_BIT_XOR: emit_inst(e, OPCODE_BIT_XOR, line); break;
+                case OP_SHL:     emit_inst(e, OPCODE_SHL,     line); break;
+                case OP_SHR:     emit_inst(e, OPCODE_SHR,     line); break;
                 default: break;
             }
         }
@@ -830,8 +841,9 @@ static void emit_expr(Emitter *e, Node *node) {
     case NODE_UNARY_OP: {
         emit_expr(e, node->as.unary.operand);
         switch (node->as.unary.op) {
-            case UNOP_NEG: emit_inst(e, OPCODE_NEG, node->loc.line); break;
-            case UNOP_NOT: emit_inst(e, OPCODE_NOT, node->loc.line); break;
+            case UNOP_NEG:     emit_inst(e, OPCODE_NEG,     node->loc.line); break;
+            case UNOP_NOT:     emit_inst(e, OPCODE_NOT,     node->loc.line); break;
+            case UNOP_BIT_NOT: emit_inst(e, OPCODE_BIT_NOT, node->loc.line); break;
             default: break;
         }
     } break;
@@ -1758,8 +1770,14 @@ static void emit_stmt(Emitter *e, Node *node) {
         break;
 
     case NODE_MODULE: {
+        /* Module items are statements, so they go through emit_stmt — the one
+         * place that pops an expression's value and asserts stack neutrality.
+         * The former emit_node() dispatcher sent expression items straight to
+         * emit_expr, which left their value on the stack: every module-level
+         * `print(...)`, bare expression, `if` or assignment then failed with a
+         * bogus "internal: stack imbalance in statement Module". */
         for (size_t i = 0; i < node->as.module.items.len; i++) {
-            emit_node(e, node->as.module.items.data[i]);
+            emit_stmt(e, node->as.module.items.data[i]);
         }
     } break;
 
@@ -1797,55 +1815,6 @@ static void emit_stmt(Emitter *e, Node *node) {
 }
 
 /* -----------------------------------------------------------
- * Node dispatcher
- * ----------------------------------------------------------- */
-
-static void emit_node(Emitter *e, Node *node) {
-    if (!node) return;
-
-    switch (node->kind) {
-    case NODE_MODULE:
-        emit_stmt(e, node);
-        break;
-
-    case NODE_FN_DECL:
-    case NODE_VAR_DECL:
-    case NODE_CONST_DECL:
-    case NODE_STRUCT_DECL:
-    case NODE_ENUM_DECL:
-    case NODE_USE:
-    case NODE_IMPL:
-        emit_stmt(e, node);
-        break;
-
-    case NODE_BLOCK:
-    case NODE_IF:
-    case NODE_WHILE:
-    case NODE_FOR:
-    case NODE_RETURN:
-    case NODE_BREAK:
-    case NODE_CONTINUE:
-    case NODE_ASSIGN:
-        emit_expr(e, node);
-        break;
-
-    case NODE_INT_LIT:
-    case NODE_FLOAT_LIT:
-    case NODE_STRING_LIT:
-    case NODE_BOOL_LIT:
-    case NODE_IDENT:
-    case NODE_BINARY_OP:
-    case NODE_UNARY_OP:
-    case NODE_CALL:
-        emit_expr(e, node);
-        break;
-
-    default:
-        break;
-    }
-}
-
-/* -----------------------------------------------------------
  * Public API
  * ----------------------------------------------------------- */
 
@@ -1860,7 +1829,7 @@ Emitter *emitter_create(Arena *arena, StringTable *strings) {
 void emitter_emit(Emitter *e, Node *module) {
     if (!e || !module) return;
     register_types(e, module);
-    emit_node(e, module);
+    emit_stmt(e, module);
 
     /* If the module defines main(), call it. Top-level functions live in the
      * globals table, so a name lookup is enough. */

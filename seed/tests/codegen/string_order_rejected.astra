@@ -1,0 +1,9 @@
+// EXPECT-RUNTIME-ERROR:
+//
+// C backend twin of conformance/expressions/string_order_rejected.astra (S14).
+// astra_lt/gt/le/ge returned `false` for any unsupported operand pair; they now
+// report "cannot compare string and string" exactly like the VM, so the compiled
+// program stops instead of continuing with a wrong boolean.
+fn main() {
+    print("a" < "b")
+}

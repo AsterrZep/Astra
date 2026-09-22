@@ -1,0 +1,33 @@
+// EXPECT: 9223372036854775807
+// EXPECT: 4294967295
+// EXPECT: 42
+// EXPECT: 4
+// EXPECT: 7
+// EXPECT: 4
+// EXPECT: 0
+//
+// C backend twin of conformance/types/integer_widths.astra (Hallazgo E). The
+// integer widths are a compile-time notion: both backends carry values as a
+// 64-bit integer, so what this pins is that the annotated forms type-check and
+// print identically after a round-trip through gcc.
+fn add_one(x: i64) -> i64 {
+    return x + 1
+}
+
+fn main() {
+    let big: i64 = 9223372036854775807
+    print(big)
+    let u: u32 = 4294967295
+    print(u)
+    print(add_one(41))
+    let bits: u64 = 0b1100 & 0b0110
+    print(bits)
+    print(5 | 2)
+    let mut count: u64 = 0
+    for i in 0..4 {
+        count = count + 1
+    }
+    print(count)
+    let zeros: [u32] = [0, 0]
+    print(zeros[0])
+}

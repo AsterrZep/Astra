@@ -1,0 +1,35 @@
+// EXPECT: 9223372036854775807
+// EXPECT: 4294967295
+// EXPECT: 42
+// EXPECT: 4
+// EXPECT: 7
+// EXPECT: 4
+// EXPECT: 0
+//
+// The integer types the audit called Tier 1 must be inhabitable
+// (COHERENCE_AUDIT.md Hallazgo E): the checker resolved `i64`/`u32`/`u64` but
+// every literal was i32, so `let x: i64 = 5` was a type mismatch and no value of
+// those types could ever exist. Literals now adopt the type their context
+// requires (ARCHITECTURE.md §5.1), which is what makes the annotated forms below
+// work — in signatures, in arrays, in `for` ranges and in bitwise operators.
+fn add_one(x: i64) -> i64 {
+    return x + 1
+}
+
+fn main() {
+    let big: i64 = 9223372036854775807
+    print(big)
+    let u: u32 = 4294967295
+    print(u)
+    print(add_one(41))
+    let bits: u64 = 0b1100 & 0b0110
+    print(bits)
+    print(5 | 2)
+    let mut count: u64 = 0
+    for i in 0..4 {
+        count = count + 1
+    }
+    print(count)
+    let zeros: [u32] = [0, 0]
+    print(zeros[0])
+}

@@ -1,0 +1,16 @@
+// EXPECT-RUNTIME-ERROR: call depth exceeded
+//
+// The other half of the S8 regression: past VM_CALL_DEPTH the VM must stop with
+// a diagnostic. Before the frame-base fix this program corrupted the stack and
+// failed with a nonsensical message from unrelated code; the bound itself and
+// the "call depth exceeded" path already existed, so what is being pinned here
+// is that the failure stays a clean, located runtime error (and that the depth
+// limit is not reachable by accident at human scale — see deep_recursion.astra).
+fn countdown(n: i32) -> i32 {
+    if n <= 0 { return 0 }
+    return countdown(n - 1) + 1
+}
+
+fn main() {
+    print(countdown(2000))
+}

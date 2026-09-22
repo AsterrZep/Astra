@@ -24,10 +24,27 @@ Full background lives in:
 
 ```bash
 cd seed
-make            # debug build -> seed/astra-seed
-make debug      # ASan + UBSan (recommended while developing)
+make            # development build (-g -O0) -> seed/astra-seed
+make debug      # ASan + UBSan + LSan (recommended while developing)
 make release    # gcc -O2
 make test       # runs tests/run_tests.sh
+
+# Each variant compiles into its own object tree (build/debug, build/release)
+# and drops the binary before linking, so switching variants always rebuilds.
+# Never share build/ between variants: the flags are not part of an object's
+# timestamp, and mixing them used to link-fail with "creating DT_TEXTREL".
+```
+
+`run_tests.sh` runs two paths: the VM (every case in `tests/conformance/`) and
+the C backend (`tests/codegen/*.astra` through `--emit-c` + `gcc`). When you add
+a codegen-only behaviour, add its case to `tests/codegen/`.
+
+Compiling generated C requires `-Isrc` (the emitted file includes
+`codegen_runtime.h`, which lives in `seed/src/`):
+
+```bash
+./astra-seed --emit-c input.astra
+gcc -Wall -Wextra -Isrc -o output input.c -lm
 ```
 
 Runtime debugging switches:
@@ -91,6 +108,11 @@ These are easy to break and expensive to debug:
    declares, and the operator table in `constructs/operator_table.c` must match
    the parser's precedence table. `--check-constructs` enforces both; never
    silence it.
+7. **Bounded recursion.** The parser is the trust boundary: `PARSER_MAX_DEPTH`
+   (256) caps nesting in `parser.c`, and breaching it aborts parsing. Both the
+   expression and the block entry points are guarded, because nested blocks reach
+   the parser by a different path. Without this, 20k of `(`, `{`, calls, arrays
+   or `if` chains segfaulted the compiler.
 
 ## C Codegen (`--emit-c`)
 
@@ -113,15 +135,18 @@ The C codegen generates executable C from Astra bytecode. The pipeline is:
 
 ### What works (verified against VM)
 
-- Arithmetic, comparisons, booleans, strings, nil
-- `let` variables (local and global)
-- `if`/`else` (as statement and expression)
-- `for..in` (exclusive ranges)
+All 42 non-UI conformance cases are compiled through `--emit-c`, run, and
+compared against the VM's output by `make test` (identical output, no leaks under
+LSan). That covers:
+
+- Arithmetic, comparisons, booleans, strings, nil, **bitwise operators**
+- `let` variables (local and global), **module-level statements**
+- `if`/`else` (as statement and expression), `for..in`, `while`
 - Builtins (`print`)
-- Function calls, recursion
-- Arrays (literal + indexed access)
-- Structs (literal + field access by name)
-- Enums (unit variants like `Color.Red`)
+- Function calls, recursion, **lambdas**
+- Arrays (literal + indexed access), **structs** (literal + field access/write)
+- **Enums** (unit variants and data-carrying), **`match`** with bindings/guards/or-patterns
+- **Option/Result** tagged values, pattern matching and the **`?` operator**
 
 ### Key codegen invariants
 
@@ -136,18 +161,26 @@ The C codegen generates executable C from Astra bytecode. The pipeline is:
    VAL_STRUCT_DEF constants.
 5. **Field access**: GET_FIELD/SET_FIELD use runtime strcmp lookup (not index),
    matching the VM's behavior.
+6. **String literals must be escaped**: source strings are written with
+   `cg_write_c_escaped()`. Writing them raw made a valid Astra program produce
+   invalid C and let a `"` in a string inject arbitrary C into the output.
+7. **Name registries are fixed-size**: `fn_map[512]`, `global_map[256]`,
+   `struct_defs[256]`, `enum_defs[256]`, `fn_obj_reg[512]`. A breach is recorded in
+   `Codegen.error_count` and fails the run; indexing past one was a reachable
+   out-of-bounds write (registering a name must never grow a count past its cap).
+8. **Every opcode the VM knows must have a handler**, or codegen fails: a
+   placeholder comment silently drops the instruction and yields a program that
+   computes the wrong answer. Both switches end in a hard error for this reason.
 
 ### What remains for Phase 1 completion
 
-| Feature | Issue | Effort |
-|:--------|:------|:-------|
-| Lambdas | No C function body generated for lambda FnObjs | Medium |
-| Match expressions | "cannot call non-function" at runtime | Medium |
-| Option/Result | TRY_UNWRAP, TAG_IS, UNWRAP not tested | Low |
-| Data-carrying enums | AstraEnumObj not properly handled | Medium |
-| `?` operator | Not tested in C codegen | Low |
-| Module-level errors | `astra_runtime_error` used without setjmp context | Low |
-| Full test suite | 55 conformance tests via C codegen | High |
+| Item | Issue | Effort |
+|:-----|:------|:-------|
+| Module-level runtime errors | `astra_runtime_error` used outside a setjmp context in generated module code — **unverified** | Low |
+
+Everything else that was on this list (lambdas, match, Option/Result, `?`,
+data-carrying enums, the full suite through the C backend) is implemented and now
+verified by `make test` on both backends.
 
 ## Sub-agent workstreams
 
