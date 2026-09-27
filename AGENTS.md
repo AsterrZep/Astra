@@ -9,9 +9,11 @@ sub-agent workstreams.
 **Astra** is a compiled, multi-paradigm programming language (Python/TypeScript
 ergonomics, C/Rust performance, no borrow checker, no tracing-GC pauses).
 
-The repository currently holds **design documentation** (`Documentacion/`) and
-**Phase 1 of the implementation**: the *seed compiler* (`seed/`), written in C,
-which compiles a bootstrap subset called **Astra-0**.
+The repository currently holds **design documentation** (`Documentacion/`),
+**Phase 1 of the implementation** — the *seed compiler* (`seed/`), written in C,
+which compiles a bootstrap subset called **Astra-0** — and **Phase 2** (`zig/`),
+the self-hosting compiler written in Zig, whose Astra-0 frontend is ported (see
+`Documentacion/PHASE2_PROGRESS.md`).
 
 Full background lives in:
 - `Documentacion/ARCHITECTURE.md` — language specification
@@ -63,6 +65,31 @@ Compiler-introspection switches (no input file, they describe the compiler):
 ./astra-seed --dump-constructs    # every construct: EBNF, research, deps, phases
 ./astra-seed --dump-operators     # operator precedence table + documented deviations
 ```
+
+## Phase 2 (`zig/`) — Zig self-hosting compiler
+
+Requires **Zig 0.16.x**. The Astra-0 frontend (lexer, flat AST, parser) is
+implemented; the type checker, emitter and VM are next.
+
+```bash
+cd zig
+export PATH="$HOME/zig:$PATH"   # this environment keeps Zig at ~/zig/zig
+zig build                       # -> zig-out/bin/astra-zig
+zig build test                  # unit tests + conformance over seed/tests/conformance
+zig build -Doptimize=ReleaseFast
+
+./zig-out/bin/astra-zig file.astra            # parse check (exit 1 on error)
+./zig-out/bin/astra-zig --dump-tokens file.astra
+./zig-out/bin/astra-zig --dump-ast file.astra
+```
+
+Layout: `src/lexer/`, `src/ast/`, `src/parser/`, `src/main.zig`,
+`src/conformance.zig` (parses every non-UI seed conformance file). The target
+directories `src/typechecker/`, `src/emitter/`, `src/vm/` are empty so far.
+
+Porting rule: **the Zig compiler must accept everything the seed accepts before
+new features are added** (the suite is the gate). Match `seed/src/*.c` and the
+`research/010`–`012` reports for behaviour.
 
 ## Seed compiler layout (`seed/src`)
 
