@@ -12,14 +12,14 @@ bootstrap. Sustituye al compilador semilla en C (`seed/`, ver
 
 ## 1. Estado actual (2026-09-27)
 
-**Frontend (lexer + AST + parser) de Astra-0 portado y verificado.**
+**Frontend (lexer + AST + parser + type checker) de Astra-0 portado y
+verificado.**
 
 ```
-.astra ─▶ Lexer ─▶ Parser ─▶ AST          [implementado]
-                              │
-                              ├─▶ Type Checker   [pendiente]
-                              ├─▶ Emitter        [pendiente]
-                              └─▶ VM             [pendiente]
+.astra ─▶ Lexer ─▶ Parser ─▶ AST ─▶ Type Checker   [implementado]
+                                      │
+                                      ├─▶ Emitter  [pendiente]
+                                      └─▶ VM       [pendiente]
 ```
 
 | Componente | Estado | Notas |
@@ -27,18 +27,19 @@ bootstrap. Sustituye al compilador semilla en C (`seed/`, ver
 | Lexer (`src/lexer/lexer.zig`) | ✅ | Tokens de Astra-0 alineados con `seed/src/lexer.c`: keywords, `_`, `newline`, bases hex/bin/oct, `1_000`, escapes, comentarios `//` y `/* */`, rangos `..`/`..=` |
 | AST (`src/ast/ast.zig`) | ✅ | Nodos **planos** `union(Tag)` con índices `u32`, buffer `extra` compartido para listas (`PHASE2_RESEARCH.md` §1.3/§1.5) |
 | Parser (`src/parser/parser.zig`) | ✅ | Descenso recursivo + Pratt; sentencias terminadas por `;`/newline; bloques con tail-expr; `if`/`while`/`for`/`match`/patrones; structs; enums unitarios y con datos; lambdas; tipos (`T?`, `[T]`, `fn(P)->R`); `some`/`none`/`ok`/`err`; `?` |
-| Driver (`src/main.zig`) | ✅ | Lee un fichero; `--dump-tokens`, `--dump-ast`; salida 1 en error de sintaxis |
-| Type checker / Emitter / VM | ⬜ | Directorios creados, sin implementación |
+| Type checker (`src/typechecker/typechecker.zig`) | ✅ | Tabla de símbolos con ámbitos (borrado por secuencia de inserción), literales enteros polimórficos, igualdad estructural, exhaustividad de `match`, `?` sobre optional, mutabilidad de lvalues, `Option`/`Result` builtin |
+| Driver (`src/main.zig`) | ✅ | Lee un fichero; `--dump-tokens`, `--dump-ast`; parse + typecheck; salida 1 si falla cualquiera |
+| Emitter / VM | ⬜ | Directorios creados, sin implementación |
 
 ### Verificación medida
 
-- **52/52** ficheros no-UI de `seed/tests/conformance/` parsean sin error.
-- **6/23** ficheros `ui/` son rechazados por el parser: exactamente los que la
-  Fase 1 clasifica como errores **de parseo** (`struct_comma_body`,
-  `enum_comma_body`, `nesting_too_deep`, `block_nesting_too_deep`,
-  `integer_literal_out_of_range`, `unterminated_string`). El resto son errores
-  de tipos y el parser debe aceptarlos (aún no hay type checker).
-- **17 pruebas unitarias** (lexer, AST, parser, conformance) en `zig build test`.
+- **52/52** ficheros no-UI de `seed/tests/conformance/` pasan el frontend
+  completo (parseo **y** type check) sin error.
+- **22/23** ficheros `ui/` son rechazados. El único aceptado es
+  `break_outside_loop`, que el seed comprueba en el **emitter**, no en el type
+  checker; se cerrará al implementar el emitter.
+- **21 pruebas unitarias** (lexer, AST, parser, type checker, conformance) en
+  `zig build test`.
 
 ---
 
@@ -106,8 +107,8 @@ Ordenado por dependencia y valor para el bootstrap.
 
 | # | Tarea | Estado | Notas |
 |:-:|:------|:-------|:------|
-| 1 | **Type checker** portado (`typechecker.c` → Zig) | ⬜ | tabla de símbolos con ámbitos, igualdad estructural, literales enteros polimórficos (`TYPE_INT_LITERAL`), exhaustividad de `match`, `?` sobre optional |
-| 2 | **Emitter + bytecode** (`emitter.c` → Zig) | ⬜ | modelo de altura de pila verificado (la causa raíz de los hallazgos A/C de Fase 1); parcheo de saltos `offset = T - P` |
+| 1 | **Type checker** portado (`typechecker.c` → Zig) | ✅ | Verificado: 52/52 no-UI limpios, 22/23 UI rechazados (el 23 es `break`, del emitter) |
+| 2 | **Emitter + bytecode** (`emitter.c` → Zig) | ⬜ | modelo de altura de pila verificado (la causa raíz de los hallazgos A/C de Fase 1); parcheo de saltos `offset = T - P`; incluye el chequeo de `break`/`continue` fuera de bucle |
 | 3 | **VM** (`vm.c` → Zig) | ⬜ | ~30 opcodes, frames, globals, builtins; mismos textos de error que el seed |
 | 4 | **Runner de conformance con ejecución** | ⬜ | replicar `EXPECT` / `EXPECT-ERROR` / `EXPECT-RUNTIME-ERROR` y comparar salida con la VM del seed |
 | 5 | Errores con recuperación a nivel de sentencia | ⬜ | mejores diagnósticos; no bloquea |

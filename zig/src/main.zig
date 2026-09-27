@@ -9,6 +9,7 @@ const std = @import("std");
 const lexer = @import("lexer/lexer.zig");
 const ast = @import("ast/ast.zig");
 const parser = @import("parser/parser.zig");
+const typechecker = @import("typechecker/typechecker.zig");
 
 const Mode = enum { parse, tokens, ast_dump };
 
@@ -90,6 +91,10 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("{s}", .{w.buffered()});
         return;
     }
+
+    var tc = try typechecker.TypeChecker.init(a, &tree, file);
+    tc.check(root);
+    if (tc.error_count > 0) std.process.exit(1);
 
     std.debug.print("ok: {s} ({d} items)\n", .{ file, tree.extraSlice(tree.node(root).source_file).len });
 }
