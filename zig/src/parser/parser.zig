@@ -281,6 +281,8 @@ pub const Parser = struct {
         if (self.match(.kw_let)) return try self.parseVarDecl(false);
         if (self.match(.kw_var)) return try self.parseVarDecl(false);
         if (self.match(.kw_use)) return try self.parseUse();
+        if (self.match(.kw_import)) return try self.parseImport();
+        if (self.match(.kw_from)) return try self.parseFrom();
 
         if (self.match(.kw_if)) return try self.parseIf();
         if (self.match(.kw_while)) return try self.parseWhile();
@@ -575,14 +577,71 @@ pub const Parser = struct {
             self.add(.{ .var_decl = decl }, loc);
     }
 
+    /// `ImportPath ::= Identifier ("." Identifier)*` (`research/010` §12.1).
+    /// Dot-separated, the same separator the rest of the language uses for
+    /// paths (`Color.Rojo`, `s.field`). The seed's `parse_use` used to match
+    /// `::` while its own grammar said `.`; Phase 2.2 fixed the seed, so this
+    /// accepts the dot form and rejects `::` exactly as the seed now does.
+    /// Returns the source text of the whole path.
+    fn parseImportPath(self: *Parser) anyerror![]const u8 {
+        try self.expect(.identifier);
+        const start = self.previous.loc.start;
+        while (self.check(.dot)) {
+            self.advance();
+            try self.expect(.identifier);
+        }
+        return self.tree.source[start..self.previous.loc.end];
+    }
+
+    /// `ExportStmt ::= "use" ImportPath`.
     fn parseUse(self: *Parser) anyerror!u32 {
         const loc = self.previous.loc;
-        const start = self.previous.loc.end;
-        try self.expect(.identifier);
-        while (self.match(.colon_colon)) try self.expect(.identifier);
-        const path = self.tree.source[start..@max(self.previous.loc.end, start)];
+        const path = try self.parseImportPath();
         self.optionalSemi();
         return self.add(.{ .use_decl = path }, loc);
+    }
+
+    /// `import ImportPath ("as" Identifier)?`.
+    fn parseImport(self: *Parser) anyerror!u32 {
+        const loc = self.previous.loc;
+        const path = try self.parseImportPath();
+        self.skipNewlines();
+        var alias: ?[]const u8 = null;
+        if (self.match(.kw_as)) {
+            try self.expect(.identifier);
+            alias = self.previous.text;
+        }
+        self.optionalSemi();
+        return self.add(.{ .import_decl = .{ .path = path, .alias = alias } }, loc);
+    }
+
+    /// `from ImportPath import ImportItem ("," ImportItem)*`.
+    fn parseFrom(self: *Parser) anyerror!u32 {
+        const loc = self.previous.loc;
+        const path = try self.parseImportPath();
+        self.skipNewlines();
+        try self.expect(.kw_import);
+        self.skipNewlines();
+
+        var items: std.ArrayListUnmanaged(u32) = .empty;
+        defer items.deinit(self.allocator);
+        while (true) {
+            try self.expect(.identifier);
+            const name = self.previous.text;
+            const item_loc = self.previous.loc;
+            var alias: ?[]const u8 = null;
+            if (self.match(.kw_as)) {
+                try self.expect(.identifier);
+                alias = self.previous.text;
+            }
+            try items.append(self.allocator, try self.add(.{ .import_item = .{ .name = name, .alias = alias } }, item_loc));
+            self.skipNewlines();
+            if (!self.match(.comma)) break;
+            self.skipNewlines();
+        }
+        self.optionalSemi();
+        const list = try self.tree.addExtra(items.items);
+        return self.add(.{ .from_decl = .{ .path = path, .items = list } }, loc);
     }
 
     // ── Types ─────────────────────────────────────────────────────
@@ -1183,4 +1242,68 @@ test "a stray top-level semicolon recovers instead of spinning" {
     defer tree.deinit();
     try testing.expectError(error.ParseError, p.parse());
     try testing.expectEqual(@as(usize, 1), p.error_count);
+}
+
+test "use takes a dot-separated module path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parsed = try parseSource(arena.allocator(),
+        \\use std.io
+        \\use a.b.c
+        \\let x = 1
+    );
+    defer parsed.tree.deinit();
+    const items = parsed.tree.extraSlice(parsed.tree.node(parsed.root).source_file);
+    try testing.expectEqual(@as(u32, 3), items.len);
+    try testing.expectEqualStrings("std.io", parsed.tree.node(items[0]).use_decl);
+    try testing.expectEqualStrings("a.b.c", parsed.tree.node(items[1]).use_decl);
+    try testing.expectEqual(ast.Tag.var_decl, std.meta.activeTag(parsed.tree.node(items[2])));
+}
+
+test "import keeps its alias" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parsed = try parseSource(arena.allocator(),
+        \\import geometry.mesh as gm
+        \\let x = 1
+    );
+    defer parsed.tree.deinit();
+    const items = parsed.tree.extraSlice(parsed.tree.node(parsed.root).source_file);
+    const imp = parsed.tree.node(items[0]).import_decl;
+    try testing.expectEqualStrings("geometry.mesh", imp.path);
+    try testing.expectEqualStrings("gm", imp.alias.?);
+}
+
+test "from ... import keeps every item and per-item alias" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parsed = try parseSource(arena.allocator(),
+        \\from geometry.vector import Vec2, add as plus
+        \\let x = 1
+    );
+    defer parsed.tree.deinit();
+    const items = parsed.tree.extraSlice(parsed.tree.node(parsed.root).source_file);
+    const f = parsed.tree.node(items[0]).from_decl;
+    try testing.expectEqualStrings("geometry.vector", f.path);
+    try testing.expectEqual(@as(u32, 2), f.items.len);
+    const list = parsed.tree.extraSlice(f.items);
+    const first = parsed.tree.node(list[0]).import_item;
+    try testing.expectEqualStrings("Vec2", first.name);
+    try testing.expect(first.alias == null);
+    const second = parsed.tree.node(list[1]).import_item;
+    try testing.expectEqualStrings("add", second.name);
+    try testing.expectEqualStrings("plus", second.alias.?);
+}
+
+// Phase 2.2 adopted the dot form the construct grammar already declared
+// (research/010 §12.1) and fixed the seed, which had drifted to matching `::`.
+// This pins the decision on the Zig side too.
+test "`::` is not a module path separator" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const src = "use std::io\n";
+    var tree = ast.Tree.init(arena.allocator(), src);
+    var p = Parser.init(arena.allocator(), src, &tree);
+    defer tree.deinit();
+    try testing.expectError(error.ParseError, p.parse());
 }

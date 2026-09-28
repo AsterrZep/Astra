@@ -88,7 +88,7 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (**87 casos**), en verde en las tres
+los casos de conformidad. Cobertura actual (**91 casos**), en verde en las tres
 variantes de build (`dev`, `debug` con ASan+UBSan+LSan, `release`).
 
 `EXPECT-RUNTIME-ERROR` se añadió el 2026-09-21: hasta entonces **ningún** test
@@ -118,10 +118,10 @@ memoria** bajo LSan.
 | blocks | `tail_expression`, `if_value` |
 | types | `optional_syntax` (`T?` parseado correctamente), `integer_widths` (`i64`/`u32`/`u64` con valores reales, Hallazgo E) |
 | enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding`, `option_basic`, `option_equality`, `result_basic`, `result_match`, `nested_option_result`, `try_operator` |
-| module | `toplevel_stmts` (sentencias de nivel de módulo: la clase de código que ningún otro test cubría, y por eso el break de §6 pasó inadvertido), `toplevel_aggregates` (structs, enums y variantes con datos declarados en el nivel superior) |
+| module | `toplevel_stmts` (sentencias de nivel de módulo: la clase de código que ningún otro test cubría, y por eso el break de §6 pasó inadvertido), `toplevel_aggregates` (structs, enums y variantes con datos declarados en el nivel superior), `use_paths` (`use` con rutas punteadas: el constructo `use` no tenía **ningún** test, y por eso no se notó que era código muerto (S18) ni que el parser separaba con `::` (S19)) |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
 | lambda | `lambda_basic`, `lambda_multi` |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch`, `null_rejected`, `struct_comma_body`, `enum_comma_body`, `nesting_too_deep`, `block_nesting_too_deep`, `integer_literal_out_of_range`, `unterminated_string` |
+| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch`, `null_rejected`, `struct_comma_body`, `enum_comma_body`, `nesting_too_deep`, `block_nesting_too_deep`, `integer_literal_out_of_range`, `unterminated_string`, `use_colon_colon` |
 | codegen | `string_escape`, `global_limit`, `bitwise`, `deep_recursion`, `frame_overflow`, `out_of_bounds`, `returned_literal`, `aggregate_equality`, `float_remainder`, `string_order_rejected`, `float_divide_by_zero`, `integer_widths`, `toplevel_aggregates` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan + LSan) sin
@@ -588,11 +588,26 @@ Documentado para que no se lea como resuelto:
 | **Fuzzing y CI** | Pendientes (§4bis#23 y #26). El fuzzing es la forma natural de buscar la *próxima* clase de fallo del lexer/parser, ahora que los siete vectores conocidos se cierran por el límite de profundidad |
 | **Posiciones de origen en los errores del C generado** | No las lleva; añadirlas exigiría anotar cada instrucción que puede fallar |
 
-### 6.4 Cómo se reproduce
+### 6.5 Hallazgos de la Fase 2.2 (2026-09-28)
+
+Al portar el sistema de módulos al compilador Zig (`PHASE2_PROGRESS.md` §7) se
+auditó por primera vez el constructo `use` del seed, que **no tenía ningún
+test**. Aparecieron dos fallos, corregidos aquí:
+
+| # | Severidad | Hallazgo | Evidencia (antes) | Estado |
+|:-:|:----------|:---------|:------------------|:-------|
+| S18 | 🟠 Media | **`use` era código muerto**: el constructo es Astra-0 (`constructs/use.c` pone `in_astra0`, y el parser lo acepta y el emitter lo ignora), pero el type checker no tenía caso para `NODE_USE` y caía en `default:` | `use std.io` → `error: unhandled node kind 46`. Ninguna declaración `use` podía compilar: el constructo estaba en el registro y no en la práctica | ✅ caso `NODE_USE` en `typecheck_node` (devuelve `void`); `module/use_paths.astra` lo cubre |
+| S19 | 🟡 Baja | **El separador de ruta había derivado de su propia gramática**: `parse_use` casaba `TOKEN_COLON_COLON`, pero la gramática declarada (`constructs/use.c`, `research/010` §12.1) dice `ImportPath ::= Identifier ("." Identifier)*`, y `::` no es separador de ruta en ningún otro sitio del lenguaje (los caminos de variante son `Color.Rojo`, el acceso a campo `s.field`) | `use a::b` se aceptaba aquí y en ninguna otra parte | ✅ `parse_use` casa `TOKEN_DOT`; `ui/use_colon_colon.astra` fija el rechazo. Decisión y contexto en `PHASE2_GAP_ANALYSIS.md` App. B #6 |
+
+Ninguno de los dos lo podía ver la suite: no había ni un caso de conformidad que
+nombrara `use`. La causa raíz es la misma que la del resto de este apartado — una
+construcción marcada como soportada sin ninguna prueba que la ejercite.
+
+### 6.6 Cómo se reproduce
 
 ```bash
 cd seed
-make clean && make debug && make test        # 87 casos, ASan+UBSan+LSan, 0 fugas
+make clean && make debug && make test        # 91 casos, ASan+UBSan+LSan, 0 fugas
 ./astra-seed --check-constructs              # 44 constructos, 27 operadores, sin drift
 
 # S1: 300 globales por la ruta de C (antes: SEGV)

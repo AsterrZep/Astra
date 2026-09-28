@@ -504,7 +504,7 @@ pub const Emitter = struct {
     /// Height a node is required to leave behind when emitted as an expression.
     fn nodeValueEffect(self: *Emitter, idx: u32) i32 {
         return switch (self.tree.node(idx)) {
-            .while_expr, .for_expr, .return_stmt, .break_stmt, .continue_stmt, .fn_decl, .struct_decl, .enum_decl, .const_decl, .var_decl, .use_decl, .range_expr, .source_file => 0,
+            .while_expr, .for_expr, .return_stmt, .break_stmt, .continue_stmt, .fn_decl, .struct_decl, .enum_decl, .const_decl, .var_decl, .use_decl, .import_decl, .from_decl, .import_item, .range_expr, .source_file => 0,
             .block => |b| if (b.tail != null) 1 else 0,
             else => 1,
         };
@@ -1327,7 +1327,7 @@ pub const Emitter = struct {
                     }
                 }
             },
-            .struct_decl, .enum_decl, .use_decl => {},
+            .struct_decl, .enum_decl, .use_decl, .import_decl, .from_decl, .import_item => {},
             .source_file => |list| {
                 for (self.tree.extraSlice(list)) |item| self.emitStmt(item);
             },

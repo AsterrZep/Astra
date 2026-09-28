@@ -1,0 +1,16 @@
+// `use` takes a dot-separated module path (constructs/use.c, research/010
+// §12.1: `ImportPath ::= Identifier ("." Identifier)*`). The seed parses the
+// declaration and discards it: the driver compiles exactly one file, so module
+// resolution is deliberately not its job (research/011 §5.2).
+//
+// This case exists because nothing covered `use` at all. With no test to hold
+// it in place the parser had drifted from its own grammar and matched `::`
+// instead of `.`; Phase 2.2 adopted the dot form (see
+// PHASE2_GAP_ANALYSIS.md App. B #6).
+// EXPECT: 1
+use std.io
+use geometry.mesh
+use a.b.c
+
+let x = 1
+print(x);

@@ -49,6 +49,9 @@ pub const Tag = enum(u8) {
     kw_use,
     kw_mod,
     kw_pub,
+    kw_import,
+    kw_from,
+    kw_as,
     kw_mut,
     kw_true,
     kw_false,
@@ -466,6 +469,7 @@ pub const Tokenizer = struct {
 const Keyword = struct { text: []const u8, tag: Tag };
 const keyword_table = [_]Keyword{
     .{ .text = "and", .tag = .kw_and },
+    .{ .text = "as", .tag = .kw_as },
     .{ .text = "break", .tag = .kw_break },
     .{ .text = "comptime", .tag = .kw_comptime },
     .{ .text = "const", .tag = .kw_const },
@@ -476,8 +480,10 @@ const keyword_table = [_]Keyword{
     .{ .text = "false", .tag = .kw_false },
     .{ .text = "fn", .tag = .kw_fn },
     .{ .text = "for", .tag = .kw_for },
+    .{ .text = "from", .tag = .kw_from },
     .{ .text = "if", .tag = .kw_if },
     .{ .text = "impl", .tag = .kw_impl },
+    .{ .text = "import", .tag = .kw_import },
     .{ .text = "in", .tag = .kw_in },
     .{ .text = "let", .tag = .kw_let },
     .{ .text = "match", .tag = .kw_match },

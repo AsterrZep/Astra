@@ -670,13 +670,21 @@ Because the toolchain is ours, debugging can go further than C++:
 3. **Generics implementation:** Monomorphization (C++-style) or type erasure (Go-style)?
 4. **Async model:** Stackful fibers (Go-style) or stackless (Rust-style)?
 5. **C backend retention:** Keep as bootstrap tool, or replace once native backend works?
-6. **Module path syntax:** `use std.io` (dot-separated) or `use "std/io"` (path string)?
-   Note the current state is a third variant: both parsers (`seed/src/parser.c`
-   `parse_use` and the Zig port) accept `ident ("::" ident)*`, but the construct
-   spec `seed/src/constructs/use.c` declares
-   `ImportPath ::= Identifier ("." Identifier)*`. The grammar string is not
-   enforced by `--check-constructs`, so the two have drifted; Phase 2.2 must
-   pick one and fix the other.
+6. **Module path syntax:** ~~`use std.io` (dot-separated) or `use "std/io"` (path string)?~~
+   **Resolved (Phase 2.2, 2026-09-28): dot-separated.**
+   `ImportPath ::= Identifier ("." Identifier)*` — the form declared by
+   `seed/src/constructs/use.c` and `research/010` §12.1, and the one every module
+   example in the repository uses (`import geometry.mesh`,
+   `from geometry.vector import Vec2, add`, `std.os.linux`). `::` appeared only in
+   Rust comparison snippets, and `.` is already the language's path separator
+   (`Color.Rojo`, `s.field`). The two parsers had drifted — the seed's `parse_use`
+   matched `::` while its own grammar string said `.`, and `--check-constructs`
+   does not enforce grammar strings. The seed was fixed and both compilers now
+   accept the same form, pinned by
+   `seed/tests/conformance/module/use_paths.astra` and
+   `ui/use_colon_colon.astra`. A path-string form (`use "std/io"`) is not adopted.
+   **Still open:** how a path maps to files on disk, and how `use` vs `import`
+   vs `from` divide the work (§5.1 steps 4–6).
 7. **Operator overloading scope:** Trait-only, or allow ad-hoc overloading for user types?
 8. **Assembly/debug output:** which emit flags, and does the AOT backend emit
    DWARF itself or delegate to LLVM? (see §12)

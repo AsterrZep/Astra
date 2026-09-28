@@ -1,0 +1,7 @@
+// `::` is not a path separator in Astra. The seed's `parse_use` used to match
+// it even though the construct grammar (constructs/use.c) and research/010
+// §12.1 declare `ImportPath ::= Identifier ("." Identifier)*`, so `use a::b`
+// compiled here and nowhere else. Phase 2.2 adopted the dot form and fixed the
+// seed; this case pins the decision so the drift cannot come back.
+// EXPECT-ERROR: unexpected token in expression
+use a::b

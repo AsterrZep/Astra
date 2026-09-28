@@ -24,6 +24,8 @@ pub const Tag = enum {
     var_decl,
     const_decl,
     use_decl,
+    import_decl,
+    from_decl,
 
     // Declarations / auxiliary nodes
     param,
@@ -31,6 +33,7 @@ pub const Tag = enum {
     struct_init_field,
     enum_variant,
     payload,
+    import_item,
     match_arm,
 
     // Statements
@@ -86,6 +89,13 @@ pub const Lambda = struct { params: List, ret: ?u32, body: u32 };
 pub const StructDecl = struct { name: []const u8, fields: List };
 pub const EnumDecl = struct { name: []const u8, variants: List };
 pub const VarDecl = struct { name: []const u8, type_node: ?u32, value: ?u32, is_mut: bool };
+/// `import ImportPath ("as" Identifier)?` (research/010 §12.1). `path` is the
+/// source text of the whole path (`a.b.c`).
+pub const ImportDecl = struct { path: []const u8, alias: ?[]const u8 };
+/// `from ImportPath import ImportItem ("," ImportItem)*`.
+pub const FromDecl = struct { path: []const u8, items: List };
+/// `ImportItem ::= Identifier ("as" Identifier)?`.
+pub const ImportItem = struct { name: []const u8, alias: ?[]const u8 };
 pub const Param = struct { name: []const u8, type_node: ?u32 };
 pub const FieldDecl = struct { name: []const u8, type_node: u32 };
 pub const StructInitField = struct { name: []const u8, value: u32 };
@@ -121,11 +131,14 @@ pub const Node = union(Tag) {
     var_decl: VarDecl,
     const_decl: VarDecl,
     use_decl: []const u8,
+    import_decl: ImportDecl,
+    from_decl: FromDecl,
     param: Param,
     field_decl: FieldDecl,
     struct_init_field: StructInitField,
     enum_variant: EnumVariant,
     payload: List, // list of `field_decl` nodes
+    import_item: ImportItem,
     match_arm: MatchArm,
     expr_stmt: u32,
     return_stmt: ?u32,
@@ -272,6 +285,20 @@ pub const Tree = struct {
                 if (v.value) |val| try self.dumpNode(writer, val, depth + 1);
             },
             .use_decl => |path| try writer.print("use_decl {s}\n", .{path}),
+            .import_decl => |d| {
+                try writer.print("import_decl {s}", .{d.path});
+                if (d.alias) |al| try writer.print(" as {s}", .{al});
+                try writer.writeByte('\n');
+            },
+            .from_decl => |d| {
+                try writer.print("from_decl {s}\n", .{d.path});
+                for (self.extraSlice(d.items)) |c| try self.dumpNode(writer, c, depth + 1);
+            },
+            .import_item => |i| {
+                try writer.print("import_item {s}", .{i.name});
+                if (i.alias) |al| try writer.print(" as {s}", .{al});
+                try writer.writeByte('\n');
+            },
             .param => |p| {
                 try writer.print("param {s}: ", .{p.name});
                 if (p.type_node) |t| try self.dumpInline(writer, t) else try writer.writeAll("<inferred>");

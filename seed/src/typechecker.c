@@ -1899,6 +1899,13 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_PAYLOAD:      return tc_error_type(tc, node->loc,
                                 "variant payload outside an enum declaration");
 
+    /* `use` is parsed and then discarded: the driver compiles a single file, so
+     * module resolution is deliberately not the seed's job (research/011 §5.2).
+     * It is still an Astra-0 construct (constructs/use.c sets in_astra0), but
+     * this dispatch had no case for it, so every `use` fell through to the
+     * "unhandled node kind" error and the construct was unusable. */
+    case NODE_USE:          return type_new(tc->arena, TYPE_VOID);
+
     /* Module */
     case NODE_MODULE:
         typecheck_module_pass(tc, node);

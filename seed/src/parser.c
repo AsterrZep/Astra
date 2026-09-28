@@ -1200,13 +1200,20 @@ static Node *parse_var_decl(Parser *p, bool is_const) {
 
 static Node *parse_use(Parser *p) {
     SrcLoc loc = p->previous.loc;
-    /* Parse path: ident (:: ident)* */
+    /* Path: ident ("." ident)*, the dot-separated form declared by the
+     * construct grammar (constructs/use.c, research/010 §12.1). This used to
+     * match TOKEN_COLON_COLON, so `use a::b` was accepted here and nowhere
+     * else in the language — `::` is not a path separator anywhere else
+     * (variant paths are `Color.Rojo`, field access is `s.field`). The
+     * grammar was the spec and the parser had drifted from it; Phase 2.2
+     * resolved the drift by adopting the dot form. */
     expect(p, TOKEN_IDENT, "module path");
-    while (match(p, TOKEN_COLON_COLON)) {
+    while (match(p, TOKEN_DOT)) {
         expect(p, TOKEN_IDENT, "module path segment");
     }
     optional_semi(p);
-    /* For now, just return a use node (not fully implemented) */
+    /* Parsed and discarded: the driver compiles a single file, so module
+     * resolution is deliberately not the seed's job (research/011 §5.2). */
     Node *n = node_new(p->arena, NODE_USE, loc);
     return n;
 }

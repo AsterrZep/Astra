@@ -1078,6 +1078,10 @@ pub const TypeChecker = struct {
                 self.checkVarDecl(v, loc, true);
                 break :blk self.newType(.void);
             },
+            // Module declarations carry no value and, for now, no semantics:
+            // resolution is Phase 2.2 work (PHASE2_GAP_ANALYSIS §11). Parsing
+            // them must not be a type error.
+            .use_decl, .import_decl, .from_decl, .import_item => self.newType(.void),
             .payload => self.errorType(loc, "variant payload outside an enum declaration", .{}),
             .source_file => |items| blk: {
                 self.checkModule(self.tree.extraSlice(items));

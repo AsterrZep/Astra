@@ -6,7 +6,7 @@ bootstrap. Sustituye al compilador semilla en C (`seed/`, ver
 
 > **Regla de paridad**: el compilador Zig debe aceptar **el mismo lenguaje** que
 > el seed antes de crecer. `PHASE2_KICKOFF.md` lo fija como puerta: portar la
-> suite existente (89 casos) antes de añadir genéricos, traits, etc.
+> suite existente (91 casos) antes de añadir genéricos, traits, etc.
 
 ---
 
@@ -24,7 +24,7 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 |:-----------|:-------|:------|
 | Lexer (`src/lexer/lexer.zig`) | ✅ | Tokens de Astra-0 alineados con `seed/src/lexer.c`: keywords, `_`, `newline`, bases hex/bin/oct, `1_000`, escapes, comentarios `//` y `/* */`, rangos `..`/`..=` |
 | AST (`src/ast/ast.zig`) | ✅ | Nodos **planos** `union(Tag)` con índices `u32`, buffer `extra` compartido para listas (`PHASE2_RESEARCH.md` §1.3/§1.5) |
-| Parser (`src/parser/parser.zig`) | ✅ | Descenso recursivo + Pratt; sentencias terminadas por `;`/newline; bloques con tail-expr; `if`/`while`/`for`/`match`/patrones; structs; enums unitarios y con datos; lambdas; tipos (`T?`, `[T]`, `fn(P)->R`); `some`/`none`/`ok`/`err`; `?` |
+| Parser (`src/parser/parser.zig`) | ✅ | Descenso recursivo + Pratt; sentencias terminadas por `;`/newline; bloques con tail-expr; `if`/`while`/`for`/`match`/patrones; structs; enums unitarios y con datos; lambdas; tipos (`T?`, `[T]`, `fn(P)->R`); `some`/`none`/`ok`/`err`; `?`; declaraciones de módulo `use`/`import`/`from` con rutas punteadas (ver §7) |
 | Type checker (`src/typechecker/typechecker.zig`) | ✅ | Tabla de símbolos con ámbitos (borrado por secuencia de inserción), literales enteros polimórficos, igualdad estructural, exhaustividad de `match`, `?` sobre optional, mutabilidad de lvalues, `Option`/`Result` builtin |
 | Emitter (`src/emitter/emitter.zig`) | ✅ | Baja el AST a bytecode: modelo lineal de altura de pila con asertos por nodo, parcheo de saltos `offset = T - P`, frames con slot 0 para el retorno, `match`/`for`/`if`/lambdas, construcción de structs y enums |
 | VM (`src/vm/vm.zig`) | ✅ | ~48 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; mismos textos de error que el seed; salida de floats con `%g` de C |
@@ -32,13 +32,13 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 
 ### Verificación medida
 
-- **52/52** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **53/53** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **23/23** ficheros `ui/` son rechazados. El emitter cierra
+- **24/24** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop`, que el type checker deja pasar a propósito.
-- **35 pruebas unitarias** (lexer, AST, parser, type checker, emitter, bytecode,
+- **39 pruebas unitarias** (lexer, AST, parser, type checker, emitter, bytecode,
   VM, depurador y conformance) en `zig build test`.
 
 ---
@@ -50,7 +50,7 @@ Requiere **Zig 0.16.x**. En este entorno el binario vive en `~/zig/zig`.
 ```bash
 cd zig
 zig build                 # -> zig-out/bin/astra-zig
-zig build test            # 35 unit tests + conformance (compila y ejecuta) sobre seed/tests/conformance
+zig build test            # 39 unit tests + conformance (compila y ejecuta) sobre seed/tests/conformance
 zig build -Doptimize=ReleaseFast
 
 # Introspección
@@ -122,13 +122,15 @@ Ordenado por dependencia y valor para el bootstrap.
 
 | # | Tarea | Estado | Notas |
 |:-:|:------|:-------|:------|
-| 1 | **Type checker** portado (`typechecker.c` → Zig) | ✅ | Verificado: 52/52 no-UI limpios, 22/23 UI rechazados (el 23 es `break`, del emitter) |
+| 1 | **Type checker** portado (`typechecker.c` → Zig) | ✅ | Verificado: 53/53 no-UI limpios, 23/24 UI rechazados (el 24, `break`, lo cierra el emitter) |
 | 2 | **Emitter + bytecode** (`emitter.c` → Zig) | ✅ | modelo de altura de pila verificado (la causa raíz de los hallazgos A/C de Fase 1); parcheo de saltos `offset = T - P`; incluye el chequeo de `break`/`continue` fuera de bucle |
 | 3 | **VM** (`vm.c` → Zig) | ✅ | 48 opcodes, frames, globals, builtins; mismos textos de error que el seed. La salida de floats replica `printf("%g")` (ver §6) |
 | 4 | **Runner de conformance con ejecución** | ✅ | `zig build test` ejecuta cada caso no-UI y compara `EXPECT:` / `EXPECT-RUNTIME-ERROR:`; los `ui/` deben fallar al compilar |
 | 5 | Errores con recuperación a nivel de sentencia | ✅ | el módulo reporta varios errores por pase; verificado contra el seed (2 declaraciones malas → 2 errores) |
 | 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | 🟡 | hoy el formato es propio; la comparación es por aceptación, no por texto |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
+| 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; sin resolución todavía. Ver §7 |
+| 9 | **Módulos — paso 2**: tabla de módulos y resolución de rutas | ⬜ | hoy las declaraciones de módulo se parsean y se descartan, igual que en el seed |
 
 ---
 
@@ -209,3 +211,49 @@ mismo texto, `bytecode.writeFloatG` implementa la regla de C99 §7.21.6.1
 (formatear con estilo `e` para hallar el exponente redondeado `X`; si
 `-4 <= X < P` usar estilo `f` con `P-1-X` decimales, si no estilo `e` con `P-1`;
 quitar ceros finales).
+
+---
+
+## 7. Módulos (Fase 2.2) — paso 1: lexer y parser
+
+Primer paso del sistema de módulos, todavía **sólo en el frontend**: el lexer
+reconoce `import`/`from`/`as` y el parser construye los nodos de la gramática de
+`research/010` §12.1 (`use_decl`, `import_decl`, `from_decl` e `import_item`). El
+type checker los trata como `void` y el emitter como declaraciones sin efecto,
+igual que el seed: **la resolución de módulos no existe todavía**; esto sólo fija
+la superficie sintáctica del lenguaje.
+
+```
+ExportStmt ::= "use" ImportPath
+ImportStmt ::= "import" ImportPath ("as" Identifier)?
+             | "from" ImportPath "import" ImportItem ("," ImportItem)*
+ImportPath ::= Identifier ("." Identifier)*
+ImportItem ::= Identifier ("as" Identifier)?
+```
+
+**Decisión: el separador de ruta es `.`, no `::`.** Los tres documentos de
+diseño (`research/010` §12.1, `ARCHITECTURE.md` §10) y todos los ejemplos de
+módulos del repositorio usan la forma punteada (`import geometry.mesh`,
+`from geometry.vector import Vec2, add`, `std.os.linux`); `::` sólo aparece en
+fragmentos de *comparación con Rust*, nunca en código Astra. Además `.` ya es el
+separador de caminos del resto del lenguaje (`Color.Rojo`, `s.field`). El seed
+había derivado a `::` en `parse_use` mientras su propia gramática decía `.`, así
+que se corrigió el seed y los dos compiladores coinciden ahora. La decisión queda
+fijada por `seed/tests/conformance/ui/use_colon_colon.astra` y por un test unitario
+del parser Zig, y cierra la pregunta App. B #6 de `PHASE2_GAP_ANALYSIS.md`.
+
+El port destapó de paso que **`use` nunca había funcionado** en el seed: el type
+checker no tenía caso para `NODE_USE`, así que toda declaración moría con
+`unhandled node kind 46` (S18 en `PHASE1_PROGRESS.md` §6.5). Corregido allí, junto
+con el separador (S19).
+
+`import` y `from` **no existen** en el seed: `constructs/import.c` los marca
+`in_astra0 = false` con `keyword = NULL`, y su nota dice que añadir sus tokens "es
+el primer paso cuando esto aterrice". El parser Zig acepta por tanto **más** que
+el seed en estas dos formas — un superconjunto, que es la dirección que la regla
+de paridad permite. Ningún fichero de la suite usa estas sentencias, así que la
+paridad medida no cambia (53/53 no-UI, 24/24 UI).
+
+Lo que falta para un sistema de módulos de verdad (paso 2) está ya enumerado en
+`PHASE2_GAP_ANALYSIS.md` §5.1: tabla de módulos, visibilidad `pub`, compilación
+multifichero y resolución de referencias cruzadas.
