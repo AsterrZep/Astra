@@ -1,7 +1,7 @@
 # Phase 2 Gap Analysis — Astra Self-Hosting Compiler (Zig)
 
 > **Status:** Working document
-> **Last updated:** 2026-09-21
+> **Last updated:** 2026-09-28
 > **Baseline:** Phase 1 seed compiler (C, v0.1.0) — 44 constructs, 27 operators, 89 tests
 
 ---
@@ -19,6 +19,7 @@
 9. [Zig-Specific Considerations](#9-zig-specific-considerations)
 10. [Risk Areas](#10-risk-areas)
 11. [Recommended Implementation Order](#11-recommended-implementation-order)
+12. [Debugging & Low-Level Inspection](#12-debugging--low-level-inspection)
 
 ---
 
@@ -194,6 +195,12 @@ No `setjmp`/`longjmp` needed. Cleaner, comptime-checked error paths.
 
 **Recommendation:** Option C — keep C backend for bootstrapping verification, add Zig native backend incrementally.
 
+Whichever backend is chosen, it must surface the same "inspect what the
+compiler produced" affordance C/C++ users get: `--emit-llvm`, `--emit-asm` and
+`--emit-obj` in debug builds, plus DWARF debug info so external debuggers map
+machine instructions back to Astra source lines. See §12 for the full plan and
+the open decisions.
+
 ### 4.5 Build System
 
 **Current:** GNU Make with recursive make, per-variant object trees.
@@ -266,7 +273,9 @@ Stack values are pushed/popped implicitly by opcode semantics (stack-machine mod
 
 1. **No instruction boundaries** — corrupted bytes cascade silently.
 2. **No function metadata** — function boundaries are implicit in the bytecode stream.
-3. **No line number table** — runtime errors can't report source locations.
+3. **No persisted line number table** — the in-memory `Instruction` carries a
+   `line` (which is why runtime errors already print `file:line`), but the flat
+   serialized stream does not store one.
 4. **No constant pool metadata** — only raw bytes, no type information attached.
 5. **Fixed-size limits** — `MAX_CODE=1MB`, `MAX_CONSTS=1MB`, `MAX_LOCALS=256`.
 
@@ -515,10 +524,14 @@ Zig catches most C UB at compile time or with safety checks:
 
 1. **Design:** Choose LLVM or native Zig codegen
 2. **Implement:** Bytecode → target code
-3. **Optimize:** Basic optimizations (constant folding, dead code elimination)
-4. **Test:** Verify all conformance tests pass on native backend
+3. **Emit flags:** `--emit-llvm` (`.ll`), `--emit-asm` (`.s`), `--emit-obj` (`.o`)
+4. **Debug info:** attach DWARF (`DICompileUnit`/`DILocation`/`DICompositeType`)
+   so gdb/lldb step on Astra source lines (see §12)
+5. **Optimize:** Basic optimizations (constant folding, dead code elimination)
+6. **Test:** Verify all conformance tests pass on native backend
 
-**Exit criteria:** Astra programs compile to native executables without C backend.
+**Exit criteria:** Astra programs compile to native executables without C backend,
+and a debug build exposes source-mapped assembly.
 
 ### Phase 2.7 — Production Features
 
@@ -529,6 +542,84 @@ Zig catches most C UB at compile time or with safety checks:
 5. **String interpolation**
 6. **Default parameters**
 7. **Attributes / annotations**
+
+---
+
+## 12. Debugging & Low-Level Inspection
+
+How a user sees what the compiler produced and why a program failed at a low
+level. Split by layer, because the answer changes with the backend.
+
+### 12.1 What exists today (bytecode VM)
+
+Phase 1 and the Phase 2 port already expose the compiler's own low-level view:
+
+| Facility | Output |
+|:---------|:-------|
+| `--dump-bytecode` | module bytecode, operands and constant values |
+| `ASTRA_DUMP_VM=1` | bytecode of the module and of every called function |
+| `ASTRA_TRACE=1` | one line per instruction: `sp`/`base`/`frame` + top of stack |
+| `--debug` | interactive bytecode debugger: breakpoints on Astra lines, `step`, stack/locals/frames |
+| runtime errors | `file:line: runtime error: <message>` |
+
+This is the VM-layer equivalent of `-S`: it shows the instructions the compiler
+emitted and how the stack evolves, but it is bytecode, not machine code. The
+in-memory `Instruction` already carries a `line`, so the source mapping needed
+for higher-level diagnostics exists — it is just not surfaced everywhere yet.
+
+### 12.2 Native output flags (Phase 2.6)
+
+The AOT backend (§4.4, §11 Phase 2.6) must expose the `g++ -S` affordance:
+
+| Flag | Output | C/C++ equivalent |
+|:-----|:-------|:-----------------|
+| `--emit-llvm` | human-readable LLVM IR (`.ll`) | `clang -emit-llvm -S` |
+| `--emit-asm` | target assembly (`.s`) | `gcc -S` |
+| `--emit-obj` | object file (`.o`) | `gcc -c` |
+
+With LLVM these are nearly free: the target machine emits them through
+`addPassesToEmitFile` (`PHASE2_RESEARCH.md §2`).
+
+### 12.3 Source-level debugging (DWARF)
+
+The C/C++ experience — "step and see which source line failed, in the generated
+assembly" — is *debug info*, not the asm dump alone. To match it the backend
+must attach:
+
+- `DICompileUnit`/`DIFile` per module,
+- `DILocation` on every lowered instruction, derived from `Instruction.line`
+  and the AST `SourceLoc`, and
+- `DICompositeType` for structs and enums.
+
+Existing debuggers (gdb/lldb) then provide `disassemble /m`, line breakpoints,
+variable inspection and source-mapped stack traces.
+
+> `ARCHITECTURE.md` forbids *inline* assembly in source. That is unrelated to
+> inspecting the *generated* assembly, which is expected.
+
+### 12.4 Built-in tooling (Phase 2.7 / Phase 3)
+
+Because the toolchain is ours, debugging can go further than C++:
+
+- a **bytecode debugger** (breakpoints on Astra lines, step, stack/local
+  inspection) that works on the VM, with no LLVM involvement — **implemented**
+  (`--debug`, see §12.1);
+- `astra debug` showing the whole pipeline: AST → bytecode/AIR → LLVM IR → asm;
+- runtime-aware inspection: ARC/ORC reference counts, fiber stacks.
+
+### 12.5 Open decisions
+
+1. **Debug-info source:** let LLVM emit DWARF from the metadata we attach, or
+   emit DWARF ourselves (needed for non-LLVM targets)?
+2. ~~**Timing of the bytecode debugger:** build it before the AOT backend?~~
+   **Decided (2026-09-28):** built now, with the VM (§12.1). It shares the
+   per-instruction line table, needs no LLVM, and is useful during Phase 2.1.
+3. **Use the serialized bytecode (§6) as the debug format too?** A persisted
+   line table (§6.3) would let the debugger work without recompiling.
+4. **Debug-build guarantee:** commit to an unoptimized "debug build" mode where
+   no optimization removes frames or reorders statements, so stepping is exact?
+5. **Flag shape:** `--emit-asm`/`--emit-llvm`/`--emit-obj`, or a single
+   `--emit=<kind>` matching the existing `--emit-c` from the seed?
 
 ---
 
@@ -580,7 +671,17 @@ Zig catches most C UB at compile time or with safety checks:
 4. **Async model:** Stackful fibers (Go-style) or stackless (Rust-style)?
 5. **C backend retention:** Keep as bootstrap tool, or replace once native backend works?
 6. **Module path syntax:** `use std.io` (dot-separated) or `use "std/io"` (path string)?
+   Note the current state is a third variant: both parsers (`seed/src/parser.c`
+   `parse_use` and the Zig port) accept `ident ("::" ident)*`, but the construct
+   spec `seed/src/constructs/use.c` declares
+   `ImportPath ::= Identifier ("." Identifier)*`. The grammar string is not
+   enforced by `--check-constructs`, so the two have drifted; Phase 2.2 must
+   pick one and fix the other.
 7. **Operator overloading scope:** Trait-only, or allow ad-hoc overloading for user types?
+8. **Assembly/debug output:** which emit flags, and does the AOT backend emit
+   DWARF itself or delegate to LLVM? (see §12)
+9. **Timing of low-level debugging:** ship the bytecode debugger with the VM
+   (Phase 2.1/2.2) or defer all debug tooling to the native backend (2.6)?
 
 ---
 

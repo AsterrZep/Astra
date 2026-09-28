@@ -90,6 +90,9 @@ pub const Parser = struct {
     current: lexer.Token,
     previous: lexer.Token,
     had_error: bool = false,
+    /// Number of errors reported. Recovery continues past each, so a file can
+    /// produce more than one; `had_error` stays the boolean the callers use.
+    error_count: usize = 0,
     aborted: bool = false,
     depth: u32 = 0,
     no_struct_lit: bool = false,
@@ -135,18 +138,42 @@ pub const Parser = struct {
     }
 
     fn fail(self: *Parser, msg: []const u8) anyerror {
+        // Remember the first error for callers, but report *every* one: the
+        // module loop recovers after each and keeps parsing, so a file with two
+        // bad declarations should name both (the seed's `parser_error` does the
+        // same).
         if (!self.had_error) {
-            self.had_error = true;
             self.err_msg = msg;
             self.err_loc = self.current.loc;
-            std.debug.print("error:{d}:{d}: {s} (found {s})\n", .{
-                self.current.loc.line,
-                self.current.loc.col,
-                msg,
-                self.current.tag.name(),
-            });
         }
+        self.had_error = true;
+        self.error_count += 1;
+        std.debug.print("error:{d}:{d}: {s} (found {s})\n", .{
+            self.current.loc.line,
+            self.current.loc.col,
+            msg,
+            self.current.tag.name(),
+        });
         return error.ParseError;
+    }
+
+    /// Is this token a point where a fresh statement may start? Mirrors the
+    /// seed's `synchronize` list.
+    fn isSyncToken(tag: lexer.Tag) bool {
+        return switch (tag) {
+            .semicolon, .rbrace => true,
+            .kw_fn, .kw_struct, .kw_enum, .kw_let, .kw_const, .kw_use, .kw_if, .kw_while, .kw_for, .kw_return, .kw_break, .kw_continue => true,
+            else => false,
+        };
+    }
+
+    /// Error recovery at statement level: skip tokens until something that can
+    /// begin a new declaration. Does not consume the sync token itself.
+    fn synchronize(self: *Parser) void {
+        while (!self.check(.eof)) {
+            if (isSyncToken(self.current.tag)) return;
+            self.advance();
+        }
     }
 
     fn expect(self: *Parser, tag: lexer.Tag) anyerror!void {
@@ -174,6 +201,7 @@ pub const Parser = struct {
         if (self.depth >= PARSER_MAX_DEPTH) {
             self.aborted = true;
             self.had_error = true;
+            self.error_count += 1;
             self.err_msg = "nesting too deep";
             self.err_loc = self.current.loc;
             std.debug.print("error:{d}:{d}: nesting too deep (max {d})\n", .{
@@ -204,13 +232,30 @@ pub const Parser = struct {
 
         self.skipNewlines();
         while (!self.check(.eof) and !self.aborted) {
-            const decl = try self.parseDeclaration();
+            const decl = self.parseDeclaration() catch |e| blk: {
+                if (e != error.ParseError) return e; // OOM and friends are fatal
+                const at = self.current.loc.start;
+                self.synchronize();
+                // Guarantee forward progress. If the offending token is itself a
+                // sync point (a stray `;` at top level), `synchronize` stops
+                // where it already is; the seed gets past this because its
+                // `parse_statement` consumes the `;` via `optional_semi` before
+                // the error unwinds. Advancing past it here also stops the loop
+                // from re-parsing it and reporting the same error twice.
+                if (!self.check(.eof) and self.current.loc.start == at) self.advance();
+                self.skipNewlines();
+                break :blk @as(?u32, null);
+            };
             if (decl) |idx| try items.append(self.allocator, idx);
             self.skipNewlines();
         }
 
         const list = try self.tree.addExtra(items.items);
-        return self.add(.{ .source_file = list }, loc);
+        const module = try self.add(.{ .source_file = list }, loc);
+        // The tree is returned only when clean; callers treat a parse error as
+        // a hard failure (exit 1), exactly as before recovery was added.
+        if (self.had_error) return error.ParseError;
+        return module;
     }
 
     fn parseDeclaration(self: *Parser) anyerror!?u32 {
@@ -1100,4 +1145,42 @@ test "nested blocks are depth guarded" {
     defer tree.deinit();
     try testing.expectError(error.ParseError, p.parse());
     try testing.expect(p.had_error);
+}
+
+test "recovers after a bad declaration and reports the rest" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\fn main() {
+        \\    print(1)
+        \\}
+        \\let x = ;
+        \\let y = ;
+    ;
+    var tree = ast.Tree.init(arena.allocator(), src);
+    var p = Parser.init(arena.allocator(), src, &tree);
+    defer tree.deinit();
+    try testing.expectError(error.ParseError, p.parse());
+    // Statement-level recovery: both bad declarations are reported, not just
+    // the first (the seed's `synchronize` behaviour).
+    try testing.expectEqual(@as(usize, 2), p.error_count);
+}
+
+test "a stray top-level semicolon recovers instead of spinning" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\fn main() {
+        \\    print(1)
+        \\}
+        \\;
+        \\fn other() {
+        \\    print(2)
+        \\}
+    ;
+    var tree = ast.Tree.init(arena.allocator(), src);
+    var p = Parser.init(arena.allocator(), src, &tree);
+    defer tree.deinit();
+    try testing.expectError(error.ParseError, p.parse());
+    try testing.expectEqual(@as(usize, 1), p.error_count);
 }

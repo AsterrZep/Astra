@@ -10,16 +10,14 @@ bootstrap. Sustituye al compilador semilla en C (`seed/`, ver
 
 ---
 
-## 1. Estado actual (2026-09-27)
+## 1. Estado actual (2026-09-28)
 
-**Frontend (lexer + AST + parser + type checker) de Astra-0 portado y
-verificado.**
+**El compilador Astra-0 completo (frontend + emitter + VM) está portado y
+verificado: compila y ejecuta la suite del seed con salida idéntica.**
 
 ```
-.astra ─▶ Lexer ─▶ Parser ─▶ AST ─▶ Type Checker   [implementado]
-                                      │
-                                      ├─▶ Emitter  [pendiente]
-                                      └─▶ VM       [pendiente]
+.astra ─▶ Lexer ─▶ Parser ─▶ AST ─▶ Type Checker ─▶ Emitter ─▶ Bytecode ─▶ VM
+                                      [implementado]        [implementado]
 ```
 
 | Componente | Estado | Notas |
@@ -28,18 +26,20 @@ verificado.**
 | AST (`src/ast/ast.zig`) | ✅ | Nodos **planos** `union(Tag)` con índices `u32`, buffer `extra` compartido para listas (`PHASE2_RESEARCH.md` §1.3/§1.5) |
 | Parser (`src/parser/parser.zig`) | ✅ | Descenso recursivo + Pratt; sentencias terminadas por `;`/newline; bloques con tail-expr; `if`/`while`/`for`/`match`/patrones; structs; enums unitarios y con datos; lambdas; tipos (`T?`, `[T]`, `fn(P)->R`); `some`/`none`/`ok`/`err`; `?` |
 | Type checker (`src/typechecker/typechecker.zig`) | ✅ | Tabla de símbolos con ámbitos (borrado por secuencia de inserción), literales enteros polimórficos, igualdad estructural, exhaustividad de `match`, `?` sobre optional, mutabilidad de lvalues, `Option`/`Result` builtin |
-| Driver (`src/main.zig`) | ✅ | Lee un fichero; `--dump-tokens`, `--dump-ast`; parse + typecheck; salida 1 si falla cualquiera |
-| Emitter / VM | ⬜ | Directorios creados, sin implementación |
+| Emitter (`src/emitter/emitter.zig`) | ✅ | Baja el AST a bytecode: modelo lineal de altura de pila con asertos por nodo, parcheo de saltos `offset = T - P`, frames con slot 0 para el retorno, `match`/`for`/`if`/lambdas, construcción de structs y enums |
+| VM (`src/vm/vm.zig`) | ✅ | ~48 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; mismos textos de error que el seed; salida de floats con `%g` de C |
+| Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-bytecode`; salida 1 ante error de compilación o de runtime |
 
 ### Verificación medida
 
-- **52/52** ficheros no-UI de `seed/tests/conformance/` pasan el frontend
-  completo (parseo **y** type check) sin error.
-- **22/23** ficheros `ui/` son rechazados. El único aceptado es
-  `break_outside_loop`, que el seed comprueba en el **emitter**, no en el type
-  checker; se cerrará al implementar el emitter.
-- **21 pruebas unitarias** (lexer, AST, parser, type checker, conformance) en
-  `zig build test`.
+- **52/52** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+  ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
+  a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
+  que el seed y sin volcar nada a stdout.
+- **23/23** ficheros `ui/` son rechazados. El emitter cierra
+  `break_outside_loop`, que el type checker deja pasar a propósito.
+- **35 pruebas unitarias** (lexer, AST, parser, type checker, emitter, bytecode,
+  VM, depurador y conformance) en `zig build test`.
 
 ---
 
@@ -50,13 +50,19 @@ Requiere **Zig 0.16.x**. En este entorno el binario vive en `~/zig/zig`.
 ```bash
 cd zig
 zig build                 # -> zig-out/bin/astra-zig
-zig build test            # 17 unit tests + conformance sobre seed/tests/conformance
+zig build test            # 35 unit tests + conformance (compila y ejecuta) sobre seed/tests/conformance
 zig build -Doptimize=ReleaseFast
 
 # Introspección
-./zig-out/bin/astra-zig file.astra            # parse check (salida 1 si falla)
+./zig-out/bin/astra-zig file.astra            # compila y ejecuta (salida 1 si falla)
 ./zig-out/bin/astra-zig --dump-tokens file.astra
 ./zig-out/bin/astra-zig --dump-ast file.astra
+./zig-out/bin/astra-zig --dump-bytecode file.astra
+./zig-out/bin/astra-zig --debug file.astra    # depurador de bytecode (breakpoints/step)
+
+# Depuración de bajo nivel (mismos nombres que el seed)
+ASTRA_DUMP_VM=1 ./zig-out/bin/astra-zig file.astra   # bytecode + cuerpo de cada llamada
+ASTRA_TRACE=1   ./zig-out/bin/astra-zig file.astra   # traza de pila por instrucción
 ```
 
 ---
@@ -82,10 +88,17 @@ zig build -Doptimize=ReleaseFast
    `option`/`result`, `use`/`mod`, `val`, etc. Un test de conformidad cruzada
    podrá comparar los dos lexers cuando exista el equivalente a
    `--check-constructs`.
-5. **Fallo rápido por ahora.** El primer error de sintaxis aborta el parseo y se
-   registra el mensaje. La recuperación a nivel de sentencia (como el seed) es
-   una mejora posterior, no un requisito de paridad: `research/011` la sitúa en
-   "phrase-level, no sobre-ingenierada".
+5. **Recuperación a nivel de sentencia.** El bucle del módulo captura el error
+   de una declaración, sincroniza (el mismo conjunto de tokens que el seed:
+   `;`, `}`, `fn`, `let`, `if`…) y sigue parseando, de modo que un fichero con
+   dos declaraciones malas reporta las dos, como el seed. El árbol solo se
+   entrega si el parseo queda limpio; cualquier error sigue siendo un fallo duro
+   (`exit 1`). Un detalle del seed que hay que copiar con cuidado: en C
+   `parse_statement` consume el `;` con `optional_semi` incluso tras error; en
+   Zig el error se propaga antes, así que la recuperación avanza un token si
+   `synchronize` se detuvo donde ya estaba (si no, el bucle giraría sin fin).
+   `research/011` la sitúa en "phrase-level, no sobre-ingenierada" y eso es lo
+   que hay: sincronización por sentencia, sin recuperación intra-expresión.
 
 ### APIs de Zig 0.16 relevantes
 
@@ -96,6 +109,8 @@ Zig 0.16 cambió bastante la stdlib; el código usa:
 - `std.Io.Dir.cwd()`, `dir.readFileAlloc(io, path, gpa, .limited(n))`,
   `dir.walk(gpa)` + `walker.next(io)`.
 - `std.Io.Writer.fixed(buf)` y `w.buffered()` para ensamblar salida.
+- `std.Io.File.stdout()` y `file.writer(io, buf)` → se pasa `&file_writer.interface`
+  (campo `std.Io.Writer`) a la VM y se hace `flush()` al terminar.
 - `std.heap.DebugAllocator`, `std.ArrayListUnmanaged(T)` con `.empty` y
   `append(alloc, x)`.
 
@@ -108,11 +123,12 @@ Ordenado por dependencia y valor para el bootstrap.
 | # | Tarea | Estado | Notas |
 |:-:|:------|:-------|:------|
 | 1 | **Type checker** portado (`typechecker.c` → Zig) | ✅ | Verificado: 52/52 no-UI limpios, 22/23 UI rechazados (el 23 es `break`, del emitter) |
-| 2 | **Emitter + bytecode** (`emitter.c` → Zig) | ⬜ | modelo de altura de pila verificado (la causa raíz de los hallazgos A/C de Fase 1); parcheo de saltos `offset = T - P`; incluye el chequeo de `break`/`continue` fuera de bucle |
-| 3 | **VM** (`vm.c` → Zig) | ⬜ | ~30 opcodes, frames, globals, builtins; mismos textos de error que el seed |
-| 4 | **Runner de conformance con ejecución** | ⬜ | replicar `EXPECT` / `EXPECT-ERROR` / `EXPECT-RUNTIME-ERROR` y comparar salida con la VM del seed |
-| 5 | Errores con recuperación a nivel de sentencia | ⬜ | mejores diagnósticos; no bloquea |
+| 2 | **Emitter + bytecode** (`emitter.c` → Zig) | ✅ | modelo de altura de pila verificado (la causa raíz de los hallazgos A/C de Fase 1); parcheo de saltos `offset = T - P`; incluye el chequeo de `break`/`continue` fuera de bucle |
+| 3 | **VM** (`vm.c` → Zig) | ✅ | 48 opcodes, frames, globals, builtins; mismos textos de error que el seed. La salida de floats replica `printf("%g")` (ver §6) |
+| 4 | **Runner de conformance con ejecución** | ✅ | `zig build test` ejecuta cada caso no-UI y compara `EXPECT:` / `EXPECT-RUNTIME-ERROR:`; los `ui/` deben fallar al compilar |
+| 5 | Errores con recuperación a nivel de sentencia | ✅ | el módulo reporta varios errores por pase; verificado contra el seed (2 declaraciones malas → 2 errores) |
 | 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | 🟡 | hoy el formato es propio; la comparación es por aceptación, no por texto |
+| 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
 
 ---
 
@@ -126,6 +142,70 @@ Ordenado por dependencia y valor para el bootstrap.
   monomorfización, ARC/ORC, integración LLVM). Es la referencia para las fases
   siguientes.
 - `PHASE2_GAP_ANALYSIS.md` — inventario de lo que falta para el lenguaje
-  completo (genéricos, traits, comptime, módulos, FFI…).
+  completo (genéricos, traits, comptime, módulos, FFI…). Su **§12** fija el plan
+  de *debugging e inspección de bajo nivel* (flags `--emit-llvm`/`--emit-asm`,
+  DWARF, depurador de bytecode) y las decisiones abiertas; el backend nativo
+  está en su §11 (fase 2.6).
 - `research/010`, `research/011`, `research/012` — gramática, diseño del seed y
   backend C, que siguen siendo la especificación de comportamiento.
+
+---
+
+## 6. Notas del port de la VM (`vm.c` → `zig/src/vm/vm.zig`)
+
+La VM se comporta como la del seed; tres detalles merecen quedar por escrito
+porque son fáciles de romper sin que la suite lo note a simple vista:
+
+1. **El objetivo de un salto es `ip + offset`.** El seed hace `ip += offset;
+   ip--` y el bucle luego `ip++`, lo que da `P + offset`. El port paso de
+   índice calcula el destino con una suma **con signo** (`jumpTarget`) para no
+   envolver los offsets negativos de `continue`.
+2. **La pila por debajo de `sp` es el frame.** `base` es un índice de slot, no
+   un contador de 8 bits: recortarlo a `u8` fue el bug S8 de la Fase 1 (más de
+   ~127 llamadas anidadas leían el slot equivocado). El port usa `usize`.
+3. **Los textos de error son contrato.** `run_tests.sh` compara subcadenas de
+   `EXPECT-RUNTIME-ERROR`, así que los mensajes se copian literalmente.
+
+El modo de depuración del seed también está portado: `ASTRA_DUMP_VM=1` vuelca el
+bytecode del módulo y de cada función llamada, y `ASTRA_TRACE=1` imprime
+`sp=/base=/frame=` más la pila (hasta 20 valores) tras cada instrucción. A
+diferencia del seed — que deja los valores en stdout y los corchetes en stderr,
+partiendo cada línea — aquí todo va a stderr.
+
+### Depurador de bytecode (`--debug`)
+
+`./zig-out/bin/astra-zig --debug file.astra` da un depurador interactivo sobre
+la VM (sin LLVM): se detiene en la entrada y acepta comandos por stdin.
+
+```
+c | continue     corre hasta el siguiente breakpoint (o el final)
+s | step         ejecuta una instrucción
+b | break        lista los breakpoints
+b <line>         pone un breakpoint en una línea Astra
+d <line>         quita un breakpoint
+stack | p        pila de operandos
+locals | l       slots del frame actual
+bt               frames de llamada
+h | help / q | quit
+```
+
+La salida del depurador va a stderr (la del programa, a stdout). No necesita
+información adicional del emitter: usa el `line` que ya lleva cada instrucción.
+Al reanudar con `continue` se suprime el resto de la misma línea para no parar
+una vez por instrucción de una sentencia.
+
+Además, la salida no va por `printf` sino por un `std.Io.Writer`: el CLI escribe
+a stdout (`std.Io.File.stdout()` con su campo `.interface`) y la suite captura
+la salida en un buffer fijo, de modo que nada se cuela por la salida del proceso
+de test.
+
+### Formato de floats: `%g`, no el de Zig
+
+El seed imprime todo float con `printf("%g", …)` (`value_print`). El formato
+por defecto de Zig (`{}`/`{d}`) es *shortest round-trip*, no `%g`: para
+`3.14159265358979` imprime todos los dígitos donde C imprime `3.14159`, y nunca
+pasa a notación científica. Para que VM, volcado de bytecode y backend C den el
+mismo texto, `bytecode.writeFloatG` implementa la regla de C99 §7.21.6.1
+(formatear con estilo `e` para hallar el exponente redondeado `X`; si
+`-4 <= X < P` usar estilo `f` con `P-1-X` decimales, si no estilo `e` con `P-1`;
+quitar ceros finales).

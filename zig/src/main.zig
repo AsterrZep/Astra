@@ -10,15 +10,20 @@ const lexer = @import("lexer/lexer.zig");
 const ast = @import("ast/ast.zig");
 const parser = @import("parser/parser.zig");
 const typechecker = @import("typechecker/typechecker.zig");
+const emitter = @import("emitter/emitter.zig");
+const bytecode = @import("emitter/bytecode.zig");
+const vm_mod = @import("vm/vm.zig");
 
-const Mode = enum { parse, tokens, ast_dump };
+const Mode = enum { parse, tokens, ast_dump, bytecode };
 
 const usage =
-    \\usage: astra-zig [--dump-tokens | --dump-ast] <file.astra>
+    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-bytecode | --debug] <file.astra>
     \\
-    \\  (no flag)      parse the file, report syntax errors, exit 1 on failure
-    \\  --dump-tokens  print the token stream
-    \\  --dump-ast     print the parsed AST
+    \\  (no flag)        compile and run, exit 1 on a compile or runtime error
+    \\  --dump-tokens    print the token stream
+    \\  --dump-ast       print the parsed AST
+    \\  --dump-bytecode  print the emitted bytecode
+    \\  --debug          run under the interactive bytecode debugger (stdin)
     \\
 ;
 
@@ -28,12 +33,17 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
     var mode: Mode = .parse;
+    var debug = false;
     var path: ?[]const u8 = null;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
             mode = .tokens;
         } else if (std.mem.eql(u8, arg, "--dump-ast")) {
             mode = .ast_dump;
+        } else if (std.mem.eql(u8, arg, "--dump-bytecode")) {
+            mode = .bytecode;
+        } else if (std.mem.eql(u8, arg, "--debug")) {
+            debug = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
             std.debug.print("error: unknown flag {s}\n{s}", .{ arg, usage });
             std.process.exit(2);
@@ -96,5 +106,44 @@ pub fn main(init: std.process.Init) !void {
     tc.check(root);
     if (tc.error_count > 0) std.process.exit(1);
 
-    std.debug.print("ok: {s} ({d} items)\n", .{ file, tree.extraSlice(tree.node(root).source_file).len });
+    var em = emitter.Emitter.init(a, &tree, file);
+    em.emit(root);
+    if (em.error_count > 0) std.process.exit(1);
+
+    if (mode == .bytecode) {
+        var bw = std.Io.Writer.fixed(out);
+        try bytecode.dump(&bw, em.code.items, em.constants.items);
+        std.debug.print("{s}", .{bw.buffered()});
+        return;
+    }
+
+    // Default mode runs the program. Its output goes to stdout; diagnostics
+    // go to stderr, so a caller can compare the program's stdout alone
+    // (which is exactly what the conformance runner does).
+    var stdout_buf: [4096]u8 = undefined;
+    const stdout_file = std.Io.File.stdout();
+    var stdout_writer = stdout_file.writer(io, &stdout_buf);
+
+    var machine = try vm_mod.VM.init(a, &stdout_writer.interface);
+    // Low-level debug switches, the seed's environment variables: dump the
+    // bytecode (and each called function) and/or trace the stack per
+    // instruction. Both write to stderr, never to the program's stdout.
+    machine.dump_vm = init.environ_map.contains("ASTRA_DUMP_VM");
+    machine.trace = init.environ_map.contains("ASTRA_TRACE");
+
+    // The stdin reader must outlive the run: `enableDebug` keeps a pointer.
+    var stdin_buf: [4096]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buf);
+    if (debug) machine.enableDebug(&stdin_reader.interface, source);
+
+    const res = machine.run(em.code.items, em.constants.items) catch |e| {
+        std.debug.print("error: {s}\n", .{@errorName(e)});
+        std.process.exit(1);
+    };
+    stdout_writer.interface.flush() catch {};
+
+    if (res != .ok) {
+        std.debug.print("{s}:{d}: runtime error: {s}\n", .{ file, machine.error_line, machine.error_msg });
+        std.process.exit(1);
+    }
 }
