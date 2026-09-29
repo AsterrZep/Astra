@@ -1,0 +1,4 @@
+// Reached from main.astra. Resolution is relative to the importing file, so a
+// sibling inside `geometry/` is just `vector` — `geometry.vector` here would
+// mean `geometry/vector.astra` *below* this directory.
+from vector import Vec2

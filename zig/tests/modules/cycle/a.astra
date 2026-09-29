@@ -1,0 +1,3 @@
+// Loader fixture: a.astra -> b.astra -> a.astra. ARCHITECTURE.md §10.6 forbids
+// this, and only the loader (which keeps the chain) can see it.
+import b

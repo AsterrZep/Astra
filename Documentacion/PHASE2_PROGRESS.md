@@ -29,7 +29,7 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 | Emitter (`src/emitter/emitter.zig`) | ✅ | Baja el AST a bytecode: modelo lineal de altura de pila con asertos por nodo, parcheo de saltos `offset = T - P`, frames con slot 0 para el retorno, `match`/`for`/`if`/lambdas, construcción de structs y enums |
 | VM (`src/vm/vm.zig`) | ✅ | ~48 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; mismos textos de error que el seed; salida de floats con `%g` de C |
 | Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-modules`, `--dump-bytecode`; salida 1 ante error de compilación o de runtime |
-| Módulos (`src/modules/modules.zig`) | 🟡 | Esbozo del paso 2: `ImportPath` → fichero (reglas 1–2 de `ARCHITECTURE.md` §10.4), `ModuleTable` y nombres explícitos. Sin cargador de ficheros (ver §7.1) |
+| Módulos (`src/modules/`) | 🟡 | Esbozo del paso 2: `ImportPath` → fichero (reglas 1–2 de `ARCHITECTURE.md` §10.4), `ModuleTable` y nombres explícitos, y un cargador que lee los ficheros y detecta ciclos. Sin resolución de referencias ni `pub` (ver §7.1) |
 
 ### Verificación medida
 
@@ -39,7 +39,7 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
   que el seed y sin volcar nada a stdout.
 - **26/26** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop`, que el type checker deja pasar a propósito.
-- **45 pruebas unitarias** (lexer, AST, parser, type checker, emitter, bytecode,
+- **49 pruebas unitarias** (lexer, AST, parser, type checker, emitter, bytecode,
   VM, módulos, depurador y conformance) en `zig build test`.
 
 ---
@@ -131,7 +131,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | 🟡 | hoy el formato es propio; la comparación es por aceptación, no por texto |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
 | 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
-| 9 | **Módulos — paso 2**: tabla de módulos y resolución de rutas | 🟡 | esbozo en `src/modules/modules.zig`: ruta relativa → fichero, `ModuleTable` y nombres explícitos, con `--dump-modules`. Sin cargador de ficheros ni resolución de referencias. Ver §7.1 |
+| 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | 🟡 | esbozo en `src/modules/modules.zig`: ruta relativa → fichero, `ModuleTable`, nombres explícitos y un `Loader` que carga el grafo y detecta ciclos (§10.6), con `--dump-modules`. Sin resolución de referencias ni `pub`. Ver §7.1 |
 
 ---
 
@@ -262,21 +262,21 @@ descarta.
 Dos casos nuevos cubren la superficie en el seed: `module/import_from.astra` (las
 tres formas, con `as`) y `ui/from_without_items.astra` (`from a.b import` sin
 ningún item, que antes se aceptaba como una lista vacía silenciosa). La paridad
-medida sube a **54/54 no-UI y 25/25 UI**.
+medida sube a **54/54 no-UI y 26/26 UI**.
 
 Lo que falta para un sistema de módulos de verdad (paso 2) está ya enumerado en
 `PHASE2_GAP_ANALYSIS.md` §5.1: tabla de módulos, visibilidad `pub`, compilación
 multifichero y resolución de referencias cruzadas.
 
-### 7.1 Paso 2 (esbozo): resolución de rutas y tabla de módulos
+### 7.1 Paso 2 (esbozo): resolución de rutas, tabla de módulos y cargador
 
 `zig/src/modules/modules.zig` es lo primero del port que **no tiene contrapartida
 en C**: el seed compila un fichero y no carga nada (`research/011` §5.2), así que
 la paridad no dice nada de este terreno. Hace cuatro cosas y ninguna más.
 
 **Ruta → fichero.** Sólo las reglas 1 y 2 de `ARCHITECTURE.md` §10.4 (relativa y
-sub-ruta): `mesh` → `mesh.astra`, `geometry.mesh` → `geometry/mesh.astra`,
-relativo al directorio del fichero que importa. El sufijo `.astra` se añade sólo
+sub-ruta): `mesh` → `mesh.astra`, `geometry.mesh` → `geometry/mesh.astra`, ambas
+relativas al directorio del fichero que importa. El sufijo `.astra` se añade sólo
 al último segmento (`a.b.c` → `a/b/c.astra`, no `a/b/c/.astra`). Las reglas 3 y 4
 (`@/utils/logger` desde la raíz de `astra.toml`, `std/io` de la stdlib) quedan
 aplazadas a propósito: no existe ni `astra.toml` ni stdlib, y las dos escriben sus
@@ -303,17 +303,39 @@ luego `utils.Logger.info(…)`, lo que sugiere el primer segmento, pero para
 `import geometry.mesh` ni eso— así que el módulo no lo adivina: es una pregunta
 abierta en `PHASE2_GAP_ANALYSIS.md` App. B.
 
-`astra-zig --dump-modules fichero.astra` imprime la tabla para comprobarlo a mano
-(el fichero se resuelve relativo a su propio directorio, como referencia):
+**El cargador y los ciclos.** `Loader` lee el fichero al que apunta cada
+declaración y sigue sus propios imports, recursivamente, construyendo un `Graph`
+(orden de carga, la raíz primero; cada fichero aparece una sola vez aunque lo
+nombren diez declaraciones). Un ciclo es el único error que **no se puede ver
+fichero a fichero** —todos los ficheros del ciclo están bien y sólo la cadena
+está mal—, así que el cargador guarda la cadena de ficheros por la que va
+entrando y reporta el ciclo cuando una resolución aterriza sobre uno de ellos
+(`ARCHITECTURE.md` §10.6, que lo prohíbe). Los errores se cuentan en
+`error_count` (mismo contrato que el type checker y el emitter): un módulo que no
+existe, que no parsea o que participa en un ciclo no tira el grafo, lo deja
+incompleto y lo señala.
+
+`astra-zig --dump-modules fichero.astra` carga el grafo y lo imprime, con los
+errores por stderr y salida 1 si los hubo. Sobre los propios fixtures del test
+(`zig/tests/modules/tree/`, que también fijan la resolución relativa: desde
+`geometry/mesh.astra` un hermano se importa como `vector`, no como
+`geometry.vector`):
 
 ```
-modules (src/main.astra): 4 declaration(s)
-  import std.io -> src/std/io.astra
-  import geometry.mesh -> src/geometry/mesh.astra as mesh
-  from geometry.vector -> src/geometry/vector.astra [binds Vec2, add as sum]
-  use a.b.c -> src/a/b/c.astra
+module graph: 3 module(s)
+  tests/modules/tree/main.astra
+    import geometry.mesh -> tests/modules/tree/geometry/mesh.astra
+  tests/modules/tree/geometry/mesh.astra
+    from vector -> tests/modules/tree/geometry/vector.astra [binds Vec2]
+  tests/modules/tree/geometry/vector.astra
 ```
 
-Sin cargador: no se abre ningún fichero, no hay tabla de símbolos por módulo, ni
-resolución de referencias cruzadas, ni `pub`, ni detección de ciclos
-(`ARCHITECTURE.md` §10.5–§10.6). Eso es el resto de `PHASE2_GAP_ANALYSIS.md` §8.3.
+Un aviso para quien lo pruebe con la suite de conformidad: los casos no-UI son
+programas de una sola pieza y sus rutas (`std.io`, `geometry.mesh`) no existen en
+disco, así que `--dump-modules` sobre `module/import_from.astra` reporta los
+cuatro ficheros que faltan y sale con 1. Es correcto: ese caso fija la *sintaxis*,
+no un proyecto. La ruta normal (sin `--dump-modules`) no carga nada y no cambia.
+
+Sin cargador de enlaces todavía: no hay tabla de símbolos por módulo, ni
+resolución de referencias cruzadas, ni `pub` (`ARCHITECTURE.md` §10.5). Eso es el
+resto de `PHASE2_GAP_ANALYSIS.md` §8.3.

@@ -1,0 +1,4 @@
+// Loader fixture (zig/src/modules/modules.zig): the root of a three-file
+// chain. `geometry.mesh` is a sub-route path, so it resolves relative to this
+// file's directory — geometry/mesh.astra.
+import geometry.mesh

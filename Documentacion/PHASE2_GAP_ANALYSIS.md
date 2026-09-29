@@ -389,10 +389,12 @@ Phase 2 must:
 
 **Progress (2026-09-29):** the declarations are lexed and parsed by both
 compilers (Phase 2.2 step 1), with the seed and the port finally accepting the
-same three forms. The Zig side also has the path-resolution and module-table
-groundwork (step 2, `PHASE2_PROGRESS.md` §7.1): `ImportPath` → file for the two
-relative rules, plus the names each declaration states explicitly. Still ahead:
-the file loader, a symbol table per module, cross-module references, `pub`, and
+same three forms. The Zig side also has the step-2 groundwork
+(`PHASE2_PROGRESS.md` §7.1): `ImportPath` → file for the two relative rules, the
+names each declaration states explicitly, and a `Loader` that reads the resolved
+files, walks the imports and reports a cycle (§10.6) rather than looping — which
+covers the "resolve file paths, load source files" line of the list above.
+Still ahead: a symbol table per module, cross-module references, `pub`, and
 solving App. B #10–#12.
 
 ---

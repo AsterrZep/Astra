@@ -1,0 +1,5 @@
+// Loader fixture: both `one` and `two` import `shared`, so `shared` is reached
+// twice. The loader must load it once — without that, a chain of such modules
+// would grow exponentially.
+import one
+import two

@@ -1,0 +1,2 @@
+// Leaf of the chain: no module declarations, so the walk stops here.
+let v = 1

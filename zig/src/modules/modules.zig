@@ -23,10 +23,14 @@
 //!    is not specified anywhere, so this file does not guess. That is an open
 //!    question for the resolution step, recorded in `PHASE2_GAP_ANALYSIS.md`.
 //!
-//! Deliberately absent, because they need the loader and the package manifest:
-//! reading source files, a symbol table per module, cross-module reference
-//! resolution, `pub` visibility and circular-dependency detection
-//! (`ARCHITECTURE.md` §10.5–§10.6, `PHASE2_GAP_ANALYSIS.md` §8.3).
+//! Plus a **loader** (`Loader`, `Graph`): it reads the file each declaration
+//! resolves to, recursively, and reports the one thing no single file can show —
+//! a circular import, which `ARCHITECTURE.md` §10.6 forbids and the gap analysis
+//! (§8.3) makes the loader's job.
+//!
+//! Deliberately absent, because they need the package manifest and the resolver:
+//! a symbol table per module, cross-module reference resolution and `pub`
+//! visibility (`ARCHITECTURE.md` §10.5, `PHASE2_GAP_ANALYSIS.md` §8.3).
 //!
 //! The seed has none of this and is not meant to: it compiles one file
 //! (`research/011` §5.2), so this is the first thing in the port with no C
@@ -226,25 +230,157 @@ pub fn collect(
     return .{ .file = file, .decls = try decls.toOwnedSlice(allocator) };
 }
 
-/// Human-readable rendering of a table, for the `--dump-modules` flag.
+// ── Loading ──────────────────────────────────────────────────────
+
+/// Largest module the loader will read. A module is input like any other, so it
+/// gets the same ceiling `main.zig` applies to the program itself (64 MiB) rather
+/// than trusting the filesystem.
+const source_limit = 1 << 26;
+
+/// One module in the graph: the file, its source text and its declarations.
+pub const LoadedModule = struct {
+    file: []const u8,
+    source: []const u8,
+    table: ModuleTable,
+};
+
+pub const Graph = struct {
+    /// Load order, root first. Each file appears exactly once, however many
+    /// declarations point at it.
+    modules: []const LoadedModule,
+
+    pub fn find(self: Graph, file: []const u8) ?usize {
+        for (self.modules, 0..) |m, i| {
+            if (std.mem.eql(u8, m.file, file)) return i;
+        }
+        return null;
+    }
+};
+
+/// Reads modules and follows their imports.
+///
+/// A cycle is the one error that cannot be found one file at a time: every file
+/// in it is fine on its own and only the chain is wrong. So the loader keeps the
+/// chain of files it is currently inside (`visiting`) and reports a cycle when a
+/// resolution lands on one of them (`ARCHITECTURE.md` §10.6).
+///
+/// Failures are reported and counted, not returned — `error_count` is the
+/// caller's signal, the same contract the type checker and the emitter use —
+/// except allocation failures, which still propagate.
+pub const Loader = struct {
+    a: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    error_count: usize = 0,
+    modules: std.ArrayListUnmanaged(LoadedModule) = .empty,
+    /// Files being loaded right now, outermost first.
+    visiting: std.ArrayListUnmanaged([]const u8) = .empty,
+
+    pub fn init(a: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) Loader {
+        return .{ .a = a, .io = io, .dir = dir };
+    }
+
+    /// Load `root_file` and everything it imports, transitively. Returns the
+    /// graph even when `error_count > 0`: the caller decides whether a partial
+    /// graph is worth looking at, exactly as with a file that has type errors.
+    pub fn load(self: *Loader, root_file: []const u8) !Graph {
+        try self.loadFile(root_file);
+        return .{ .modules = try self.modules.toOwnedSlice(self.a) };
+    }
+
+    fn loadFile(self: *Loader, file: []const u8) !void {
+        // Order matters: a file on the stack is already in `modules`, so asking
+        // "already loaded?" first would turn every cycle into a silent no-op.
+        if (self.visitingIndex(file)) |at| {
+            self.reportCycle(at, file);
+            return;
+        }
+        if (self.loadedIndex(file) != null) return;
+
+        const source = self.dir.readFileAlloc(self.io, file, self.a, .limited(source_limit)) catch |err| {
+            std.debug.print("error: cannot read module {s}: {s}\n", .{ file, @errorName(err) });
+            self.error_count += 1;
+            return;
+        };
+
+        var tree = ast.Tree.init(self.a, source);
+        defer tree.deinit();
+        var p = parser.Parser.init(self.a, source, &tree);
+        const root = p.parse() catch {
+            std.debug.print("error: {s}: module did not parse\n", .{file});
+            self.error_count += 1;
+            return;
+        };
+
+        const table = try collect(self.a, &tree, root, file);
+        try self.modules.append(self.a, .{ .file = file, .source = source, .table = table });
+
+        try self.visiting.append(self.a, file);
+        for (table.decls) |decl| try self.loadFile(decl.file);
+        _ = self.visiting.pop();
+    }
+
+    fn visitingIndex(self: *const Loader, file: []const u8) ?usize {
+        for (self.visiting.items, 0..) |v, i| {
+            if (std.mem.eql(u8, v, file)) return i;
+        }
+        return null;
+    }
+
+    fn loadedIndex(self: *const Loader, file: []const u8) ?usize {
+        for (self.modules.items, 0..) |m, i| {
+            if (std.mem.eql(u8, m.file, file)) return i;
+        }
+        return null;
+    }
+
+    fn reportCycle(self: *Loader, at: usize, file: []const u8) void {
+        std.debug.print("error: circular import: ", .{});
+        for (self.visiting.items[at..]) |step| std.debug.print("{s} -> ", .{step});
+        std.debug.print("{s}\n", .{file});
+        self.error_count += 1;
+    }
+};
+
+// ── Dumps ────────────────────────────────────────────────────────
+
+fn writeDecl(writer: anytype, d: Decl) !void {
+    try writer.print("{s} {s} -> {s}", .{ @tagName(d.kind), d.path, d.file });
+    if (d.alias) |alias| try writer.print(" as {s}", .{alias});
+    if (d.kind == .from) {
+        try writer.writeAll(" [binds");
+        for (d.items, 0..) |item, i| {
+            if (i > 0) try writer.writeAll(",");
+            if (item.alias) |alias| {
+                try writer.print(" {s} as {s}", .{ item.name, alias });
+            } else {
+                try writer.print(" {s}", .{item.name});
+            }
+        }
+        try writer.writeAll("]");
+    }
+    try writer.writeAll("\n");
+}
+
+/// Human-readable rendering of one file's declarations.
 pub fn dump(writer: anytype, table: ModuleTable) !void {
     try writer.print("modules ({s}): {d} declaration(s)\n", .{ table.file, table.decls.len });
     for (table.decls) |d| {
-        try writer.print("  {s} {s} -> {s}", .{ @tagName(d.kind), d.path, d.file });
-        if (d.alias) |alias| try writer.print(" as {s}", .{alias});
-        if (d.kind == .from) {
-            try writer.writeAll(" [binds");
-            for (d.items, 0..) |item, i| {
-                if (i > 0) try writer.writeAll(",");
-                if (item.alias) |alias| {
-                    try writer.print(" {s} as {s}", .{ item.name, alias });
-                } else {
-                    try writer.print(" {s}", .{item.name});
-                }
-            }
-            try writer.writeAll("]");
+        try writer.writeAll("  ");
+        try writeDecl(writer, d);
+    }
+}
+
+/// Human-readable rendering of a loaded graph, for `--dump-modules`: every file
+/// that would take part in the build, in load order, with what each one imports.
+pub fn dumpGraph(writer: anytype, graph: Graph) !void {
+    try writer.print("module graph: {d} module(s)\n", .{graph.modules.len});
+    for (graph.modules) |m| {
+        try writer.print("  {s}\n", .{m.file});
+        for (m.table.decls) |d| {
+            try writer.writeAll("    ");
+            try writeDecl(writer, d);
         }
-        try writer.writeAll("\n");
     }
 }
 
@@ -397,4 +533,116 @@ test "a file with no module declarations has an empty table" {
     var w = std.Io.Writer.fixed(&out);
     try dump(&w, table);
     try std.testing.expectEqualStrings("modules (main.astra): 0 declaration(s)\n", w.buffered());
+}
+
+// ── Loader tests ──────────────────────────────────────────────────
+//
+// These are the only tests in the port that read files of their own: loading
+// *is* the filesystem, so the fixtures live in `zig/tests/modules/<scenario>/`
+// and are located relative to whichever directory the test binary was started
+// in (the same two candidates `conformance.zig` tries).
+
+const fixture_candidates = [_][]const u8{ "tests/modules", "../tests/modules" };
+
+fn fixtureRoot(io: std.Io, cwd: std.Io.Dir) ![]const u8 {
+    for (fixture_candidates) |candidate| {
+        cwd.access(io, candidate, .{}) catch continue;
+        return candidate;
+    }
+    // Not `error.SkipZigTest`: a loader test that silently does not run is the
+    // "marked supported, never exercised" gap this suite exists to catch.
+    return error.ModuleFixturesNotFound;
+}
+
+fn fixture(a: std.mem.Allocator, root: []const u8, relative: []const u8) ![]u8 {
+    return std.fs.path.join(a, &.{ root, relative });
+}
+
+test "the loader follows imports transitively, resolving each path" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = Loader.init(a, io, cwd);
+    const entry = try fixture(a, root, "tree/main.astra");
+    const graph = try loader.load(entry);
+
+    try std.testing.expectEqual(@as(usize, 0), loader.error_count);
+    try std.testing.expectEqual(@as(usize, 3), graph.modules.len);
+
+    // Load order is depth-first from the root, and every file is resolved
+    // relative to the file that imported it: root → geometry/mesh → geometry/vector.
+    try std.testing.expectEqualStrings(entry, graph.modules[0].file);
+    const mesh = try std.fs.path.join(a, &.{ root, "tree", "geometry", "mesh.astra" });
+    const vector = try std.fs.path.join(a, &.{ root, "tree", "geometry", "vector.astra" });
+    try std.testing.expectEqualStrings(mesh, graph.modules[1].file);
+    try std.testing.expectEqualStrings(vector, graph.modules[2].file);
+
+    try std.testing.expectEqual(Kind.import, graph.modules[0].table.decls[0].kind);
+    try std.testing.expectEqual(Kind.from, graph.modules[1].table.decls[0].kind);
+    try std.testing.expectEqualStrings("Vec2", itemBindingName(graph.modules[1].table.decls[0].items[0]));
+    try std.testing.expectEqual(@as(usize, 0), graph.modules[2].table.decls.len);
+
+    try std.testing.expectEqual(@as(?usize, 2), graph.find(vector));
+    try std.testing.expectEqual(@as(?usize, null), graph.find("nowhere.astra"));
+}
+
+test "a module reached twice is loaded once" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = Loader.init(a, io, cwd);
+    const graph = try loader.load(try fixture(a, root, "diamond/main.astra"));
+
+    try std.testing.expectEqual(@as(usize, 0), loader.error_count);
+    // main → one → shared, then two (whose `shared` is already loaded).
+    try std.testing.expectEqual(@as(usize, 4), graph.modules.len);
+    const shared = try std.fs.path.join(a, &.{ root, "diamond", "shared.astra" });
+    try std.testing.expectEqual(@as(?usize, 2), graph.find(shared));
+}
+
+test "a circular import is reported instead of loading forever" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = Loader.init(a, io, cwd);
+    const graph = try loader.load(try fixture(a, root, "cycle/a.astra"));
+
+    // One reported edge (b → a) and a graph that stops there: no runaway walk.
+    try std.testing.expectEqual(@as(usize, 1), loader.error_count);
+    try std.testing.expectEqual(@as(usize, 2), graph.modules.len);
+}
+
+test "a module that is not on disk is reported, not fatal" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = Loader.init(a, io, cwd);
+    const entry = try fixture(a, root, "missing/main.astra");
+    const graph = try loader.load(entry);
+
+    try std.testing.expectEqual(@as(usize, 1), loader.error_count);
+    // The root is still in the graph: one unresolvable import does not throw
+    // away the file that was fine.
+    try std.testing.expectEqual(@as(usize, 1), graph.modules.len);
+    try std.testing.expectEqualStrings(entry, graph.modules[0].file);
 }

@@ -23,7 +23,7 @@ const usage =
     \\  (no flag)        compile and run, exit 1 on a compile or runtime error
     \\  --dump-tokens    print the token stream
     \\  --dump-ast       print the parsed AST
-    \\  --dump-modules   list the module declarations and the files they resolve to
+    \\  --dump-modules   load and print the module graph (files reached, cycles reported)
     \\  --dump-bytecode  print the emitted bytecode
     \\  --debug          run under the interactive bytecode debugger (stdin)
     \\
@@ -106,14 +106,19 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    // Module resolution is groundwork (modules/modules.zig): nothing links
-    // files yet, so this reports what *would* be loaded and where each
-    // declaration points. It runs before the type checker because resolution
-    // belongs to the frontend, not to the stages that assume one file.
+    // Module resolution is groundwork (modules/modules.zig): the declarations
+    // become a graph of files, but nothing links them yet — the type checker
+    // still sees one file. It runs before the type checker because loading
+    // belongs to the frontend, not to the stages that assume a single file.
     if (mode == .modules) {
-        const table = try modules_mod.collect(a, &tree, root, file);
-        try modules_mod.dump(&w, table);
+        var loader = modules_mod.Loader.init(a, io, dir);
+        const graph = try loader.load(file);
+        try modules_mod.dumpGraph(&w, graph);
         std.debug.print("{s}", .{w.buffered()});
+        // A module that cannot be read, does not parse, or takes part in a
+        // cycle is a failed build — the same exit status it will have once
+        // files are actually linked.
+        if (loader.error_count > 0) std.process.exit(1);
         return;
     }
 
