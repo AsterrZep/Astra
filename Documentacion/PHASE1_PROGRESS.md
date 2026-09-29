@@ -90,7 +90,7 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (**93 casos**), en verde en las tres
+los casos de conformidad. Cobertura actual (**94 casos**), en verde en las tres
 variantes de build (`dev`, `debug` con ASan+UBSan+LSan, `release`).
 
 `EXPECT-RUNTIME-ERROR` se añadió el 2026-09-21: hasta entonces **ningún** test
@@ -123,7 +123,7 @@ memoria** bajo LSan.
 | module | `toplevel_stmts` (sentencias de nivel de módulo: la clase de código que ningún otro test cubría, y por eso el break de §6 pasó inadvertido), `toplevel_aggregates` (structs, enums y variantes con datos declarados en el nivel superior), `use_paths` (`use` con rutas punteadas: el constructo `use` no tenía **ningún** test, y por eso no se notó que era código muerto (S18) ni que el parser separaba con `::` (S19)), `import_from` (`import ... as`, `from ... import ... as`, las tres formas de §6.7) |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
 | lambda | `lambda_basic`, `lambda_multi` |
-| ui | `from_without_items` (`from a.b import` sin ningún item), `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch`, `null_rejected`, `struct_comma_body`, `enum_comma_body`, `nesting_too_deep`, `block_nesting_too_deep`, `integer_literal_out_of_range`, `unterminated_string`, `use_colon_colon` |
+| ui | `from_without_items` (`from a.b import` sin ningún item), `import_keyword_segment` (`import std.mod`: una palabra clave no puede ser segmento de ruta), `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch`, `null_rejected`, `struct_comma_body`, `enum_comma_body`, `nesting_too_deep`, `block_nesting_too_deep`, `integer_literal_out_of_range`, `unterminated_string`, `use_colon_colon` |
 | codegen | `string_escape`, `global_limit`, `bitwise`, `deep_recursion`, `frame_overflow`, `out_of_bounds`, `returned_literal`, `aggregate_equality`, `float_remainder`, `string_order_rejected`, `float_divide_by_zero`, `integer_widths`, `toplevel_aggregates` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan + LSan) sin
@@ -609,7 +609,7 @@ construcción marcada como soportada sin ninguna prueba que la ejercite.
 
 ```bash
 cd seed
-make clean && make debug && make test        # 93 casos, ASan+UBSan+LSan, 0 fugas
+make clean && make debug && make test        # 94 casos, ASan+UBSan+LSan, 0 fugas
 ./astra-seed --check-constructs              # 46 constructos, 27 operadores, sin drift
 
 # S1: 300 globales por la ruta de C (antes: SEGV)
@@ -682,3 +682,19 @@ escrito:
   caracteres. `da_push` existía pero **sin ningún uso** en el compilador y con el
   patrón "asignar memoria nueva y ponerla a cero", que pierde el contenido
   anterior; no se adoptó.
+
+Y dos cosas que la Fase 2 puso a la vista al escribir la resolución de rutas
+(`PHASE2_PROGRESS.md` §7.1), ninguna de las cuales se ha tocado todavía a
+propósito:
+
+- **Las declaraciones de módulo anidadas no son un error en ninguno de los dos
+  compiladores.** `fn main() { import inner.thing }` compila y ejecuta en el seed
+  y en el Zig, aunque `research/010` §12.1 declara estos constructos como
+  `Item`, no como sentencia. Es la misma clase de deriva que S19 (el parser
+  aceptando lo que su gramática no dice), pero aquí los dos compiladores
+  coinciden, así que no rompe la paridad y ninguna prueba lo fija. Decidir si se
+  rechaza es trabajo del paso 2, no de este cambio.
+- **Un segmento de ruta no puede ser una palabra clave**, y eso ya está fijado:
+  `import std.mod` falla con `expected module path segment, got mod`
+  (`ui/import_keyword_segment.astra`). Sin prueba, esta frontera era la primera
+  que se habría roto al añadir `mod`/`pub` al léxico.

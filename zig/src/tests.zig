@@ -8,6 +8,7 @@ pub const typechecker = @import("typechecker/typechecker.zig");
 pub const emitter = @import("emitter/emitter.zig");
 pub const bytecode = @import("emitter/bytecode.zig");
 pub const vm = @import("vm/vm.zig");
+pub const modules = @import("modules/modules.zig");
 pub const conformance = @import("conformance.zig");
 
 test {
@@ -18,5 +19,6 @@ test {
     _ = emitter;
     _ = bytecode;
     _ = vm;
+    _ = modules;
     _ = conformance;
 }

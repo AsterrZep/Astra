@@ -13,15 +13,17 @@ const typechecker = @import("typechecker/typechecker.zig");
 const emitter = @import("emitter/emitter.zig");
 const bytecode = @import("emitter/bytecode.zig");
 const vm_mod = @import("vm/vm.zig");
+const modules_mod = @import("modules/modules.zig");
 
-const Mode = enum { parse, tokens, ast_dump, bytecode };
+const Mode = enum { parse, tokens, ast_dump, bytecode, modules };
 
 const usage =
-    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-bytecode | --debug] <file.astra>
+    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --debug] <file.astra>
     \\
     \\  (no flag)        compile and run, exit 1 on a compile or runtime error
     \\  --dump-tokens    print the token stream
     \\  --dump-ast       print the parsed AST
+    \\  --dump-modules   list the module declarations and the files they resolve to
     \\  --dump-bytecode  print the emitted bytecode
     \\  --debug          run under the interactive bytecode debugger (stdin)
     \\
@@ -40,6 +42,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .tokens;
         } else if (std.mem.eql(u8, arg, "--dump-ast")) {
             mode = .ast_dump;
+        } else if (std.mem.eql(u8, arg, "--dump-modules")) {
+            mode = .modules;
         } else if (std.mem.eql(u8, arg, "--dump-bytecode")) {
             mode = .bytecode;
         } else if (std.mem.eql(u8, arg, "--debug")) {
@@ -98,6 +102,17 @@ pub fn main(init: std.process.Init) !void {
 
     if (mode == .ast_dump) {
         try tree.dump(&w, root);
+        std.debug.print("{s}", .{w.buffered()});
+        return;
+    }
+
+    // Module resolution is groundwork (modules/modules.zig): nothing links
+    // files yet, so this reports what *would* be loaded and where each
+    // declaration points. It runs before the type checker because resolution
+    // belongs to the frontend, not to the stages that assume one file.
+    if (mode == .modules) {
+        const table = try modules_mod.collect(a, &tree, root, file);
+        try modules_mod.dump(&w, table);
         std.debug.print("{s}", .{w.buffered()});
         return;
     }

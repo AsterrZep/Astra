@@ -387,6 +387,14 @@ Phase 2 must:
 2. **Implement** `trait` and `impl` next (needed for generics and methods).
 3. **Implement** `comptime` last (complex, not blocking other features).
 
+**Progress (2026-09-29):** the declarations are lexed and parsed by both
+compilers (Phase 2.2 step 1), with the seed and the port finally accepting the
+same three forms. The Zig side also has the path-resolution and module-table
+groundwork (step 2, `PHASE2_PROGRESS.md` §7.1): `ImportPath` → file for the two
+relative rules, plus the names each declaration states explicitly. Still ahead:
+the file loader, a symbol table per module, cross-module references, `pub`, and
+solving App. B #10–#12.
+
 ---
 
 ## 9. Zig-Specific Considerations
@@ -694,13 +702,31 @@ Because the toolchain is ours, debugging can go further than C++:
    accept the same form, pinned by
    `seed/tests/conformance/module/use_paths.astra` and
    `ui/use_colon_colon.astra`. A path-string form (`use "std/io"`) is not adopted.
-   **Still open:** how a path maps to files on disk, and how `use` vs `import`
-   vs `from` divide the work (§5.1 steps 4–6).
+   **Still open:** how `use` vs `import` vs `from` divide the work (§5.1 steps
+   4–6), and the two items below. One half of "how a path maps to files on disk"
+   landed on 2026-09-29: `zig/src/modules/modules.zig` implements rules 1–2 of
+   `ARCHITECTURE.md` §10.4 (relative and sub-route) — see #10 for the roots.
 7. **Operator overloading scope:** Trait-only, or allow ad-hoc overloading for user types?
 8. **Assembly/debug output:** which emit flags, and does the AOT backend emit
    DWARF itself or delegate to LLVM? (see §12)
 9. **Timing of low-level debugging:** ship the bytecode debugger with the VM
    (Phase 2.1/2.2) or defer all debug tooling to the native backend (2.6)?
+10. **Dotted spelling of the special roots:** `ARCHITECTURE.md` §10.4 rules 3–4
+    spell the project root and the stdlib with `/` (`import @/utils/logger`,
+    `import std/io`), a separator `research/010` §12.1 replaced with `.` for
+    `ImportPath`. Deferred, not guessed (2026-09-29): neither `astra.toml` nor a
+    stdlib exists yet, and both need a root marker the grammar does not have.
+    Until it is decided, `std.io` is an ordinary relative path.
+11. **What a bare `import a.b` binds:** `ARCHITECTURE.md` §10.5 imports `utils`
+    and then uses `utils.Logger` (first segment), but for a multi-segment path
+    nothing says whether `import geometry.mesh` binds `geometry` or `mesh`. The
+    Zig module table records only names the grammar states explicitly
+    (`import … as x`, `from … import a, b as c`); this has to be decided before
+    a bare import can bind anything.
+12. **Nested module declarations:** both compilers accept
+    `fn main() { import inner.thing }`, although §12.1 makes these constructs
+    `Item`s rather than statements. Rejecting them changes behaviour in both
+    compilers and belongs to the resolution step (`PHASE1_PROGRESS.md` §6.7).
 
 ---
 

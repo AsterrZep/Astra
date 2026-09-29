@@ -1,0 +1,6 @@
+// A path segment must be an identifier: `ImportPath ::= Identifier ("." Identifier)*`
+// (research/010 §12.1). `mod` is a keyword, so it cannot name a segment even
+// though it looks like one — the lexer is what decides, and both compilers
+// reject it at the same place.
+// EXPECT-ERROR: expected module path segment, got mod
+import std.mod
