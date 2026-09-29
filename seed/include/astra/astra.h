@@ -136,9 +136,12 @@ typedef enum {
     TOKEN_COMPTIME,
     TOKEN_CONST,
     TOKEN_IN,
+    TOKEN_AS,
     TOKEN_SOME,    // some
     TOKEN_NONE,    // none
     TOKEN_OPTION,  // option
+    TOKEN_IMPORT,
+    TOKEN_FROM,
     TOKEN_RESULT,  // result
 
     /* Operators */
@@ -277,7 +280,12 @@ typedef enum {
     /* Top-level */
     NODE_MODULE,
     NODE_USE,
+    NODE_IMPORT,
+    NODE_FROM,
     NODE_IMPL,
+
+    /* Import item (sub-production of ImportStmt) */
+    NODE_IMPORT_ITEM,
 } NodeKind;
 
 /* Forward declaration */
@@ -528,6 +536,22 @@ typedef struct {
     DYNARRAY(Node *) items;
 } ModuleNode;
 
+/* Import / from declarations (research/010 §12.1) */
+typedef struct {
+    InternedString path;   /* source text of the whole path, e.g. "geometry.mesh" */
+    InternedString alias;  /* NULL when no "as" */
+} ImportDecl;
+
+typedef struct {
+    InternedString path;          /* source text of the whole path */
+    DYNARRAY(Node *) items;       /* NODE_IMPORT_ITEM nodes */
+} FromDecl;
+
+typedef struct {
+    InternedString name;
+    InternedString alias;         /* NULL when no "as" */
+} ImportItem;
+
 /* -----------------------------------------------------------
  * §9: AST Node (union)
  * ----------------------------------------------------------- */
@@ -576,6 +600,9 @@ struct Node {
         TypeArray       type_array;
         TypeFn          type_fn;
         ModuleNode      module;
+        ImportDecl       import;
+        FromDecl         from;
+        ImportItem       import_item;
     } as;
 };
 

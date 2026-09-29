@@ -1906,6 +1906,14 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
      * "unhandled node kind" error and the construct was unusable. */
     case NODE_USE:          return type_new(tc->arena, TYPE_VOID);
 
+    /* `import` / `from` are parsed and then discarded for the same reason as
+     * `use`: the seed compiles a single file, so module resolution is not its
+     * job (research/011 §5.2, ARCHITECTURE.md §10). The item nodes exist only
+     * to record the names a `from` statement would bring into scope. */
+    case NODE_IMPORT:
+    case NODE_FROM:
+    case NODE_IMPORT_ITEM:  return type_new(tc->arena, TYPE_VOID);
+
     /* Module */
     case NODE_MODULE:
         typecheck_module_pass(tc, node);

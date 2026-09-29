@@ -28,7 +28,7 @@ seed/src/constructs/
 ├── registry.c           índice: la ÚNICA lista de constructos
 ├── operator_table.c     tabla de precedencia (§2.4 / §12.2) + su entrada
 ├── if.c  else.c  while.c  for.c  in.c  match.c  match_arm.c  ...
-└── ...                  42 archivos de constructo en total
+└── ...                  46 archivos de constructo en total
 ```
 
 ---
@@ -183,12 +183,20 @@ que estaban repartidas por el código. Todas verificadas leyendo `research/010`.
 | 4 | **Los rangos como expresión no tienen fila en §12.2**: §12.1 solo usa `..` en `RangePattern` y en el *slice* `[a..b]` | El seed los añadió como expresión (potencia 2) para que `for i in 0..n` se lea natural. Documentado en `range.c` |
 | 5 | **`TypeAlias ::= "type" Identifier ("=" \| "<" GenericParams ">") Type`** — la rama de genéricos no lleva `=`, así que no tiene tipo destino; la producción parece truncada | `type_alias.c` lo registra; el reporte debería corregirse |
 | 6 | **`ImplBlock ::= "impl" GenericParams? Type …`** — `GenericParams?` sin ángulos, a diferencia de `FunctionDef`/`StructDef`/`EnumDef` que lo envuelven en `< >`; tal cual es ambiguo | `impl.c` lo registra |
-| 7 | **§7.2 dice "~60 tokens"**; el enum `TokenKind` del seed tiene **75** | Sin acción; el conteo del reporte está desactualizado |
+| 7 | **§7.2 dice "~60 tokens"**; el enum `TokenKind` del seed tiene **81** | Sin acción; el conteo del reporte está desactualizado |
 
 Los huecos **deliberados** (especificados, fuera de Astra-0) quedan registrados
 como constructos con `in_astra0 = false` y su justificación citada:
-`trait`, `impl`, `import`, `type_alias`, `comptime`, `lambda`, `tuple_lit`,
+`trait`, `impl`, `type_alias`, `comptime`, `lambda`, `tuple_lit`,
 `pattern_ident`. `research/011` §5.2/§5.4 es la razón de cada uno.
+
+`import` salió de esta lista el 2026-09-29 (Fase 2.2, paso 1 de módulos): el seed
+registraba `import` como constructo fuera de Astra-0 y sin palabra clave, mientras
+el frontend Zig ya parseaba `import`/`from`. Como el registro es quien decide qué
+es Astra-0, el seed ganó `import` y `from` (dos archivos, una producción con dos
+alternativas: cada palabra clave necesita su token) y el sub-constructo
+`import_item` para `NODE_IMPORT_ITEM`. Se sigue sin resolver módulos, igual que
+antes; ver `PHASE1_PROGRESS.md` §6.7.
 
 ---
 
@@ -212,12 +220,12 @@ completa: no hay un quinto sitio que recordar.
 `--check-constructs` reporta el progreso:
 
 ```
-construct registry: 44 constructs
-sub-constructs: 12
-migrated (all three phases): 0 / 44
+construct registry: 46 constructs
+sub-constructs: 13
+migrated (all three phases): 0 / 46
 ```
 
-En este commit el registro **describe** los 44 constructos pero todavía no
+En este commit el registro **describe** los 46 constructos pero todavía no
 ejecuta ninguno: `phases` es 0 en todos y los hooks son `NULL`. Eso es
 deliberado y es la razón de que los 27 tests sigan en verde — este hito es
 puramente aditivo y auditable.
@@ -236,7 +244,7 @@ La migración de los hooks va por fases, y cada fase es verificable por sí sola
 3. **check** — igual para el type checker. `match` y su exhaustividad
    (`research/04` §9.7) son los que más ganan.
 
-Cada fase se commitea por separado y `migrated: N / 44` es la métrica.
+Cada fase se commitea por separado y `migrated: N / 46` es la métrica.
 
 ### Guardarraíl
 
@@ -246,7 +254,7 @@ respeten dos reglas:
 
 - El registro es **declarativo**: describe, no abstrae. No hay vtable, ni
   registro dinámico, ni carga en tiempo de ejecución, ni un generador de
-  código. Son 44 structs constantes y unas tablas de punteros.
+  código. Son 46 structs constantes y unas tablas de punteros.
 - Ningún archivo de constructo **añade** un concepto al lenguaje. Cada uno
   documenta un constructo que ya existe en `research/010`, o marca
   explícitamente uno que está fuera de Astra-0.
@@ -260,12 +268,12 @@ parar.
 ## 8. Decisión sobre la migración de hooks (2026-09-21)
 
 **El seed no migra los hooks `parse` / `check` / `emit`. El registro se queda
-declarativo + validado (`migrated: 0 / 44`).** La decisión se toma con la
+declarativo + validado (`migrated: 0 / 46`).** La decisión se toma con la
 investigación delante, no por comodidad:
 
 - `research/011` §2.3.1 nombra la sobre-ingeniería del seed como su **primer
   anti-patrón** (*"quick and dirty — it's used once to bootstrap, then retired"*).
-  Mover 44 hooks a un despacho por punteros es, literalmente, cambiar `switch`
+  Mover 46 hooks a un despacho por punteros es, literalmente, cambiar `switch`
   simples por una vtable: cero cambio observable, más indirección y más superficie
   donde romper el invariante de pila del emisor.
 - `research/011` §3.3 —la estructura de módulos que ese mismo reporte prescribe—

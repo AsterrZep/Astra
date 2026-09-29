@@ -43,6 +43,9 @@ const char *token_kind_name(TokenKind kind) {
     case TOKEN_NONE:       return "none";
     case TOKEN_OPTION:     return "option";
     case TOKEN_RESULT:     return "result";
+    case TOKEN_AS:         return "as";
+    case TOKEN_IMPORT:     return "import";
+    case TOKEN_FROM:       return "from";
     case TOKEN_PLUS:       return "+";
     case TOKEN_MINUS:      return "-";
     case TOKEN_STAR:       return "*";
@@ -424,6 +427,30 @@ static void dump_node(Node *node, int indent) {
         break;
     case NODE_USE:
         printf("Use\n");
+        break;
+    case NODE_IMPORT:
+        printf("Import(%.*s", (int)node->as.import.path.len,
+               node->as.import.path.str);
+        if (node->as.import.alias.str) {
+            printf(" as %.*s", (int)node->as.import.alias.len,
+                   node->as.import.alias.str);
+        }
+        printf(")\n");
+        break;
+    case NODE_FROM:
+        printf("From(%.*s)\n", (int)node->as.from.path.len, node->as.from.path.str);
+        for (size_t i = 0; i < node->as.from.items.len; i++) {
+            dump_node(node->as.from.items.data[i], indent + 1);
+        }
+        break;
+    case NODE_IMPORT_ITEM:
+        printf("ImportItem(%.*s", (int)node->as.import_item.name.len,
+               node->as.import_item.name.str);
+        if (node->as.import_item.alias.str) {
+            printf(" as %.*s", (int)node->as.import_item.alias.len,
+                   node->as.import_item.alias.str);
+        }
+        printf(")\n");
         break;
     case NODE_IMPL:
         printf("Impl\n");

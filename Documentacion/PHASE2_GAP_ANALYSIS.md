@@ -344,7 +344,9 @@ This hybrid approach requires the type checker to distinguish "structural types"
 
 ### 8.1 Registry Summary
 
-The construct registry (`constructs/registry.c`) has **44 entries** organized by category:
+The construct registry (`constructs/registry.c`) has **46 entries** organized by
+category (44 here at the baseline; `from` and `import_item` landed on 2026-09-29
+with the module surface — see the note under §8.2):
 
 | Category | Count | In Astra-0 | Notes |
 |:---------|:------|:-----------|:------|
@@ -368,6 +370,15 @@ These are registered (keyword lexes, grammar documented) but `parse = NULL, chec
 | `import` | `TOKEN_IDENT` | `NODE_NONE` | No multi-file support yet |
 | `type_alias` | `TOKEN_IDENT` | `NODE_NONE` | No lexer token for `type` keyword |
 | `export` | none | `NODE_NONE` | No module system |
+
+> **Update (2026-09-29, Phase 2.2 step 1):** `import` is **no longer** outside
+> Astra-0. The seed now registers `import` and `from` as Astra-0 constructs with
+> their own tokens (`TOKEN_IMPORT`/`TOKEN_FROM`/`TOKEN_AS`) and builds
+> `NODE_IMPORT`/`NODE_FROM`/`NODE_IMPORT_ITEM` from the dot-separated
+> `ImportPath` shared with `use`. The registry grew from 44 to **46** constructs.
+> Module resolution is still out of scope for the seed, which is the only thing
+> §8.3 actually asks for; see `PHASE1_PROGRESS.md` §6.7 and
+> `PHASE2_PROGRESS.md` §7.
 
 ### 8.3 Phase 2 Action
 

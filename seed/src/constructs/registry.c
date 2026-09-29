@@ -27,6 +27,9 @@ extern const ConstructSpec construct_enum_variant;
 extern const ConstructSpec construct_variant_path;
 extern const ConstructSpec construct_const_decl;
 extern const ConstructSpec construct_use;
+extern const ConstructSpec construct_import;
+extern const ConstructSpec construct_from;
+extern const ConstructSpec construct_import_item;
 extern const ConstructSpec construct_type_annotation;
 
 /* --- statements ---------------------------------------------- */
@@ -68,7 +71,6 @@ extern const ConstructSpec construct_field_access;
 /* --- specified by the full grammar, outside Astra-0 ---------- */
 extern const ConstructSpec construct_trait;
 extern const ConstructSpec construct_impl;
-extern const ConstructSpec construct_import;
 extern const ConstructSpec construct_type_alias;
 extern const ConstructSpec construct_comptime;
 extern const ConstructSpec construct_lambda;
@@ -84,6 +86,9 @@ const ConstructSpec *const astra_constructs[] = {
     &construct_variant_path,
     &construct_const_decl,
     &construct_use,
+    &construct_import,
+    &construct_from,
+    &construct_import_item,
     &construct_type_annotation,
 
     /* statements */
@@ -125,7 +130,6 @@ const ConstructSpec *const astra_constructs[] = {
     /* outside Astra-0 */
     &construct_trait,
     &construct_impl,
-    &construct_import,
     &construct_type_alias,
     &construct_comptime,
     &construct_lambda,

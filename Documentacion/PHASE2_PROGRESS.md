@@ -6,11 +6,11 @@ bootstrap. Sustituye al compilador semilla en C (`seed/`, ver
 
 > **Regla de paridad**: el compilador Zig debe aceptar **el mismo lenguaje** que
 > el seed antes de crecer. `PHASE2_KICKOFF.md` lo fija como puerta: portar la
-> suite existente (91 casos) antes de añadir genéricos, traits, etc.
+> suite existente (93 casos) antes de añadir genéricos, traits, etc.
 
 ---
 
-## 1. Estado actual (2026-09-28)
+## 1. Estado actual (2026-09-29)
 
 **El compilador Astra-0 completo (frontend + emitter + VM) está portado y
 verificado: compila y ejecuta la suite del seed con salida idéntica.**
@@ -32,11 +32,11 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 
 ### Verificación medida
 
-- **53/53** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **54/54** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **24/24** ficheros `ui/` son rechazados. El emitter cierra
+- **25/25** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop`, que el type checker deja pasar a propósito.
 - **39 pruebas unitarias** (lexer, AST, parser, type checker, emitter, bytecode,
   VM, depurador y conformance) en `zig build test`.
@@ -129,7 +129,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 5 | Errores con recuperación a nivel de sentencia | ✅ | el módulo reporta varios errores por pase; verificado contra el seed (2 declaraciones malas → 2 errores) |
 | 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | 🟡 | hoy el formato es propio; la comparación es por aceptación, no por texto |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
-| 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; sin resolución todavía. Ver §7 |
+| 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
 | 9 | **Módulos — paso 2**: tabla de módulos y resolución de rutas | ⬜ | hoy las declaraciones de módulo se parsean y se descartan, igual que en el seed |
 
 ---
@@ -247,12 +247,21 @@ checker no tenía caso para `NODE_USE`, así que toda declaración moría con
 `unhandled node kind 46` (S18 en `PHASE1_PROGRESS.md` §6.5). Corregido allí, junto
 con el separador (S19).
 
-`import` y `from` **no existen** en el seed: `constructs/import.c` los marca
-`in_astra0 = false` con `keyword = NULL`, y su nota dice que añadir sus tokens "es
-el primer paso cuando esto aterrice". El parser Zig acepta por tanto **más** que
-el seed en estas dos formas — un superconjunto, que es la dirección que la regla
-de paridad permite. Ningún fichero de la suite usa estas sentencias, así que la
-paridad medida no cambia (53/53 no-UI, 24/24 UI).
+**El seed ya tiene la misma superficie (2026-09-29).** Este paso dejó al parser
+Zig por delante: `import` y `from` no existían como tokens en el seed, que los
+registraba como constructos fuera de Astra-0 (`keyword = NULL`). Eso convertía al
+Zig en un superconjunto —permitido por la regla de paridad, pero en la dirección
+que no interesa mantener—, así que el seed reconoce ahora `import`/`from`/`as`:
+tres constructos nuevos en el registro (46 en total) y un único
+`parse_module_path` compartido por `import` y `from`, para que las dos formas no
+puedan divergir del `use` que ya existía. Sigue sin haber resolución de módulos,
+igual que en el Zig: en ambos compiladores la declaración se parsea y se
+descarta.
+
+Dos casos nuevos cubren la superficie en el seed: `module/import_from.astra` (las
+tres formas, con `as`) y `ui/from_without_items.astra` (`from a.b import` sin
+ningún item, que antes se aceptaba como una lista vacía silenciosa). La paridad
+medida sube a **54/54 no-UI y 25/25 UI**.
 
 Lo que falta para un sistema de módulos de verdad (paso 2) está ya enumerado en
 `PHASE2_GAP_ANALYSIS.md` §5.1: tabla de módulos, visibilidad `pub`, compilación

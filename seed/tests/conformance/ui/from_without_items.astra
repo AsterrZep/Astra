@@ -1,0 +1,6 @@
+// `ImportStmt` requires at least one item after `import` (research/010 §12.1:
+// `ImportItem ("," ImportItem)*`). The parser used to accept an empty list here
+// and silently build a `from` that imports nothing; the explicit diagnostic is
+// what this case pins.
+// EXPECT-ERROR: expected at least one import item
+from geometry.vector import

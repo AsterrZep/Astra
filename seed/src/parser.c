@@ -126,6 +126,7 @@ static void synchronize(Parser *p) {
         switch (p->current.kind) {
             case TOKEN_FN: case TOKEN_STRUCT: case TOKEN_ENUM:
             case TOKEN_LET: case TOKEN_CONST: case TOKEN_USE:
+            case TOKEN_IMPORT: case TOKEN_FROM:
             case TOKEN_IF: case TOKEN_WHILE: case TOKEN_FOR:
             case TOKEN_RETURN: case TOKEN_BREAK: case TOKEN_CONTINUE:
                 return;
@@ -1219,6 +1220,144 @@ static Node *parse_use(Parser *p) {
 }
 
 /* -----------------------------------------------------------
+ * Import / from declarations (research/010 §12.1)
+ * ----------------------------------------------------------- */
+
+/* Path ::= Identifier ("." Identifier)* — the dot-separated form declared by
+ * the construct grammar (constructs/import.c, constructs/from.c,
+ * research/010 §12.1). Shared by `import` and `from` so the two cannot drift,
+ * and identical to the form `use` already accepts. Returns the joined text
+ * interned, e.g. "geometry.mesh". */
+static InternedString parse_module_path(Parser *p) {
+    /* The arena has no realloc, so the path cannot be grown in place. Collect
+     * the interned segments, then join them into one buffer: allocations stay
+     * proportional to the segment count, not to the character count. */
+    size_t          seg_cap = 4;
+    size_t          seg_len = 0;
+    InternedString *segs    = arena_new_array(p->arena, InternedString, seg_cap);
+
+    expect(p, TOKEN_IDENT, "module path");
+    segs[seg_len++] = p->previous.text;
+
+    while (match(p, TOKEN_DOT)) {
+        expect(p, TOKEN_IDENT, "module path segment");
+        if (seg_len >= seg_cap) {
+            size_t          new_cap = seg_cap * 2;
+            InternedString *nd = arena_new_array(p->arena, InternedString, new_cap);
+            memcpy(nd, segs, sizeof(InternedString) * seg_len);
+            segs    = nd;
+            seg_cap = new_cap;
+        }
+        segs[seg_len++] = p->previous.text;
+    }
+
+    size_t total = seg_len - 1; /* one '.' between every pair of segments */
+    for (size_t i = 0; i < seg_len; i++) total += segs[i].len;
+
+    char  *buf = arena_alloc(p->arena, total + 1, _Alignof(char));
+    size_t at  = 0;
+    for (size_t i = 0; i < seg_len; i++) {
+        if (i > 0) buf[at++] = '.';
+        memcpy(buf + at, segs[i].str, segs[i].len);
+        at += segs[i].len;
+    }
+    buf[at] = '\0';
+    return string_intern_cstr(p->strings, buf);
+}
+
+/* `import a.b as c` — binds a whole module under an optional alias
+ * (research/010 §12.1). */
+static Node *parse_import(Parser *p) {
+    SrcLoc loc = p->previous.loc; /* the `import` keyword */
+    InternedString path = parse_module_path(p);
+    skip_newlines(p);
+
+    InternedString alias = {0}; /* NULL when there is no `as` */
+    if (match(p, TOKEN_AS)) {
+        expect(p, TOKEN_IDENT, "alias");
+        alias = p->previous.text;
+    }
+    optional_semi(p);
+
+    Node *n = node_new(p->arena, NODE_IMPORT, loc);
+    n->as.import.path  = path;
+    n->as.import.alias = alias;
+    return n;
+}
+
+/* `from a.b import x, y as z` — brings selected names into scope
+ * (research/010 §12.1). */
+static Node *parse_from(Parser *p) {
+    SrcLoc loc = p->previous.loc; /* the `from` keyword */
+    InternedString path = parse_module_path(p);
+    skip_newlines(p);
+
+    expect(p, TOKEN_IMPORT, "import");
+    skip_newlines(p);
+
+    DYNARRAY(Node *) items;
+    items.data = NULL;
+    items.len  = 0;
+    items.cap  = 0;
+
+    while (!check(p, TOKEN_EOF) && !p->aborted) {
+        uint32_t iter_start = p->current.loc.offset;
+        expect(p, TOKEN_IDENT, "import item");
+        if (p->had_error && p->current.loc.offset == iter_start) {
+            /* No progress: without this the loop would report the same bad
+             * token forever (same guard as the enum body loop). */
+            fprintf(stderr, "error:");
+            srcloc_print(p->current.loc);
+            fprintf(stderr, ": aborting import list after parse error\n");
+            break;
+        }
+        SrcLoc         item_loc   = p->previous.loc;
+        InternedString item_name  = p->previous.text;
+        InternedString item_alias = {0}; /* NULL when there is no `as` */
+
+        if (match(p, TOKEN_AS)) {
+            expect(p, TOKEN_IDENT, "alias");
+            item_alias = p->previous.text;
+        }
+
+        Node *item = node_new(p->arena, NODE_IMPORT_ITEM, item_loc);
+        item->as.import_item.name  = item_name;
+        item->as.import_item.alias = item_alias;
+
+        if (items.len >= items.cap) {
+            size_t new_cap = items.cap == 0 ? 4 : items.cap * 2;
+            Node **nd = arena_new_array(p->arena, Node *, new_cap);
+            if (items.data) {
+                memcpy(nd, items.data, sizeof(Node *) * items.len);
+            }
+            items.data = nd;
+            items.cap  = new_cap;
+        }
+        items.data[items.len++] = item;
+
+        skip_newlines(p);
+        if (!match(p, TOKEN_COMMA)) break;
+        skip_newlines(p);
+    }
+
+    /* The production requires at least one item: `from a.b import` alone
+     * would otherwise parse as an empty list that silently imports nothing. */
+    if (items.len == 0 && !p->had_error) {
+        parser_error(p, "expected at least one import item");
+    }
+    optional_semi(p);
+
+    Node *n = node_new(p->arena, NODE_FROM, loc);
+    n->as.from.path = path;
+    /* DYNARRAY(T) is an anonymous struct, so the three fields are copied
+     * individually: two DYNARRAY(Node *) declarations are distinct types. */
+    n->as.from.items.data = items.data;
+    n->as.from.items.len  = items.len;
+    n->as.from.items.cap  = items.cap;
+    return n;
+}
+
+/* -----------------------------------------------------------
  * Type parsing
  * ----------------------------------------------------------- */
 
@@ -1315,6 +1454,8 @@ static Node *parse_statement(Parser *p) {
     if (check(p, TOKEN_ENUM))   { advance(p); return parse_enum_decl(p); }
     if (check(p, TOKEN_CONST))  { advance(p); return parse_var_decl(p, true); }
     if (check(p, TOKEN_USE))    { advance(p); return parse_use(p); }
+    if (check(p, TOKEN_IMPORT)) { advance(p); return parse_import(p); }
+    if (check(p, TOKEN_FROM))   { advance(p); return parse_from(p); }
 
     /* Let/Var declaration (uses 'let' keyword) */
     if (check(p, TOKEN_LET)) {

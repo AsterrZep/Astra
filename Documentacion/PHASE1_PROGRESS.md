@@ -66,6 +66,8 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 - `match` como sentencia (el resultado se descarta)
 - `return` con y sin valor
 - `enum Nombre { A B C }` (variantes unitarias, sin datos aún)
+- Declaraciones de módulo: `use a.b`, `import a.b as c`, `from a.b import X, y as z`
+  (se parsean y se descartan; ver §6.7)
 - Funciones de nivel superior con parámetros tipados y recursión
 
 ### Runtime
@@ -88,7 +90,7 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (**91 casos**), en verde en las tres
+los casos de conformidad. Cobertura actual (**93 casos**), en verde en las tres
 variantes de build (`dev`, `debug` con ASan+UBSan+LSan, `release`).
 
 `EXPECT-RUNTIME-ERROR` se añadió el 2026-09-21: hasta entonces **ningún** test
@@ -118,10 +120,10 @@ memoria** bajo LSan.
 | blocks | `tail_expression`, `if_value` |
 | types | `optional_syntax` (`T?` parseado correctamente), `integer_widths` (`i64`/`u32`/`u64` con valores reales, Hallazgo E) |
 | enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding`, `option_basic`, `option_equality`, `result_basic`, `result_match`, `nested_option_result`, `try_operator` |
-| module | `toplevel_stmts` (sentencias de nivel de módulo: la clase de código que ningún otro test cubría, y por eso el break de §6 pasó inadvertido), `toplevel_aggregates` (structs, enums y variantes con datos declarados en el nivel superior), `use_paths` (`use` con rutas punteadas: el constructo `use` no tenía **ningún** test, y por eso no se notó que era código muerto (S18) ni que el parser separaba con `::` (S19)) |
+| module | `toplevel_stmts` (sentencias de nivel de módulo: la clase de código que ningún otro test cubría, y por eso el break de §6 pasó inadvertido), `toplevel_aggregates` (structs, enums y variantes con datos declarados en el nivel superior), `use_paths` (`use` con rutas punteadas: el constructo `use` no tenía **ningún** test, y por eso no se notó que era código muerto (S18) ni que el parser separaba con `::` (S19)), `import_from` (`import ... as`, `from ... import ... as`, las tres formas de §6.7) |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
 | lambda | `lambda_basic`, `lambda_multi` |
-| ui | `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch`, `null_rejected`, `struct_comma_body`, `enum_comma_body`, `nesting_too_deep`, `block_nesting_too_deep`, `integer_literal_out_of_range`, `unterminated_string`, `use_colon_colon` |
+| ui | `from_without_items` (`from a.b import` sin ningún item), `type_mismatch`, `break_outside_loop`, `struct_missing_field`, `struct_unknown_field`, `struct_field_type`, `match_non_exhaustive`, `enum_unknown_variant`, `match_pattern_type`, `void_initializer`, `missing_return_value`, `immutable_element_assign`, `enum_variant_assign`, `pattern_bind_wrong_type`, `option_type_error`, `option_type_mismatch`, `lambda_type_mismatch`, `null_rejected`, `struct_comma_body`, `enum_comma_body`, `nesting_too_deep`, `block_nesting_too_deep`, `integer_literal_out_of_range`, `unterminated_string`, `use_colon_colon` |
 | codegen | `string_escape`, `global_limit`, `bitwise`, `deep_recursion`, `frame_overflow`, `out_of_bounds`, `returned_literal`, `aggregate_equality`, `float_remainder`, `string_order_rejected`, `float_divide_by_zero`, `integer_widths`, `toplevel_aggregates` |
 
 Los tests se ejecutan también bajo `make debug` (ASan + UBSan + LSan) sin
@@ -607,8 +609,8 @@ construcción marcada como soportada sin ninguna prueba que la ejercite.
 
 ```bash
 cd seed
-make clean && make debug && make test        # 91 casos, ASan+UBSan+LSan, 0 fugas
-./astra-seed --check-constructs              # 44 constructos, 27 operadores, sin drift
+make clean && make debug && make test        # 93 casos, ASan+UBSan+LSan, 0 fugas
+./astra-seed --check-constructs              # 46 constructos, 27 operadores, sin drift
 
 # S1: 300 globales por la ruta de C (antes: SEGV)
 python3 -c "open('/tmp/g.astra','w').write(''.join('let g%d = %d;\n'%(i,i) for i in range(300))+'fn main() { print(g0) }\n')"
@@ -636,3 +638,47 @@ Al verificar esta pasada se compiló además **cada** caso no-UI de conformidad 
 error contra la VM. Cualquier divergencia nueva se ve así antes de escribirla en
 la documentación, que es lo que faltaba para que las afirmaciones de esta
 documentación sean reproducibles en lugar de declaradas.
+
+### 6.7 Superficie de módulos completa en el seed (2026-09-29)
+
+El paso 1 de módulos dejó al compilador Zig por delante en el *frontend*: aceptaba
+`import`/`from`/`as` mientras el seed sólo tenía `use`, y registraba `import` como
+un constructo fuera de Astra-0 (`keyword = NULL`). Eso es un superconjunto —la
+regla de paridad lo tolera— pero es la dirección que conviene no mantener: la
+gramática de `research/010` §12.1 es una sola, y el seed es donde se decide qué es
+Astra-0.
+
+El seed reconoce ahora las tres formas, sin añadir resolución de módulos (sigue
+sin ser su trabajo: `research/011` §5.2):
+
+```
+ExportStmt ::= "use" ImportPath
+ImportStmt ::= "import" ImportPath ("as" Identifier)?
+             | "from" ImportPath "import" ImportItem ("," ImportItem)*
+ImportPath ::= Identifier ("." Identifier)*
+ImportItem ::= Identifier ("as" Identifier)?
+```
+
+Lo que se añadió, y por qué en cada sitio:
+
+| Pieza | Sitio | Nota |
+|:------|:------|:-----|
+| `TOKEN_IMPORT` / `TOKEN_FROM` / `TOKEN_AS` | `lexer.c` (`keywords[]`) | tres entradas más en la tabla de palabras clave; `lexer_keyword_token` las expone al self-check |
+| `NODE_IMPORT` / `NODE_FROM` / `NODE_IMPORT_ITEM` | `astra.h` | `ImportDecl{path, alias}`, `FromDecl{path, items}`, `ImportItem{name, alias}`; `alias.str == NULL` cuando no hay `as` |
+| `constructs/{import,from,import_item}.c` | registro | `import` y `from` son dos archivos para una producción con dos alternativas (cada palabra clave necesita su token); `import_item` es el SUB que posee `NODE_IMPORT_ITEM`. **46 constructos** |
+| `parse_module_path` | `parser.c` | un solo constructor de la ruta punteada, compartido por `import` y `from` |
+| casos `NODE_*` | `typechecker.c`, `emitter.c`, `driver.c` | `void` y sin efecto, como `use`; `--dump-ast` imprime `Import(...)`/`From(...)`/`ImportItem(...)` |
+
+Dos decisiones que la implementación dejó al descubierto y que conviene tener por
+escrito:
+
+- **Un `from` sin items es un error de sintaxis.** La producción exige
+  `ImportItem ("," ImportItem)*`, y el parser lo aceptaba como una lista vacía: un
+  `from a.b import` que no importaba nada y no decía nada. Ahora reporta
+  `expected at least one import item` (`ui/from_without_items.astra`).
+- **La ruta se construye sin `realloc`.** La arena no tiene `realloc`, así que
+  `parse_module_path` acumula los segmentos internados y los une en un solo
+  buffer al final: el número de reservas depende de los segmentos, no de los
+  caracteres. `da_push` existía pero **sin ningún uso** en el compilador y con el
+  patrón "asignar memoria nueva y ponerla a cero", que pierde el contenido
+  anterior; no se adoptó.

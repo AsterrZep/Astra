@@ -671,6 +671,9 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_TYPE_FN:           return "TypeFn";
     case NODE_MODULE:            return "Module";
     case NODE_USE:               return "Use";
+    case NODE_IMPORT:            return "Import";
+    case NODE_FROM:              return "From";
+    case NODE_IMPORT_ITEM:       return "ImportItem";
     case NODE_IMPL:              return "Impl";
     }
     return "?";
@@ -693,6 +696,9 @@ static int node_value_effect(Node *node) {
     case NODE_CONST_DECL:
     case NODE_VAR_DECL:
     case NODE_USE:
+    case NODE_IMPORT:
+    case NODE_FROM:
+    case NODE_IMPORT_ITEM:
     case NODE_IMPL:
     case NODE_MODULE:
     case NODE_RANGE:
@@ -1766,6 +1772,9 @@ static void emit_stmt(Emitter *e, Node *node) {
     case NODE_STRUCT_DECL:
     case NODE_ENUM_DECL:
     case NODE_USE:
+    case NODE_IMPORT:
+    case NODE_FROM:
+    case NODE_IMPORT_ITEM:
     case NODE_IMPL:
         break;
 
