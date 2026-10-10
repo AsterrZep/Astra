@@ -68,8 +68,9 @@ Compiler-introspection switches (no input file, they describe the compiler):
 
 ## Phase 2 (`zig/`) — Zig self-hosting compiler
 
-Requires **Zig 0.16.x**. The Astra-0 frontend (lexer, flat AST, parser) is
-implemented; the type checker, emitter and VM are next.
+Requires **Zig 0.16.x**. The Astra-0 frontend (lexer, flat AST, parser, type
+checker, emitter, VM) is ported and verified against the seed suite; the module
+loader groundwork (`src/modules/`) is in progress.
 
 ```bash
 cd zig
@@ -78,14 +79,18 @@ zig build                       # -> zig-out/bin/astra-zig
 zig build test                  # unit tests + conformance over seed/tests/conformance
 zig build -Doptimize=ReleaseFast
 
-./zig-out/bin/astra-zig file.astra            # parse check (exit 1 on error)
+./zig-out/bin/astra-zig file.astra            # compile and run (exit 1 on error)
 ./zig-out/bin/astra-zig --dump-tokens file.astra
 ./zig-out/bin/astra-zig --dump-ast file.astra
+./zig-out/bin/astra-zig --dump-modules file.astra
+./zig-out/bin/astra-zig --dump-bytecode file.astra
+./zig-out/bin/astra-zig --debug file.astra    # interactive bytecode debugger
 ```
 
-Layout: `src/lexer/`, `src/ast/`, `src/parser/`, `src/main.zig`,
-`src/conformance.zig` (parses every non-UI seed conformance file). The target
-directories `src/typechecker/`, `src/emitter/`, `src/vm/` are empty so far.
+Layout: `src/lexer/`, `src/ast/`, `src/parser/`, `src/typechecker/`,
+`src/emitter/` (emitter + bytecode), `src/vm/`, `src/modules/`,
+`src/main.zig`, `src/conformance.zig` (compiles and runs every non-UI seed
+conformance file, rejects every UI file).
 
 Porting rule: **the Zig compiler must accept everything the seed accepts before
 new features are added** (the suite is the gate). Match `seed/src/*.c` and the
@@ -162,7 +167,7 @@ The C codegen generates executable C from Astra bytecode. The pipeline is:
 
 ### What works (verified against VM)
 
-All 42 non-UI conformance cases are compiled through `--emit-c`, run, and
+All 54 non-UI conformance cases are compiled through `--emit-c`, run, and
 compared against the VM's output by `make test` (identical output, no leaks under
 LSan). That covers:
 
@@ -228,11 +233,11 @@ agreed up front).
 | **tests** (conformance suite) | `tests/**` | `make test` |
 | **docs** | `Documentacion/**`, `AGENTS.md` | review |
 
-The construct workstreams are the finest-grained split: 44 independent files,
-so several can run at once. They have exactly one shared contract —
-`constructs/construct.h` — and the self-check is the arbiter: if two of them
-claim the same node kind, token or keyword, `--check-constructs` fails the suite
-before anything is compiled.
+The construct workstreams are the finest-grained split: 46 constructs (one
+file per grammar production), so several can run at once. They have exactly
+one shared contract — `constructs/construct.h` — and the self-check is the
+arbiter: if two of them claim the same node kind, token or keyword,
+`--check-constructs` fails the suite before anything is compiled.
 
 Shared-contract files (`include/astra/astra.h`, `src/priv.h`) are the
 integration points: changes to them must be done by the workstream that needs
