@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  seed:
+    name: seed (C) — ASan/UBSan/LSan + suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build the sanitizer variant first, then run the suite directly against
+      # that binary: `make test` depends on $(TARGET) and would rebuild it with
+      # default flags, silently dropping the sanitizers.
+      - name: Build (ASan + UBSan + LSan)
+        run: make debug
+        working-directory: seed
+      - name: Test suite (registry gate + VM + C backend)
+        run: ./tests/run_tests.sh
+        working-directory: seed
+      - name: Release build compiles clean
+        run: make release
+        working-directory: seed
+
+  zig:
+    name: zig (Phase 2) — zig build test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build
+        run: zig build
+        working-directory: zig
+      # Unit tests + the seed conformance suite compiled and executed in the
+      # Zig VM. conformance.zig hard-fails when seed/tests/conformance is
+      # missing, so a sparse checkout cannot go green.
+      - name: Unit tests + seed conformance
+        run: zig build test --summary all
+        working-directory: zig
