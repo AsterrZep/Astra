@@ -406,8 +406,8 @@ Ordenado por valor para el objetivo de bootstrap.
 - [x] **`--emit-c`** (ruta de bootstrap a C del diseño original).
 - [x] **`--dump-bytecode`** como flag estable (comparte implementación con
       `ASTRA_DUMP_VM` vía `vm_dump_bytecode()`).
+- [x] **CI**: `.github/workflows/ci.yml` (Linux) — `make debug` + suite, `make release`, y `zig build test` sobre la suite de conformidad.
 - [ ] Fuzzing del lexer/parser (`clang -fsanitize=fuzzer`).
-- [ ] CI multiplataforma (Linux/macOS/Windows).
 
 ## 4bis. Inventario de tareas para completar la Fase 1
 
@@ -450,7 +450,7 @@ Ordenado por valor para el objetivo de bootstrap.
 |:-:|:------|:--------|:-------|:---------|
 | 24 | Module system (File-as-Module) | Alto | [ ] **Fase 2** | `research/011` §5.3 lo da por no-bloqueante para el bootstrap: el seed compila **un** fichero, que es lo que necesita para auto-hospedarse en un solo módulo |
 | 25 | Full C codegen test suite | Alto | ✅ | La suite completa corre por ambas rutas (registro + VM + C) |
-| 26 | CI multiplataforma | Alto | [ ] | `.github/workflows/` — pendiente |
+| 26 | CI multiplataforma | Alto | ✅ (Linux) | `.github/workflows/ci.yml` — suite del seed bajo ASan/UBSan/LSan + build release + suite Zig. macOS/Windows quedan como follow-up |
 | 27 | Genéricos básicos por monomorfización | Medio | [ ] | **Fase 2** |
 | 28 | Traits con despacho simple | Medio | [ ] | **Fase 2** |
 | 29 | Migración completa de constructos (44 hooks) | Medio | ✖ decidido no hacer | `CONSTRUCT_REGISTRY.md` §8 |

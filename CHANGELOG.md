@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **CI (GitHub Actions)**: `.github/workflows/ci.yml` builds the seed under
+  ASan/UBSan/LSan and runs the full suite against that binary, checks the
+  release build, and runs `zig build test` (unit tests + seed conformance)
+  with Zig 0.16.0 on every push and PR (Linux; macOS/Windows are a follow-up)
 - Complete architecture specification (41 sections)
 - Design philosophy documentation
 - Comparative analysis with Mojo, Nim, Zig, Julia, Vale, Swift
@@ -33,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
 
 ### Fixed
+- **Emitter limits no longer fail silently (seed + Zig)**: past `MAX_CODE` the
+  instruction was dropped (wrong answers with exit 0), past `MAX_CONSTS`
+  `add_constant` returned index 0 (aliasing every further constant), and past
+  256 locals `add_local` returned `0xFF`, which `let` silently promoted to a
+  *global* — changing scoping without a word. Both emitters now report each
+  limit once at the choke point and fail the compilation; pinned by
+  `ui/too_many_locals.astra` (95 seed cases)
+- **Zig conformance gate**: `zig build test` used to skip (green) when
+  `seed/tests/conformance` was missing; it now hard-fails, as
+  `PHASE2_KICKOFF.md` defines the suite as the parity gate
+- **`status.sh` false red**: the dashboard parsed `failed:` with `awk '{print $2}'`
+  on the shared summary line and reported "94 passed, 94 FAILED" for a green suite
 - **`import` path segments are re-validated at the filesystem boundary**: `zig/src/modules/modules.zig` refuses a segment that is not an identifier (`a/b`, `..`), so a module path can never escape the importing file's directory
 - **`from` with no import items was silently accepted**: `from a.b import` built a `From` that imported nothing and reported nothing; the production requires at least one item, so it now reports `expected at least one import item` (`ui/from_without_items.astra`)
 - **`use` was dead code in the seed**: the type checker had no `NODE_USE` case, so every `use` declaration — an Astra-0 construct — failed with `unhandled node kind 46` (S18)
