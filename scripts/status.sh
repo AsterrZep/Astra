@@ -108,8 +108,11 @@ echo ""
 # ── Test Results ──
 echo -e "${BOLD}${BLUE}── Test Suite ──${NC}"
 TEST_OUTPUT=$(make test 2>&1)
-PASSED=$(echo "$TEST_OUTPUT" | grep "passed:" | awk '{print $2}')
-FAILED=$(echo "$TEST_OUTPUT" | grep "failed:" | awk '{print $2}')
+# The summary is one line ("passed: 94   failed: 0"), so match the word and
+# take the field after it — a bare `awk '{print $2}'` on "failed:" returned
+# the passed count and faked a red dashboard.
+PASSED=$(echo "$TEST_OUTPUT" | awk '{for (i = 1; i <= NF; i++) if ($i == "passed:") print $(i + 1)}')
+FAILED=$(echo "$TEST_OUTPUT" | awk '{for (i = 1; i <= NF; i++) if ($i == "failed:") print $(i + 1)}')
 
 if [ "$FAILED" = "0" ]; then
     echo -e "  Tests:   ${GREEN}✓${NC} ${PASSED}/${PASSED} passed (0 failures)"
