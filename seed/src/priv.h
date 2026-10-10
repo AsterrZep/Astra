@@ -153,6 +153,12 @@ struct Emitter {
     int32_t        sp;
     int32_t        sp_high;
 
+    /* Limit reports fire once each: a 300-local function would otherwise
+     * print the same diagnostic per binding. */
+    bool           code_limit_reported;
+    bool           const_limit_reported;
+    bool           locals_limit_reported;
+
     int            error_count;
 };
 

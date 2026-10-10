@@ -137,8 +137,14 @@ static void emit_assign_into(Emitter *e, Node *place, Node *value, uint32_t line
 }
 
 static void emit_inst(Emitter *e, OpCode op, uint32_t line) {
-    if (e->code_len >= EMITTER_MAX_CODE) {
-        return;
+    /* The limit is a policy, not a physical wall: report it once, then keep
+     * appending so the stack model stays consistent. error_count > 0 means
+     * nothing will run; silently dropping the instruction used to produce a
+     * program that computed the wrong answer. */
+    if (e->code_len >= EMITTER_MAX_CODE && !e->code_limit_reported) {
+        fprintf(stderr, "error: too many instructions (max %d)\n", EMITTER_MAX_CODE);
+        e->code_limit_reported = true;
+        e->error_count++;
     }
     if (e->code_len >= e->code_cap) {
         size_t new_cap = e->code_cap == 0 ? 256 : e->code_cap * 2;
@@ -206,7 +212,13 @@ static uint32_t add_constant(Emitter *e, Value val) {
         }
     }
 
-    if (e->const_len >= EMITTER_MAX_CONSTS) return 0;
+    /* Report and keep going: returning index 0 used to silently alias every
+     * further constant to the first one. */
+    if (e->const_len >= EMITTER_MAX_CONSTS && !e->const_limit_reported) {
+        fprintf(stderr, "error: too many constants (max %d)\n", EMITTER_MAX_CONSTS);
+        e->const_limit_reported = true;
+        e->error_count++;
+    }
     if (e->const_len >= e->const_cap) {
         size_t new_cap = e->const_cap == 0 ? 64 : e->const_cap * 2;
         Value *new_consts = arena_alloc(e->arena,
@@ -227,7 +239,17 @@ static uint32_t add_constant(Emitter *e, Value val) {
  * ----------------------------------------------------------- */
 
 static uint8_t add_local(Emitter *e, InternedString name) {
-    if (e->local_count >= EMITTER_MAX_LOCALS) return 0xFF;
+    /* Reporting here — at the choke point — closes every call site at once.
+     * A plain `let` past 256 locals used to silently become a *global*,
+     * changing the program's scoping without a word. */
+    if (e->local_count >= EMITTER_MAX_LOCALS) {
+        if (!e->locals_limit_reported) {
+            fprintf(stderr, "error: too many locals (max %d)\n", EMITTER_MAX_LOCALS);
+            e->locals_limit_reported = true;
+            e->error_count++;
+        }
+        return 0xFF;
+    }
     uint8_t slot = e->local_count;
     e->locals[slot].name  = name;
     e->locals[slot].slot  = slot;
@@ -1016,8 +1038,7 @@ static void emit_expr(Emitter *e, Node *node) {
          * it and the arm body supplies the match's result. */
         uint8_t slot = add_local(e, hidden_local(e, "match_val"));
         if (slot == 0xFF) {
-            fprintf(stderr, "error: too many locals for match\n");
-            e->error_count++;
+            /* add_local already reported the limit; recovery only. */
             break;
         }
         emit_expr(e, node->as.match_expr.target);
@@ -1064,8 +1085,7 @@ static void emit_expr(Emitter *e, Node *node) {
             if (pat && pat->kind == NODE_PATTERN_BIND) {
                 uint8_t bind_slot = add_local(e, pat->as.pattern_bind.name);
                 if (bind_slot == 0xFF) {
-                    fprintf(stderr, "error: too many locals for match\n");
-                    e->error_count++;
+                    /* add_local already reported the limit; recovery only. */
                     break;
                 }
                 emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
@@ -1117,8 +1137,7 @@ static void emit_expr(Emitter *e, Node *node) {
 
                     uint8_t bind_slot = add_local(e, pat->as.pattern_variant_bind.bindings.data[b]);
                     if (bind_slot == 0xFF) {
-                        fprintf(stderr, "error: too many locals for match\n");
-                        e->error_count++;
+                        /* add_local already reported the limit; recovery only. */
                         break;
                     }
                     emit_inst_index(e, OPCODE_SET_LOCAL, bind_slot, line);
@@ -1166,10 +1185,7 @@ static void emit_expr(Emitter *e, Node *node) {
                     emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
                     emit_inst(e, OPCODE_UNWRAP, line);
                     uint8_t bind_slot = add_local(e, payload->as.pattern_bind.name);
-                    if (bind_slot == 0xFF) {
-                        fprintf(stderr, "error: too many locals for match\n");
-                        e->error_count++;
-                    } else {
+                    if (bind_slot != 0xFF) {
                         emit_inst_index(e, OPCODE_SET_LOCAL, bind_slot, line);
                     }
                 } else if (payload && payload->kind == NODE_PATTERN_WILDCARD) {

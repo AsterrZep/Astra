@@ -94,6 +94,12 @@ pub const Emitter = struct {
 
     error_count: usize = 0,
 
+    // Limit reports fire once each: a 300-local function would otherwise
+    // print the same diagnostic per binding.
+    code_limit_reported: bool = false,
+    const_limit_reported: bool = false,
+    locals_limit_reported: bool = false,
+
     pub fn init(a: std.mem.Allocator, tree: *ast.Tree, filename: []const u8) Emitter {
         return .{ .a = a, .tree = tree, .filename = filename };
     }
@@ -115,7 +121,14 @@ pub const Emitter = struct {
     }
 
     fn emitInst(self: *Emitter, op: OpCode, ln: u32) void {
-        if (self.code.items.len >= MAX_CODE) return;
+        // The limit is a policy, not a physical wall: report it, then keep
+        // appending so the stack model stays consistent. error_count > 0
+        // means nothing will run; dropping the instruction instead used to
+        // corrupt the program silently (AGENTS.md invariant #8).
+        if (self.code.items.len >= MAX_CODE and !self.code_limit_reported) {
+            self.code_limit_reported = true;
+            self.err("error: too many instructions (max {d})\n", .{MAX_CODE});
+        }
         self.code.append(self.a, .{ .op = op, .line = ln }) catch @panic("OOM");
         self.spAdvance(op.stackEffect(0));
     }
@@ -170,7 +183,12 @@ pub const Emitter = struct {
                 else => {},
             }
         }
-        if (self.constants.items.len >= MAX_CONSTS) return 0;
+        // Like emitInst, report and keep going: returning index 0 used to
+        // silently alias every further constant to the first one.
+        if (self.constants.items.len >= MAX_CONSTS and !self.const_limit_reported) {
+            self.const_limit_reported = true;
+            self.err("error: too many constants (max {d})\n", .{MAX_CONSTS});
+        }
         const idx: u32 = @intCast(self.constants.items.len);
         self.constants.append(self.a, val) catch @panic("OOM");
         return idx;
@@ -183,7 +201,17 @@ pub const Emitter = struct {
     // ── Locals ────────────────────────────────────────────────────
 
     fn addLocal(self: *Emitter, name: []const u8) u8 {
-        if (self.local_count >= MAX_LOCALS) return 0xFF;
+        if (self.local_count >= MAX_LOCALS) {
+            // Reporting here — at the choke point — closes every call site at
+            // once. The seed used to reach this only from `match` and let a
+            // plain `let` past 256 locals silently become a *global*, changing
+            // the program's scoping without a word.
+            if (!self.locals_limit_reported) {
+                self.locals_limit_reported = true;
+                self.err("error: too many locals (max {d})\n", .{MAX_LOCALS});
+            }
+            return 0xFF;
+        }
         const slot: u8 = @intCast(self.local_count);
         self.locals[self.local_count] = .{ .name = name, .slot = slot, .depth = self.scope_depth };
         self.local_count += 1;
@@ -961,10 +989,9 @@ pub const Emitter = struct {
         const base = self.sp;
 
         // The matched value lives in a hidden local; every arm tests against it.
+        // addLocal already reports the limit; the 0xFF branch is recovery only.
         const slot = self.addLocal("$match_val");
-        if (slot == 0xFF) {
-            self.err("error: too many locals for match\n", .{});
-        } else {
+        if (slot != 0xFF) {
             self.emitExpr(m.target);
             self.emitInstIndex(.set_local, slot, ln);
         }
@@ -1000,10 +1027,7 @@ pub const Emitter = struct {
                 },
                 .pattern_bind => |name| {
                     const bind_slot = self.addLocal(name);
-                    if (bind_slot == 0xFF) {
-                        self.err("error: too many locals for match\n", .{});
-                        break :arms_loop;
-                    }
+                    if (bind_slot == 0xFF) break :arms_loop;
                     self.emitInstIndex(.get_local, slot, ln);
                     self.emitInstIndex(.set_local, bind_slot, ln);
                     if (arm.guard) |g| {
@@ -1040,10 +1064,7 @@ pub const Emitter = struct {
                         self.emitInstIndex(.get_local, slot, ln);
                         self.emitInstIndex(.get_enum_field, @intCast(k), ln);
                         const bind_slot = self.addLocal(self.tree.node(b).pattern_bind);
-                        if (bind_slot == 0xFF) {
-                            self.err("error: too many locals for match\n", .{});
-                            break;
-                        }
+                        if (bind_slot == 0xFF) break;
                         self.emitInstIndex(.set_local, bind_slot, ln);
                     }
 
@@ -1080,9 +1101,7 @@ pub const Emitter = struct {
                                 self.emitInstIndex(.get_local, slot, ln);
                                 self.emitInst(.unwrap, ln);
                                 const bind_slot = self.addLocal(name);
-                                if (bind_slot == 0xFF) {
-                                    self.err("error: too many locals for match\n", .{});
-                                } else {
+                                if (bind_slot != 0xFF) {
                                     self.emitInstIndex(.set_local, bind_slot, ln);
                                 }
                             },
