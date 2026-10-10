@@ -28,12 +28,20 @@ const candidates = [_][]const u8{
     "tests/conformance",
 };
 
-fn findRoot(io: std.Io, cwd: std.Io.Dir) ?[]const u8 {
+fn findRoot(io: std.Io, cwd: std.Io.Dir) ![]const u8 {
     for (candidates) |c| {
         cwd.access(io, c, .{}) catch continue;
         return c;
     }
-    return null;
+    // The suite IS the gate (PHASE2_KICKOFF.md): a tree without seed/ must not
+    // go green having checked nothing, so this is a hard failure, not a skip.
+    std.debug.print(
+        \\error: seed conformance suite not found (tried ../seed/tests/conformance,
+        \\seed/tests/conformance and tests/conformance from the working directory).
+        \\Run `zig build test` from a checkout that contains seed/tests/conformance.
+        \\
+    , .{});
+    return error.SeedSuiteNotFound;
 }
 
 /// Extract the value of a `// EXPECT...:` directive from a source line, or null
@@ -81,7 +89,7 @@ fn runProgram(arena: std.mem.Allocator, source: []const u8, name: []const u8, ou
 test "runs every non-ui seed conformance file and matches its expectations" {
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = std.Io.Dir.cwd();
-    const root = findRoot(io, cwd) orelse return error.SkipZigTest;
+    const root = try findRoot(io, cwd);
 
     var dir = try cwd.openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
@@ -152,7 +160,7 @@ test "runs every non-ui seed conformance file and matches its expectations" {
 test "rejects every ui seed conformance file" {
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = std.Io.Dir.cwd();
-    const root = findRoot(io, cwd) orelse return error.SkipZigTest;
+    const root = try findRoot(io, cwd);
 
     var dir = try cwd.openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
