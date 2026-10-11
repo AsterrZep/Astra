@@ -126,7 +126,7 @@ static void synchronize(Parser *p) {
         switch (p->current.kind) {
             case TOKEN_FN: case TOKEN_STRUCT: case TOKEN_ENUM:
             case TOKEN_LET: case TOKEN_CONST: case TOKEN_USE:
-            case TOKEN_IMPORT: case TOKEN_FROM:
+            case TOKEN_IMPORT: case TOKEN_FROM: case TOKEN_PUB:
             case TOKEN_IF: case TOKEN_WHILE: case TOKEN_FOR:
             case TOKEN_RETURN: case TOKEN_BREAK: case TOKEN_CONTINUE:
                 return;
@@ -910,11 +910,12 @@ static Node *parse_return(Parser *p) {
  * Function declaration
  * ----------------------------------------------------------- */
 
-static Node *parse_fn_decl(Parser *p) {
+static Node *parse_fn_decl(Parser *p, bool is_pub) {
     SrcLoc loc = p->previous.loc;
     expect(p, TOKEN_IDENT, "function name");
     Node *n = node_new(p->arena, NODE_FN_DECL, loc);
     n->as.fn_decl.name = p->previous.text;
+    n->as.fn_decl.is_pub = is_pub;
     n->as.fn_decl.params.data    = NULL;
     n->as.fn_decl.params.len     = 0;
     n->as.fn_decl.params.cap     = 0;
@@ -973,11 +974,12 @@ static Node *parse_fn_decl(Parser *p) {
  * Struct declaration
  * ----------------------------------------------------------- */
 
-static Node *parse_struct_decl(Parser *p) {
+static Node *parse_struct_decl(Parser *p, bool is_pub) {
     SrcLoc loc = p->previous.loc;
     expect(p, TOKEN_IDENT, "struct name");
     Node *n = node_new(p->arena, NODE_STRUCT_DECL, loc);
     n->as.struct_decl.name = p->previous.text;
+    n->as.struct_decl.is_pub = is_pub;
     n->as.struct_decl.field_names.data = NULL;
     n->as.struct_decl.field_names.len  = 0;
     n->as.struct_decl.field_names.cap  = 0;
@@ -1040,11 +1042,12 @@ static Node *parse_struct_decl(Parser *p) {
  * Enum declaration
  * ----------------------------------------------------------- */
 
-static Node *parse_enum_decl(Parser *p) {
+static Node *parse_enum_decl(Parser *p, bool is_pub) {
     SrcLoc loc = p->previous.loc;
     expect(p, TOKEN_IDENT, "enum name");
     Node *n = node_new(p->arena, NODE_ENUM_DECL, loc);
     n->as.enum_decl.name = p->previous.text;
+    n->as.enum_decl.is_pub = is_pub;
     n->as.enum_decl.variants.data = NULL;
     n->as.enum_decl.variants.len  = 0;
     n->as.enum_decl.variants.cap  = 0;
@@ -1158,7 +1161,7 @@ static Node *parse_enum_decl(Parser *p) {
  * Let/Var declaration
  * ----------------------------------------------------------- */
 
-static Node *parse_var_decl(Parser *p, bool is_const) {
+static Node *parse_var_decl(Parser *p, bool is_const, bool is_pub) {
     SrcLoc loc = p->previous.loc;
     bool is_mut = false;
     if (!is_const && match(p, TOKEN_MUT)) {
@@ -1184,6 +1187,7 @@ static Node *parse_var_decl(Parser *p, bool is_const) {
         n->as.const_decl.name  = name;
         n->as.const_decl.type  = type_annot;
         n->as.const_decl.value = value;
+        n->as.const_decl.is_pub = is_pub;
         return n;
     } else {
         Node *n = node_new(p->arena, NODE_VAR_DECL, loc);
@@ -1448,11 +1452,25 @@ static Node *parse_statement(Parser *p) {
 
     if (check(p, TOKEN_EOF) || p->aborted) return NULL;
 
+    /* `pub` marks a declaration as exported (ARCHITECTURE §10.2). Recorded on
+     * the AST node; per-module visibility kicks in with the module system.
+     * research/010 §12.1 allows repeated qualifiers (`pub*`); only the four
+     * exportable kinds take it. */
+    bool is_pub = false;
+    if (check(p, TOKEN_PUB)) {
+        while (match(p, TOKEN_PUB)) is_pub = true;
+        if (!check(p, TOKEN_FN) && !check(p, TOKEN_STRUCT) &&
+            !check(p, TOKEN_ENUM) && !check(p, TOKEN_CONST)) {
+            parser_error(p, "'pub' can only precede fn, struct, enum or const");
+            return NULL;
+        }
+    }
+
     /* Declaration keywords */
-    if (check(p, TOKEN_FN))     { advance(p); return parse_fn_decl(p); }
-    if (check(p, TOKEN_STRUCT)) { advance(p); return parse_struct_decl(p); }
-    if (check(p, TOKEN_ENUM))   { advance(p); return parse_enum_decl(p); }
-    if (check(p, TOKEN_CONST))  { advance(p); return parse_var_decl(p, true); }
+    if (check(p, TOKEN_FN))     { advance(p); return parse_fn_decl(p, is_pub); }
+    if (check(p, TOKEN_STRUCT)) { advance(p); return parse_struct_decl(p, is_pub); }
+    if (check(p, TOKEN_ENUM))   { advance(p); return parse_enum_decl(p, is_pub); }
+    if (check(p, TOKEN_CONST))  { advance(p); return parse_var_decl(p, true, is_pub); }
     if (check(p, TOKEN_USE))    { advance(p); return parse_use(p); }
     if (check(p, TOKEN_IMPORT)) { advance(p); return parse_import(p); }
     if (check(p, TOKEN_FROM))   { advance(p); return parse_from(p); }
@@ -1460,7 +1478,7 @@ static Node *parse_statement(Parser *p) {
     /* Let/Var declaration (uses 'let' keyword) */
     if (check(p, TOKEN_LET)) {
         advance(p);
-        return parse_var_decl(p, false);
+        return parse_var_decl(p, false, false);
     }
 
     /* Statements */

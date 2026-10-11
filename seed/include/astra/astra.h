@@ -465,6 +465,7 @@ typedef struct {
     DYNARRAY(Node *)      param_types;
     Node                 *return_type; /* may be NULL */
     Node                 *body;        /* BlockExpr */
+    bool                 is_pub;       /* `pub fn` — exported (ARCHITECTURE §10.2) */
 } FnDecl;
 
 typedef struct {
@@ -478,12 +479,14 @@ typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) field_names;
     DYNARRAY(Node *)      field_types;
+    bool                  is_pub; /* `pub struct` — exported */
 } StructDecl;
 
 typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) variants;       /* unit variant names */
     DYNARRAY(Node *)      variant_payloads;  /* NODE_PAYLOAD, parallel to variants */
+    bool                  is_pub;            /* `pub enum` — exported */
 } EnumDecl;
 
 /* Payload of a data-carrying enum variant:
@@ -503,6 +506,7 @@ typedef struct {
     InternedString name;
     Node          *type;
     Node          *value; /* may be NULL */
+    bool           is_pub; /* `pub const` — exported; `val` never is */
 } ConstDecl;
 
 typedef struct {

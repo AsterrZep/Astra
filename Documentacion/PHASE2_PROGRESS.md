@@ -29,17 +29,17 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 | Emitter (`src/emitter/emitter.zig`) | ✅ | Baja el AST a bytecode: modelo lineal de altura de pila con asertos por nodo, parcheo de saltos `offset = T - P`, frames con slot 0 para el retorno, `match`/`for`/`if`/lambdas, construcción de structs y enums |
 | VM (`src/vm/vm.zig`) | ✅ | ~48 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; mismos textos de error que el seed; salida de floats con `%g` de C |
 | Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-modules`, `--dump-bytecode`; salida 1 ante error de compilación o de runtime |
-| Módulos (`src/modules/`) | 🟡 | Esbozo del paso 2: `ImportPath` → fichero (reglas 1–2 de `ARCHITECTURE.md` §10.4), `ModuleTable` y nombres explícitos, y un cargador que lee los ficheros y detecta ciclos. Sin resolución de referencias ni `pub` (ver §7.1) |
+| Módulos (`src/modules/`) | 🟡 | Esbozo del paso 2: `ImportPath` → fichero (reglas 1–2 de `ARCHITECTURE.md` §10.4), `ModuleTable` y nombres explícitos, y un cargador que lee los ficheros y detecta ciclos. `pub` ya se parsea y registra en el AST de ambos compiladores (§7.2); la visibilidad entre módulos y la resolución de referencias siguen pendientes (ver §7.1) |
 
 ### Verificación medida
 
-- **55/55** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **56/56** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **26/26** ficheros `ui/` son rechazados. El emitter cierra
+- **28/28** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop`, que el type checker deja pasar a propósito.
-- **53 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
+- **55 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
   bytecode, VM, módulos, depurador y conformance) en `zig build test`.
 
 ---
@@ -131,7 +131,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | 🟡 | hoy el formato es propio; la comparación es por aceptación, no por texto |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
 | 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
-| 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | 🟡 | esbozo en `src/modules/modules.zig`: ruta relativa → fichero, `ModuleTable`, nombres explícitos y un `Loader` que carga el grafo y detecta ciclos (§10.6), con `--dump-modules`. Sin resolución de referencias ni `pub`. Ver §7.1 |
+| 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | 🟡 | esbozo en `src/modules/modules.zig`: ruta relativa → fichero, `ModuleTable`, nombres explícitos y un `Loader` que carga el grafo y detecta ciclos (§10.6), con `--dump-modules`. `pub` se registra ya en el AST (§7.2); falta la visibilidad entre módulos y la resolución de referencias. Ver §7.1 |
 | 10 | **InternPool de tipos** (substrato de genéricos) | ✅ | `src/typechecker/types.zig`: pool hash-consed con identidad canónica (struct/enum por nombre); `typeEq` = fast-path de puntero + reglas de unificación del seed recursivas en compuestos (`array(int_literal)` ≡ `[]i32`); fn sin retorno anotado normalizado a `void` (paridad con `a.ret orelse voidType` del seed). 53/53 tests. Sustituye el diseño "un heap-node por ocurrencia" (`PHASE2_ARCHITECTURE.md` §3.3) |
 | 11 | **Colección de declaraciones** (forward-refs de tipo) | ✅ | Pase 0 en ambos compiladores (`typecheck_module_pass`/`checkModule`): registra nombres de struct/enum con layout vacío antes de resolver firmas y fields, así las declaraciones se referencian en cualquier orden (incl. recursión mutua). Caso nuevo `types/forward_type_refs.astra`; suite 96/96 seed, 53/53 zig. Los structs anidados en cuerpos de función siguen sin funcionar (paridad — ya fallaban igual antes) |
 
@@ -339,5 +339,31 @@ cuatro ficheros que faltan y sale con 1. Es correcto: ese caso fija la *sintaxis
 no un proyecto. La ruta normal (sin `--dump-modules`) no carga nada y no cambia.
 
 Sin cargador de enlaces todavía: no hay tabla de símbolos por módulo, ni
-resolución de referencias cruzadas, ni `pub` (`ARCHITECTURE.md` §10.5). Eso es el
-resto de `PHASE2_GAP_ANALYSIS.md` §8.3.
+resolución de referencias cruzadas (`ARCHITECTURE.md` §10.5). La visibilidad
+`pub` ya se parsea en ambos compiladores (§7.2), pero todavía no se aplica.
+Eso es el resto de `PHASE2_GAP_ANALYSIS.md` §8.3.
+
+### 7.2 `pub`: sintaxis real en ambos compiladores
+
+`ARCHITECTURE.md` §10.2: los items son privados por defecto y `pub` exporta
+`fn`, `struct`, `enum` y `const` (no `let`/`var`, ni `use`/`import`). Antes de
+este paso el lexer del seed tenía `TOKEN_PUB` pero el parser lo rechazaba
+(`unexpected token in expression`) mientras el Zig lo aceptaba y lo descartaba
+— una divergencia que habría congelado dos parsers distintos para siempre.
+
+Ahora ambos registran el modificador en el AST (`is_pub` en `FnDecl`,
+`StructDecl`, `EnumDecl` y `ConstDecl`):
+
+- `pub` es cuantificable como en research/010 §12.1 (`FunctionQualifiers ::= ("pub" | ...)*`);
+  `pub pub fn` se acepta y deduplica.
+- `pub` seguido de cualquier otra cosa (`pub let`, `pub use`, `pub if`) es un
+  error de parseo con el mismo mensaje en ambos: `'pub' can only precede fn,
+  struct, enum or const`.
+- `--dump-ast` lo muestra: el Zig imprime `pub fn_decl nombre`, el seed
+  `PubFnDecl(nombre)`.
+- Casos nuevos: `module/pub_decls.astra` (acepta y ejecuta) y
+  `ui/pub_let.astra` (rechaza).
+
+La *semántica* (dos niveles de visibilidad, gating en imports) queda para la
+compilación multi-módulo: con un solo fichero `pub` y privado se comportan
+igual.

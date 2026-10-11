@@ -1,0 +1,7 @@
+// `pub` exports functions, structs, enums and consts only (ARCHITECTURE
+// §10.2); before let/var it is an error in both compilers.
+// EXPECT-ERROR: 'pub' can only precede
+pub let x = 1
+fn main() {
+    print(x)
+}

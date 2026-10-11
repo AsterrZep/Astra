@@ -84,11 +84,11 @@ pub const Tag = enum {
     type_fn,
 };
 
-pub const FnDecl = struct { name: []const u8, params: List, ret: ?u32, body: u32 };
+pub const FnDecl = struct { name: []const u8, params: List, ret: ?u32, body: u32, is_pub: bool = false };
 pub const Lambda = struct { params: List, ret: ?u32, body: u32 };
-pub const StructDecl = struct { name: []const u8, fields: List };
-pub const EnumDecl = struct { name: []const u8, variants: List };
-pub const VarDecl = struct { name: []const u8, type_node: ?u32, value: ?u32, is_mut: bool };
+pub const StructDecl = struct { name: []const u8, fields: List, is_pub: bool = false };
+pub const EnumDecl = struct { name: []const u8, variants: List, is_pub: bool = false };
+pub const VarDecl = struct { name: []const u8, type_node: ?u32, value: ?u32, is_mut: bool, is_pub: bool = false };
 /// `import ImportPath ("as" Identifier)?` (research/010 §12.1). `path` is the
 /// source text of the whole path (`a.b.c`).
 pub const ImportDecl = struct { path: []const u8, alias: ?[]const u8 };
@@ -249,7 +249,7 @@ pub const Tree = struct {
                 for (self.extraSlice(l)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .fn_decl => |f| {
-                try writer.print("fn_decl {s}\n", .{f.name});
+                try writer.print("{s}fn_decl {s}\n", .{ if (f.is_pub) "pub " else "", f.name });
                 try indent(writer, depth + 1);
                 try writer.writeAll("params\n");
                 for (self.extraSlice(f.params)) |c| try self.dumpNode(writer, c, depth + 2);
@@ -267,16 +267,17 @@ pub const Tree = struct {
                 try self.dumpNode(writer, f.body, depth + 1);
             },
             .struct_decl => |s| {
-                try writer.print("struct_decl {s}\n", .{s.name});
+                try writer.print("{s}struct_decl {s}\n", .{ if (s.is_pub) "pub " else "", s.name });
                 for (self.extraSlice(s.fields)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .enum_decl => |e| {
-                try writer.print("enum_decl {s}\n", .{e.name});
+                try writer.print("{s}enum_decl {s}\n", .{ if (e.is_pub) "pub " else "", e.name });
                 for (self.extraSlice(e.variants)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .var_decl, .const_decl => {
                 const v = n.var_decl; // both share the same payload shape
-                try writer.print("{s} {s}{s}\n", .{
+                try writer.print("{s}{s} {s}{s}\n", .{
+                    if (v.is_pub) "pub " else "",
                     @tagName(n),
                     v.name,
                     if (v.is_mut) " (mut)" else "",

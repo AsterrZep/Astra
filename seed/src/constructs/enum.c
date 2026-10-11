@@ -25,7 +25,7 @@ const ConstructSpec construct_enum = {
     .has_braces = true,
     .in_astra0  = true,
     .deps       = deps,
-    .grammar    = "EnumDef ::= \"enum\" Identifier GenericParams? WhereClause? \"{\" EnumVariants? \"}\"\n"
+    .grammar    = "EnumDef ::= \"pub\"? \"enum\" Identifier GenericParams? WhereClause? \"{\" EnumVariants? \"}\"\n"
                   "EnumVariants ::= EnumVariant (\",\" EnumVariant)* \",\"?",
     .research  = "research/04 §9.2 (enum declaration), §6 (memory and layout), §9.7 "
                   "(exhaustiveness); research/010 §12.1",

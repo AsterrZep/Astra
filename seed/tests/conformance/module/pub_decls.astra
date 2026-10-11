@@ -1,0 +1,42 @@
+// `pub` before fn/struct/enum/const is accepted syntax and is recorded on the
+// declaration (ARCHITECTURE §10.2; research/010 §12.1). Visibility across
+// modules is not enforced yet — within one file pub and private declarations
+// behave identically — but both compilers must parse and run the same programs.
+// EXPECT: 42
+// EXPECT: 42
+// EXPECT: 2
+// EXPECT: Circle
+// EXPECT: 41
+
+pub const LIMIT = 42
+
+pub fn double(x: i32) -> i32 {
+    x * 2
+}
+
+pub struct Point {
+    x: i32
+    y: i32
+}
+
+pub enum Shape {
+    Circle
+    Square
+}
+
+fn private_helper() -> i32 {
+    LIMIT - 1
+}
+
+fn main() {
+    print(LIMIT);
+    print(double(21));
+    let p = Point { x: 1, y: 2 };
+    print(p.x + p.y - 1);
+    let s = Shape.Circle;
+    match s {
+        Shape.Circle => print("Circle"),
+        Shape.Square => print("Square"),
+    }
+    print(private_helper());
+}

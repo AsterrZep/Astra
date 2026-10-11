@@ -271,15 +271,24 @@ pub const Parser = struct {
         self.last_stmt_semi = false;
         if (self.check(.eof) or self.aborted) return null;
 
-        // `pub` is accepted and transparent at every declaration site.
-        while (self.match(.kw_pub)) {}
+        // `pub` marks a declaration as exported (ARCHITECTURE §10.2). Recorded
+        // on the AST node; per-module visibility kicks in with the module
+        // system. research/010 §12.1 allows repeated qualifiers (`pub*`);
+        // only the four exportable kinds take it here.
+        var is_pub = false;
+        while (self.match(.kw_pub)) is_pub = true;
+        if (is_pub and !self.check(.kw_fn) and !self.check(.kw_struct) and
+            !self.check(.kw_enum) and !self.check(.kw_const))
+        {
+            return self.fail("'pub' can only precede fn, struct, enum or const");
+        }
 
-        if (self.match(.kw_fn)) return try self.parseFnDecl();
-        if (self.match(.kw_struct)) return try self.parseStructDecl();
-        if (self.match(.kw_enum)) return try self.parseEnumDecl();
-        if (self.match(.kw_const)) return try self.parseVarDecl(true);
-        if (self.match(.kw_let)) return try self.parseVarDecl(false);
-        if (self.match(.kw_var)) return try self.parseVarDecl(false);
+        if (self.match(.kw_fn)) return try self.parseFnDecl(is_pub);
+        if (self.match(.kw_struct)) return try self.parseStructDecl(is_pub);
+        if (self.match(.kw_enum)) return try self.parseEnumDecl(is_pub);
+        if (self.match(.kw_const)) return try self.parseVarDecl(true, is_pub);
+        if (self.match(.kw_let)) return try self.parseVarDecl(false, false);
+        if (self.match(.kw_var)) return try self.parseVarDecl(false, false);
         if (self.match(.kw_use)) return try self.parseUse();
         if (self.match(.kw_import)) return try self.parseImport();
         if (self.match(.kw_from)) return try self.parseFrom();
@@ -446,7 +455,7 @@ pub const Parser = struct {
 
     // ── Declarations ──────────────────────────────────────────────
 
-    fn parseFnDecl(self: *Parser) anyerror!u32 {
+    fn parseFnDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         try self.expect(.identifier);
         const name = self.previous.text;
@@ -474,10 +483,10 @@ pub const Parser = struct {
         try self.expect(.lbrace);
         const body = try self.parseBlock();
         const list = try self.tree.addExtra(params.items);
-        return self.add(.{ .fn_decl = .{ .name = name, .params = list, .ret = ret, .body = body } }, loc);
+        return self.add(.{ .fn_decl = .{ .name = name, .params = list, .ret = ret, .body = body, .is_pub = is_pub } }, loc);
     }
 
-    fn parseStructDecl(self: *Parser) anyerror!u32 {
+    fn parseStructDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         try self.expect(.identifier);
         const name = self.previous.text;
@@ -497,10 +506,10 @@ pub const Parser = struct {
         }
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(fields.items);
-        return self.add(.{ .struct_decl = .{ .name = name, .fields = list } }, loc);
+        return self.add(.{ .struct_decl = .{ .name = name, .fields = list, .is_pub = is_pub } }, loc);
     }
 
-    fn parseEnumDecl(self: *Parser) anyerror!u32 {
+    fn parseEnumDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         try self.expect(.identifier);
         const name = self.previous.text;
@@ -551,10 +560,10 @@ pub const Parser = struct {
         }
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(variants.items);
-        return self.add(.{ .enum_decl = .{ .name = name, .variants = list } }, loc);
+        return self.add(.{ .enum_decl = .{ .name = name, .variants = list, .is_pub = is_pub } }, loc);
     }
 
-    fn parseVarDecl(self: *Parser, is_const: bool) anyerror!u32 {
+    fn parseVarDecl(self: *Parser, is_const: bool, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         var is_mut = false;
         if (!is_const and self.match(.kw_mut)) is_mut = true;
@@ -570,7 +579,9 @@ pub const Parser = struct {
 
         self.optionalSemi();
 
-        const decl = ast.VarDecl{ .name = name, .type_node = type_node, .value = value, .is_mut = is_mut };
+        // `is_pub` only reaches here as false for let/var: `pub` before them
+        // is rejected in parseStatement.
+        const decl = ast.VarDecl{ .name = name, .type_node = type_node, .value = value, .is_mut = is_mut, .is_pub = is_pub };
         return if (is_const)
             self.add(.{ .const_decl = decl }, loc)
         else
@@ -1188,6 +1199,42 @@ test "enum with data variants and match patterns" {
     try testing.expectEqual(@as(u32, 2), e.variants.len);
     const v0 = parsed.tree.node(parsed.tree.extraSlice(e.variants)[0]).enum_variant;
     try testing.expect(v0.payload != null);
+}
+
+test "pub is recorded on exportable declarations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\pub fn helper() -> i32 { 1 }
+        \\pub struct Point { x: i32 }
+        \\pub enum Shape { Circle }
+        \\pub const LIMIT = 5
+        \\fn main() { print(LIMIT) }
+    ;
+    var tree = ast.Tree.init(arena.allocator(), src);
+    var p = Parser.init(arena.allocator(), src, &tree);
+    defer tree.deinit();
+    const root = try p.parse();
+    const items = tree.extraSlice(tree.node(root).source_file);
+    try testing.expect(tree.node(items[0]).fn_decl.is_pub);
+    try testing.expect(tree.node(items[1]).struct_decl.is_pub);
+    try testing.expect(tree.node(items[2]).enum_decl.is_pub);
+    try testing.expect(tree.node(items[3]).const_decl.is_pub);
+    try testing.expect(!tree.node(items[4]).fn_decl.is_pub);
+}
+
+test "pub before let/var is rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\pub let x = 1
+        \\fn main() { print(x) }
+    ;
+    var tree = ast.Tree.init(arena.allocator(), src);
+    var p = Parser.init(arena.allocator(), src, &tree);
+    defer tree.deinit();
+    try testing.expectError(error.ParseError, p.parse());
+    try testing.expect(p.had_error);
 }
 
 test "nested blocks are depth guarded" {

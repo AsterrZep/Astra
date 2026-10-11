@@ -329,7 +329,7 @@ static void dump_node(Node *node, int indent) {
         dump_node(node->as.assign.value, indent + 1);
         break;
     case NODE_FN_DECL:
-        printf("FnDecl(%.*s)\n",
+        printf("%sFnDecl(%.*s)\n", node->as.fn_decl.is_pub ? "Pub" : "",
                (int)node->as.fn_decl.name.len,
                node->as.fn_decl.name.str);
         for (size_t i = 0; i < node->as.fn_decl.params.len; i++) {
@@ -347,7 +347,7 @@ static void dump_node(Node *node, int indent) {
         dump_node(node->as.fn_decl.body, indent + 1);
         break;
     case NODE_STRUCT_DECL:
-        printf("StructDecl(%.*s)\n",
+        printf("%sStructDecl(%.*s)\n", node->as.struct_decl.is_pub ? "Pub" : "",
                (int)node->as.struct_decl.name.len,
                node->as.struct_decl.name.str);
         for (size_t i = 0; i < node->as.struct_decl.field_names.len; i++) {
@@ -359,7 +359,7 @@ static void dump_node(Node *node, int indent) {
         }
         break;
     case NODE_ENUM_DECL:
-        printf("EnumDecl(%.*s)\n",
+        printf("%sEnumDecl(%.*s)\n", node->as.enum_decl.is_pub ? "Pub" : "",
                (int)node->as.enum_decl.name.len,
                node->as.enum_decl.name.str);
         for (size_t i = 0; i < node->as.enum_decl.variants.len; i++) {
@@ -384,7 +384,7 @@ static void dump_node(Node *node, int indent) {
         }
         break;
     case NODE_CONST_DECL:
-        printf("ConstDecl(%.*s)\n",
+        printf("%sConstDecl(%.*s)\n", node->as.const_decl.is_pub ? "Pub" : "",
                (int)node->as.const_decl.name.len,
                node->as.const_decl.name.str);
         if (node->as.const_decl.type) dump_node(node->as.const_decl.type, indent + 1);

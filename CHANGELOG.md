@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`pub` declarations (seed + Zig)**: `pub` before `fn`, `struct`, `enum` or
+  `const` is accepted by both compilers and recorded on the AST (`is_pub`);
+  before anything else (`pub let`, `pub use`) it is a parse error with the
+  same message in both. Foundation for the module system's visibility rules
+  (`ARCHITECTURE.md` §10.2); no cross-module semantics yet. New cases
+  `module/pub_decls.astra` and `ui/pub_let.astra`
 - **CI (GitHub Actions)**: `.github/workflows/ci.yml` builds the seed under
   ASan/UBSan/LSan and runs the full suite against that binary, checks the
   release build, and runs `zig build test` (unit tests + seed conformance)
