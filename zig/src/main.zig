@@ -112,6 +112,7 @@ pub fn main(init: std.process.Init) !void {
     // belongs to the frontend, not to the stages that assume a single file.
     if (mode == .modules) {
         var loader = modules_mod.Loader.init(a, io, dir);
+        defer loader.deinit();
         const graph = try loader.load(file);
         try modules_mod.dumpGraph(&w, graph);
         std.debug.print("{s}", .{w.buffered()});

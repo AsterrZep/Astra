@@ -307,15 +307,20 @@ abierta en `PHASE2_GAP_ANALYSIS.md` App. B.
 
 **El cargador y los ciclos.** `Loader` lee el fichero al que apunta cada
 declaración y sigue sus propios imports, recursivamente, construyendo un `Graph`
-(orden de carga, la raíz primero; cada fichero aparece una sola vez aunque lo
-nombren diez declaraciones). Un ciclo es el único error que **no se puede ver
-fichero a fichero** —todos los ficheros del ciclo están bien y sólo la cadena
-está mal—, así que el cargador guarda la cadena de ficheros por la que va
-entrando y reporta el ciclo cuando una resolución aterriza sobre uno de ellos
-(`ARCHITECTURE.md` §10.6, que lo prohíbe). Los errores se cuentan en
+(**orden post-order: dependencias primero, la raíz la última**; cada fichero
+aparece una sola vez aunque lo nombren diez declaraciones). El orden importa:
+una futura compilación ejecuta el código de nivel de módulo módulo a módulo, y
+cada uno debe correr después de todo lo que importa. Además el árbol parseado de
+cada fichero **se conserva** en el `LoadedModule` (`tree` + `root`): la
+compilación emitirá desde él, no sólo desde la tabla. Un ciclo es el único error
+que **no se puede ver fichero a fichero** —todos los ficheros del ciclo están
+bien y sólo la cadena está mal—, así que el cargador guarda la cadena de ficheros
+por la que va entrando y reporta el ciclo cuando una resolución aterriza sobre
+uno de ellos (`ARCHITECTURE.md` §10.6, que lo prohíbe). Los errores se cuentan en
 `error_count` (mismo contrato que el type checker y el emitter): un módulo que no
 existe, que no parsea o que participa en un ciclo no tira el grafo, lo deja
-incompleto y lo señala.
+incompleto y lo señala. `Loader.deinit` destruye los árboles (las fuentes y rutas
+son memoria de arena y las deja la arena).
 
 `astra-zig --dump-modules fichero.astra` carga el grafo y lo imprime, con los
 errores por stderr y salida 1 si los hubo. Sobre los propios fixtures del test
@@ -325,12 +330,19 @@ errores por stderr y salida 1 si los hubo. Sobre los propios fixtures del test
 
 ```
 module graph: 3 module(s)
-  tests/modules/tree/main.astra
-    import geometry.mesh -> tests/modules/tree/geometry/mesh.astra
+  tests/modules/tree/geometry/vector.astra
+    exports: leaf
   tests/modules/tree/geometry/mesh.astra
     from vector -> tests/modules/tree/geometry/vector.astra [binds Vec2]
-  tests/modules/tree/geometry/vector.astra
+  tests/modules/tree/main.astra
+    import geometry.mesh -> tests/modules/tree/geometry/mesh.astra
 ```
+
+La tabla de cada módulo incluye además su conjunto de exports: los nombres
+`pub` de nivel de módulo (`fn`/`struct`/`enum`/`const`), coleccionados por
+`collect` para que el resolutor pueda rechazar un import de un nombre privado
+(§7.2). Todavía no se aplica ninguna visibilidad; el dump los muestra porque ya
+están recogidos.
 
 Un aviso para quien lo pruebe con la suite de conformidad: los casos no-UI son
 programas de una sola pieza y sus rutas (`std.io`, `geometry.mesh`) no existen en

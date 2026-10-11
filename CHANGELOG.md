@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Module loader keeps trees and orders dependencies first (Zig)**:
+  `Loader.loadFile` now appends each module *after* its imports (post-order, so
+  a future compiler can execute module code dep-before-user), retains each
+  file's parsed tree in `LoadedModule` (`tree` + `root`) for emission, and
+  `collect` gathers each file's `pub` top-level names into
+  `ModuleTable.exports`. `--dump-modules` prints the new order and the export
+  sets; `Loader.deinit` tears the trees down
 - **`pub` declarations (seed + Zig)**: `pub` before `fn`, `struct`, `enum` or
   `const` is accepted by both compilers and recorded on the AST (`is_pub`);
   before anything else (`pub let`, `pub use`) it is a parse error with the

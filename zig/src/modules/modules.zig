@@ -14,7 +14,8 @@
 //!    for a root nobody has defined would be inventing language.
 //! 2. **Declarations per file.** `collect` turns a parsed tree plus the file it
 //!    came from into a `ModuleTable`: every module declaration in that file with
-//!    its resolved file path. Module-level only (see `collect`).
+//!    its resolved file path, plus the names the file marks `pub` (the export
+//!    set the resolver will gate imports on). Module-level only (see `collect`).
 //! 3. **Explicit bindings.** `ModuleTable.explicitBindings` lists the names a
 //!    file introduces, *only* where the grammar states them: the alias of
 //!    `import ... as x` and the items of `from ... import a, b as c`. A bare
@@ -24,13 +25,17 @@
 //!    question for the resolution step, recorded in `PHASE2_GAP_ANALYSIS.md`.
 //!
 //! Plus a **loader** (`Loader`, `Graph`): it reads the file each declaration
-//! resolves to, recursively, and reports the one thing no single file can show —
-//! a circular import, which `ARCHITECTURE.md` §10.6 forbids and the gap analysis
-//! (§8.3) makes the loader's job.
+//! resolves to, recursively, keeps each file's parsed tree alive (compilation
+//! will need them, not just the tables), orders the graph **dependencies first,
+//! root last** so a future compiler can execute module code dep-before-user,
+//! and reports the one thing no single file can show — a circular import, which
+//! `ARCHITECTURE.md` §10.6 forbids and the gap analysis (§8.3) makes the
+//! loader's job.
 //!
-//! Deliberately absent, because they need the package manifest and the resolver:
-//! a symbol table per module, cross-module reference resolution and `pub`
-//! visibility (`ARCHITECTURE.md` §10.5, `PHASE2_GAP_ANALYSIS.md` §8.3).
+//! Deliberately absent, because they need the resolver: cross-module reference
+//! resolution and *enforcing* `pub` visibility — the export sets are collected
+//! but nothing is gated on them yet (`ARCHITECTURE.md` §10.5,
+//! `PHASE2_GAP_ANALYSIS.md` §8.3).
 //!
 //! The seed has none of this and is not meant to: it compiles one file
 //! (`research/011` §5.2), so this is the first thing in the port with no C
@@ -146,6 +151,10 @@ pub const ModuleTable = struct {
     /// The file the declarations were collected from.
     file: []const u8,
     decls: []const Decl,
+    /// Top-level names the file marks `pub` (fn/struct/enum/const), in source
+    /// order. Collected so the resolver can reject an import of a private name
+    /// (`ARCHITECTURE.md` §10.2); nothing gates on it yet.
+    exports: []const []const u8 = &.{},
 
     /// Index of the first declaration naming `path`, or null.
     ///
@@ -191,6 +200,7 @@ pub fn collect(
     file: []const u8,
 ) !ModuleTable {
     var decls: std.ArrayListUnmanaged(Decl) = .empty;
+    var exports: std.ArrayListUnmanaged([]const u8) = .empty;
 
     const items = switch (tree.node(root)) {
         .source_file => |list| tree.extraSlice(list),
@@ -200,6 +210,13 @@ pub fn collect(
     };
 
     for (items) |item| {
+        switch (tree.node(item)) {
+            .fn_decl => |f| if (f.is_pub) try exports.append(allocator, f.name),
+            .struct_decl => |s| if (s.is_pub) try exports.append(allocator, s.name),
+            .enum_decl => |e| if (e.is_pub) try exports.append(allocator, e.name),
+            .const_decl => |c| if (c.is_pub) try exports.append(allocator, c.name),
+            else => {},
+        }
         const decl: Decl = switch (tree.node(item)) {
             .use_decl => |path| .{ .kind = .use, .path = path, .file = try resolveFromFile(allocator, file, path) },
             .import_decl => |d| .{
@@ -227,7 +244,11 @@ pub fn collect(
         try decls.append(allocator, decl);
     }
 
-    return .{ .file = file, .decls = try decls.toOwnedSlice(allocator) };
+    return .{
+        .file = file,
+        .decls = try decls.toOwnedSlice(allocator),
+        .exports = try exports.toOwnedSlice(allocator),
+    };
 }
 
 // ── Loading ──────────────────────────────────────────────────────
@@ -237,16 +258,22 @@ pub fn collect(
 /// than trusting the filesystem.
 const source_limit = 1 << 26;
 
-/// One module in the graph: the file, its source text and its declarations.
+/// One module in the graph: the file, its source text, its declarations, and
+/// the parsed tree they came from. The tree stays alive because compilation
+/// will emit from it; `Loader.deinit` destroys it.
 pub const LoadedModule = struct {
     file: []const u8,
     source: []const u8,
     table: ModuleTable,
+    tree: ast.Tree,
+    root: u32,
 };
 
 pub const Graph = struct {
-    /// Load order, root first. Each file appears exactly once, however many
-    /// declarations point at it.
+    /// Load order, **dependencies first, root last** (post-order). Each file
+    /// appears exactly once, however many declarations point at it. A compiler
+    /// executes module code in this order so a module's top-level statements
+    /// run after everything it imports (`ARCHITECTURE.md` §10.5).
     modules: []const LoadedModule,
 
     pub fn find(self: Graph, file: []const u8) ?usize {
@@ -280,17 +307,27 @@ pub const Loader = struct {
         return .{ .a = a, .io = io, .dir = dir };
     }
 
-    /// Load `root_file` and everything it imports, transitively. Returns the
-    /// graph even when `error_count > 0`: the caller decides whether a partial
-    /// graph is worth looking at, exactly as with a file that has type errors.
+    /// Destroy the loaded trees. Sources and paths are arena memory (the
+    /// compilation arena) and are left to it; the trees hold state of their
+    /// own, so they are torn down here. Call after the `Graph` is done.
+    pub fn deinit(self: *Loader) void {
+        for (self.modules.items) |*m| m.tree.deinit();
+    }
+
+    /// Load `root_file` and everything it imports, transitively. The returned
+    /// graph borrows from the loader and stays valid until `deinit`; it is
+    /// returned even when `error_count > 0`: the caller decides whether a
+    /// partial graph is worth looking at, exactly as with a file that has type
+    /// errors.
     pub fn load(self: *Loader, root_file: []const u8) !Graph {
         try self.loadFile(root_file);
-        return .{ .modules = try self.modules.toOwnedSlice(self.a) };
+        return .{ .modules = self.modules.items };
     }
 
     fn loadFile(self: *Loader, file: []const u8) !void {
-        // Order matters: a file on the stack is already in `modules`, so asking
-        // "already loaded?" first would turn every cycle into a silent no-op.
+        // Cycle check first: a file on the stack is not in `modules` yet
+        // (post-order append), so without this a cycle would re-enter the file
+        // forever. The already-loaded check only follows it, for diamonds.
         if (self.visitingIndex(file)) |at| {
             self.reportCycle(at, file);
             return;
@@ -304,7 +341,10 @@ pub const Loader = struct {
         };
 
         var tree = ast.Tree.init(self.a, source);
-        defer tree.deinit();
+        // Disarmed once the tree is moved into `modules`; until then every
+        // failure path (parse error, OOM) tears it down.
+        var tree_owned = false;
+        defer if (!tree_owned) tree.deinit();
         var p = parser.Parser.init(self.a, source, &tree);
         const root = p.parse() catch {
             std.debug.print("error: {s}: module did not parse\n", .{file});
@@ -313,11 +353,21 @@ pub const Loader = struct {
         };
 
         const table = try collect(self.a, &tree, root, file);
-        try self.modules.append(self.a, .{ .file = file, .source = source, .table = table });
 
+        // Post-order: dependencies (and their trees) are complete before this
+        // module is appended, so the graph is executable dep-before-user.
         try self.visiting.append(self.a, file);
         for (table.decls) |decl| try self.loadFile(decl.file);
         _ = self.visiting.pop();
+
+        try self.modules.append(self.a, .{
+            .file = file,
+            .source = source,
+            .table = table,
+            .tree = tree,
+            .root = root,
+        });
+        tree_owned = true;
     }
 
     fn visitingIndex(self: *const Loader, file: []const u8) ?usize {
@@ -362,6 +412,16 @@ fn writeDecl(writer: anytype, d: Decl) !void {
     try writer.writeAll("\n");
 }
 
+fn writeExports(writer: anytype, table: ModuleTable) !void {
+    if (table.exports.len == 0) return;
+    try writer.writeAll("  exports:");
+    for (table.exports, 0..) |name, i| {
+        if (i > 0) try writer.writeAll(",");
+        try writer.print(" {s}", .{name});
+    }
+    try writer.writeAll("\n");
+}
+
 /// Human-readable rendering of one file's declarations.
 pub fn dump(writer: anytype, table: ModuleTable) !void {
     try writer.print("modules ({s}): {d} declaration(s)\n", .{ table.file, table.decls.len });
@@ -369,10 +429,12 @@ pub fn dump(writer: anytype, table: ModuleTable) !void {
         try writer.writeAll("  ");
         try writeDecl(writer, d);
     }
+    try writeExports(writer, table);
 }
 
 /// Human-readable rendering of a loaded graph, for `--dump-modules`: every file
-/// that would take part in the build, in load order, with what each one imports.
+/// that would take part in the build, in load order (dependencies first), with
+/// what each one imports and exports.
 pub fn dumpGraph(writer: anytype, graph: Graph) !void {
     try writer.print("module graph: {d} module(s)\n", .{graph.modules.len});
     for (graph.modules) |m| {
@@ -380,6 +442,14 @@ pub fn dumpGraph(writer: anytype, graph: Graph) !void {
         for (m.table.decls) |d| {
             try writer.writeAll("    ");
             try writeDecl(writer, d);
+        }
+        if (m.table.exports.len > 0) {
+            try writer.writeAll("    exports:");
+            for (m.table.exports, 0..) |name, i| {
+                if (i > 0) try writer.writeAll(",");
+                try writer.print(" {s}", .{name});
+            }
+            try writer.writeAll("\n");
         }
     }
 }
@@ -432,12 +502,18 @@ test "the importing file's directory is the base for resolution" {
     }
 }
 
-test "collect: declarations, resolved files and explicit bindings" {
+test "collect: declarations, resolved files, explicit bindings and exports" {
     const source =
         \\import std.io
         \\import geometry.mesh as mesh
         \\from geometry.vector import Vec2, add as sum
         \\use a.b.c
+        \\pub fn helper() -> i32 { 1 }
+        \\fn private_fn() -> i32 { 2 }
+        \\pub struct Point { x: i32 }
+        \\pub enum Shape { Circle }
+        \\pub const LIMIT = 5
+        \\const SECRET = 6
         \\fn main() { print(1) }
         \\
     ;
@@ -482,6 +558,14 @@ test "collect: declarations, resolved files and explicit bindings" {
     try std.testing.expectEqualStrings("mesh", binds[0].name);
     try std.testing.expectEqualStrings("Vec2", binds[1].name);
     try std.testing.expectEqualStrings("sum", binds[2].name);
+
+    // Exports: exactly the `pub` top-level declarations, in source order.
+    // Private fn/const and non-declaration items contribute nothing.
+    try std.testing.expectEqual(@as(usize, 4), table.exports.len);
+    try std.testing.expectEqualStrings("helper", table.exports[0]);
+    try std.testing.expectEqualStrings("Point", table.exports[1]);
+    try std.testing.expectEqualStrings("Shape", table.exports[2]);
+    try std.testing.expectEqualStrings("LIMIT", table.exports[3]);
 }
 
 test "collect ignores module declarations nested in a function body" {
@@ -568,26 +652,36 @@ test "the loader follows imports transitively, resolving each path" {
     const a = arena.allocator();
 
     var loader = Loader.init(a, io, cwd);
+    defer loader.deinit();
     const entry = try fixture(a, root, "tree/main.astra");
     const graph = try loader.load(entry);
 
     try std.testing.expectEqual(@as(usize, 0), loader.error_count);
     try std.testing.expectEqual(@as(usize, 3), graph.modules.len);
 
-    // Load order is depth-first from the root, and every file is resolved
-    // relative to the file that imported it: root → geometry/mesh → geometry/vector.
-    try std.testing.expectEqualStrings(entry, graph.modules[0].file);
+    // Load order is post-order (dependencies first, root last), and every file
+    // is resolved relative to the file that imported it:
+    // geometry/vector → geometry/mesh → main.
     const mesh = try std.fs.path.join(a, &.{ root, "tree", "geometry", "mesh.astra" });
     const vector = try std.fs.path.join(a, &.{ root, "tree", "geometry", "vector.astra" });
+    try std.testing.expectEqualStrings(vector, graph.modules[0].file);
     try std.testing.expectEqualStrings(mesh, graph.modules[1].file);
-    try std.testing.expectEqualStrings(vector, graph.modules[2].file);
+    try std.testing.expectEqualStrings(entry, graph.modules[2].file);
 
-    try std.testing.expectEqual(Kind.import, graph.modules[0].table.decls[0].kind);
+    // The trees survive loading: the root node of each module is usable.
+    for (graph.modules) |m| {
+        try std.testing.expectEqual(ast.Tag.source_file, std.meta.activeTag(m.tree.node(m.root)));
+    }
+    // The leaf's `pub fn leaf` is in its export set.
+    try std.testing.expectEqual(@as(usize, 1), graph.modules[0].table.exports.len);
+    try std.testing.expectEqualStrings("leaf", graph.modules[0].table.exports[0]);
+
     try std.testing.expectEqual(Kind.from, graph.modules[1].table.decls[0].kind);
     try std.testing.expectEqualStrings("Vec2", itemBindingName(graph.modules[1].table.decls[0].items[0]));
-    try std.testing.expectEqual(@as(usize, 0), graph.modules[2].table.decls.len);
+    try std.testing.expectEqual(Kind.import, graph.modules[2].table.decls[0].kind);
+    try std.testing.expectEqual(@as(usize, 0), graph.modules[2].table.exports.len);
 
-    try std.testing.expectEqual(@as(?usize, 2), graph.find(vector));
+    try std.testing.expectEqual(@as(?usize, 0), graph.find(vector));
     try std.testing.expectEqual(@as(?usize, null), graph.find("nowhere.astra"));
 }
 
@@ -601,13 +695,15 @@ test "a module reached twice is loaded once" {
     const a = arena.allocator();
 
     var loader = Loader.init(a, io, cwd);
+    defer loader.deinit();
     const graph = try loader.load(try fixture(a, root, "diamond/main.astra"));
 
     try std.testing.expectEqual(@as(usize, 0), loader.error_count);
-    // main → one → shared, then two (whose `shared` is already loaded).
+    // Post-order: shared (reached from one) completes first, then one, two
+    // (whose `shared` is already loaded), then main.
     try std.testing.expectEqual(@as(usize, 4), graph.modules.len);
     const shared = try std.fs.path.join(a, &.{ root, "diamond", "shared.astra" });
-    try std.testing.expectEqual(@as(?usize, 2), graph.find(shared));
+    try std.testing.expectEqual(@as(?usize, 0), graph.find(shared));
 }
 
 test "a circular import is reported instead of loading forever" {
@@ -620,6 +716,7 @@ test "a circular import is reported instead of loading forever" {
     const a = arena.allocator();
 
     var loader = Loader.init(a, io, cwd);
+    defer loader.deinit();
     const graph = try loader.load(try fixture(a, root, "cycle/a.astra"));
 
     // One reported edge (b → a) and a graph that stops there: no runaway walk.
@@ -637,6 +734,7 @@ test "a module that is not on disk is reported, not fatal" {
     const a = arena.allocator();
 
     var loader = Loader.init(a, io, cwd);
+    defer loader.deinit();
     const entry = try fixture(a, root, "missing/main.astra");
     const graph = try loader.load(entry);
 

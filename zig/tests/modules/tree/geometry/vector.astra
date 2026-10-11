@@ -1,2 +1,5 @@
-// Leaf of the chain: no module declarations, so the walk stops here.
-let v = 1
+// Leaf of the chain: no module declarations, so the walk stops here. The
+// `pub fn` lands in this module's export set (`ModuleTable.exports`).
+pub fn leaf() -> i32 {
+    1
+}
