@@ -39,6 +39,29 @@ const Symbol = struct {
     type_: *Type,
     is_mut: bool,
     is_fn: bool,
+    /// Non-null when the name is a module binding (`import a.b as m`, or a
+    /// bare `import a.b` which binds `b`): member access goes through this
+    /// export list instead of the type system (`ARCHITECTURE.md` §10.1, §10.5).
+    module_exports: ?[]const Export = null,
+};
+
+/// One exported name of a module and the type it resolves to. Collected from
+/// the `pub` top-level declarations after a module is checked; the type comes
+/// from the shared pool, so it is the same `*Type` every other module sees.
+pub const Export = struct { name: []const u8, type_: *Type };
+
+/// A name an importing module binds, as seen from that module. Built by the
+/// driver from the import declarations plus the exporting module's exports,
+/// then injected before the module is checked.
+pub const ImportBinding = struct {
+    /// The name as written in the importing module (`add`, or the alias).
+    local: []const u8,
+    /// The bound type for a plain name binding (`from x import add`). Unused
+    /// when `module_exports` is set.
+    type_: *Type,
+    /// Non-null for a module-namespace binding (`import a.b as m` / bare
+    /// `import a.b`): `m.x` resolves `x` in this list.
+    module_exports: ?[]const Export = null,
 };
 
 const Variant = struct { name: []const u8, enum_type: *Type };
@@ -54,7 +77,11 @@ fn isErrorType(t: *const Type) bool {
 pub const TypeChecker = struct {
     a: std.mem.Allocator,
     filename: []const u8,
-    pool: TypePool = undefined,
+    /// Interned types for the whole compilation. A pointer so every module's
+    /// checker shares one pool: a type exported by one module must be the
+    /// *same* interned type the importer resolves, or `typeEq` would compare
+    /// strangers.
+    pool: *TypePool,
     symbols: std.ArrayListUnmanaged(Symbol) = .empty,
     scopes: std.ArrayListUnmanaged(usize) = .empty,
     variants: std.ArrayListUnmanaged(Variant) = .empty,
@@ -66,8 +93,15 @@ pub const TypeChecker = struct {
     tree: *ast.Tree,
 
     pub fn init(a: std.mem.Allocator, tree: *ast.Tree, filename: []const u8) !TypeChecker {
-        var tc = TypeChecker{ .a = a, .filename = filename, .tree = tree };
-        tc.pool = try TypePool.init(a);
+        const pool = try a.create(TypePool);
+        pool.* = try TypePool.init(a);
+        return initWithPool(a, tree, filename, pool);
+    }
+
+    /// Like `init`, but joins an existing pool — the multi-module driver's
+    /// form: one pool for the whole compilation, one checker per module.
+    pub fn initWithPool(a: std.mem.Allocator, tree: *ast.Tree, filename: []const u8, pool: *TypePool) !TypeChecker {
+        var tc = TypeChecker{ .a = a, .filename = filename, .tree = tree, .pool = pool };
         try tc.registerBuiltins();
         return tc;
     }
@@ -243,7 +277,12 @@ pub const TypeChecker = struct {
     // ── Expressions ───────────────────────────────────────────────
 
     fn checkIdent(self: *TypeChecker, name: []const u8, loc: lexer.Loc) *Type {
-        if (self.lookup(name)) |sym| return sym.type_;
+        if (self.lookup(name)) |sym| {
+            if (sym.module_exports != null) {
+                return self.errorType(loc, "module '{s}' is not a value", .{name});
+            }
+            return sym.type_;
+        }
         return self.errorType(loc, "undefined variable '{s}'", .{name});
     }
 
@@ -418,6 +457,21 @@ pub const TypeChecker = struct {
     }
 
     fn checkFieldAccess(self: *TypeChecker, object_idx: u32, field: []const u8, loc: lexer.Loc) *Type {
+        // Module namespace: `alias.x` where `alias` is a module binding.
+        // File-as-module (§10.1): exactly one level — `alias.x.y` falls
+        // through and fails below, because a module has no sub-namespaces.
+        if (std.meta.activeTag(self.tree.node(object_idx)) == .identifier) {
+            const obj_name = self.tree.node(object_idx).identifier;
+            if (self.lookup(obj_name)) |sym| {
+                if (sym.module_exports) |exps| {
+                    for (exps) |ex| {
+                        if (std.mem.eql(u8, ex.name, field)) return ex.type_;
+                    }
+                    return self.errorType(loc, "module '{s}' does not export '{s}'", .{ obj_name, field });
+                }
+            }
+        }
+
         const object = self.checkNode(object_idx);
         if (isErrorType(object)) return object;
 
@@ -1004,6 +1058,49 @@ pub const TypeChecker = struct {
             },
             else => self.errorType(loc, "unhandled node kind", .{}),
         };
+    }
+
+    // ── Module imports (multi-module driver) ─────────────────────
+
+    /// Bind the names an import statement introduces, in the module-level
+    /// scope. Called by the driver after `init`/`initWithPool` and before
+    /// `check`, once the exporting modules have been checked and their
+    /// exports collected.
+    pub fn injectImports(self: *TypeChecker, bindings: []const ImportBinding) void {
+        for (bindings) |b| {
+            // Module bindings never consult `type_` (`module_exports`
+            // short-circuits every lookup); void is a safe placeholder.
+            const ty = if (b.module_exports != null) self.newType(.void) else b.type_;
+            self.insert(.{
+                .name = b.local,
+                .type_ = ty,
+                .is_mut = false,
+                .is_fn = false,
+                .module_exports = b.module_exports,
+            });
+        }
+    }
+
+    /// The `pub` top-level declarations of the module just checked, with the
+    /// type each name resolves to. Allocated from the checker's arena (the
+    /// compilation arena) — no `deinit`.
+    pub fn collectExports(self: *TypeChecker, items: []const u32) []Export {
+        var list: std.ArrayListUnmanaged(Export) = .empty;
+        for (items) |it| {
+            const name: ?[]const u8 = switch (self.tree.node(it)) {
+                .fn_decl => |f| if (f.is_pub) f.name else null,
+                .struct_decl => |s| if (s.is_pub) s.name else null,
+                .enum_decl => |e| if (e.is_pub) e.name else null,
+                .const_decl => |c| if (c.is_pub) c.name else null,
+                else => null,
+            };
+            if (name) |n| {
+                if (self.lookup(n)) |sym| {
+                    list.append(self.a, .{ .name = n, .type_ = sym.type_ }) catch @panic("OOM");
+                }
+            }
+        }
+        return list.toOwnedSlice(self.a) catch @panic("OOM");
     }
 
     fn checkModule(self: *TypeChecker, items: []const u32) void {

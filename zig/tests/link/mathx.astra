@@ -1,0 +1,11 @@
+// Multi-module fixture: exports an additive function and a constant.
+// `helper` is private — importing it must fail (pub gating).
+pub const PI2 = 6
+
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn helper() -> i32 {
+    99
+}

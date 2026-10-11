@@ -69,8 +69,10 @@ Compiler-introspection switches (no input file, they describe the compiler):
 ## Phase 2 (`zig/`) — Zig self-hosting compiler
 
 Requires **Zig 0.16.x**. The Astra-0 frontend (lexer, flat AST, parser, type
-checker, emitter, VM) is ported and verified against the seed suite; the module
-loader groundwork (`src/modules/`) is in progress.
+checker, emitter, VM) is ported and verified against the seed suite. The module
+system (`src/modules/` + the multi-module path in `src/main.zig`) compiles and
+runs multi-file programs: `pub` gating, shared type pool, mangled globals,
+dependency-order execution (`Documentacion/PHASE2_PROGRESS.md` §7).
 
 ```bash
 cd zig

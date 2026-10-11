@@ -274,7 +274,7 @@ pub const Graph = struct {
     /// appears exactly once, however many declarations point at it. A compiler
     /// executes module code in this order so a module's top-level statements
     /// run after everything it imports (`ARCHITECTURE.md` §10.5).
-    modules: []const LoadedModule,
+    modules: []LoadedModule,
 
     pub fn find(self: Graph, file: []const u8) ?usize {
         for (self.modules, 0..) |m, i| {

@@ -123,6 +123,24 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // Multi-module: the entry file declares imports, so the loader builds the
+    // graph and every module is checked (shared type pool, `pub` gating) and
+    // executed in dependency order on one VM. A single-file program takes the
+    // unchanged path below.
+    const entry_items = tree.extraSlice(tree.node(root).source_file);
+    var has_module_decls = false;
+    for (entry_items) |it| {
+        switch (tree.node(it)) {
+            .use_decl, .import_decl, .from_decl => has_module_decls = true,
+            else => {},
+        }
+    }
+
+    if (has_module_decls) {
+        try compileAndRunMulti(a, io, dir, file, source, out, mode, debug, init);
+        return;
+    }
+
     var tc = try typechecker.TypeChecker.init(a, &tree, file);
     tc.check(root);
     if (tc.error_count > 0) std.process.exit(1);
@@ -167,4 +185,161 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("{s}:{d}: runtime error: {s}\n", .{ file, machine.error_line, machine.error_msg });
         std.process.exit(1);
     }
+}
+
+/// Last segment of a dotted import path: `import geometry.mesh` (no `as`)
+/// binds `mesh` (decision recorded in `PHASE2_GAP_ANALYSIS.md` App. B #11,
+/// per `ARCHITECTURE.md` §10.1 file-as-module).
+fn lastSegment(path: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, path, '.')) |i| return path[i + 1 ..];
+    return path;
+}
+
+/// Compile and run a program whose entry file declares imports: load the
+/// module graph, typecheck every module against a shared type pool (imports
+/// resolve to the exporting module's `pub` declarations), then emit and run
+/// each module's top-level code in dependency order — the root's `main` runs
+/// last. The loader re-reads the entry from disk like every other module
+/// (one parse per module, one owner).
+fn compileAndRunMulti(
+    a: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    file: []const u8,
+    source: []const u8,
+    out: []u8,
+    mode: Mode,
+    debug: bool,
+    init: std.process.Init,
+) !void {
+    var loader = modules_mod.Loader.init(a, io, dir);
+    defer loader.deinit();
+    const graph = try loader.load(file);
+    if (loader.error_count > 0) std.process.exit(1);
+
+    const n = graph.modules.len;
+    const pool = try a.create(typechecker.TypePool);
+    pool.* = try typechecker.TypePool.init(a);
+
+    // `m{i}.` mangles module i's globals; graph order is post-order, so the
+    // root is the last module.
+    const mangled = try a.alloc([]const u8, n);
+    for (mangled, 0..) |*slot, i| {
+        slot.* = std.fmt.allocPrint(a, "m{d}.", .{i}) catch @panic("OOM");
+    }
+
+    const exports = try a.alloc([]typechecker.Export, n);
+    const module_imports = try a.alloc([]emitter.ImportRef, n);
+
+    var errors: usize = 0;
+    for (graph.modules, 0..) |*m, i| {
+        var mtc = try typechecker.TypeChecker.initWithPool(a, &m.tree, m.file, pool);
+
+        var bindings: std.ArrayListUnmanaged(typechecker.ImportBinding) = .empty;
+        var em_imports: std.ArrayListUnmanaged(emitter.ImportRef) = .empty;
+        for (m.table.decls) |decl| {
+            const dep_i = graph.find(decl.file) orelse continue; // loader guarantees it
+            const dep_exports = exports[dep_i];
+            switch (decl.kind) {
+                .from => {
+                    for (decl.items) |item| {
+                        const bound = modules_mod.itemBindingName(item);
+                        var found: ?typechecker.Export = null;
+                        for (dep_exports) |ex| {
+                            if (std.mem.eql(u8, ex.name, item.name)) {
+                                found = ex;
+                                break;
+                            }
+                        }
+                        if (found == null) {
+                            std.debug.print(
+                                "error:{s}: module '{s}' does not export '{s}'\n",
+                                .{ m.file, decl.path, item.name },
+                            );
+                            errors += 1;
+                            continue;
+                        }
+                        try bindings.append(a, .{ .local = bound, .type_ = found.?.type_ });
+                        try em_imports.append(a, .{
+                            .local = bound,
+                            .target = std.fmt.allocPrint(a, "{s}{s}", .{ mangled[dep_i], item.name }) catch @panic("OOM"),
+                        });
+                    }
+                },
+                .import => {
+                    const local = decl.alias orelse lastSegment(decl.path);
+                    try bindings.append(a, .{ .local = local, .type_ = undefined, .module_exports = dep_exports });
+                    try em_imports.append(a, .{ .local = local, .module_prefix = mangled[dep_i] });
+                },
+                .use => {
+                    std.debug.print(
+                        "error:{s}: 'use' (re-export) is not supported in multi-module builds yet; use 'import' or 'from'\n",
+                        .{m.file},
+                    );
+                    errors += 1;
+                },
+            }
+        }
+        mtc.injectImports(bindings.items);
+        mtc.check(m.root);
+        errors += mtc.error_count;
+        exports[i] = mtc.collectExports(m.tree.extraSlice(m.tree.node(m.root).source_file));
+        module_imports[i] = em_imports.items;
+    }
+    if (errors > 0) std.process.exit(1);
+
+    if (mode == .bytecode) {
+        var bw = std.Io.Writer.fixed(out);
+        for (graph.modules, 0..) |*m, i| {
+            var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
+            if (i == n - 1) {
+                mem.emit(m.root);
+            } else {
+                mem.emitModule(m.root);
+            }
+            if (mem.error_count > 0) std.process.exit(1);
+            try bw.print("== {s} ==\n", .{m.file});
+            try bytecode.dump(&bw, mem.code.items, mem.constants.items);
+        }
+        std.debug.print("{s}", .{bw.buffered()});
+        return;
+    }
+
+    var stdout_buf: [4096]u8 = undefined;
+    const stdout_file = std.Io.File.stdout();
+    var stdout_writer = stdout_file.writer(io, &stdout_buf);
+
+    var machine = try vm_mod.VM.init(a, &stdout_writer.interface);
+    machine.dump_vm = init.environ_map.contains("ASTRA_DUMP_VM");
+    machine.trace = init.environ_map.contains("ASTRA_TRACE");
+
+    var stdin_buf: [4096]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buf);
+    // The debugger maps lines against one source; on a multi-module program
+    // it shows the entry file's lines for every module (known limitation).
+    if (debug) machine.enableDebug(&stdin_reader.interface, source);
+
+    for (graph.modules, 0..) |*m, i| {
+        var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
+        if (i == n - 1) {
+            mem.emit(m.root);
+        } else {
+            mem.emitModule(m.root);
+        }
+        if (mem.error_count > 0) std.process.exit(1);
+
+        // Each module's code is arena-owned and stays valid: `run` only keeps
+        // pointers into it, and the globals table carries across calls, so
+        // dependencies' bindings are still there when the importer runs.
+        const res = machine.run(mem.code.items, mem.constants.items) catch |e| {
+            std.debug.print("error: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        if (res != .ok) {
+            stdout_writer.interface.flush() catch {};
+            std.debug.print("{s}:{d}: runtime error: {s}\n", .{ m.file, machine.error_line, machine.error_msg });
+            std.process.exit(1);
+        }
+    }
+    stdout_writer.interface.flush() catch {};
 }

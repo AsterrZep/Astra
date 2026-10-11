@@ -10,6 +10,7 @@ pub const bytecode = @import("emitter/bytecode.zig");
 pub const vm = @import("vm/vm.zig");
 pub const modules = @import("modules/modules.zig");
 pub const conformance = @import("conformance.zig");
+pub const link = @import("link.zig");
 
 test {
     _ = lexer;
@@ -21,4 +22,5 @@ test {
     _ = vm;
     _ = modules;
     _ = conformance;
+    _ = link;
 }

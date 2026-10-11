@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Multi-module compilation (Zig CLI)**: `astra-zig` now compiles and runs
+  programs whose entry file declares imports. The loader builds the graph
+  (dependencies first), every module typechecks against one shared type pool,
+  imports resolve to the exporting module's `pub` declarations (`pub` gating:
+  a private name is a compile error), module globals are mangled (`m0.add`)
+  into the VM's flat namespace, and modules execute in dependency order on
+  one VM — the root's `main` runs last. A bare `import a.b` binds the last
+  segment (decision App. B #11); `use` (re-exports) and cross-module
+  struct/enum *values* are not supported yet and say so. E2E fixtures in
+  `zig/tests/link/`, tests in `zig/src/link.zig`. The seed CLI still
+  compiles one file and ignores imports (the conformance suite is unaffected:
+  it uses its own single-file pipeline)
 - **Module loader keeps trees and orders dependencies first (Zig)**:
   `Loader.loadFile` now appends each module *after* its imports (post-order, so
   a future compiler can execute module code dep-before-user), retains each

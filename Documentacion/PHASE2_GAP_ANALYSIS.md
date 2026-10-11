@@ -721,10 +721,19 @@ Because the toolchain is ours, debugging can go further than C++:
     Until it is decided, `std.io` is an ordinary relative path.
 11. **What a bare `import a.b` binds:** `ARCHITECTURE.md` §10.5 imports `utils`
     and then uses `utils.Logger` (first segment), but for a multi-segment path
-    nothing says whether `import geometry.mesh` binds `geometry` or `mesh`. The
-    Zig module table records only names the grammar states explicitly
+    nothing says whether `import geometry.mesh` binds `geometry` or `mesh`.
+    ~~The Zig module table records only names the grammar states explicitly
     (`import … as x`, `from … import a, b as c`); this has to be decided before
-    a bare import can bind anything.
+    a bare import can bind anything.~~
+    **Resolved (2026-10-10, confirmed with the language owner): the last
+    segment.** `import geometry.mesh` binds `mesh` and `mesh.x` names an
+    export of `geometry/mesh.astra`; `import a.b as m` still binds `m`. The
+    rationale is file-as-module (`ARCHITECTURE.md` §10.1): the module *is* the
+    file, and a file's name is the last segment of its path — `utils.Logger`
+    in §10.5 reads as `utils` the file exporting `Logger`, which is exactly the
+    single-segment case of the same rule. Implemented in the Zig multi-module
+    driver (`zig/src/main.zig`, `lastSegment`) and pinned by the
+    `zig/tests/link/` fixtures.
 12. **Nested module declarations:** both compilers accept
     `fn main() { import inner.thing }`, although §12.1 makes these constructs
     `Item`s rather than statements. Rejecting them changes behaviour in both

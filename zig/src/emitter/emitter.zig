@@ -61,6 +61,19 @@ const EnumInfo = struct {
 const VariantEntry = struct { variant: []const u8, enum_idx: usize };
 const FnName = struct { name: []const u8 };
 
+/// One imported name, as the importing module's emitter must resolve it.
+pub const ImportRef = struct {
+    /// The name as written locally (`add`, or the alias / last segment).
+    local: []const u8,
+    /// Mangled global of a plain name binding (`from x import add` → `m0.add`).
+    /// Empty for a module binding.
+    target: []const u8 = "",
+    /// Mangled prefix of the exporting module for a namespace binding
+    /// (`import a.b as m` → `m0.`); `m.x` becomes global `m0.x`. Empty for a
+    /// plain binding.
+    module_prefix: []const u8 = "",
+};
+
 /// Pending jump sites for the enclosing loop, patched once the exit / continue
 /// targets are known.
 const LoopPatch = struct {
@@ -92,6 +105,15 @@ pub const Emitter = struct {
     sp: i32 = 0,
     sp_high: i32 = 0,
 
+    /// Mangled prefix of this module's globals ("" for single-file).
+    prefix: []const u8 = "",
+    /// Names bound by import declarations, mapped to their real globals.
+    imports: []const ImportRef = &.{},
+    /// Module-level names THIS module declares (fn/let/var/const). Only these
+    /// are mangled — a bare name that is not declared here is a builtin
+    /// (`print`) or an undefined global, and both keep the source name.
+    module_globals: std.ArrayListUnmanaged([]const u8) = .empty,
+
     error_count: usize = 0,
 
     // Limit reports fire once each: a 300-local function would otherwise
@@ -102,6 +124,60 @@ pub const Emitter = struct {
 
     pub fn init(a: std.mem.Allocator, tree: *ast.Tree, filename: []const u8) Emitter {
         return .{ .a = a, .tree = tree, .filename = filename };
+    }
+
+    /// Multi-module form: `prefix` mangles every module-level global this
+    /// module defines (`m1.` + `add` → `m1.add`, unique across the graph —
+    /// the VM's globals table is flat and name-keyed), and `imports` maps
+    /// each imported local name to the global it must actually read.
+    pub fn initWithModules(
+        a: std.mem.Allocator,
+        tree: *ast.Tree,
+        filename: []const u8,
+        prefix: []const u8,
+        imports: []const ImportRef,
+    ) Emitter {
+        return .{ .a = a, .tree = tree, .filename = filename, .prefix = prefix, .imports = imports };
+    }
+
+    /// The runtime global name for a module-level declaration of this module.
+    /// Builtins and unknown names pass through: they are not this module's
+    /// globals and the VM resolves (or rejects) them under the source name.
+    fn globalName(self: *const Emitter, name: []const u8) []const u8 {
+        if (self.prefix.len == 0) return name;
+        for (self.module_globals.items) |g| {
+            if (std.mem.eql(u8, g, name)) {
+                return std.fmt.allocPrint(self.a, "{s}{s}", .{ self.prefix, name }) catch @panic("OOM");
+            }
+        }
+        return name;
+    }
+
+    /// Record the module-level names this module declares, for `globalName`.
+    fn collectModuleGlobals(self: *Emitter, module: u32) void {
+        const items = switch (self.tree.node(module)) {
+            .source_file => |list| self.tree.extraSlice(list),
+            else => return,
+        };
+        for (items) |item| {
+            const name: ?[]const u8 = switch (self.tree.node(item)) {
+                .fn_decl => |f| f.name,
+                .var_decl => |v| v.name,
+                .const_decl => |v| v.name,
+                else => null,
+            };
+            if (name) |n| {
+                self.module_globals.append(self.a, n) catch @panic("OOM");
+            }
+        }
+    }
+
+    /// The import binding a local name resolves to, if any.
+    fn importFor(self: *const Emitter, name: []const u8) ?ImportRef {
+        for (self.imports) |ref| {
+            if (std.mem.eql(u8, ref.local, name)) return ref;
+        }
+        return null;
     }
 
     fn err(self: *Emitter, comptime fmt: []const u8, args: anytype) void {
@@ -661,8 +737,12 @@ pub const Emitter = struct {
             .identifier => |name| {
                 if (self.findLocal(name)) |slot| {
                     self.emitInstIndex(.get_local, @intCast(slot), ln);
+                } else if (self.importFor(name)) |ref| {
+                    const gname = if (ref.target.len > 0) ref.target else self.globalName(name);
+                    const ci = self.addConstant(bc.vString(gname));
+                    self.emitInstIndex(.get_global, ci, ln);
                 } else {
-                    const ci = self.addConstant(bc.vString(name));
+                    const ci = self.addConstant(bc.vString(self.globalName(name)));
                     self.emitInstIndex(.get_global, ci, ln);
                 }
             },
@@ -756,8 +836,13 @@ pub const Emitter = struct {
             .call_expr => |c| {
                 // A bare-identifier callee may name a data-carrying enum variant
                 // (`Paso(x)`); mirror the checker's rule: variant, else call.
+                // An imported name is never a local variant — skip the search
+                // so `from dep import helper` cannot be shadowed by a variant
+                // that happens to share the name.
                 const callee = self.tree.node(c.callee);
-                if (std.meta.activeTag(callee) == .identifier and !self.isKnownFn(callee.identifier)) {
+                const callee_imported = std.meta.activeTag(callee) == .identifier and
+                    self.importFor(callee.identifier) != null;
+                if (std.meta.activeTag(callee) == .identifier and !callee_imported and !self.isKnownFn(callee.identifier)) {
                     const vname = callee.identifier;
                     if (self.findEnumByVariant(vname)) |ei| {
                         if (enumVariantIndex(ei, vname)) |vi| {
@@ -836,6 +921,18 @@ pub const Emitter = struct {
             },
             .field_access => |fa| {
                 const obj = self.tree.node(fa.object);
+                // `alias.x` where `alias` is a module binding: a plain global
+                // read of the exporting module's mangled name.
+                if (std.meta.activeTag(obj) == .identifier) {
+                    if (self.importFor(obj.identifier)) |ref| {
+                        if (ref.module_prefix.len > 0) {
+                            const gname = std.fmt.allocPrint(self.a, "{s}{s}", .{ ref.module_prefix, fa.field }) catch @panic("OOM");
+                            const ci = self.addConstant(bc.vString(gname));
+                            self.emitInstIndex(.get_global, ci, ln);
+                            return;
+                        }
+                    }
+                }
                 // `Enum.Variant` is a value, not a field read.
                 if (std.meta.activeTag(obj) == .identifier) {
                     if (self.findEnum(obj.identifier)) |ei| {
@@ -845,6 +942,15 @@ pub const Emitter = struct {
                         const ci = self.addConstant(bc.vEnum(ei.name, fa.field));
                         self.emitInstIndex(.const_, ci, ln);
                     } else {
+                        // A plain imported name used with `.` names a foreign
+                        // enum/struct value; those are not linkable yet. Report
+                        // at compile time instead of an undefined global at
+                        // runtime (the emitted code is discarded anyway).
+                        if (self.importFor(obj.identifier)) |ref| {
+                            if (ref.module_prefix.len == 0) {
+                                self.err("error: '{s}.{s}' — cross-module enum/struct values are not supported yet\n", .{ obj.identifier, fa.field });
+                            }
+                        }
                         self.emitExpr(fa.object);
                         const ci = self.addConstant(bc.vString(fa.field));
                         self.emitInstIndex(.get_field, ci, ln);
@@ -1277,7 +1383,7 @@ pub const Emitter = struct {
                     self.emitInstIndex(.set_local, @intCast(slot), ln);
                     self.emitInstIndex(.get_local, @intCast(slot), ln);
                 } else {
-                    const ci = self.addConstant(bc.vString(name));
+                    const ci = self.addConstant(bc.vString(self.globalName(name)));
                     self.emitInstIndex(.set_global, ci, ln);
                     self.emitInstIndex(.get_global, ci, ln);
                 }
@@ -1307,7 +1413,7 @@ pub const Emitter = struct {
             .fn_decl => |f| {
                 const fn_obj = self.emitFunctionBody(f.params, f.body, ln);
                 const fn_idx = self.addConstant(bc.vFn(fn_obj));
-                const name_idx = self.addConstant(bc.vString(f.name));
+                const name_idx = self.addConstant(bc.vString(self.globalName(f.name)));
                 if (self.scope_depth == 0) {
                     self.emitInstIndex(.const_, fn_idx, ln);
                     self.emitInstIndex(.set_global, name_idx, ln);
@@ -1334,12 +1440,12 @@ pub const Emitter = struct {
                     self.emitInstIndex(.const_, ci, ln);
                 }
                 if (self.scope_depth == 0) {
-                    const name_idx = self.addConstant(bc.vString(v.name));
+                    const name_idx = self.addConstant(bc.vString(self.globalName(v.name)));
                     self.emitInstIndex(.set_global, name_idx, ln);
                 } else {
                     const slot = self.addLocal(v.name);
                     if (slot == 0xFF) {
-                        const name_idx = self.addConstant(bc.vString(v.name));
+                        const name_idx = self.addConstant(bc.vString(self.globalName(v.name)));
                         self.emitInstIndex(.set_global, name_idx, ln);
                     } else {
                         self.emitInstIndex(.set_local, slot, ln);
@@ -1381,7 +1487,22 @@ pub const Emitter = struct {
     }
 
     /// Public API: emit a whole module. `module` is the `source_file` root.
+    /// Emit a dependency module: its type registrations and module-level
+    /// code, ending in `halt` but WITHOUT the call to `main` — only the root
+    /// module gets one (the multi-module driver runs modules in graph order
+    /// and calls the root's `main` last).
+    pub fn emitModule(self: *Emitter, module: u32) void {
+        self.collectModuleGlobals(module);
+        self.registerTypes(module);
+        self.emitStmt(module);
+        self.emitInst(.halt, 0);
+    }
+
+    /// Emit a whole module and, if it defines main(), call it. `module` is the
+    /// `source_file` root. Single-file form: the prefix is empty and globals
+    /// keep their source names.
     pub fn emit(self: *Emitter, module: u32) void {
+        self.collectModuleGlobals(module);
         self.registerTypes(module);
         self.emitStmt(module);
 
@@ -1390,7 +1511,7 @@ pub const Emitter = struct {
         for (self.tree.extraSlice(self.tree.node(module).source_file)) |item| {
             const it = self.tree.node(item);
             if (std.meta.activeTag(it) == .fn_decl and std.mem.eql(u8, it.fn_decl.name, "main")) {
-                const name_idx = self.addConstant(bc.vString("main"));
+                const name_idx = self.addConstant(bc.vString(self.globalName("main")));
                 self.emitInstIndex(.get_global, name_idx, self.tree.loc(item).line);
                 self.emitInst(.call, self.tree.loc(item).line);
                 self.code.items[self.code.items.len - 1].arg = .{ .arg_count = 0 };

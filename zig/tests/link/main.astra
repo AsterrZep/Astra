@@ -1,0 +1,14 @@
+// Multi-module fixture root: `from` binds names directly, `import … as`
+// binds a module namespace (member access `sh.x`), and a bare `import`
+// binds the last segment of the path.
+from mathx import add, PI2
+import shape as sh
+import mathx
+
+fn main() {
+    print(add(2, 3));
+    print(PI2);
+    print(sh.scale(4));
+    print(sh.area(5));
+    print(mathx.add(10, 20));
+}
