@@ -167,7 +167,7 @@ The C codegen generates executable C from Astra bytecode. The pipeline is:
 
 ### What works (verified against VM)
 
-All 54 non-UI conformance cases are compiled through `--emit-c`, run, and
+All 55 non-UI conformance cases are compiled through `--emit-c`, run, and
 compared against the VM's output by `make test` (identical output, no leaks under
 LSan). That covers:
 

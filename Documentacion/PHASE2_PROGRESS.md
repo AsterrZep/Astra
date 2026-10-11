@@ -33,14 +33,14 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 
 ### Verificación medida
 
-- **54/54** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **55/55** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
 - **26/26** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop`, que el type checker deja pasar a propósito.
-- **49 pruebas unitarias** (lexer, AST, parser, type checker, emitter, bytecode,
-  VM, módulos, depurador y conformance) en `zig build test`.
+- **53 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
+  bytecode, VM, módulos, depurador y conformance) en `zig build test`.
 
 ---
 
@@ -133,6 +133,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
 | 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | 🟡 | esbozo en `src/modules/modules.zig`: ruta relativa → fichero, `ModuleTable`, nombres explícitos y un `Loader` que carga el grafo y detecta ciclos (§10.6), con `--dump-modules`. Sin resolución de referencias ni `pub`. Ver §7.1 |
 | 10 | **InternPool de tipos** (substrato de genéricos) | ✅ | `src/typechecker/types.zig`: pool hash-consed con identidad canónica (struct/enum por nombre); `typeEq` = fast-path de puntero + reglas de unificación del seed recursivas en compuestos (`array(int_literal)` ≡ `[]i32`); fn sin retorno anotado normalizado a `void` (paridad con `a.ret orelse voidType` del seed). 53/53 tests. Sustituye el diseño "un heap-node por ocurrencia" (`PHASE2_ARCHITECTURE.md` §3.3) |
+| 11 | **Colección de declaraciones** (forward-refs de tipo) | ✅ | Pase 0 en ambos compiladores (`typecheck_module_pass`/`checkModule`): registra nombres de struct/enum con layout vacío antes de resolver firmas y fields, así las declaraciones se referencian en cualquier orden (incl. recursión mutua). Caso nuevo `types/forward_type_refs.astra`; suite 96/96 seed, 53/53 zig. Los structs anidados en cuerpos de función siguen sin funcionar (paridad — ya fallaban igual antes) |
 
 ---
 

@@ -862,7 +862,13 @@ pub const TypeChecker = struct {
             flds = buf;
         }
         st.fields = flds;
-        self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
+        // Pass 0 already bound the module-level name to this canonical type;
+        // an unrelated binding (a shadowing local) gets a fresh symbol.
+        if (self.lookup(s.name)) |existing| {
+            if (existing.type_ != st) self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
+        } else {
+            self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
+        }
     }
 
     fn checkEnumDecl(self: *TypeChecker, idx: u32) void {
@@ -898,7 +904,11 @@ pub const TypeChecker = struct {
         }
         en.variants = vs;
         en.payloads = payloads;
-        self.insert(.{ .name = e.name, .type_ = en, .is_mut = false, .is_fn = false });
+        if (self.lookup(e.name)) |existing| {
+            if (existing.type_ != en) self.insert(.{ .name = e.name, .type_ = en, .is_mut = false, .is_fn = false });
+        } else {
+            self.insert(.{ .name = e.name, .type_ = en, .is_mut = false, .is_fn = false });
+        }
     }
 
     /// Public entry point: type-check a whole module and accumulate errors.
@@ -997,6 +1007,24 @@ pub const TypeChecker = struct {
     }
 
     fn checkModule(self: *TypeChecker, items: []const u32) void {
+        // Pass 0: bind every top-level struct/enum name to an empty type
+        // before any signature or field type is resolved, so declarations may
+        // reference each other in any order (forward references, mutual
+        // recursion). checkStructDecl/checkEnumDecl fill the layouts in
+        // pass 1 — the pool hands back the same canonical type.
+        for (items) |it| {
+            switch (self.tree.node(it)) {
+                .struct_decl => |s| {
+                    const st = self.pool.structType(s.name) catch @panic("OOM");
+                    self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
+                },
+                .enum_decl => |e| {
+                    const en = self.pool.enumType(e.name) catch @panic("OOM");
+                    self.insert(.{ .name = e.name, .type_ = en, .is_mut = false, .is_fn = false });
+                },
+                else => {},
+            }
+        }
         // First pass: register signatures and type declarations.
         for (items) |it| {
             switch (self.tree.node(it)) {

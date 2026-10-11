@@ -1,0 +1,77 @@
+// Type references may point forward: struct fields, fn signatures, return
+// types, variable annotations and enum payloads all resolve regardless of
+// declaration order (declaration collection precedes layout resolution).
+// EXPECT: 7
+// EXPECT: ana
+// EXPECT: 3
+// EXPECT: 5
+// EXPECT: 9
+
+struct Persona {
+    amigo: Persona2
+    edad: i32
+}
+
+struct Persona2 {
+    nombre: string
+}
+
+enum Accion {
+    Mover(Paso)
+    Pintar(Color)
+    Quedarse
+}
+
+struct Paso {
+    pasos: i32
+}
+
+enum Color {
+    Rojo
+    Azul
+}
+
+// Mutual recursion: two structs referring to each other (optional breaks
+// the cycle for values, but the *types* must resolve in any order).
+struct Madre {
+    hija: Hija?
+}
+
+struct Hija {
+    madre: Madre?
+}
+
+fn sumar_edades(a: Persona, b: Persona) -> i32 {
+    return a.edad + b.edad;
+}
+
+fn anotada(p: Persona2) -> string {
+    return p.nombre;
+}
+
+fn main() {
+    let ana = Persona { amigo: Persona2 { nombre: "ana" }, edad: 3 };
+    let juan = Persona { amigo: Persona2 { nombre: "juan" }, edad: 4 };
+    print(sumar_edades(ana, juan));
+    print(anotada(ana.amigo));
+
+    let p: Paso = Paso { pasos: 3 };
+    print(p.pasos);
+
+    let acc = Mover(Paso { pasos: 5 });
+    match acc {
+        Accion.Mover(paso) => print(paso.pasos),
+        Accion.Pintar(c) => {
+            match c {
+                Color.Rojo => print("rojo"),
+                Color.Azul => print("azul"),
+            }
+        },
+        Accion.Quedarse => print("quieto"),
+    }
+
+    let m: Madre = Madre { hija: none };
+    if m.hija == none {
+        print(9);
+    }
+}

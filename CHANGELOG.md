@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
 
 ### Fixed
+- **Type references may point forward (seed + Zig)**: signatures, struct
+  fields, variable annotations and enum payloads referring to a struct or enum
+  declared later in the file used to fail with `unknown type '...'`. Both
+  typecheckers now run a declaration-collection pass that binds every
+  top-level struct/enum name to an empty type before resolving any type node,
+  so declarations work in any order — including mutual recursion. Pinned by
+  `tests/conformance/types/forward_type_refs.astra` (seed suite now 96 cases)
 - **Emitter limits no longer fail silently (seed + Zig)**: past `MAX_CODE` the
   instruction was dropped (wrong answers with exit 0), past `MAX_CONSTS`
   `add_constant` returned index 0 (aliasing every further constant), and past

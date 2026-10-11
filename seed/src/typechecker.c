@@ -1588,9 +1588,26 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
 static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.struct_decl.name;
 
-    /* Create struct type */
-    Type *st_type = type_new(tc->arena, TYPE_STRUCT);
-    st_type->as.struc.name = name;
+    /* The module pass pre-registers top-level struct names (declare_type_decls)
+     * so field types may reference structs declared later in the file. Fill
+     * that type in place; a name not bound to a struct — a nested declaration
+     * inside a function body, or a shadowing local — gets a fresh type. */
+    Type *st_type = NULL;
+    Symbol *existing = symbol_table_lookup(tc->symbols, name);
+    if (existing && existing->type && existing->type->kind == TYPE_STRUCT) {
+        st_type = existing->type;
+    } else {
+        st_type = type_new(tc->arena, TYPE_STRUCT);
+        st_type->as.struc.name = name;
+        Symbol sym = {
+            .name    = name,
+            .type    = st_type,
+            .is_mut  = false,
+            .is_fn   = false,
+            .def_loc = node->loc,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
 
     /* Populate fields */
     size_t field_count = node->as.struct_decl.field_names.len;
@@ -1607,15 +1624,6 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
         st_type->as.struc.fields = NULL;
         st_type->as.struc.field_count = 0;
     }
-
-    Symbol sym = {
-        .name    = name,
-        .type    = st_type,
-        .is_mut  = false,
-        .is_fn   = false,
-        .def_loc = node->loc,
-    };
-    symbol_table_insert(tc->symbols, sym);
 }
 
 static int enum_variant_index(Type *en, InternedString variant) {
@@ -1629,8 +1637,24 @@ static int enum_variant_index(Type *en, InternedString variant) {
 static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.enum_decl.name;
 
-    Type *en_type = type_new(tc->arena, TYPE_ENUM);
-    en_type->as.enumeration.name = name;
+    /* Same forward-reference contract as structs: the module pass binds the
+     * name, this fills variants and payload layouts into that type. */
+    Type *en_type = NULL;
+    Symbol *existing = symbol_table_lookup(tc->symbols, name);
+    if (existing && existing->type && existing->type->kind == TYPE_ENUM) {
+        en_type = existing->type;
+    } else {
+        en_type = type_new(tc->arena, TYPE_ENUM);
+        en_type->as.enumeration.name = name;
+        Symbol sym = {
+            .name    = name,
+            .type    = en_type,
+            .is_mut  = false,
+            .is_fn   = false,
+            .def_loc = node->loc,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
 
     size_t nv = node->as.enum_decl.variants.len;
     en_type->as.enumeration.variant_count = nv;
@@ -1664,22 +1688,52 @@ static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
             if (type_is_error(vl->types[j])) return;
         }
     }
-
-    Symbol sym = {
-        .name    = name,
-        .type    = en_type,
-        .is_mut  = false,
-        .is_fn   = false,
-        .def_loc = node->loc,
-    };
-    symbol_table_insert(tc->symbols, sym);
 }
 
 /* ============================================================
  * §7: Module Type Checking
  * ============================================================ */
 
+/* Pass 0 of module type checking: bind every top-level struct/enum name to an
+ * empty type before any signature or field type is resolved. Declarations may
+ * then reference each other in any order (forward references, mutual
+ * recursion); typecheck_{struct,enum}_decl fills the layouts in pass 1. */
+static void declare_type_decls(TypeChecker *tc, Node *module) {
+    for (size_t i = 0; i < module->as.module.items.len; i++) {
+        Node *item = module->as.module.items.data[i];
+        if (item->kind == NODE_STRUCT_DECL) {
+            Type *st = type_new(tc->arena, TYPE_STRUCT);
+            st->as.struc.name = item->as.struct_decl.name;
+            st->as.struc.fields = NULL;
+            st->as.struc.field_count = 0;
+            Symbol sym = {
+                .name    = item->as.struct_decl.name,
+                .type    = st,
+                .is_mut  = false,
+                .is_fn   = false,
+                .def_loc = item->loc,
+            };
+            symbol_table_insert(tc->symbols, sym);
+        } else if (item->kind == NODE_ENUM_DECL) {
+            Type *en = type_new(tc->arena, TYPE_ENUM);
+            en->as.enumeration.name = item->as.enum_decl.name;
+            en->as.enumeration.variant_count = 0;
+            en->as.enumeration.variants = NULL;
+            en->as.enumeration.payloads = NULL;
+            Symbol sym = {
+                .name    = item->as.enum_decl.name,
+                .type    = en,
+                .is_mut  = false,
+                .is_fn   = false,
+                .def_loc = item->loc,
+            };
+            symbol_table_insert(tc->symbols, sym);
+        }
+    }
+}
+
 static void typecheck_module_pass(TypeChecker *tc, Node *module) {
+    declare_type_decls(tc, module);
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
         switch (item->kind) {
