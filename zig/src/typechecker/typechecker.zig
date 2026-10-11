@@ -19,74 +19,20 @@ const std = @import("std");
 const lexer = @import("../lexer/lexer.zig");
 const ast = @import("../ast/ast.zig");
 const parser = @import("../parser/parser.zig");
+const types = @import("types.zig");
 
 fn isTag(n: ast.Node, tag: ast.Tag) bool {
     return std.meta.activeTag(n) == tag;
 }
 
-pub const Kind = enum {
-    void,
-    bool_,
-    int, // i32
-    int64,
-    uint32,
-    uint64,
-    int_literal, // polymorphic integer literal (no width yet)
-    float, // f64
-    string,
-    optional,
-    array,
-    fn_type,
-    struct_,
-    enum_,
-    nil,
-    unknown,
-    error_,
-
-    pub fn name(self: Kind) []const u8 {
-        return switch (self) {
-            .void => "void",
-            .bool_ => "bool",
-            .int => "i32",
-            .int_literal => "integer literal",
-            .int64 => "i64",
-            .uint32 => "u32",
-            .uint64 => "u64",
-            .float => "f64",
-            .string => "string",
-            .optional => "optional",
-            .array => "array",
-            .fn_type => "fn",
-            .struct_ => "struct",
-            .enum_ => "enum",
-            .nil => "nil",
-            .unknown => "unknown",
-            .error_ => "<error>",
-        };
-    }
-};
-
-pub const Field = struct { name: []const u8, type_: *Type };
-
-/// Compile-time payload layout of one data-carrying variant, parallel to
-/// `variants`. Unnamed fields keep an empty name.
-pub const VariantLayout = struct {
-    names: []const []const u8 = &.{},
-    types: []const *Type = &.{},
-    field_count: usize = 0,
-};
-
-pub const Type = struct {
-    kind: Kind,
-    inner: ?*Type = null, // optional
-    elem: ?*Type = null, // array
-    params: []const *Type = &.{}, // fn
-    ret: ?*Type = null, // fn
-    name: []const u8 = "", // struct / enum
-    fields: []const Field = &.{}, // struct
-    variants: []const []const u8 = &.{}, // enum
-    payloads: []const VariantLayout = &.{}, // enum
-};
+pub const Type = types.Type;
+pub const Kind = types.Kind;
+pub const Field = types.Field;
+pub const VariantLayout = types.VariantLayout;
+pub const TypePool = types.TypePool;
+/// Port of the seed's `type_eq`; operates on interned types (see `types.zig`).
+pub const typeEq = types.typeEq;
+const isInteger = types.isInteger;
 
 const Symbol = struct {
     name: []const u8,
@@ -97,52 +43,18 @@ const Symbol = struct {
 
 const Variant = struct { name: []const u8, enum_type: *Type };
 
-fn isInteger(t: *const Type) bool {
-    return switch (t.kind) {
-        .int, .int64, .uint32, .uint64, .int_literal => true,
-        else => false,
-    };
-}
-
 fn isNumeric(t: *const Type) bool {
     return isInteger(t) or t.kind == .float;
-}
-
-/// Port of `type_eq` (seed/src/typechecker.c).
-pub fn typeEq(a: *const Type, b: *const Type) bool {
-    if (a.kind == .unknown or b.kind == .unknown) return true;
-    if ((a.kind == .nil and b.kind == .optional) or (a.kind == .optional and b.kind == .nil)) return true;
-    if (a.kind == .int_literal and b.kind != .int_literal) return isInteger(b);
-    if (b.kind == .int_literal and a.kind != .int_literal) return isInteger(a);
-    if (a.kind != b.kind) return false;
-    return switch (a.kind) {
-        .optional => typeEq(a.inner.?, b.inner.?),
-        .array => typeEq(a.elem.?, b.elem.?),
-        .fn_type => blk: {
-            if (a.params.len != b.params.len) break :blk false;
-            for (a.params, b.params) |pa, pb| {
-                if (!typeEq(pa, pb)) break :blk false;
-            }
-            const ar = a.ret orelse voidType;
-            const br = b.ret orelse voidType;
-            break :blk typeEq(ar, br);
-        },
-        .struct_ => std.mem.eql(u8, a.name, b.name),
-        .enum_ => std.mem.eql(u8, a.name, b.name),
-        else => true,
-    };
 }
 
 fn isErrorType(t: *const Type) bool {
     return t.kind == .error_;
 }
 
-var voidTypeInstance = Type{ .kind = .void };
-var voidType: *Type = &voidTypeInstance;
-
 pub const TypeChecker = struct {
     a: std.mem.Allocator,
     filename: []const u8,
+    pool: TypePool = undefined,
     symbols: std.ArrayListUnmanaged(Symbol) = .empty,
     scopes: std.ArrayListUnmanaged(usize) = .empty,
     variants: std.ArrayListUnmanaged(Variant) = .empty,
@@ -155,35 +67,27 @@ pub const TypeChecker = struct {
 
     pub fn init(a: std.mem.Allocator, tree: *ast.Tree, filename: []const u8) !TypeChecker {
         var tc = TypeChecker{ .a = a, .filename = filename, .tree = tree };
+        tc.pool = try TypePool.init(a);
         try tc.registerBuiltins();
         return tc;
     }
 
-    // ── Type constructors ─────────────────────────────────────────
+    // ── Type constructors (all types are interned in `pool`) ──────
 
     fn newType(self: *TypeChecker, kind: Kind) *Type {
-        const t = self.a.create(Type) catch @panic("OOM");
-        t.* = .{ .kind = kind };
-        return t;
+        return self.pool.primitive(kind) catch @panic("OOM");
     }
 
     fn newOptional(self: *TypeChecker, inner: *Type) *Type {
-        const t = self.newType(.optional);
-        t.inner = inner;
-        return t;
+        return self.pool.optional(inner) catch @panic("OOM");
     }
 
     fn newArray(self: *TypeChecker, elem: *Type) *Type {
-        const t = self.newType(.array);
-        t.elem = elem;
-        return t;
+        return self.pool.array(elem) catch @panic("OOM");
     }
 
     fn newFn(self: *TypeChecker, params: []const *Type, ret: ?*Type) *Type {
-        const t = self.newType(.fn_type);
-        t.params = params;
-        t.ret = ret;
-        return t;
+        return self.pool.fnType(params, ret) catch @panic("OOM");
     }
 
     // ── Symbol table ──────────────────────────────────────────────
@@ -259,8 +163,7 @@ pub const TypeChecker = struct {
 
         // Option: some(T) -> Option, none -> Option
         {
-            const opt = self.newType(.enum_);
-            opt.name = "Option";
+            const opt = self.pool.enumType("Option") catch @panic("OOM");
             const vs = try self.a.alloc([]const u8, 2);
             vs[0] = "some";
             vs[1] = "none";
@@ -277,8 +180,7 @@ pub const TypeChecker = struct {
 
         // Result: ok(T) -> Result, err(E) -> Result
         {
-            const res = self.newType(.enum_);
-            res.name = "Result";
+            const res = self.pool.enumType("Result") catch @panic("OOM");
             const vs = try self.a.alloc([]const u8, 2);
             vs[0] = "ok";
             vs[1] = "err";
@@ -943,26 +845,29 @@ pub const TypeChecker = struct {
 
     fn checkStructDecl(self: *TypeChecker, idx: u32) void {
         const s = self.tree.node(idx).struct_decl;
-        const st = self.newType(.struct_);
-        st.name = s.name;
+        // Keyed by name: a re-declaration aliases this entry and overwrites
+        // the layout below (see types.zig header; the seed has no
+        // duplicate-name error either).
+        const st = self.pool.structType(s.name) catch @panic("OOM");
         const fields = self.tree.extraSlice(s.fields);
+        var flds: []const Field = &.{};
         if (fields.len > 0) {
-            var flds = self.a.alloc(Field, fields.len) catch @panic("OOM");
+            const buf = self.a.alloc(Field, fields.len) catch @panic("OOM");
             for (fields, 0..) |fidx, i| {
                 const fd = self.tree.node(fidx).field_decl;
                 const ft = self.resolveTypeNode(fd.type_node);
                 if (isErrorType(ft)) return;
-                flds[i] = .{ .name = fd.name, .type_ = ft };
+                buf[i] = .{ .name = fd.name, .type_ = ft };
             }
-            st.fields = flds;
+            flds = buf;
         }
+        st.fields = flds;
         self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
     }
 
     fn checkEnumDecl(self: *TypeChecker, idx: u32) void {
         const e = self.tree.node(idx).enum_decl;
-        const en = self.newType(.enum_);
-        en.name = e.name;
+        const en = self.pool.enumType(e.name) catch @panic("OOM");
         const variants = self.tree.extraSlice(e.variants);
         var vs = self.a.alloc([]const u8, variants.len) catch @panic("OOM");
         for (variants, 0..) |vi, i| {
@@ -970,7 +875,6 @@ pub const TypeChecker = struct {
             vs[i] = v.name;
             self.addVariant(v.name, en);
         }
-        en.variants = vs;
 
         var payloads = self.a.alloc(VariantLayout, variants.len) catch @panic("OOM");
         for (variants, 0..) |vi, i| {
@@ -980,18 +884,19 @@ pub const TypeChecker = struct {
                 const pf = self.tree.extraSlice(self.tree.node(p).payload);
                 vl.field_count = pf.len;
                 var names = self.a.alloc([]const u8, pf.len) catch @panic("OOM");
-                var types = self.a.alloc(*Type, pf.len) catch @panic("OOM");
+                var types_buf = self.a.alloc(*Type, pf.len) catch @panic("OOM");
                 for (pf, 0..) |fidx, j| {
                     const fd = self.tree.node(fidx).field_decl;
                     names[j] = fd.name;
-                    types[j] = self.resolveTypeNode(fd.type_node);
-                    if (isErrorType(types[j])) return;
+                    types_buf[j] = self.resolveTypeNode(fd.type_node);
+                    if (isErrorType(types_buf[j])) return;
                 }
                 vl.names = names;
-                vl.types = types;
+                vl.types = types_buf;
             }
             payloads[i] = vl;
         }
+        en.variants = vs;
         en.payloads = payloads;
         self.insert(.{ .name = e.name, .type_ = en, .is_mut = false, .is_fn = false });
     }
