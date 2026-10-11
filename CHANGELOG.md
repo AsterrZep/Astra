@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Unified diagnostics sink (Zig)**: parser, type checker, emitter and
+  module loader now report through one `Diagnostic{file, span, msg}` sink
+  (`zig/src/diagnostics.zig`) with a single `file:line:col: error: msg`
+  format that degrades to `file:line:`, `file:` or `error:` when location
+  information is missing. Parse errors now carry the module's file name
+  (previously they printed `error:{line}:{col}:` with no file, which was
+  ambiguous in multi-module builds). The loader's read/parse/cycle errors
+  and the driver's `does not export` / `use not supported` errors use the
+  same sink; runtime and CLI-flag errors are intentionally outside it.
+  Phases with no sink wired (e.g. the conformance runner) print directly
+  through the same formatter, so behaviour is identical either way. The
+  seed compiler is untouched
 - **Multi-module compilation (Zig CLI)**: `astra-zig` now compiles and runs
   programs whose entry file declares imports. The loader builds the graph
   (dependencies first), every module typechecks against one shared type pool,

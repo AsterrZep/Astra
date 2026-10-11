@@ -44,6 +44,7 @@
 
 const std = @import("std");
 const ast = @import("../ast/ast.zig");
+const diagnostics_mod = @import("../diagnostics.zig");
 
 /// `error.InvalidImportPath` covers both an empty path and a segment that is not
 /// an identifier. It is one error because both mean the same thing at this
@@ -302,6 +303,9 @@ pub const Loader = struct {
     modules: std.ArrayListUnmanaged(LoadedModule) = .empty,
     /// Files being loaded right now, outermost first.
     visiting: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Optional sink: when wired, errors are recorded there (and echoed to
+    /// stderr); when null, they print directly. Both paths share one format.
+    diag: ?*diagnostics_mod.Sink = null,
 
     pub fn init(a: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) Loader {
         return .{ .a = a, .io = io, .dir = dir };
@@ -335,7 +339,7 @@ pub const Loader = struct {
         if (self.loadedIndex(file) != null) return;
 
         const source = self.dir.readFileAlloc(self.io, file, self.a, .limited(source_limit)) catch |err| {
-            std.debug.print("error: cannot read module {s}: {s}\n", .{ file, @errorName(err) });
+            diagnostics_mod.emit(self.diag, file, diagnostics_mod.no_span, "cannot read module: {s}", .{@errorName(err)});
             self.error_count += 1;
             return;
         };
@@ -346,8 +350,11 @@ pub const Loader = struct {
         var tree_owned = false;
         defer if (!tree_owned) tree.deinit();
         var p = parser.Parser.init(self.a, source, &tree);
+        p.filename = file;
+        p.diag = self.diag;
         const root = p.parse() catch {
-            std.debug.print("error: {s}: module did not parse\n", .{file});
+            // The parser already reported each syntax error with this file's
+            // name through the sink; count the module as failed, nothing more.
             self.error_count += 1;
             return;
         };
@@ -385,9 +392,14 @@ pub const Loader = struct {
     }
 
     fn reportCycle(self: *Loader, at: usize, file: []const u8) void {
-        std.debug.print("error: circular import: ", .{});
-        for (self.visiting.items[at..]) |step| std.debug.print("{s} -> ", .{step});
-        std.debug.print("{s}\n", .{file});
+        var buf: [1024]u8 = undefined;
+        var w = std.Io.Writer.fixed(&buf);
+        w.writeAll("circular import: ") catch {};
+        for (self.visiting.items[at..]) |step| {
+            w.print("{s} -> ", .{step}) catch break;
+        }
+        w.print("{s}", .{file}) catch {};
+        diagnostics_mod.emit(self.diag, file, diagnostics_mod.no_span, "{s}", .{w.buffered()});
         self.error_count += 1;
     }
 };

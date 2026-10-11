@@ -14,6 +14,7 @@ const emitter = @import("emitter/emitter.zig");
 const bytecode = @import("emitter/bytecode.zig");
 const vm_mod = @import("vm/vm.zig");
 const modules_mod = @import("modules/modules.zig");
+const diagnostics = @import("diagnostics.zig");
 
 const Mode = enum { parse, tokens, ast_dump, bytecode, modules };
 
@@ -72,6 +73,12 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     const a = arena.allocator();
 
+    // Every compiler phase reports through this one sink: one record shape
+    // (`Diagnostic{file, span, msg}`), one format, and — when the CLI exits
+    // on a compile error — one place that has seen every message.
+    var diag = diagnostics.Sink.init(a);
+    defer diag.deinit();
+
     // Output is assembled in a buffer and flushed at once; the dumps go to
     // stderr like `std.debug.print`, matching the seed's introspection flags.
     const out = try allocator.alloc(u8, 1 << 20);
@@ -96,6 +103,8 @@ pub fn main(init: std.process.Init) !void {
     var tree = ast.Tree.init(a, source);
     defer tree.deinit();
     var p = parser.Parser.init(a, source, &tree);
+    p.filename = file;
+    p.diag = &diag;
     const root = p.parse() catch {
         std.process.exit(1);
     };
@@ -113,6 +122,7 @@ pub fn main(init: std.process.Init) !void {
     if (mode == .modules) {
         var loader = modules_mod.Loader.init(a, io, dir);
         defer loader.deinit();
+        loader.diag = &diag;
         const graph = try loader.load(file);
         try modules_mod.dumpGraph(&w, graph);
         std.debug.print("{s}", .{w.buffered()});
@@ -137,15 +147,17 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (has_module_decls) {
-        try compileAndRunMulti(a, io, dir, file, source, out, mode, debug, init);
+        try compileAndRunMulti(a, io, dir, file, source, out, mode, debug, init, &diag);
         return;
     }
 
     var tc = try typechecker.TypeChecker.init(a, &tree, file);
+    tc.diag = &diag;
     tc.check(root);
     if (tc.error_count > 0) std.process.exit(1);
 
     var em = emitter.Emitter.init(a, &tree, file);
+    em.diag = &diag;
     em.emit(root);
     if (em.error_count > 0) std.process.exit(1);
 
@@ -211,9 +223,11 @@ fn compileAndRunMulti(
     mode: Mode,
     debug: bool,
     init: std.process.Init,
+    diag: *diagnostics.Sink,
 ) !void {
     var loader = modules_mod.Loader.init(a, io, dir);
     defer loader.deinit();
+    loader.diag = diag;
     const graph = try loader.load(file);
     if (loader.error_count > 0) std.process.exit(1);
 
@@ -234,6 +248,7 @@ fn compileAndRunMulti(
     var errors: usize = 0;
     for (graph.modules, 0..) |*m, i| {
         var mtc = try typechecker.TypeChecker.initWithPool(a, &m.tree, m.file, pool);
+        mtc.diag = diag;
 
         var bindings: std.ArrayListUnmanaged(typechecker.ImportBinding) = .empty;
         var em_imports: std.ArrayListUnmanaged(emitter.ImportRef) = .empty;
@@ -252,10 +267,7 @@ fn compileAndRunMulti(
                             }
                         }
                         if (found == null) {
-                            std.debug.print(
-                                "error:{s}: module '{s}' does not export '{s}'\n",
-                                .{ m.file, decl.path, item.name },
-                            );
+                            diagnostics.emit(diag, m.file, diagnostics.no_span, "module '{s}' does not export '{s}'", .{ decl.path, item.name });
                             errors += 1;
                             continue;
                         }
@@ -272,10 +284,7 @@ fn compileAndRunMulti(
                     try em_imports.append(a, .{ .local = local, .module_prefix = mangled[dep_i] });
                 },
                 .use => {
-                    std.debug.print(
-                        "error:{s}: 'use' (re-export) is not supported in multi-module builds yet; use 'import' or 'from'\n",
-                        .{m.file},
-                    );
+                    diagnostics.emit(diag, m.file, diagnostics.no_span, "'use' (re-export) is not supported in multi-module builds yet; use 'import' or 'from'", .{});
                     errors += 1;
                 },
             }
@@ -292,6 +301,7 @@ fn compileAndRunMulti(
         var bw = std.Io.Writer.fixed(out);
         for (graph.modules, 0..) |*m, i| {
             var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
+            mem.diag = diag;
             if (i == n - 1) {
                 mem.emit(m.root);
             } else {
@@ -321,6 +331,7 @@ fn compileAndRunMulti(
 
     for (graph.modules, 0..) |*m, i| {
         var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
+        mem.diag = diag;
         if (i == n - 1) {
             mem.emit(m.root);
         } else {

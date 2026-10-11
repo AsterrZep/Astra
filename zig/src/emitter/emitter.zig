@@ -26,6 +26,7 @@ const std = @import("std");
 const lexer = @import("../lexer/lexer.zig");
 const ast = @import("../ast/ast.zig");
 const bc = @import("bytecode.zig");
+const diagnostics_mod = @import("../diagnostics.zig");
 
 const OpCode = bc.OpCode;
 const Instruction = bc.Instruction;
@@ -115,6 +116,9 @@ pub const Emitter = struct {
     module_globals: std.ArrayListUnmanaged([]const u8) = .empty,
 
     error_count: usize = 0,
+    /// Optional sink: when wired, errors are recorded there (and echoed to
+    /// stderr); when null, they print directly. Both paths share one format.
+    diag: ?*diagnostics_mod.Sink = null,
 
     // Limit reports fire once each: a 300-local function would otherwise
     // print the same diagnostic per binding.
@@ -180,9 +184,12 @@ pub const Emitter = struct {
         return null;
     }
 
-    fn err(self: *Emitter, comptime fmt: []const u8, args: anytype) void {
+    /// Report an emitter error against source line `ln` (0 when the emitter
+    /// has no position — table overflows reported at a choke point). The
+    /// sink/formatter adds the file prefix and the `error:` tag.
+    fn err(self: *Emitter, ln: u32, comptime fmt: []const u8, args: anytype) void {
         self.error_count += 1;
-        std.debug.print(fmt, args);
+        diagnostics_mod.emit(self.diag, self.filename, .{ .start = 0, .end = 0, .line = ln, .col = 0 }, fmt, args);
     }
 
     fn line(self: *const Emitter, idx: u32) u32 {
@@ -203,7 +210,7 @@ pub const Emitter = struct {
         // corrupt the program silently (AGENTS.md invariant #8).
         if (self.code.items.len >= MAX_CODE and !self.code_limit_reported) {
             self.code_limit_reported = true;
-            self.err("error: too many instructions (max {d})\n", .{MAX_CODE});
+            self.err(ln, "too many instructions (max {d})", .{MAX_CODE});
         }
         self.code.append(self.a, .{ .op = op, .line = ln }) catch @panic("OOM");
         self.spAdvance(op.stackEffect(0));
@@ -263,7 +270,7 @@ pub const Emitter = struct {
         // silently alias every further constant to the first one.
         if (self.constants.items.len >= MAX_CONSTS and !self.const_limit_reported) {
             self.const_limit_reported = true;
-            self.err("error: too many constants (max {d})\n", .{MAX_CONSTS});
+            self.err(0, "too many constants (max {d})", .{MAX_CONSTS});
         }
         const idx: u32 = @intCast(self.constants.items.len);
         self.constants.append(self.a, val) catch @panic("OOM");
@@ -284,7 +291,7 @@ pub const Emitter = struct {
             // the program's scoping without a word.
             if (!self.locals_limit_reported) {
                 self.locals_limit_reported = true;
-                self.err("error: too many locals (max {d})\n", .{MAX_LOCALS});
+                self.err(0, "too many locals (max {d})", .{MAX_LOCALS});
             }
             return 0xFF;
         }
@@ -361,14 +368,14 @@ pub const Emitter = struct {
             switch (self.tree.node(item)) {
                 .fn_decl => |f| {
                     if (self.fns.items.len >= MAX_FNS) {
-                        self.err("error: too many functions (max {d})\n", .{MAX_FNS});
+                        self.err(self.line(item), "too many functions (max {d})", .{MAX_FNS});
                         continue;
                     }
                     self.fns.append(self.a, .{ .name = f.name }) catch @panic("OOM");
                 },
                 .enum_decl => |e| {
                     if (self.enums.items.len >= MAX_ENUMS) {
-                        self.err("error: too many enum declarations (max {d})\n", .{MAX_ENUMS});
+                        self.err(self.line(item), "too many enum declarations (max {d})", .{MAX_ENUMS});
                         continue;
                     }
                     const decl_variants = self.tree.extraSlice(e.variants);
@@ -401,7 +408,7 @@ pub const Emitter = struct {
                     for (names, 0..) |vname, j| {
                         if (counts[j] == 0) continue;
                         if (self.variant_index.items.len >= MAX_VARIANTS) {
-                            self.err("error: too many enum variants (max {d})\n", .{MAX_VARIANTS});
+                            self.err(self.line(item), "too many enum variants (max {d})", .{MAX_VARIANTS});
                             break;
                         }
                         self.variant_index.append(self.a, .{ .variant = vname, .enum_idx = enum_idx }) catch @panic("OOM");
@@ -409,7 +416,7 @@ pub const Emitter = struct {
                 },
                 .struct_decl => |s| {
                     if (self.structs.items.len >= MAX_STRUCTS) {
-                        self.err("error: too many struct declarations (max {d})\n", .{MAX_STRUCTS});
+                        self.err(self.line(item), "too many struct declarations (max {d})", .{MAX_STRUCTS});
                         continue;
                     }
                     const decl_fields = self.tree.extraSlice(s.fields);
@@ -432,9 +439,9 @@ pub const Emitter = struct {
 
     // ── Loop patch lists ──────────────────────────────────────────
 
-    fn loopEnter(self: *Emitter) ?*LoopPatch {
+    fn loopEnter(self: *Emitter, ln: u32) ?*LoopPatch {
         if (self.loop_depth >= MAX_LOOP_DEPTH) {
-            self.err("error: loop nesting too deep (max {d})\n", .{MAX_LOOP_DEPTH});
+            self.err(ln, "loop nesting too deep (max {d})", .{MAX_LOOP_DEPTH});
             return null;
         }
         const lp = &self.loops[self.loop_depth];
@@ -487,7 +494,7 @@ pub const Emitter = struct {
         const before = self.sp;
         self.emitValueBranch(idx);
         if (self.sp != before + 1) {
-            self.err("error:{d}: internal: {s} body left {d} values, expected 1\n", .{ ln, where, self.sp - before });
+            self.err(ln, "internal: {s} body left {d} values, expected 1", .{ where, self.sp - before });
             self.sp = before + 1;
         }
     }
@@ -522,15 +529,15 @@ pub const Emitter = struct {
                 else
                     null;
                 if (ei == null) {
-                    self.err("error: pattern must be a literal, `_` or Enum.Variant\n", .{});
+                    self.err(ln, "pattern must be a literal, `_` or Enum.Variant", .{});
                 } else if (enumVariantIndex(ei.?, fa.field) == null) {
-                    self.err("error: enum '{s}' has no variant '{s}'\n", .{ ei.?.name, fa.field });
+                    self.err(ln, "enum '{s}' has no variant '{s}'", .{ ei.?.name, fa.field });
                 }
                 const idx = self.addConstant(bc.vEnum(if (ei) |e| e.name else "", fa.field));
                 self.emitInstIndex(.const_, idx, ln);
             },
             else => {
-                self.err("error: unsupported pattern in match arm\n", .{});
+                self.err(ln, "unsupported pattern in match arm", .{});
                 const z = self.addNil();
                 self.emitInstIndex(.const_, z, ln);
             },
@@ -556,7 +563,7 @@ pub const Emitter = struct {
             .pattern_variant_bind => |vb| {
                 const var_path = self.tree.node(vb.variant);
                 if (std.meta.activeTag(var_path) != .field_access) {
-                    self.err("error: pattern must be a literal, `_` or Enum.Variant\n", .{});
+                    self.err(ln, "pattern must be a literal, `_` or Enum.Variant", .{});
                     return;
                 }
                 const fa = var_path.field_access;
@@ -566,11 +573,11 @@ pub const Emitter = struct {
                 else
                     null;
                 if (ei == null) {
-                    self.err("error: pattern must be a literal, `_` or Enum.Variant\n", .{});
+                    self.err(ln, "pattern must be a literal, `_` or Enum.Variant", .{});
                     return;
                 }
                 if (enumVariantIndex(ei.?, fa.field) == null) {
-                    self.err("error: enum '{s}' has no variant '{s}'\n", .{ ei.?.name, fa.field });
+                    self.err(ln, "enum '{s}' has no variant '{s}'", .{ ei.?.name, fa.field });
                 }
                 const idx = self.addConstant(bc.vEnum(ei.?.name, fa.field));
                 self.emitInstIndex(.get_local, slot, ln);
@@ -618,9 +625,7 @@ pub const Emitter = struct {
         const want = before + expected;
         if (self.sp == want) return;
         const n = self.tree.node(idx);
-        self.err("error:{s}:{d}: internal: stack imbalance in {s} {s}: expected height {d}, emitter computed {d}\n", .{
-            self.filename, self.line(idx), where, @tagName(n), want, self.sp,
-        });
+        self.err(self.line(idx), "internal: stack imbalance in {s} {s}: expected height {d}, emitter computed {d}", .{ where, @tagName(n), want, self.sp });
         self.sp = want;
     }
 
@@ -639,7 +644,7 @@ pub const Emitter = struct {
                 self.emitInstIndex(.set_field, idx, ln);
             },
             else => {
-                self.err("error: invalid assignment target\n", .{});
+                self.err(ln, "invalid assignment target", .{});
             },
         }
     }
@@ -690,9 +695,7 @@ pub const Emitter = struct {
 
         // RET hands exactly one value back, so the frame must be empty here.
         if (self.sp != 0) {
-            self.err("error:{s}:{d}: internal: function leaves {d} value(s) on the stack at return\n", .{
-                self.filename, ln, self.sp,
-            });
+            self.err(ln, "internal: function leaves {d} value(s) on the stack at return", .{self.sp});
         }
 
         fn_obj.local_count = @truncate(self.local_count);
@@ -849,7 +852,7 @@ pub const Emitter = struct {
                             const nf: usize = ei.field_counts[vi];
                             const args = self.tree.extraSlice(c.args);
                             if (args.len != nf) {
-                                self.err("error: variant '{s}.{s}' expects {d} field(s), got {d}\n", .{ ei.name, vname, nf, args.len });
+                                self.err(ln, "variant '{s}.{s}' expects {d} field(s), got {d}", .{ ei.name, vname, nf, args.len });
                             } else {
                                 self.emitEnumConstruction(ei, vi, nf, args, ln);
                                 self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
@@ -875,7 +878,7 @@ pub const Emitter = struct {
             },
             .struct_literal => |s| {
                 const si = self.findStruct(s.name) orelse {
-                    self.err("error: unknown struct '{s}'\n", .{s.name});
+                    self.err(ln, "unknown struct '{s}'", .{s.name});
                     self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
                     return;
                 };
@@ -892,7 +895,7 @@ pub const Emitter = struct {
                         }
                     }
                     if (!found) {
-                        self.err("error: struct '{s}' has no field '{s}'\n", .{ s.name, fname });
+                        self.err(ln, "struct '{s}' has no field '{s}'", .{ s.name, fname });
                     }
                 }
 
@@ -911,7 +914,7 @@ pub const Emitter = struct {
                     if (vi) |j| {
                         self.emitExpr(self.tree.node(decl_fields[j]).struct_init_field.value);
                     } else {
-                        self.err("error: missing field '{s}' in initializer of '{s}'\n", .{ sf, s.name });
+                        self.err(ln, "missing field '{s}' in initializer of '{s}'", .{ sf, s.name });
                         const z = self.addNil();
                         self.emitInstIndex(.const_, z, ln);
                     }
@@ -937,7 +940,7 @@ pub const Emitter = struct {
                 if (std.meta.activeTag(obj) == .identifier) {
                     if (self.findEnum(obj.identifier)) |ei| {
                         if (enumVariantIndex(ei, fa.field) == null) {
-                            self.err("error: enum '{s}' has no variant '{s}'\n", .{ ei.name, fa.field });
+                            self.err(ln, "enum '{s}' has no variant '{s}'", .{ ei.name, fa.field });
                         }
                         const ci = self.addConstant(bc.vEnum(ei.name, fa.field));
                         self.emitInstIndex(.const_, ci, ln);
@@ -948,7 +951,7 @@ pub const Emitter = struct {
                         // runtime (the emitted code is discarded anyway).
                         if (self.importFor(obj.identifier)) |ref| {
                             if (ref.module_prefix.len == 0) {
-                                self.err("error: '{s}.{s}' — cross-module enum/struct values are not supported yet\n", .{ obj.identifier, fa.field });
+                                self.err(ln, "'{s}.{s}' — cross-module enum/struct values are not supported yet", .{ obj.identifier, fa.field });
                             }
                         }
                         self.emitExpr(fa.object);
@@ -963,7 +966,7 @@ pub const Emitter = struct {
             },
             .match_expr => |m| self.emitMatch(m, ln),
             .range_expr => {
-                self.err("error: range expression is only valid as a for-loop iterator\n", .{});
+                self.err(ln, "range expression is only valid as a for-loop iterator", .{});
             },
             .block => |b| {
                 const saved_depth = self.scope_depth;
@@ -995,7 +998,7 @@ pub const Emitter = struct {
             },
             .while_expr => |w| {
                 const loop_start = self.code.items.len;
-                const lp = self.loopEnter();
+                const lp = self.loopEnter(ln);
                 if (lp) |p| p.continue_target = loop_start;
                 self.emitExpr(w.cond);
                 self.emitInstOffset(.jump_if_false, 0, ln);
@@ -1020,7 +1023,7 @@ pub const Emitter = struct {
             },
             .break_stmt => {
                 if (self.loop_depth == 0) {
-                    self.err("error: 'break' used outside of a loop\n", .{});
+                    self.err(ln, "'break' used outside of a loop", .{});
                 } else {
                     self.emitInstOffset(.jump, 0, ln);
                     const lp = &self.loops[self.loop_depth - 1];
@@ -1029,7 +1032,7 @@ pub const Emitter = struct {
             },
             .continue_stmt => {
                 if (self.loop_depth == 0) {
-                    self.err("error: 'continue' used outside of a loop\n", .{});
+                    self.err(ln, "'continue' used outside of a loop", .{});
                 } else {
                     self.emitInstOffset(.jump, 0, ln);
                     const lp = &self.loops[self.loop_depth - 1];
@@ -1309,14 +1312,14 @@ pub const Emitter = struct {
             if (r.end_node) |e| {
                 self.emitExpr(e);
             } else {
-                self.err("error: open-ended range is not supported in Astra-0\n", .{});
+                self.err(ln, "open-ended range is not supported in Astra-0", .{});
                 const z = self.addConstant(bc.vInt(0));
                 self.emitInstIndex(.const_, z, ln);
             }
             self.emitInstIndex(.set_local, slot_end, ln);
 
             loop_start = self.code.items.len;
-            lp = self.loopEnter();
+            lp = self.loopEnter(ln);
             self.emitInstIndex(.get_local, slot_idx, ln);
             self.emitInstIndex(.get_local, slot_end, ln);
             self.emitInst(if (r.inclusive) .le else .lt, ln);
@@ -1342,7 +1345,7 @@ pub const Emitter = struct {
             self.emitInstIndex(.set_local, slot_idx, ln);
 
             loop_start = self.code.items.len;
-            lp = self.loopEnter();
+            lp = self.loopEnter(ln);
             self.emitInstIndex(.get_local, slot_idx, ln);
             self.emitInstIndex(.get_local, slot_arr, ln);
             self.emitInst(.len, ln);
@@ -1400,7 +1403,7 @@ pub const Emitter = struct {
                 self.emitAssignInto(asn.target, asn.value, ln);
             },
             else => {
-                self.err("error: invalid assignment target\n", .{});
+                self.err(ln, "invalid assignment target", .{});
             },
         }
     }

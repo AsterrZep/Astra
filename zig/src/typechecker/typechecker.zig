@@ -20,6 +20,7 @@ const lexer = @import("../lexer/lexer.zig");
 const ast = @import("../ast/ast.zig");
 const parser = @import("../parser/parser.zig");
 const types = @import("types.zig");
+const diagnostics_mod = @import("../diagnostics.zig");
 
 fn isTag(n: ast.Node, tag: ast.Tag) bool {
     return std.meta.activeTag(n) == tag;
@@ -91,6 +92,9 @@ pub const TypeChecker = struct {
     pending_fn_loc: lexer.Loc = .{ .start = 0, .end = 0, .line = 0, .col = 0 },
     error_count: usize = 0,
     tree: *ast.Tree,
+    /// Optional sink: when wired, errors are recorded there (and echoed to
+    /// stderr); when null, they print directly. Both paths share one format.
+    diag: ?*diagnostics_mod.Sink = null,
 
     pub fn init(a: std.mem.Allocator, tree: *ast.Tree, filename: []const u8) !TypeChecker {
         const pool = try a.create(TypePool);
@@ -177,9 +181,7 @@ pub const TypeChecker = struct {
 
     fn errFmt(self: *TypeChecker, loc: lexer.Loc, comptime fmt: []const u8, args: anytype) void {
         self.error_count += 1;
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, fmt, args) catch "type error";
-        std.debug.print("{s}:{d}:{d}: error: {s}\n", .{ self.filename, loc.line, loc.col, msg });
+        diagnostics_mod.emit(self.diag, self.filename, loc, fmt, args);
     }
 
     fn errorType(self: *TypeChecker, loc: lexer.Loc, comptime fmt: []const u8, args: anytype) *Type {

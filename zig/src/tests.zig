@@ -11,6 +11,7 @@ pub const vm = @import("vm/vm.zig");
 pub const modules = @import("modules/modules.zig");
 pub const conformance = @import("conformance.zig");
 pub const link = @import("link.zig");
+pub const diagnostics = @import("diagnostics.zig");
 
 test {
     _ = lexer;
@@ -23,4 +24,5 @@ test {
     _ = modules;
     _ = conformance;
     _ = link;
+    _ = diagnostics;
 }

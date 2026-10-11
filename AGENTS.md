@@ -72,7 +72,8 @@ Requires **Zig 0.16.x**. The Astra-0 frontend (lexer, flat AST, parser, type
 checker, emitter, VM) is ported and verified against the seed suite. The module
 system (`src/modules/` + the multi-module path in `src/main.zig`) compiles and
 runs multi-file programs: `pub` gating, shared type pool, mangled globals,
-dependency-order execution (`Documentacion/PHASE2_PROGRESS.md` §7).
+dependency-order execution (`Documentacion/PHASE2_PROGRESS.md` §7). Diagnostics
+from every phase go through one sink (`src/diagnostics.zig`, §7.4).
 
 ```bash
 cd zig
@@ -91,8 +92,9 @@ zig build -Doptimize=ReleaseFast
 
 Layout: `src/lexer/`, `src/ast/`, `src/parser/`, `src/typechecker/`,
 `src/emitter/` (emitter + bytecode), `src/vm/`, `src/modules/`,
-`src/main.zig`, `src/conformance.zig` (compiles and runs every non-UI seed
-conformance file, rejects every UI file).
+`src/diagnostics.zig` (one `Diagnostic{file, span, msg}` sink for every
+phase), `src/main.zig`, `src/conformance.zig` (compiles and runs every non-UI
+seed conformance file, rejects every UI file).
 
 Porting rule: **the Zig compiler must accept everything the seed accepts before
 new features are added** (the suite is the gate). Match `seed/src/*.c` and the

@@ -28,7 +28,8 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 | Type checker (`src/typechecker/typechecker.zig`) | ✅ | Tabla de símbolos con ámbitos (borrado por secuencia de inserción), literales enteros polimórficos, exhaustividad de `match`, `?` sobre optional, mutabilidad de lvalues, `Option`/`Result` builtin. Los tipos viven en un **pool hash-consed** (`src/typechecker/types.zig`): identidad canónica por estructura (struct/enum por nombre), `typeEq` con fast-path de puntero y las reglas de unificación del seed (`unknown`/`nil`/`int_literal`) recursivas dentro de compuestos |
 | Emitter (`src/emitter/emitter.zig`) | ✅ | Baja el AST a bytecode: modelo lineal de altura de pila con asertos por nodo, parcheo de saltos `offset = T - P`, frames con slot 0 para el retorno, `match`/`for`/`if`/lambdas, construcción de structs y enums |
 | VM (`src/vm/vm.zig`) | ✅ | ~48 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; mismos textos de error que el seed; salida de floats con `%g` de C |
-| Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-modules`, `--dump-bytecode`; salida 1 ante error de compilación o de runtime |
+| Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-modules`, `--dump-bytecode`; salida 1 ante error de compilación o de runtime. Diagnósticos por fase ruteados a un sink único (`src/diagnostics.zig`, §7.4) |
+| Diagnósticos (`src/diagnostics.zig`) | ✅ | Registro `Diagnostic{file, span, msg}` con un único formato `file:line:col: error: msg` (degrada a `file:line:` / `file:` / `error:`); parser, type checker, emitter y loader emiten a través de él; las fases sin sink imprime directo con el mismo formato |
 | Módulos (`src/modules/` + driver) | 🟡 | Carga, gating `pub` y compilación multi-módulo en el CLI Zig (§7.3): `import`/`from` resuelven (reglas 1–2), imports tipados contra los exports del módulo exportador, globals manglados y ejecución en orden de dependencias. Faltan re-exports (`use`), raíces `@/`/`std/` (§7.1) y valores de structs/enums foráneos |
 
 ### Verificación medida
@@ -39,9 +40,9 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
   que el seed y sin volcar nada a stdout.
 - **28/28** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop`, que el type checker deja pasar a propósito.
-- **57 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
-  bytecode, VM, módulos, depurador, link multi-módulo y conformance) en
-  `zig build test`.
+- **60 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
+  bytecode, VM, módulos, depurador, link multi-módulo, diagnósticos y
+  conformance) en `zig build test`.
 
 ---
 
@@ -431,3 +432,39 @@ Alcance y límites conocidos, todos documentados en el código:
 Fijado por `zig/src/link.zig` (test e2e sobre los fixtures `zig/tests/link/`:
 `from`, alias, import desnudo con #11, gating de `pub` privado) y verificado a
 mano con `--dump-modules`/`--dump-bytecode`.
+
+### 7.4 Diagnósticos: un sink, un formato (Zig)
+
+Antes de este paso cada fase imprimía por su cuenta y con su propio formato:
+el parser `error:{line}:{col}: {msg}` **sin el nombre del fichero** (un bug
+real: en compilación multi-módulo un error de parseo no decía de qué módulo
+era), el type checker `{file}:{line}:{col}: error: {msg}`, y el emitter
+mezclaba `error: {msg}` sin ubicación con variantes internas. Ahora existe un
+único registro y un único formato:
+
+- `zig/src/diagnostics.zig` define `Diagnostic{file, span, msg}` y `Sink`
+  (arena-backed). `emit(sink, file, span, fmt, args)` añade al sink si hay uno
+  y, por ahora, lo ecoa a stderr (`echo = true` — salida idéntica a la de
+  antes en la CLI); si el sink es `null`, formatea a un buffer de pila e
+  imprime directo **con el mismo formato**, de modo que las fases sin cablear
+  (p. ej. `conformance.zig`, que sólo mira `error_count`) no divergen.
+- Formato único: `file:line:col: error: msg`, degradando a `file:line:`,
+  `file:` y `error:` cuando no hay ubicación (span en ceros = "sin span").
+- El parser gana `filename` (lo fija el driver o el `Loader`) y `diag`; el
+  type checker, emitter y `Loader` ganan `diag: ?*Sink`. Todos los call
+  sites del emitter pasan la línea real cuando existe (`self.err(ln, …)`);
+  los límites globales (constantes, locals, funciones…) usan la línea del
+  item declarado o 0 si no hay.
+- Los errores de *driver* multi-módulo (`does not export`, `use` no
+  soportado) y los del `Loader` (módulo ilegible, ciclo) también pasan por
+  `emit`. Los errores de runtime y los del CLI (flags, fichero) quedan
+  fuera a propósito: no son diagnósticos de compilación.
+- La semántica del programa y la suite no cambian: `conformance.zig` sigue
+  sin comparar texto, y el seed no se toca (el sink es solo Zig por ahora;
+  portarlo al seed queda para cuando el formato se estabilice contra un
+  emisor de verdad — p. ej. JSON o SARIF — y no solo a stderr).
+
+Fijado por los tests de `diagnostics.zig` (formato degradado y
+truncamiento) y verificado a mano: error de parseo con fichero
+(`/tmp/err.astra:1:14: error: …`), export inexistente en multi-módulo, ciclo
+(`circular import: a -> b -> a`) y `break` fuera de bucle (`file:1: error: …`).

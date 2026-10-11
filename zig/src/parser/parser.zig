@@ -24,6 +24,7 @@
 const std = @import("std");
 const lexer = @import("../lexer/lexer.zig");
 const ast = @import("../ast/ast.zig");
+const diagnostics_mod = @import("../diagnostics.zig");
 
 pub const PARSER_MAX_DEPTH: u32 = 256;
 
@@ -99,6 +100,12 @@ pub const Parser = struct {
     last_stmt_semi: bool = false,
     err_msg: []const u8 = "",
     err_loc: lexer.Loc = .{ .start = 0, .end = 0, .line = 0, .col = 0 },
+    /// File being parsed, for diagnostics. Empty when the caller does not
+    /// care (unit tests); the driver and the module loader set it.
+    filename: []const u8 = "",
+    /// Optional sink: when wired, errors are recorded there (and echoed to
+    /// stderr); when null, they print directly. Both paths share one format.
+    diag: ?*diagnostics_mod.Sink = null,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8, tree: *ast.Tree) Parser {
         var p = Parser{
@@ -148,9 +155,7 @@ pub const Parser = struct {
         }
         self.had_error = true;
         self.error_count += 1;
-        std.debug.print("error:{d}:{d}: {s} (found {s})\n", .{
-            self.current.loc.line,
-            self.current.loc.col,
+        diagnostics_mod.emit(self.diag, self.filename, self.current.loc, "{s} (found {s})", .{
             msg,
             self.current.tag.name(),
         });
@@ -204,11 +209,7 @@ pub const Parser = struct {
             self.error_count += 1;
             self.err_msg = "nesting too deep";
             self.err_loc = self.current.loc;
-            std.debug.print("error:{d}:{d}: nesting too deep (max {d})\n", .{
-                self.current.loc.line,
-                self.current.loc.col,
-                PARSER_MAX_DEPTH,
-            });
+            diagnostics_mod.emit(self.diag, self.filename, self.current.loc, "nesting too deep (max {d})", .{PARSER_MAX_DEPTH});
             return false;
         }
         self.depth += 1;
