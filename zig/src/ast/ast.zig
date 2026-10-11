@@ -275,7 +275,13 @@ pub const Tree = struct {
                 for (self.extraSlice(e.variants)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .var_decl, .const_decl => {
-                const v = n.var_decl; // both share the same payload shape
+                // The payloads are the same shape but distinct union fields:
+                // reading `var_decl` while `const_decl` is active panics.
+                const v = switch (n) {
+                    .var_decl => |d| d,
+                    .const_decl => |d| d,
+                    else => unreachable,
+                };
                 try writer.print("{s}{s} {s}{s}\n", .{
                     if (v.is_pub) "pub " else "",
                     @tagName(n),
