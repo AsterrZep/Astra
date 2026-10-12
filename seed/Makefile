@@ -13,6 +13,7 @@ CFLAGS_RELEASE ?= -Wall -Wextra -Wpedantic -std=c11 -O2 -DNDEBUG
 
 SRCDIR  = src
 INCDIR  = include
+FUZZDIR = fuzz
 BUILDDIR = build
 TARGET  = astra-seed
 
@@ -22,7 +23,10 @@ SRCS    = $(wildcard $(SRCDIR)/*.c) $(wildcard $(SRCDIR)/constructs/*.c)
 OBJS    = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SRCS))
 DEPS    = $(OBJS:.o=.d)
 
-.PHONY: all clean debug release test format
+# Fuzz variant: every source except src/main.c — libFuzzer provides main().
+FUZZ_SRCS = $(filter-out $(SRCDIR)/main.c,$(SRCS))
+
+.PHONY: all clean debug release test format fuzz fuzz-run
 
 # Default: development build (-g -O0, no sanitizers). `make debug` is the one to
 # use while developing; `make release` is the optimized GCC build.
@@ -54,6 +58,48 @@ release:
 	@$(MAKE) --no-print-directory BUILDDIR=build/release \
 	    CC=gcc CFLAGS="$(CFLAGS_RELEASE)" $(TARGET)
 
+# Fuzz build — clang + libFuzzer (PHASE1 §4bis#23)
+#
+# -fsanitize=fuzzer links libFuzzer's main(), which is why src/main.c is
+# dropped from SRCS and the harness (fuzz/fuzz_compile.c) provides
+# LLVMFuzzerTestOneInput instead. Like debug/release, the variant owns its
+# object tree: fuzzer instrumentation is not part of an object's timestamp.
+# -O1 overrides the default -O0 (last flag wins) because in-process fuzzing
+# at -O0 loses most of its exec/s for no debugging benefit — traces still
+# carry -g and frame pointers.
+fuzz:
+	@command -v clang >/dev/null 2>&1 || { \
+	    echo "make fuzz: clang not found — libFuzzer requires it"; exit 1; }
+	@$(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/fuzz CC=clang \
+	    CFLAGS="$(CFLAGS) -O1 -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer" \
+	    SRCS="$(FUZZ_SRCS)" fuzz-link
+
+fuzz-link: $(OBJS) $(BUILDDIR)/fuzz_compile.o
+	$(CC) $(CFLAGS) -o $(BUILDDIR)/astra-fuzz $^ -lm
+	@echo "Built: $(BUILDDIR)/astra-fuzz"
+
+$(BUILDDIR)/fuzz_compile.o: $(FUZZDIR)/fuzz_compile.c | $(BUILDDIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCDIR) -I$(SRCDIR) -MMD -MP -c $< -o $@
+
+# Fuzz campaign helper: seed the corpus with every test program (mutations of
+# valid programs reach far deeper than raw bytes), then run with the token
+# dictionary. Single worker by default — the ASan build costs ~250 MB RSS and
+# parallel workers have no headroom on a small box. Time-boxed; make fuzz-run
+# FUZZ_TIME=3600 for a long session. Crash artifacts land in
+# $(BUILDDIR)/fuzz/artifacts/. Campaigns should redirect stderr to a file:
+# every rejected input prints diagnostics, and a runaway write stalls can show
+# up as libFuzzer "timeout" artifacts that are not real slow inputs.
+FUZZ_TIME ?= 60
+fuzz-run: fuzz
+	@mkdir -p $(BUILDDIR)/fuzz/corpus $(BUILDDIR)/fuzz/work $(BUILDDIR)/fuzz/artifacts
+	@find tests -name '*.astra' -exec cp -f {} $(BUILDDIR)/fuzz/corpus/ \;
+	./$(BUILDDIR)/fuzz/astra-fuzz $(BUILDDIR)/fuzz/work $(BUILDDIR)/fuzz/corpus \
+	    -artifact_prefix=$(BUILDDIR)/fuzz/artifacts/ \
+	    -dict=$(FUZZDIR)/astra.dict -max_len=16384 -timeout=5 \
+	    -rss_limit_mb=512 -malloc_limit_mb=64 \
+	    -max_total_time=$(FUZZ_TIME) 2>$(BUILDDIR)/fuzz/campaign.log
+
 # Link
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -84,3 +130,4 @@ test: $(TARGET)
 
 # Include dependency files
 -include $(DEPS)
+-include $(BUILDDIR)/fuzz_compile.d
