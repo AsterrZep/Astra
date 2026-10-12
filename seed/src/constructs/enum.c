@@ -5,9 +5,9 @@
  * `EnumVariants ::= EnumVariant ("," EnumVariant)* ","?`
  *
  * Sum types: research/04 §9.2. Astra-0 implements the unit form
- * (`enum Color { Rojo Verde }`); payload variants are specified and
- * not implemented, and the discriminator/tag layout questions in
- * research/04 §6 are deferred with them.
+ * (`enum Color { Rojo Verde }`) and payload variants
+ * (`enum Shape { Circle(f64) Square }`), tagged at runtime on the
+ * enum value (see vm.c).
  * ============================================================ */
 
 #include "constructs/construct.h"

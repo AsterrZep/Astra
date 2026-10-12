@@ -474,7 +474,7 @@ Ordenado por valor para el objetivo de bootstrap.
 | D | `val` keyword no existe, 3 docs discrepantes | ✅ Resuelto (`let`/`let mut` canónico) |
 | E | Tipos enteros `i64`/`u32`/`u64` faltantes | ✅ Resuelto (agregados al typechecker) |
 | F | `T?` optional type no parseable | ✅ Resuelto (parser consume `?`) |
-| G | Semántica de agregados sin especificar | [ ] Pendiente |
+| G | Semántica de agregados sin especificar | ✅ Resuelto (misma fila G de §3bis: ARC de facto escrito en `ARCHITECTURE.md` §2) |
 
 ## 5. Cómo continuar
 
@@ -594,7 +594,7 @@ Documentado para que no se lea como resuelto:
 | **Closures** | Capturan **por valor** (ARCHITECTURE.md §30.5): asignar a una variable capturada es error de compilación y las funciones con nombre anidadas no capturan. No hay semántica de referencia ni quéjas de ARC que resolver (ver §4bis#16) |
 | **Módulos** | Un fichero; el module system es Fase 2 |
 | **Fuzzing y CI** | El fuzzing sigue pendiente (§4bis#23). La CI está activa desde septiembre (`.github/workflows/ci.yml`): job seed con ASan/UBSan/LSan + suite completa, job Zig con la conformidad del seed. El fuzzing es la forma natural de buscar la *próxima* clase de fallo del lexer/parser, ahora que los siete vectores conocidos se cierran por el límite de profundidad |
-| **Posiciones de origen en los errores del C generado** | No las lleva; añadirlas exigiría anotar cada instrucción que puede fallar |
+| **Posiciones de origen en los errores del C generado** | Las lleva desde el 2026-10-12: `file:line:` en los errores de runtime vía `astra_file`/`astra_line` anotados por opcode caíble; fijados por `tests/codegen/error_line_in_fn.astra` y `tests/codegen/toplevel_oob.astra` |
 
 ### 6.5 Hallazgos de la Fase 2.2 (2026-09-28)
 

@@ -15,14 +15,14 @@
 //! 2. **Declarations per file.** `collect` turns a parsed tree plus the file it
 //!    came from into a `ModuleTable`: every module declaration in that file with
 //!    its resolved file path, plus the names the file marks `pub` (the export
-//!    set the resolver will gate imports on). Module-level only (see `collect`).
+//!    set the drivers gate imports on). Module-level only (see `collect`).
 //! 3. **Explicit bindings.** `ModuleTable.explicitBindings` lists the names a
 //!    file introduces, *only* where the grammar states them: the alias of
 //!    `import ... as x` and the items of `from ... import a, b as c`. A bare
-//!    `import a.b` binds *something* — `ARCHITECTURE.md` §10.5 writes
-//!    `import utils` and then `utils.Logger.info(…)` — but which segment it binds
-//!    is not specified anywhere, so this file does not guess. That is an open
-//!    question for the resolution step, recorded in `PHASE2_GAP_ANALYSIS.md`.
+//!    `import a.b` binds the **last** segment (`import utils.mesh` binds
+//!    `mesh`), per `ARCHITECTURE.md` §10.5; that binding is derived by the
+//!    drivers (`lastSegment`), not declared here (`PHASE2_GAP_ANALYSIS.md`
+//!    App. B #11, resolved 2026-10-10).
 //!
 //! Plus a **loader** (`Loader`, `Graph`): it reads the file each declaration
 //! resolves to, recursively, keeps each file's parsed tree alive (compilation
@@ -32,10 +32,10 @@
 //! `ARCHITECTURE.md` §10.6 forbids and the gap analysis (§8.3) makes the
 //! loader's job.
 //!
-//! Deliberately absent, because they need the resolver: cross-module reference
-//! resolution and *enforcing* `pub` visibility — the export sets are collected
-//! but nothing is gated on them yet (`ARCHITECTURE.md` §10.5,
-//! `PHASE2_GAP_ANALYSIS.md` §8.3).
+//! Cross-module reference resolution and *enforcing* `pub` visibility live in
+//! the drivers (`main.zig` / `link.zig`, `PHASE2_PROGRESS.md` §7): binding
+//! names to the owning module's globals, type ownership through `own_types`,
+//! and rejecting the import of a private name.
 //!
 //! The seed has none of this and is not meant to: it compiles one file
 //! (`research/011` §5.2), so this is the first thing in the port with no C
@@ -153,14 +153,14 @@ pub const ModuleTable = struct {
     file: []const u8,
     decls: []const Decl,
     /// Top-level names the file marks `pub` (fn/struct/enum/const), in source
-    /// order. Collected so the resolver can reject an import of a private name
-    /// (`ARCHITECTURE.md` §10.2); nothing gates on it yet.
+    /// order. The drivers gate imports on it and reject a private name
+    /// (`ARCHITECTURE.md` §10.2; `link.zig` "importing a private name").
     exports: []const []const u8 = &.{},
 
     /// Index of the first declaration naming `path`, or null.
     ///
-    /// This is the lookup the resolver will use once files are loaded; today it
-    /// answers "does this file declare this module twice?".
+    /// Answers "does this file declare this module twice?"; the drivers order
+    /// and resolve files through `Graph.find`, not this table.
     pub fn find(self: ModuleTable, path: []const u8) ?usize {
         for (self.decls, 0..) |d, i| {
             if (std.mem.eql(u8, d.path, path)) return i;
@@ -170,7 +170,8 @@ pub const ModuleTable = struct {
 
     /// Every name the file binds *explicitly*: item names (or their alias) from
     /// `from`, and the alias of `import ... as`. A bare `import a.b` contributes
-    /// nothing — what it binds is unspecified, so it is not guessed here.
+    /// nothing here — its binding (the last segment, App. B #11) is derived by
+    /// the drivers, not declared by the grammar.
     pub fn explicitBindings(self: ModuleTable, allocator: std.mem.Allocator) ![]Binding {
         var list: std.ArrayListUnmanaged(Binding) = .empty;
         errdefer list.deinit(allocator);

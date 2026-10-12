@@ -1,8 +1,8 @@
 # Astra — Enums Algebraicos, Pattern Matching y Tipos Algebraicos de Datos (ADTs)
 
-**Estado:** Propuesta de Diseño v0.1
+**Estado:** Implementado en la Fase 1 (enums con datos, `match` con bindings/guards/or-patterns); faltan los range patterns de §9.4 (ver `constructs/range.c`)
 **Fecha:** 2026-09-16
-**Cubre:** Sección 5.4 del ARCHITECTURE.md (pendiente: "Patrones y enums algebraicos")
+**Cubre:** Sección 5.4 del ARCHITECTURE.md ("Patrones y enums algebraicos")
 
 ---
 
