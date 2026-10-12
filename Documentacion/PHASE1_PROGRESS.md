@@ -364,8 +364,15 @@ Ordenado por valor para el objetivo de bootstrap.
 ### Closures y módulos
 - [x] **Lambdas** `|params| { body }`: parse, typecheck (con inferencia de retorno),
       emit como FnObj interno. Soporta parámetros tipados, return type annotations
-      y return statements. Sin captura de variables (closures) aún.
-- [ ] Cierre de variables capturadas (Tier 2 del MVP).
+      y return statements.
+- [x] **Closures** (Tier 2 del MVP): captura por valor de las variables libres
+      del frame que rodea a la lambda (`OPCODE_CLOSURE` + `OPCODE_GET_CAPTURE`).
+      El emitter analiza las libres del body contra los ámbitos del frame
+      exterior, las pushea en el sitio de creación y el VM clona el FnObj
+      plantilla con ese env. Las funciones con nombre anidadas no capturan, y
+      asignar a una variable capturada es error de compilación (no hay celda
+      que escribir). Implementado también en el backend C (`--emit-c`) y en el
+      compilador Zig.
 
 ### Sistema de tipos
 - [ ] Genéricos básicos por monomorfización (Tier 3).
@@ -435,7 +442,7 @@ Ordenado por valor para el objetivo de bootstrap.
 | 13 | C codegen: Option/Result | Alto | ✅ | `option_*`, `result_*`, `nested_option_result` |
 | 14 | C codegen: `?` operator | Alto | ✅ | `conformance/enums/try_operator.astra`; mensaje de error idéntico al VM |
 | 15 | Suite de tests vía C codegen | Alto | ✅ | `tests/run_tests.sh` (segunda ruta) + `tests/codegen/` |
-| 16 | Closures (captura de variables) | Medio | [ ] **Tier 2** | `emitter.c`, `vm.c` — fuera del alcance de la Fase 1 (`research/011` §5.2 la lista en Tier 1 el *lambda*, no la captura) |
+| 16 | Closures (captura de variables) | Medio | ✅ | `emitter.c` (análisis de libres + `OPCODE_CLOSURE`/`OPCODE_GET_CAPTURE`), `vm.c`, backend C y Zig; `tests/conformance/lambda/closures.astra`, `ui/capture_assign.astra`, `tests/codegen/closures.astra` |
 | 17 | Migrar hooks de constructos | Medio | ✖ decidido no hacer | `CONSTRUCT_REGISTRY.md` §8 |
 | 18 | C codegen: module-level errors sin setjmp | Medio | ✅ | Verificado: salida 1 con diagnóstico en ambos backends |
 | 19 | Bitwise operators en el emisor | Medio | ✅ | VM + runtime de C + `tests/codegen/bitwise.astra` |
@@ -585,7 +592,7 @@ Documentado para que no se lea como resuelto:
 |:-----|:-------|
 | **Ancho de los enteros no verificado en runtime** | `u32`/`u64`/`i64` existen en el checker y los valores son `int64_t` en los dos backends. No se comprueba rango al sumar ni al asignar: `let a: u32 = -1` compila y `a` vale `-1`. Un `u64` por encima de `INT64_MAX` tampoco es representable (el lexer lo rechaza). Es consecuencia de que el seed modela **un** entero de 64 bits y le pone nombres; darle semántica real de anchuras es trabajo de Fase 2 (`research/011` §9.2 es lo que lo exige) |
 | **`while`/`for` como expresión** | No soportado a propósito (ver §4bis#20) |
-| **Closures** | Tier 2; los `lambda` existen pero no capturan (ver §4bis#16) |
+| **Closures** | Capturan **por valor** (ARCHITECTURE.md §30.5): asignar a una variable capturada es error de compilación y las funciones con nombre anidadas no capturan. No hay semántica de referencia ni quéjas de ARC que resolver (ver §4bis#16) |
 | **Módulos** | Un fichero; el module system es Fase 2 |
 | **Fuzzing y CI** | Pendientes (§4bis#23 y #26). El fuzzing es la forma natural de buscar la *próxima* clase de fallo del lexer/parser, ahora que los siete vectores conocidos se cierran por el límite de profundidad |
 | **Posiciones de origen en los errores del C generado** | No las lleva; añadirlas exigiría anotar cada instrucción que puede fallar |

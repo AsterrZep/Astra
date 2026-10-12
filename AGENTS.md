@@ -171,7 +171,7 @@ The C codegen generates executable C from Astra bytecode. The pipeline is:
 
 ### What works (verified against VM)
 
-All 55 non-UI conformance cases are compiled through `--emit-c`, run, and
+All 57 non-UI conformance cases are compiled through `--emit-c`, run, and
 compared against the VM's output by `make test` (identical output, no leaks under
 LSan). That covers:
 
@@ -179,7 +179,8 @@ LSan). That covers:
 - `let` variables (local and global), **module-level statements**
 - `if`/`else` (as statement and expression), `for..in`, `while`
 - Builtins (`print`)
-- Function calls, recursion, **lambdas**
+- Function calls, recursion, **lambdas**, **closures** (capture by value;
+  assigning to a captured variable is a compile error)
 - Arrays (literal + indexed access), **structs** (literal + field access/write)
 - **Enums** (unit variants and data-carrying), **`match`** with bindings/guards/or-patterns
 - **Option/Result** tagged values, pattern matching and the **`?` operator**

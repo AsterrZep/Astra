@@ -26,20 +26,21 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 | AST (`src/ast/ast.zig`) | ✅ | Nodos **planos** `union(Tag)` con índices `u32`, buffer `extra` compartido para listas (`PHASE2_RESEARCH.md` §1.3/§1.5) |
 | Parser (`src/parser/parser.zig`) | ✅ | Descenso recursivo + Pratt; sentencias terminadas por `;`/newline; bloques con tail-expr; `if`/`while`/`for`/`match`/patrones; structs; enums unitarios y con datos; lambdas; tipos (`T?`, `[T]`, `fn(P)->R`); `some`/`none`/`ok`/`err`; `?`; declaraciones de módulo `use`/`import`/`from` con rutas punteadas (ver §7) |
 | Type checker (`src/typechecker/typechecker.zig`) | ✅ | Tabla de símbolos con ámbitos (borrado por secuencia de inserción), literales enteros polimórficos, exhaustividad de `match`, `?` sobre optional, mutabilidad de lvalues, `Option`/`Result` builtin. Los tipos viven en un **pool hash-consed** (`src/typechecker/types.zig`): identidad canónica por estructura (struct/enum por nombre), `typeEq` con fast-path de puntero y las reglas de unificación del seed (`unknown`/`nil`/`int_literal`) recursivas dentro de compuestos |
-| Emitter (`src/emitter/emitter.zig`) | ✅ | Baja el AST a bytecode: modelo lineal de altura de pila con asertos por nodo, parcheo de saltos `offset = T - P`, frames con slot 0 para el retorno, `match`/`for`/`if`/lambdas, construcción de structs y enums |
-| VM (`src/vm/vm.zig`) | ✅ | ~48 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; mismos textos de error que el seed; salida de floats con `%g` de C |
+| Emitter (`src/emitter/emitter.zig`) | ✅ | Baja el AST a bytecode: modelo lineal de altura de pila con asertos por nodo, parcheo de saltos `offset = T - P`, frames con slot 0 para el retorno, `match`/`for`/`if`/lambdas, construcción de structs y enums, **closures** (análisis de variables libres sobre el árbol plano, captura por valor con `closure`/`get_capture`; asignar a una capturada es error de compilación) |
+| VM (`src/vm/vm.zig`) | ✅ | ~50 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; **closures** (`closure` clona el FnObj plantilla con el env capturado; `get_capture` lee `stack[base]`, que guarda el callee durante toda la llamada); mismos textos de error que el seed; salida de floats con `%g` de C |
 | Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-modules`, `--dump-bytecode`; salida 1 ante error de compilación o de runtime. Diagnósticos por fase ruteados a un sink único (`src/diagnostics.zig`, §7.4) |
 | Diagnósticos (`src/diagnostics.zig`) | ✅ | Registro `Diagnostic{file, span, msg}` con un único formato `file:line:col: error: msg` (degrada a `file:line:` / `file:` / `error:`); parser, type checker, emitter y loader emiten a través de él; las fases sin sink imprime directo con el mismo formato |
 | Módulos (`src/modules/` + driver) | 🟡 | Carga, gating `pub` y compilación multi-módulo en el CLI Zig (§7.3): `import`/`from` resuelven (reglas 1–2), imports tipados contra los exports del módulo exportador, globals manglados y ejecución en orden de dependencias. Faltan re-exports (`use`), raíces `@/`/`std/` (§7.1) y valores de structs/enums foráneos |
 
 ### Verificación medida
 
-- **56/56** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **57/57** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **28/28** ficheros `ui/` son rechazados. El emitter cierra
-  `break_outside_loop`, que el type checker deja pasar a propósito.
+- **29/29** ficheros `ui/` son rechazados. El emitter cierra
+  `break_outside_loop` y la asignación a una variable capturada
+  (`capture_assign`), que el type checker deja pasar a propósito.
 - **60 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
   bytecode, VM, módulos, depurador, link multi-módulo, diagnósticos y
   conformance) en `zig build test`.

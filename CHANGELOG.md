@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Closures (seed + C backend + Zig)**: lambdas now capture free variables
+  from the enclosing frame **by value** (ARCHITECTURE.md §30.5). The emitter
+  analyzes the lambda body for free names against the enclosing scopes, pushes
+  each captured value at the creation site, and emits `OPCODE_CLOSURE`
+  (`(fn_const << 8) | n_captures`), which clones the template `FnObj` and
+  attaches the stack values as its `env`. Inside the body a free name resolves
+  local → `GET_CAPTURE` → global; `GET_CAPTURE` reads the callee's env through
+  frame slot 0, which holds the callee for the whole call. Assigning to a
+  captured variable is rejected at compile time — there is no cell to write, and
+  a write to only the local copy would diverge from the enclosing frame. Named
+  nested functions do not capture. Implemented end-to-end in all three paths:
+  the seed VM (`vm.c`), the C backend (`--emit-c`: `AstraFn.env`,
+  `astra_closure_new`, both opcode switches), and the Zig compiler
+  (`bytecode.zig`/`vm.zig`/`emitter.zig` with the free-variable walker over the
+  flat AST). Conformance: `lambda/closures.astra`, `ui/capture_assign.astra`,
+  `tests/codegen/closures.astra`; verified by instruction-level `ASTRA_DUMP_VM`
+  trace parity between the seed and the Zig VM.
 - **Unified diagnostics sink (Zig)**: parser, type checker, emitter and
   module loader now report through one `Diagnostic{file, span, msg}` sink
   (`zig/src/diagnostics.zig`) with a single `file:line:col: error: msg`

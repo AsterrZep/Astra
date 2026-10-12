@@ -71,7 +71,7 @@ The gap is large but structured: the seed compiler's architecture (construct reg
 | Range | `VAL_RANGE` | `start..end`, used in `for..in` |
 | Tuple | `VAL_TUPLE` | Fixed-size, heterogeneous (partial support) |
 | Function | `VAL_FN` | Top-level named functions |
-| Closure | `VAL_CLOSURE` | Lambda/closure values (no captured upvalues in Astra-0) |
+| Closure | `VAL_CLOSURE` | Lambda/closure values; capture by value (`OPCODE_CLOSURE`/`OPCODE_GET_CAPTURE`, since v0.1.x) |
 
 ### 2.3 Operators (27)
 
@@ -103,7 +103,7 @@ The gap is large but structured: the seed compiler's architecture (construct reg
 - Parameters in frame slots 1..n (slot 0 = callee)
 - Recursive calls
 - Lambdas (`|params| { body }`) as expressions
-- Function values (first-class functions, but no closures with captured variables)
+- Function values (first-class functions; lambdas capture free variables of the enclosing frame by value)
 
 ### 2.6 Patterns
 
@@ -248,7 +248,7 @@ The self-hosting compiler must be written in Astra-0 (the subset Phase 1 impleme
 | Pattern matching extensions (rest, spread) | Low | Extend existing match |
 | Destructuring assignment | Low | `let (a, b) = tuple;` |
 | String interpolation | Low | `f"hello {name}"` |
-| Closures with captured upvalues | Medium | Currently lambdas can't capture |
+| ~~Closures with captured upvalues~~ | Medium | Done: lambdas capture by value in seed, C backend and Zig |
 | Default parameter values | Low | `fn foo(x: int = 5)` |
 | Variadic functions | Low | Already partially built in `print` |
 | Attributes / annotations | Low | `@deprecated`, `@inline` |
