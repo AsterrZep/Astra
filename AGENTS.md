@@ -47,13 +47,21 @@ Fuzzing (PHASE1 §4bis#23): `make fuzz` builds the libFuzzer harness
 (`seed/fuzz/fuzz_compile.c` — lexer, parser, typechecker and emitter, no VM);
 `make fuzz-run FUZZ_TIME=N` seeds the corpus from `tests/` and runs **one**
 worker with `-rss_limit_mb=512` (the ASan build costs ~250 MB; parallel
-workers will OOM a small box). Campaigns redirect stderr to
-`build/fuzz/campaign.log` — every rejected input prints diagnostics, and a
-stalled write under memory pressure shows up as a fake libFuzzer `timeout`;
-replay an artifact standalone before believing it. CI builds the harness and
-replays the whole corpus with `-runs=0`. When the fuzzer finds a crash, keep
-the artifact in `seed/fuzz/regressions/` with the fix and add its replay to
-`.github/workflows/ci.yml`.
+workers will OOM a small box). Campaigns set `ASTRA_FUZZ_QUIET=1`: the
+harness masks fd 2 per input so the tens of thousands of diagnostics per
+second cannot stall and show up as a fake libFuzzer `timeout`, with
+`ASAN_OPTIONS=log_path=build/fuzz/asan` keeping ASan/LSan reports in files
+while fd 2 is masked. CI replays the corpus `-runs=0` **without** quiet
+mode, so a red replay keeps its diagnostics in the log.
+
+Triage any artifact (`crash-*`, `timeout-*`, `oom-*`, `leak-*`) with
+`fuzz/classify.sh <artifact>` **before** reporting it: it replays standalone
+×20 (measures the real wall time) and in-process ×3000 with stderr closed.
+Reproducible standalone = real finding: keep the input in
+`seed/fuzz/regressions/` with the fix and add its replay to
+`.github/workflows/ci.yml`. Clean otherwise = environment flake (load,
+memory pressure, allocator state). A campaign killed by the OOM killer
+(rc 137, no artifact) is the machine, not the compiler.
 
 Compiling generated C requires `-Isrc` (the emitted file includes
 `codegen_runtime.h`, which lives in `seed/src/`):
