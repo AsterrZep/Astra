@@ -21,6 +21,10 @@ pub fn area(s: Shape) -> f64 {
         Shape.Circle(r) => 3.0 * r * r,
         Shape.Square(w) => w * w,
         Shape.Dot => 0.0,
-    }
+    };
     a
 }
+
+pub const UNIT = Vec2 { x: 3.0, y: 4.0 }
+
+pub const DOT = Shape.Dot;

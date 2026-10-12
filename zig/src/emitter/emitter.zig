@@ -1270,25 +1270,18 @@ pub const Emitter = struct {
                         }
                         const ci = self.addConstant(bc.vEnum(ei.name, fa.field));
                         self.emitInstIndex(.const_, ci, ln);
-                    } else {
-                        // A plain imported name used with `.` names a foreign
-                        // enum/struct value; those are not linkable yet. Report
-                        // at compile time instead of an undefined global at
-                        // runtime (the emitted code is discarded anyway).
-                        if (self.importFor(obj.identifier)) |ref| {
-                            if (ref.module_prefix.len == 0) {
-                                self.err(ln, "'{s}.{s}' — cross-module enum/struct values are not supported yet", .{ obj.identifier, fa.field });
-                            }
-                        }
-                        self.emitExpr(fa.object);
-                        const ci = self.addConstant(bc.vString(fa.field));
-                        self.emitInstIndex(.get_field, ci, ln);
+                        return;
                     }
-                } else {
-                    self.emitExpr(fa.object);
-                    const ci = self.addConstant(bc.vString(fa.field));
-                    self.emitInstIndex(.get_field, ci, ln);
                 }
+                // Everything else is a plain value read. A from-imported
+                // constant reaches the exporting module's mangled global
+                // through the binding table, so `ORIGIN.x` works across
+                // modules; a struct *type* name reaches nothing and dies as
+                // an undefined global at runtime — the same behaviour the
+                // seed has for a single-file type-as-value.
+                self.emitExpr(fa.object);
+                const ci = self.addConstant(bc.vString(fa.field));
+                self.emitInstIndex(.get_field, ci, ln);
             },
             .match_expr => |m| self.emitMatch(m, ln),
             .range_expr => {

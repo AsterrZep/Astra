@@ -241,7 +241,7 @@ test "foreign aggregates cross module boundaries" {
     // an imported enum with a payload binding, and the namespace form
     // `geo.Shape.Dot` resolved at compile time.
     const out = try runGraph(a, graph, linked);
-    try std.testing.expectEqualStrings("3\n12\n42\n3\n", out);
+    try std.testing.expectEqualStrings("3\n12\n42\n3\n7\n99\n", out);
 }
 
 test "use re-exports forward exports one level" {

@@ -1,7 +1,9 @@
 // Multi-module fixture root: struct literals, enum values and match patterns
 // over types declared in `geometry` (foreign aggregates), both by `from`
 // bindings (bare names) and through the `geo` namespace (`geo.Shape.Square`).
-from geometry import Vec2, Shape, circle, area
+// Constants exported by `geometry` are read as values across the boundary:
+// a struct value's fields (`UNIT.x`) and a match over an exported enum value.
+from geometry import Vec2, Shape, circle, area, UNIT, DOT
 import geometry as geo
 
 fn main() {
@@ -22,4 +24,12 @@ fn main() {
         Shape.Dot => 3,
     };
     print(k);
+    print(UNIT.x + UNIT.y);
+    let d = DOT;
+    let q = match d {
+        Shape.Circle(r) => 1,
+        Shape.Square(w) => 2,
+        Shape.Dot => 99,
+    };
+    print(q);
 }
