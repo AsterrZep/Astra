@@ -1,0 +1,9 @@
+// Closures capture by value (ARCHITECTURE.md 30.5): there is no cell to
+// store into, so assigning to a captured variable is rejected at compile
+// time instead of silently writing only a local copy.
+// EXPECT-ERROR: cannot assign to captured variable 'n'
+fn main() {
+    let mut n = 1
+    let f = |x: i32| -> i32 { n = n + x; n }
+    print(f(1))
+}
