@@ -15,6 +15,7 @@ const bytecode = @import("emitter/bytecode.zig");
 const vm_mod = @import("vm/vm.zig");
 const modules_mod = @import("modules/modules.zig");
 const diagnostics = @import("diagnostics.zig");
+const dump_mod = @import("dump.zig");
 
 const Mode = enum { parse, tokens, ast_dump, bytecode, modules };
 
@@ -79,24 +80,30 @@ pub fn main(init: std.process.Init) !void {
     var diag = diagnostics.Sink.init(a);
     defer diag.deinit();
 
-    // Output is assembled in a buffer and flushed at once; the dumps go to
-    // stderr like `std.debug.print`, matching the seed's introspection flags.
+    // Output is assembled in a buffer and flushed at once; the dump flags
+    // write to stdout like the seed's (parity-gated), other debug output to
+    // stderr.
     const out = try allocator.alloc(u8, 1 << 20);
     defer allocator.free(out);
     var w = std.Io.Writer.fixed(out);
 
     if (mode == .tokens) {
+        // The seed's --dump-tokens prints to stdout (driver.c token_print);
+        // the parity gate diffs both streams byte for byte.
+        var stdout_buf: [4096]u8 = undefined;
+        const stdout_file = std.Io.File.stdout();
+        var stdout_writer = stdout_file.writer(io, &stdout_buf);
         var tk = lexer.Tokenizer.init(a, source);
         while (true) {
             const t = tk.next();
-            try w.print("{d}:{d}\t{s}\t{s}\n", .{ t.loc.line, t.loc.col, t.tag.name(), t.text });
+            try dump_mod.printToken(&stdout_writer.interface, t);
             if (t.tag == .eof) break;
             if (t.tag == .lex_err) {
-                std.debug.print("{s}", .{w.buffered()});
+                stdout_writer.interface.flush() catch {};
                 std.process.exit(1);
             }
         }
-        std.debug.print("{s}", .{w.buffered()});
+        stdout_writer.interface.flush() catch {};
         return;
     }
 
@@ -110,8 +117,12 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (mode == .ast_dump) {
-        try tree.dump(&w, root);
-        std.debug.print("{s}", .{w.buffered()});
+        // Same stdout destination as the seed's driver.c run_dump_ast.
+        var stdout_buf: [4096]u8 = undefined;
+        const stdout_file = std.Io.File.stdout();
+        var stdout_writer = stdout_file.writer(io, &stdout_buf);
+        try tree.dump(&stdout_writer.interface, root);
+        stdout_writer.interface.flush() catch {};
         return;
     }
 

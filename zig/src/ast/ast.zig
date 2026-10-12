@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const lexer = @import("../lexer/lexer.zig");
+const dump_mod = @import("../dump.zig");
 
 /// Slice into `Tree.extra`.
 pub const List = struct { start: u32, len: u32 };
@@ -228,9 +229,12 @@ pub const Tree = struct {
         return self.source[l.start..l.end];
     }
 
-    /// Stable, indented dump used by `--dump-ast` and the conformance test.
-    /// Starts at `root` — node 0 is whichever node the parser created first, not
-    /// necessarily the module.
+    /// Byte-parity dump used by `--dump-ast` (PHASE2 §4 #6): it prints exactly
+    /// what `seed/astra-seed --dump-ast` prints — the reference format lives in
+    /// `seed/src/driver.c` `dump_node` (labels like `FnDecl(name)`, types as
+    /// child nodes, no inline headers). Kinds the seed parser never produces
+    /// (`expr_stmt`, `compound_assignment`, `nil_literal`) keep seed-shaped
+    /// stubs so the switch stays exhaustive.
     pub fn dump(self: *const Tree, writer: anytype, root: u32) !void {
         try self.dumpNode(writer, root, 0);
     }
@@ -245,257 +249,261 @@ pub const Tree = struct {
         try indent(writer, depth);
         switch (n) {
             .source_file => |l| {
-                try writer.print("source_file ({d} items)\n", .{l.len});
+                try writer.writeAll("Module\n");
                 for (self.extraSlice(l)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .fn_decl => |f| {
-                try writer.print("{s}fn_decl {s}\n", .{ if (f.is_pub) "pub " else "", f.name });
-                try indent(writer, depth + 1);
-                try writer.writeAll("params\n");
-                for (self.extraSlice(f.params)) |c| try self.dumpNode(writer, c, depth + 2);
+                try writer.print("{s}FnDecl({s})\n", .{ if (f.is_pub) "Pub" else "", f.name });
+                for (self.extraSlice(f.params)) |p| {
+                    const par = self.nodes.items[p].param;
+                    try indent(writer, depth + 1);
+                    try writer.print("Param({s})\n", .{par.name});
+                    if (par.type_node) |t| try self.dumpNode(writer, t, depth + 2);
+                }
                 if (f.ret) |r| {
                     try indent(writer, depth + 1);
-                    try writer.writeAll("ret\n");
+                    try writer.writeAll("ReturnType\n");
                     try self.dumpNode(writer, r, depth + 2);
                 }
                 try self.dumpNode(writer, f.body, depth + 1);
             },
             .lambda_expr => |f| {
-                try writer.writeAll("lambda\n");
-                for (self.extraSlice(f.params)) |c| try self.dumpNode(writer, c, depth + 1);
+                try writer.writeAll("Lambda\n");
+                for (self.extraSlice(f.params)) |p| {
+                    // The seed prints lambda params without their types.
+                    try indent(writer, depth + 1);
+                    try writer.print("Param({s})\n", .{self.nodes.items[p].param.name});
+                }
                 if (f.ret) |r| try self.dumpNode(writer, r, depth + 1);
                 try self.dumpNode(writer, f.body, depth + 1);
             },
             .struct_decl => |s| {
-                try writer.print("{s}struct_decl {s}\n", .{ if (s.is_pub) "pub " else "", s.name });
+                try writer.print("{s}StructDecl({s})\n", .{ if (s.is_pub) "Pub" else "", s.name });
                 for (self.extraSlice(s.fields)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .enum_decl => |e| {
-                try writer.print("{s}enum_decl {s}\n", .{ if (e.is_pub) "pub " else "", e.name });
+                try writer.print("{s}EnumDecl({s})\n", .{ if (e.is_pub) "Pub" else "", e.name });
                 for (self.extraSlice(e.variants)) |c| try self.dumpNode(writer, c, depth + 1);
             },
-            .var_decl, .const_decl => {
-                // The payloads are the same shape but distinct union fields:
-                // reading `var_decl` while `const_decl` is active panics.
-                const v = switch (n) {
-                    .var_decl => |d| d,
-                    .const_decl => |d| d,
-                    else => unreachable,
-                };
-                try writer.print("{s}{s} {s}{s}\n", .{
-                    if (v.is_pub) "pub " else "",
-                    @tagName(n),
-                    v.name,
-                    if (v.is_mut) " (mut)" else "",
-                });
+            .var_decl => |v| {
+                try writer.print("VarDecl({s}{s})\n", .{ v.name, if (v.is_mut) ", mut" else "" });
                 if (v.type_node) |t| try self.dumpNode(writer, t, depth + 1);
                 if (v.value) |val| try self.dumpNode(writer, val, depth + 1);
             },
-            .use_decl => |path| try writer.print("use_decl {s}\n", .{path}),
+            .const_decl => |v| {
+                try writer.print("{s}ConstDecl({s})\n", .{ if (v.is_pub) "Pub" else "", v.name });
+                if (v.type_node) |t| try self.dumpNode(writer, t, depth + 1);
+                if (v.value) |val| try self.dumpNode(writer, val, depth + 1);
+            },
+            .use_decl => try writer.writeAll("Use\n"),
             .import_decl => |d| {
-                try writer.print("import_decl {s}", .{d.path});
+                try writer.print("Import({s}", .{d.path});
                 if (d.alias) |al| try writer.print(" as {s}", .{al});
-                try writer.writeByte('\n');
+                try writer.writeAll(")\n");
             },
             .from_decl => |d| {
-                try writer.print("from_decl {s}\n", .{d.path});
+                try writer.print("From({s})\n", .{d.path});
                 for (self.extraSlice(d.items)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .import_item => |i| {
-                try writer.print("import_item {s}", .{i.name});
+                try writer.print("ImportItem({s}", .{i.name});
                 if (i.alias) |al| try writer.print(" as {s}", .{al});
-                try writer.writeByte('\n');
+                try writer.writeAll(")\n");
             },
             .param => |p| {
-                try writer.print("param {s}: ", .{p.name});
-                if (p.type_node) |t| try self.dumpInline(writer, t) else try writer.writeAll("<inferred>");
-                try writer.writeByte('\n');
+                // Standalone fallback; fn_decl prints Param inline at +1/+2.
+                try writer.print("Param({s})\n", .{p.name});
+                if (p.type_node) |t| try self.dumpNode(writer, t, depth + 1);
             },
             .field_decl => |f| {
-                try writer.print("field {s}: ", .{f.name});
-                try self.dumpInline(writer, f.type_node);
-                try writer.writeByte('\n');
+                try writer.print("Field({s})\n", .{f.name});
+                try self.dumpNode(writer, f.type_node, depth + 1);
             },
             .struct_init_field => |f| {
-                try writer.print("init {s} =\n", .{f.name});
+                try writer.print("Field({s})\n", .{f.name});
                 try self.dumpNode(writer, f.value, depth + 1);
             },
             .enum_variant => |v| {
-                try writer.print("variant {s}\n", .{v.name});
-                if (v.payload) |p| try self.dumpNode(writer, p, depth + 1);
+                try writer.print("Variant({s})\n", .{v.name});
+                if (v.payload) |p| {
+                    // Payload fields inline at +1 (no `Payload` wrapper header).
+                    for (self.extraSlice(self.nodes.items[p].payload)) |fl| {
+                        const fd = self.nodes.items[fl].field_decl;
+                        try indent(writer, depth + 1);
+                        if (fd.name.len > 0) {
+                            try writer.print("Field({s}:)\n", .{fd.name});
+                        } else {
+                            try writer.writeAll("Field\n");
+                        }
+                        try self.dumpNode(writer, fd.type_node, depth + 2);
+                    }
+                }
             },
             .payload => |l| {
-                try writer.writeAll("payload\n");
-                for (self.extraSlice(l)) |c| try self.dumpNode(writer, c, depth + 1);
+                try writer.writeAll("Payload\n");
+                for (self.extraSlice(l)) |fl| {
+                    const fd = self.nodes.items[fl].field_decl;
+                    try indent(writer, depth + 1);
+                    if (fd.name.len > 0) {
+                        try writer.print("Field({s}:)\n", .{fd.name});
+                    } else {
+                        try writer.writeAll("Field\n");
+                    }
+                    try self.dumpNode(writer, fd.type_node, depth + 2);
+                }
             },
             .match_arm => |a| {
-                try writer.writeAll("arm\n");
+                try writer.writeAll("Arm\n");
                 try self.dumpNode(writer, a.pattern, depth + 1);
-                if (a.guard) |g| {
-                    try indent(writer, depth + 1);
-                    try writer.writeAll("guard\n");
-                    try self.dumpNode(writer, g, depth + 2);
-                }
+                // The seed drops the guard from the dump.
                 try self.dumpNode(writer, a.body, depth + 1);
             },
-            .expr_stmt => |e| {
-                try writer.writeAll("expr_stmt\n");
-                try self.dumpNode(writer, e, depth + 1);
-            },
+            // Dead node (the seed has no expr_stmt): transparent wrapper.
+            .expr_stmt => |e| try self.dumpNode(writer, e, depth),
             .return_stmt => |v| {
-                try writer.writeAll("return\n");
+                try writer.writeAll("Return\n");
                 if (v) |x| try self.dumpNode(writer, x, depth + 1);
             },
-            .break_stmt => try writer.writeAll("break\n"),
-            .continue_stmt => try writer.writeAll("continue\n"),
+            .break_stmt => try writer.writeAll("Break\n"),
+            .continue_stmt => try writer.writeAll("Continue\n"),
             .block => |b| {
-                try writer.writeAll("block\n");
+                try writer.writeAll("Block\n");
                 for (self.extraSlice(b.stmts)) |c| try self.dumpNode(writer, c, depth + 1);
-                if (b.tail) |t| {
-                    try indent(writer, depth + 1);
-                    try writer.writeAll("tail\n");
-                    try self.dumpNode(writer, t, depth + 2);
-                }
+                // The seed folds the tail expr into the statement list, no header.
+                if (b.tail) |t| try self.dumpNode(writer, t, depth + 1);
             },
-            .int_literal => |v| try writer.print("int {d}\n", .{v}),
-            .float_literal => |v| try writer.print("float {d}\n", .{v}),
-            .string_literal => |v| try writer.print("string \"{s}\"\n", .{v}),
-            .bool_literal => |v| try writer.print("bool {}\n", .{v}),
-            .nil_literal => try writer.writeAll("nil\n"),
-            .identifier => |v| try writer.print("ident {s}\n", .{v}),
+            .int_literal => |v| try writer.print("IntLit({d})\n", .{v}),
+            .float_literal => |v| {
+                try writer.writeAll("FloatLit(");
+                try dump_mod.writeG(writer, v);
+                try writer.writeAll(")\n");
+            },
+            .string_literal => |v| try writer.print("StringLit(\"{s}\")\n", .{v}),
+            .bool_literal => |v| try writer.print("BoolLit({})\n", .{v}),
+            // Dead node (the seed lexes `nil` as an identifier).
+            .nil_literal => try writer.writeAll("Ident(nil)\n"),
+            .identifier => |v| try writer.print("Ident({s})\n", .{v}),
             .binary_expr => |b| {
-                try writer.print("binary {s}\n", .{@tagName(b.op)});
+                try writer.print("BinaryOp({s})\n", .{b.op.seedName()});
                 try self.dumpNode(writer, b.left, depth + 1);
                 try self.dumpNode(writer, b.right, depth + 1);
             },
             .unary_expr => |u| {
-                try writer.print("unary {s}\n", .{@tagName(u.op)});
+                try writer.print("UnaryOp({s})\n", .{u.op.seedName()});
                 try self.dumpNode(writer, u.operand, depth + 1);
             },
             .call_expr => |c| {
-                try writer.writeAll("call\n");
+                try writer.writeAll("Call\n");
                 try self.dumpNode(writer, c.callee, depth + 1);
                 for (self.extraSlice(c.args)) |a| try self.dumpNode(writer, a, depth + 1);
             },
             .index_expr => |i| {
-                try writer.writeAll("index\n");
+                try writer.writeAll("Index\n");
                 try self.dumpNode(writer, i.object, depth + 1);
                 try self.dumpNode(writer, i.index, depth + 1);
             },
             .field_access => |f| {
-                try writer.print("field .{s}\n", .{f.field});
+                try writer.print("FieldAccess({s})\n", .{f.field});
                 try self.dumpNode(writer, f.object, depth + 1);
             },
             .array_literal => |l| {
-                try writer.print("array ({d})\n", .{l.len});
+                try writer.print("ArrayLit({d})\n", .{l.len});
                 for (self.extraSlice(l)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .range_expr => |r| {
-                try writer.print("range {s}\n", .{if (r.inclusive) "..=" else ".."});
+                try writer.print("Range({s})\n", .{if (r.inclusive) "..=" else ".."});
                 if (r.start_node) |s| try self.dumpNode(writer, s, depth + 1);
                 if (r.end_node) |e| try self.dumpNode(writer, e, depth + 1);
             },
             .struct_literal => |s| {
-                try writer.print("struct_lit {s}\n", .{s.name});
+                try writer.print("StructLit({s})\n", .{s.name});
                 for (self.extraSlice(s.fields)) |c| try self.dumpNode(writer, c, depth + 1);
             },
-            .some_expr, .ok_expr, .err_expr, .try_expr => |inner| {
-                try writer.print("{s}\n", .{@tagName(n)});
+            .some_expr => |inner| {
+                try writer.writeAll("SomeExpr\n");
                 try self.dumpNode(writer, inner, depth + 1);
             },
-            .none_expr => try writer.writeAll("none\n"),
+            .none_expr => try writer.writeAll("NoneExpr\n"),
+            .ok_expr => |inner| {
+                try writer.writeAll("OkExpr\n");
+                try self.dumpNode(writer, inner, depth + 1);
+            },
+            .err_expr => |inner| {
+                try writer.writeAll("ErrExpr\n");
+                try self.dumpNode(writer, inner, depth + 1);
+            },
+            .try_expr => |inner| {
+                try writer.writeAll("TryExpr\n");
+                try self.dumpNode(writer, inner, depth + 1);
+            },
             .if_expr => |i| {
-                try writer.writeAll("if\n");
+                try writer.writeAll("If\n");
                 try self.dumpNode(writer, i.cond, depth + 1);
                 try self.dumpNode(writer, i.then_block, depth + 1);
                 if (i.else_block) |e| {
                     try indent(writer, depth + 1);
-                    try writer.writeAll("else\n");
+                    try writer.writeAll("Else\n");
                     try self.dumpNode(writer, e, depth + 2);
                 }
             },
             .while_expr => |w| {
-                try writer.writeAll("while\n");
+                try writer.writeAll("While\n");
                 try self.dumpNode(writer, w.cond, depth + 1);
                 try self.dumpNode(writer, w.body, depth + 1);
             },
             .for_expr => |f| {
-                try writer.print("for {s} in\n", .{f.var_name});
+                try writer.print("For({s})\n", .{f.var_name});
                 try self.dumpNode(writer, f.iter, depth + 1);
                 try self.dumpNode(writer, f.body, depth + 1);
             },
             .match_expr => |m| {
-                try writer.writeAll("match\n");
+                try writer.writeAll("Match\n");
                 try self.dumpNode(writer, m.target, depth + 1);
                 for (self.extraSlice(m.arms)) |a| try self.dumpNode(writer, a, depth + 1);
             },
             .assignment => |a| {
-                try writer.writeAll("assign\n");
+                try writer.writeAll("Assign\n");
                 try self.dumpNode(writer, a.target, depth + 1);
                 try self.dumpNode(writer, a.value, depth + 1);
             },
-            .compound_assignment => |a| {
-                try writer.print("compound_assign {s}\n", .{@tagName(a.op)});
-                try self.dumpNode(writer, a.target, depth + 1);
-                try self.dumpNode(writer, a.value, depth + 1);
-            },
-            .pattern_wildcard => try writer.writeAll("pattern _\n"),
-            .pattern_bind => |name| try writer.print("pattern bind {s}\n", .{name}),
+            // Dead: the seed's parser rejects `x += 1`; its dump prints a bare
+            // line with no children, so mirror that if the node ever appears.
+            .compound_assignment => try writer.writeAll("CompoundAssign\n"),
+            .pattern_wildcard => try writer.writeAll("PatternWildcard\n"),
+            .pattern_bind => |name| try writer.print("PatternBind({s})\n", .{name}),
             .pattern_variant_bind => |v| {
-                try writer.writeAll("pattern variant\n");
+                try writer.writeAll("PatternVariantBind\n");
                 try self.dumpNode(writer, v.variant, depth + 1);
-                for (self.extraSlice(v.bindings)) |b| try self.dumpNode(writer, b, depth + 1);
+                for (self.extraSlice(v.bindings)) |b| {
+                    try indent(writer, depth + 1);
+                    try writer.print("Bind({s})\n", .{self.nodes.items[b].pattern_bind});
+                }
             },
             .pattern_builtin_variant => |v| {
-                try writer.print("pattern {s}\n", .{@tagName(v.kind)});
+                // BuiltinKind order matches the seed's BuiltinVariantKind:
+                // ok=0, err=1, some=2, none=3.
+                try writer.print("PatternBuiltinVariant({d})\n", .{@intFromEnum(v.kind)});
                 if (v.payload) |p| try self.dumpNode(writer, p, depth + 1);
             },
             .pattern_or => |l| {
-                try writer.writeAll("pattern or\n");
+                try writer.print("PatternOr({d})\n", .{l.len});
                 for (self.extraSlice(l)) |c| try self.dumpNode(writer, c, depth + 1);
             },
-            .type_ident => |name| try writer.print("type {s}\n", .{name}),
+            .type_ident => |name| try writer.print("TypeIdent({s})\n", .{name}),
             .type_optional => |inner| {
-                try writer.writeAll("type optional\n");
+                try writer.writeAll("TypeOptional\n");
                 try self.dumpNode(writer, inner, depth + 1);
             },
             .type_array => |a| {
-                try writer.writeAll("type array\n");
+                try writer.writeAll("TypeArray\n");
                 try self.dumpNode(writer, a.elem, depth + 1);
                 if (a.size) |s| try self.dumpNode(writer, s, depth + 1);
             },
             .type_fn => |f| {
-                try writer.writeAll("type fn\n");
+                try writer.writeAll("TypeFn\n");
                 for (self.extraSlice(f.params)) |p| try self.dumpNode(writer, p, depth + 1);
                 if (f.ret) |r| try self.dumpNode(writer, r, depth + 1);
             },
-        }
-    }
-
-    /// Single-line rendering for types, to keep param/field lines compact.
-    fn dumpInline(self: *const Tree, writer: anytype, idx: u32) !void {
-        const n = self.nodes.items[idx];
-        switch (n) {
-            .type_ident => |name| try writer.writeAll(name),
-            .type_optional => |inner| {
-                try self.dumpInline(writer, inner);
-                try writer.writeByte('?');
-            },
-            .type_array => |a| {
-                try writer.writeByte('[');
-                try self.dumpInline(writer, a.elem);
-                try writer.writeByte(']');
-            },
-            .type_fn => |f| {
-                try writer.writeAll("fn(");
-                for (self.extraSlice(f.params), 0..) |p, i| {
-                    if (i > 0) try writer.writeAll(", ");
-                    try self.dumpInline(writer, p);
-                }
-                try writer.writeAll(") -> ");
-                if (f.ret) |r| try self.dumpInline(writer, r) else try writer.writeAll("void");
-            },
-            else => try writer.print("<{s}>", .{@tagName(n)}),
         }
     }
 };
@@ -530,5 +538,5 @@ test "ast dump runs" {
     var buf: [512]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     try tree.dump(&w, 2);
-    try testing.expect(std.mem.indexOf(u8, w.buffered(), "int 42") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "IntLit(42)") != null);
 }
