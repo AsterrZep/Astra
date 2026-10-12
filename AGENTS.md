@@ -113,6 +113,11 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/astra-zig --debug file.astra    # interactive bytecode debugger
 ```
 
+`--dump-tokens`/`--dump-ast` are byte-parity-gated against the seed
+(PHASE2 §4 #6): after touching either dump, run
+`./zig/tests/dump_parity.sh` from the repo root (needs both binaries;
+`SHOW_DIFF=1` prints the first diffs). CI's `parity` job runs it.
+
 Layout: `src/lexer/`, `src/ast/`, `src/parser/`, `src/typechecker/`,
 `src/emitter/` (emitter + bytecode), `src/vm/`, `src/modules/`,
 `src/diagnostics.zig` (one `Diagnostic{file, span, msg}` sink for every

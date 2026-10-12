@@ -127,6 +127,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
 
 ### Changed
+- **`--dump-tokens` y `--dump-ast` del Zig byte-idénticos al seed (PHASE2
+  §4 #6)**: los dos introspection flags dejaron de imprimir el formato
+  propio del Zig a stderr y ahora replican el del seed a stdout. Nuevo
+  `zig/src/dump.zig`: `printToken` (mismo `%u:%u  %-14s` + valor que
+  `token_print`), `Tag.seedName()` completo (81 kinds en espejo de
+  `token_kind_name`) y `writeG`, un `%g` de C sin libc (6 dígitos
+  significativos, estilo e si el exponente < -4 o >= 6, exponente con
+  signo y >= 2 dígitos) testeado contra la salida real de gcc. `dumpNode`
+  reescrito al formato de `driver.c dump_node` (`Module`, `FnDecl(name)`,
+  `Param(x)`, `ReturnType`, `VarDecl(x[, mut])`, `Field(x:)` inline en
+  payloads, `Arm` sin guard, `Bind(name)`, `NoneExpr`, `Use` bare);
+  `dumpInline` eliminado. Gate en CI: job `parity` +
+  `zig/tests/dump_parity.sh` diffea ambos dumps sobre conformance no-UI,
+  codegen y los probes parse-only de `zig/tests/dump_probes/` (payloads
+  con nombre, formas `%g`, guards, `pub`+lambda, `use`/`import`) — 78
+  ficheros. Divergencia aceptada fuera del alcance: ante un error de
+  parseo el seed vuelca el AST parcial con rc=0 y el Zig sale con rc=1
 - **Dispatchers del backend de C unificados** (`--emit-c`): los dos
   switches de opcodes paralelos de `seed/src/codegen.c` (cuerpo de
   función y código de módulo) pasan a un único
@@ -158,6 +175,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dentro de una función
 
 ### Fixed
+- **Payload fields con nombre de enum se perdían en el dump del seed**:
+  `match(p, TOKEN_COLON)` movía `previous` al `:` y `--dump-ast` imprimía
+  `Field(::)` para todo campo `x: i32` de una variante con payload (el
+  parser Zig ya almacenaba el nombre bien; la paridad lo hizo visible).
+  Ahora `Field(x:)`. Los nombres solo alimentan el dump y
+  `field_names` cosmético (la igualdad de payloads es posicional), así
+  que la suite no se mueve. Pinned by
+  `zig/tests/dump_probes/enum_named_payload.astra`
 - **INDEX/SET_INDEX de nivel módulo en el C backend sin bounds checks**:
   `emit_module_code` emitía acceso crudo a `elems[idx]`, así que
   `print(a[5])` a nivel superior leía fuera del buffer del heap, imprimía

@@ -132,7 +132,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 3 | **VM** (`vm.c` → Zig) | ✅ | 48 opcodes, frames, globals, builtins; mismos textos de error que el seed. La salida de floats replica `printf("%g")` (ver §6) |
 | 4 | **Runner de conformance con ejecución** | ✅ | `zig build test` ejecuta cada caso no-UI y compara `EXPECT:` / `EXPECT-RUNTIME-ERROR:`; los `ui/` deben fallar al compilar |
 | 5 | Errores con recuperación a nivel de sentencia | ✅ | el módulo reporta varios errores por pase; verificado contra el seed (2 declaraciones malas → 2 errores) |
-| 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | 🟡 | hoy el formato es propio; la comparación es por aceptación, no por texto |
+| 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | ✅ | byte-idénticos al seed: gate `zig/tests/dump_parity.sh` (job `parity` de CI) sobre conformance no-UI + codegen + `zig/tests/dump_probes/` (78 ficheros, 0 divergencias). `src/dump.zig` reimplementa el `%g` de C sin libc (tests contra gcc) y `Tag.seedName()` espeja `token_kind_name`. Mirrors lossy a propósito del seed, replicados: `Use` sin path, guard de match omitido, `CompoundAssign` sin hijos |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
 | 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
 | 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | ✅ | Carga, exports `pub`, gating y compilación multi-módulo en el CLI (§7.3). Los re-exports (`use`) y los valores struct/enum foráneos quedaron cubiertos (2026-10-12); faltan raíces `@/`/`std/` (§7.1) |
@@ -376,8 +376,8 @@ Ahora ambos registran el modificador en el AST (`is_pub` en `FnDecl`,
 - `pub` seguido de cualquier otra cosa (`pub let`, `pub use`, `pub if`) es un
   error de parseo con el mismo mensaje en ambos: `'pub' can only precede fn,
   struct, enum or const`.
-- `--dump-ast` lo muestra: el Zig imprime `pub fn_decl nombre`, el seed
-  `PubFnDecl(nombre)`.
+- `--dump-ast` lo muestra: ambos imprimen `PubFnDecl(nombre)` (desde la
+  paridad de §4 #6 el Zig imprime el formato del seed, no el suyo propio).
 - Casos nuevos: `module/pub_decls.astra` (acepta y ejecuta) y
   `ui/pub_let.astra` (rechaza).
 
