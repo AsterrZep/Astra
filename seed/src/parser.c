@@ -1084,14 +1084,18 @@ static Node *parse_enum_decl(Parser *p, bool is_pub) {
                     PayloadField pf = {0};
                     if (check(p, TOKEN_IDENT)) {
                         advance(p);
+                        InternedString fname = p->previous.text;
                         if (match(p, TOKEN_COLON)) {
-                            /* named field: consumed IDENT ':' */
-                            pf.name = p->previous.text;
+                            /* named field: capture the IDENT *before* ':' —
+                             * match() moves `previous` onto the colon, which
+                             * used to make every named payload field print as
+                             * `Field(::)` in --dump-ast. */
+                            pf.name = fname;
                             pf.type = parse_type(p);
                         } else {
                             /* unnamed field: the IDENT *was* the type */
                             Node *tn = node_new(p->arena, NODE_TYPE_IDENT, p->previous.loc);
-                            tn->as.type_ident.name = p->previous.text;
+                            tn->as.type_ident.name = fname;
                             pf.type = tn;
                         }
                     } else {
