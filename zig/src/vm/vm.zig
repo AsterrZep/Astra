@@ -406,6 +406,8 @@ pub const VM = struct {
                     }
                 },
                 .get_local, .set_local => w.print(" slot={d}", .{argIndex(inst)}) catch {},
+                .closure => w.print(" fn={d} captures={d}", .{ argIndex(inst) >> 8, argIndex(inst) & 0xFF }) catch {},
+                .get_capture => w.print(" cap={d}", .{argIndex(inst)}) catch {},
                 .call => w.print(" argc={d}", .{argCount(inst)}) catch {},
                 .jump, .jump_if_false, .jump_if_true => w.print(" offset={d}", .{argOffset(inst)}) catch {},
                 else => {},
@@ -1236,6 +1238,63 @@ pub const VM = struct {
                     self.constants = fr.saved_constants;
                     if (!self.push(return_val)) return .runtime_error;
                     next = fr.ip;
+                },
+                .closure => {
+                    // operand: (fn_const << 8) | capture_count, same packing
+                    // style as NEW_ENUM. Pop the captured values (pushed in
+                    // capture order by the emitter), clone the template FnObj,
+                    // and attach them as env. Capture-by-value (ARCHITECTURE.md
+                    // §30.5): the env holds the values as they were at creation
+                    // time. The clone shares code/constants slices with the
+                    // template, so only the shell is allocated.
+                    const packed_arg = argIndex(inst);
+                    const fn_const: usize = packed_arg >> 8;
+                    const n_cap: usize = packed_arg & 0xFF;
+                    if (fn_const >= self.constants.len or
+                        tag(self.constants[fn_const]) != .fn_)
+                    {
+                        return self.rt(line, "closure template is not a function", .{});
+                    }
+                    if (self.sp < n_cap) {
+                        return self.rt(line, "not enough captured values on stack", .{});
+                    }
+                    const tmpl = self.constants[fn_const].fn_;
+                    const clos = self.a.create(bc.FnObj) catch
+                        return self.rt(line, "out of memory allocating closure", .{});
+                    const env: []bc.Value = if (n_cap > 0)
+                        self.a.alloc(bc.Value, n_cap) catch
+                            return self.rt(line, "out of memory allocating closure", .{})
+                    else
+                        &.{};
+                    clos.* = .{
+                        .code = tmpl.code,
+                        .constants = tmpl.constants,
+                        .param_count = tmpl.param_count,
+                        .local_count = tmpl.local_count,
+                        .env = env,
+                    };
+                    // The emitter pushed captures in order, so env[0] is the
+                    // deepest stack entry: copy from the bottom of the popped
+                    // range up.
+                    for (0..n_cap) |i| clos.env[i] = self.stack[self.sp - n_cap + i];
+                    self.sp -= n_cap;
+                    if (!self.push(bc.vFn(clos))) return .runtime_error;
+                },
+                .get_capture => {
+                    // Slot 0 of the current frame holds the callee (the
+                    // closure) and is never overwritten inside the body (no
+                    // SET_LOCAL 0 is emitted in function bodies), so env is
+                    // readable for the whole call.
+                    const cap: usize = argIndex(inst);
+                    if (self.frame_count == 0) {
+                        return self.rt(line, "GET_CAPTURE outside a function", .{});
+                    }
+                    const base = self.frameBase();
+                    const callee = self.stack[base];
+                    if (tag(callee) != .fn_ or cap >= callee.fn_.env.len) {
+                        return self.rt(line, "no captured variable at index {d}", .{cap});
+                    }
+                    if (!self.push(callee.fn_.env[cap])) return .runtime_error;
                 },
 
                 // ---- I/O ----

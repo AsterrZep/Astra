@@ -67,6 +67,8 @@ pub const OpCode = enum(u8) {
     // Functions
     call,
     ret,
+    closure,
+    get_capture,
 
     // I/O
     print,
@@ -128,6 +130,8 @@ pub const OpCode = enum(u8) {
             .get_enum_field => "GET_ENUM_FIELD",
             .call => "CALL",
             .ret => "RET",
+            .closure => "CLOSURE",
+            .get_capture => "GET_CAPTURE",
             .print => "PRINT",
             .wrap_ok => "WRAP_OK",
             .wrap_err => "WRAP_ERR",
@@ -143,10 +147,13 @@ pub const OpCode = enum(u8) {
     /// matters for POP, NEW_ARRAY, NEW_STRUCT and CALL.
     pub fn stackEffect(self: OpCode, operand: u32) i32 {
         return switch (self) {
-            .const_, .dup, .get_local, .get_global => 1,
+            .const_, .dup, .get_local, .get_global, .get_capture => 1,
             .pop => -@as(i32, @intCast(if (operand != 0) operand else 1)),
             .set_local, .set_global, .jump_if_false, .jump_if_true, .index, .print, .add, .sub, .mul, .div, .mod, .eq, .neq, .lt, .gt, .le, .ge, .and_, .or_, .bit_and, .bit_or, .bit_xor, .shl, .shr, .ret => -1,
             .new_array => 1 - @as(i32, @intCast(operand)),
+            // CLOSURE packs (fn_const_idx << 8) | n_captures; it pops the n
+            // captured values and pushes the closure (seed opcode_stack_effect).
+            .closure => 1 - @as(i32, @intCast(operand & 0xFF)),
             .new_struct, .call => -@as(i32, @intCast(operand)),
             .swap, .neg, .not, .bit_not, .len, .get_field, .jump, .halt => 0,
             .set_field => -1,
@@ -187,6 +194,12 @@ pub const FnObj = struct {
     constants: []Value,
     param_count: u8 = 0,
     local_count: u8 = 0,
+    /// Closure env: captured values in capture-index order (capture-by-value,
+    /// ARCHITECTURE.md §30.5). Templates in the constant pool leave it empty;
+    /// OPCODE_CLOSURE clones the template and fills this in. A body reads it
+    /// as the callee's env because slot 0 of a frame holds the callee for the
+    /// whole call — the same contract the seed VM relies on.
+    env: []Value = &.{},
 };
 
 pub const Kind = enum {
@@ -398,6 +411,8 @@ pub fn dump(writer: anytype, code: []const Instruction, constants: []const Value
                 }
             },
             .get_local, .set_local => try writer.print(" slot={d}", .{inst.arg.index}),
+            .closure => try writer.print(" fn={d} captures={d}", .{ inst.arg.index >> 8, inst.arg.index & 0xFF }),
+            .get_capture => try writer.print(" cap={d}", .{inst.arg.index}),
             .call => try writer.print(" argc={d}", .{inst.arg.arg_count}),
             .jump, .jump_if_false, .jump_if_true => try writer.print(" offset={d}", .{inst.arg.offset}),
             else => {},
@@ -415,6 +430,9 @@ test "opcode stack effects" {
     try testing.expectEqual(@as(i32, -2), OpCode.new_array.stackEffect(3));
     try testing.expectEqual(@as(i32, -3), OpCode.new_struct.stackEffect(3));
     try testing.expectEqual(@as(i32, -2), OpCode.call.stackEffect(2));
+    try testing.expectEqual(@as(i32, 1), OpCode.get_capture.stackEffect(0));
+    try testing.expectEqual(@as(i32, -2), OpCode.closure.stackEffect(3));
+    try testing.expectEqual(@as(i32, 1), OpCode.closure.stackEffect(0));
 }
 
 test "float formatting matches C %g" {

@@ -43,6 +43,9 @@ const MAX_LOOP_DEPTH = 32;
 
 const Local = struct { name: []const u8, slot: u8, depth: u8 };
 
+/// One captured free variable of a lambda, in env-index order.
+const Capture = struct { name: []const u8, index: u8 };
+
 /// Compile-time view of a struct declaration.
 const StructInfo = struct {
     name: []const u8,
@@ -94,6 +97,11 @@ pub const Emitter = struct {
     locals: [MAX_LOCALS]Local = undefined,
     local_count: usize = 0,
     scope_depth: u8 = 0,
+
+    /// Captures of the lambda whose body is currently being emitted (empty
+    /// outside lambdas and inside named function bodies).
+    captures: [MAX_LOCALS]Capture = undefined,
+    capture_count: usize = 0,
 
     loops: [MAX_LOOP_DEPTH]LoopPatch = undefined,
     loop_depth: usize = 0,
@@ -310,6 +318,16 @@ pub const Emitter = struct {
         return null;
     }
 
+    /// Index of a captured variable in the current lambda's env, if any.
+    fn findCapture(self: *const Emitter, name: []const u8) ?usize {
+        var i = self.capture_count;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, self.captures[i].name, name)) return i;
+        }
+        return null;
+    }
+
     /// Release the slots of the locals declared in the scope being left.
     ///
     /// Deliberately emits no POP: locals live in VM stack slots *below* sp
@@ -323,6 +341,195 @@ pub const Emitter = struct {
             self.local_count -= 1;
         }
     }
+
+    // ── Free-variable analysis (closures) ───────────────────────
+
+    /// Names visible to the analysis as a stack of (name, scope mark); a
+    /// scope exit forgets everything bound after its mark. Free names that
+    /// resolve in the *enclosing emitter* (a local slot or one of its own
+    /// captures) become this lambda's env; everything else stays a global.
+    /// This is the seed's FreeVars/fv_walk, transposed onto the flat tree.
+    const FreeVars = struct {
+        em: *Emitter,
+        names: [MAX_LOCALS]FvName = undefined,
+        name_count: usize = 0,
+        marks: [MAX_LOCALS]u32 = undefined,
+        mark_count: usize = 0,
+        caps: [MAX_LOCALS]Capture = undefined,
+        cap_count: usize = 0,
+        overflow: bool = false,
+
+        const FvName = struct { name: []const u8, mark: u32 };
+
+        fn pushScope(fv: *FreeVars) void {
+            if (fv.mark_count < MAX_LOCALS) {
+                fv.marks[fv.mark_count] = @intCast(fv.name_count);
+                fv.mark_count += 1;
+            }
+        }
+        fn popScope(fv: *FreeVars) void {
+            if (fv.mark_count == 0) return;
+            fv.mark_count -= 1;
+            fv.name_count = fv.marks[fv.mark_count];
+        }
+        fn bind(fv: *FreeVars, name: []const u8) void {
+            if (fv.name_count >= MAX_LOCALS) return;
+            fv.names[fv.name_count] = .{ .name = name, .mark = @intCast(fv.mark_count) };
+            fv.name_count += 1;
+        }
+        fn bound(fv: *const FreeVars, name: []const u8) bool {
+            var i = fv.name_count;
+            while (i > 0) {
+                i -= 1;
+                if (std.mem.eql(u8, fv.names[i].name, name)) return true;
+            }
+            return false;
+        }
+        fn ref(fv: *FreeVars, name: []const u8) void {
+            if (fv.bound(name)) return;
+            for (0..fv.cap_count) |i| {
+                if (std.mem.eql(u8, fv.caps[i].name, name)) return;
+            }
+            const em = fv.em;
+            if (em.findLocal(name) != null or em.findCapture(name) != null) {
+                if (fv.cap_count >= 255) {
+                    fv.overflow = true;
+                    return;
+                }
+                fv.caps[fv.cap_count] = .{ .name = name, .index = @intCast(fv.cap_count) };
+                fv.cap_count += 1;
+            }
+            // else: a module-level name — global or import binding — which
+            // keeps resolving through GET_GLOBAL, unchanged.
+        }
+        fn pattern(fv: *FreeVars, pat: u32) void {
+            switch (fv.em.tree.node(pat)) {
+                .pattern_bind => |name| fv.bind(name),
+                .pattern_variant_bind => |vb| {
+                    for (fv.em.tree.extraSlice(vb.bindings)) |b| fv.pattern(b);
+                },
+                .pattern_builtin_variant => |b| {
+                    if (b.payload) |p| fv.pattern(p);
+                },
+                .pattern_or => |alts| {
+                    for (fv.em.tree.extraSlice(alts)) |a| fv.pattern(a);
+                },
+                else => {},
+            }
+        }
+        fn walk(fv: *FreeVars, idx: u32) void {
+            switch (fv.em.tree.node(idx)) {
+                .identifier => |name| fv.ref(name),
+                .assignment => |asn| {
+                    // The target is treated as a read so that assigning to a
+                    // captured name still lands in the capture set, where
+                    // emission reports "cannot assign to captured variable".
+                    const tgt = fv.em.tree.node(asn.target);
+                    if (std.meta.activeTag(tgt) == .identifier) fv.ref(tgt.identifier);
+                    fv.walk(asn.value);
+                },
+                .compound_assignment => |ca| {
+                    const tgt = fv.em.tree.node(ca.target);
+                    if (std.meta.activeTag(tgt) == .identifier) fv.ref(tgt.identifier);
+                    fv.walk(ca.value);
+                },
+                .binary_expr => |b| {
+                    fv.walk(b.left);
+                    fv.walk(b.right);
+                },
+                .unary_expr => |u| fv.walk(u.operand),
+                .call_expr => |c| {
+                    fv.walk(c.callee);
+                    for (fv.em.tree.extraSlice(c.args)) |a| fv.walk(a);
+                },
+                .index_expr => |ix| {
+                    fv.walk(ix.object);
+                    fv.walk(ix.index);
+                },
+                .field_access => |fa| fv.walk(fa.object),
+                .array_literal => |list| {
+                    for (fv.em.tree.extraSlice(list)) |e| fv.walk(e);
+                },
+                .range_expr => |r| {
+                    if (r.start_node) |s| fv.walk(s);
+                    if (r.end_node) |e| fv.walk(e);
+                },
+                .struct_literal => |sl| {
+                    for (fv.em.tree.extraSlice(sl.fields)) |f| {
+                        fv.walk(fv.em.tree.node(f).struct_init_field.value);
+                    }
+                },
+                .some_expr, .ok_expr, .err_expr, .try_expr => |inner| fv.walk(inner),
+                .none_expr, .nil_literal, .int_literal, .float_literal,
+                .string_literal, .bool_literal, .break_stmt, .continue_stmt => {},
+                .if_expr => |ie| {
+                    fv.walk(ie.cond);
+                    fv.walk(ie.then_block);
+                    if (ie.else_block) |eb| fv.walk(eb);
+                },
+                .while_expr => |w| {
+                    fv.walk(w.cond);
+                    fv.walk(w.body);
+                },
+                .for_expr => |f| {
+                    // emitFor evaluates the iterable before binding the loop
+                    // variable, so the walker does too.
+                    fv.pushScope();
+                    fv.walk(f.iter);
+                    fv.bind(f.var_name);
+                    fv.walk(f.body);
+                    fv.popScope();
+                },
+                .match_expr => |m| {
+                    fv.walk(m.target);
+                    for (fv.em.tree.extraSlice(m.arms)) |arm_idx| {
+                        const arm = fv.em.tree.node(arm_idx).match_arm;
+                        fv.pushScope();
+                        fv.pattern(arm.pattern);
+                        if (arm.guard) |g| fv.walk(g);
+                        fv.walk(arm.body);
+                        fv.popScope();
+                    }
+                },
+                .block => |b| {
+                    fv.pushScope();
+                    for (fv.em.tree.extraSlice(b.stmts)) |s| fv.walk(s);
+                    if (b.tail) |t| fv.walk(t);
+                    fv.popScope();
+                },
+                .expr_stmt => |inner| fv.walk(inner),
+                .return_stmt => |maybe| {
+                    if (maybe) |v| fv.walk(v);
+                },
+                .lambda_expr => |l| {
+                    // A nested lambda's free names may come from THIS frame
+                    // (its locals or its own captures) and count as captures
+                    // of the enclosing lambda — the chain the seed builds.
+                    fv.pushScope();
+                    for (fv.em.tree.extraSlice(l.params)) |p| {
+                        fv.bind(fv.em.tree.node(p).param.name);
+                    }
+                    fv.walk(l.body);
+                    fv.popScope();
+                },
+                .fn_decl => |f| {
+                    // Named functions do not capture: bind only the name in
+                    // the enclosing lambda; the body is not walked.
+                    fv.bind(f.name);
+                },
+                .var_decl, .const_decl => {
+                    const v = switch (fv.em.tree.node(idx)) {
+                        .var_decl => |v| v,
+                        .const_decl => |v| v,
+                        else => unreachable,
+                    };
+                    if (v.value) |val| fv.walk(val);
+                    fv.bind(v.name);
+                },
+                else => {},
+            }
+        }
+    };
 
     // ── Type registries ───────────────────────────────────────────
 
@@ -651,8 +858,9 @@ pub const Emitter = struct {
 
     /// Emit a function or lambda body into a fresh code/constant pool, matching
     /// the seed's save/swap/restore. Slot 0 is reserved for the return value, so
-    /// parameters start at slot 1.
-    fn emitFunctionBody(self: *Emitter, params: ast.List, body: u32, ln: u32) *bc.FnObj {
+    /// parameters start at slot 1. `caps` is the lambda's capture table (empty
+    /// for named functions, which do not capture).
+    fn emitFunctionBody(self: *Emitter, params: ast.List, body: u32, ln: u32, caps: []const Capture) *bc.FnObj {
         const fn_obj = self.a.create(bc.FnObj) catch @panic("OOM");
         fn_obj.* = .{ .code = &.{}, .constants = &.{} };
 
@@ -661,15 +869,24 @@ pub const Emitter = struct {
         const saved_local_count = self.local_count;
         const saved_scope_depth = self.scope_depth;
         const saved_sp = self.sp;
+        const saved_capture_count = self.capture_count;
         var saved_locals: [MAX_LOCALS]Local = undefined;
         var i: usize = 0;
         while (i < saved_local_count) : (i += 1) saved_locals[i] = self.locals[i];
+        var saved_captures: [MAX_LOCALS]Capture = undefined;
+        i = 0;
+        while (i < saved_capture_count) : (i += 1) saved_captures[i] = self.captures[i];
 
         self.code = .empty;
         self.constants = .empty;
         self.scope_depth = 1;
         self.local_count = 0;
         self.sp = 0;
+        // Inside the body, free names resolve through this lambda's captures
+        // (GET_CAPTURE), not the enclosing frame's.
+        self.capture_count = caps.len;
+        i = 0;
+        while (i < caps.len) : (i += 1) self.captures[i] = caps[i];
 
         _ = self.addLocal("$ret");
         const plist = self.tree.extraSlice(params);
@@ -707,8 +924,11 @@ pub const Emitter = struct {
         self.local_count = saved_local_count;
         self.scope_depth = saved_scope_depth;
         self.sp = saved_sp;
+        self.capture_count = saved_capture_count;
         i = 0;
         while (i < saved_local_count) : (i += 1) self.locals[i] = saved_locals[i];
+        i = 0;
+        while (i < saved_capture_count) : (i += 1) self.captures[i] = saved_captures[i];
         return fn_obj;
     }
 
@@ -740,6 +960,11 @@ pub const Emitter = struct {
             .identifier => |name| {
                 if (self.findLocal(name)) |slot| {
                     self.emitInstIndex(.get_local, @intCast(slot), ln);
+                } else if (self.findCapture(name)) |cap| {
+                    // Free variable of the enclosing lambda: read it out of
+                    // the closure's env. Slot 0 of this frame still holds the
+                    // callee, so GET_CAPTURE reaches it without a frame change.
+                    self.emitInstIndex(.get_capture, @intCast(cap), ln);
                 } else if (self.importFor(name)) |ref| {
                     const gname = if (ref.target.len > 0) ref.target else self.globalName(name);
                     const ci = self.addConstant(bc.vString(gname));
@@ -1060,9 +1285,46 @@ pub const Emitter = struct {
                 self.emitInst(.try_unwrap, ln);
             },
             .lambda_expr => |l| {
-                const fn_obj = self.emitFunctionBody(l.params, l.body, ln);
-                const ci = self.addConstant(bc.vFn(fn_obj));
-                self.emitInstIndex(.const_, ci, ln);
+                // Free-variable analysis against the *enclosing* frame: the
+                // names it yields become this lambda's env, pushed at the
+                // creation site before CLOSURE clones the template around
+                // them (capture-by-value, ARCHITECTURE.md §30.5).
+                var fv = FreeVars{ .em = self };
+                fv.pushScope();
+                for (self.tree.extraSlice(l.params)) |p| {
+                    fv.bind(self.tree.node(p).param.name);
+                }
+                fv.walk(l.body);
+                fv.popScope();
+                if (fv.overflow) {
+                    self.err(ln, "too many captured variables (max 255)", .{});
+                }
+
+                // Push each captured value in env order. A name from the
+                // enclosing function is a local slot; one the enclosing
+                // lambda itself captured is read from *its* env — we are
+                // still emitting the outer frame, so both resolve through
+                // the outer frame's tables.
+                for (0..fv.cap_count) |i| {
+                    if (self.findLocal(fv.caps[i].name)) |slot| {
+                        self.emitInstIndex(.get_local, @intCast(slot), ln);
+                    } else if (self.findCapture(fv.caps[i].name)) |cap| {
+                        self.emitInstIndex(.get_capture, @intCast(cap), ln);
+                    } else {
+                        // Analysis and emission must agree; a miss here would
+                        // build an env with the wrong layout.
+                        self.err(ln, "internal: capture '{s}' unresolved at creation site", .{fv.caps[i].name});
+                        const z = self.addNil();
+                        self.emitInstIndex(.const_, z, ln);
+                    }
+                }
+
+                const fn_obj = self.emitFunctionBody(l.params, l.body, ln, fv.caps[0..fv.cap_count]);
+                // The captured values are already on the stack (pushed above,
+                // in the enclosing frame); CLOSURE pops them and pushes the
+                // finished closure — the lambda expression's one value.
+                const fn_idx = self.addConstant(bc.vFn(fn_obj));
+                self.emitInstIndex(.closure, (fn_idx << 8) | @as(u32, @intCast(fv.cap_count)), ln);
             },
             else => {},
         }
@@ -1385,6 +1647,12 @@ pub const Emitter = struct {
                 if (self.findLocal(name)) |slot| {
                     self.emitInstIndex(.set_local, @intCast(slot), ln);
                     self.emitInstIndex(.get_local, @intCast(slot), ln);
+                } else if (self.findCapture(name) != null) {
+                    // Closures capture by value (ARCHITECTURE.md §30.5): there
+                    // is no cell to store into, and writing only the local
+                    // copy would silently diverge from the enclosing frame.
+                    // Refuse at compile time instead.
+                    self.err(ln, "cannot assign to captured variable '{s}' (closures capture by value)", .{name});
                 } else {
                     const ci = self.addConstant(bc.vString(self.globalName(name)));
                     self.emitInstIndex(.set_global, ci, ln);
@@ -1414,7 +1682,9 @@ pub const Emitter = struct {
 
         switch (self.tree.node(idx)) {
             .fn_decl => |f| {
-                const fn_obj = self.emitFunctionBody(f.params, f.body, ln);
+                // Named functions do not capture: their bodies keep resolving
+                // free names as globals (the callee has no env).
+                const fn_obj = self.emitFunctionBody(f.params, f.body, ln, &.{});
                 const fn_idx = self.addConstant(bc.vFn(fn_obj));
                 const name_idx = self.addConstant(bc.vString(self.globalName(f.name)));
                 if (self.scope_depth == 0) {
