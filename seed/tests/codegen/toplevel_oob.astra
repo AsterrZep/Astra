@@ -1,0 +1,10 @@
+// EXPECT-RUNTIME-ERROR:
+//
+// C backend twin of conformance/arrays/out_of_bounds.astra at MODULE level.
+// The function-body path was fixed by out_of_bounds.astra, but the
+// top-level dispatcher (emit_module_code) still emitted raw
+// `elems[idx]` accesses: `print(a[5])` read past the heap buffer, printed
+// garbage and exited 0. Both opcodes now go through
+// astra_array_get/astra_array_set, matching the VM's bounds error.
+let a = [1, 2, 3]
+print(a[5])

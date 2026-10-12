@@ -1476,9 +1476,13 @@ static void emit_module_code(Codegen *cg) {
         } break;
 
         case OPCODE_INDEX: {
+            /* Bounds-checked via astra_array_get, same as the function-body
+             * twin: the raw elems[] access here used to read out of bounds
+             * and keep going with garbage. */
             cg_write(cg, "    {\n");
             cg_write(cg, "        AstraValue _idx = frame[--sp];\n");
-            cg_write(cg, "        frame[sp-1] = frame[sp-1].as.array_val->elems[_idx.as.int_val];\n");
+            cg_write(cg, "        AstraValue _arr = frame[sp - 1];\n");
+            cg_write(cg, "        frame[sp - 1] = astra_array_get(_arr.as.array_val, _idx.as.int_val);\n");
             cg_write(cg, "    }\n");
         } break;
 
@@ -1490,8 +1494,9 @@ static void emit_module_code(Codegen *cg) {
             cg_write(cg, "    {\n");
             cg_write(cg, "        AstraValue _val = frame[--sp];\n");
             cg_write(cg, "        AstraValue _idx = frame[--sp];\n");
-            cg_write(cg, "        frame[sp-1].as.array_val->elems[_idx.as.int_val] = _val;\n");
-            cg_write(cg, "        frame[sp-1] = _val;\n");
+            cg_write(cg, "        AstraValue _arr = frame[sp - 1];\n");
+            cg_write(cg, "        astra_array_set(_arr.as.array_val, _idx.as.int_val, _val);\n");
+            cg_write(cg, "        frame[sp - 1] = _val;\n");
             cg_write(cg, "    }\n");
         } break;
 
