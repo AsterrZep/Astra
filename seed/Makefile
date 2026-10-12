@@ -94,18 +94,29 @@ $(BUILDDIR)/fuzz_compile.o: $(FUZZDIR)/fuzz_compile.c | $(BUILDDIR)
 # dictionary. Single worker by default — the ASan build costs ~250 MB RSS and
 # parallel workers have no headroom on a small box. Time-boxed; make fuzz-run
 # FUZZ_TIME=3600 for a long session. Crash artifacts land in
-# $(BUILDDIR)/fuzz/artifacts/. Campaigns should redirect stderr to a file:
-# every rejected input prints diagnostics, and a runaway write stalls can show
-# up as libFuzzer "timeout" artifacts that are not real slow inputs.
+# $(BUILDDIR)/fuzz/artifacts/.
+#
+# Environment hardening, learned from a false alarm on 2026-10-12:
+#   - ASTRA_FUZZ_QUIET=1 masks fd 2 per input inside the harness: campaigns
+#     print tens of thousands of diagnostics per second, and a stalled write
+#     under memory pressure showed up as a fake libFuzzer "timeout";
+#   - ASAN_OPTIONS=log_path keeps ASan/LSan reports while fd 2 is masked
+#     (files $(BUILDDIR)/fuzz/asan.<pid>);
+#   - -timeout=10 (not 5): wall-clock alarms also fire on a loaded box, and
+#     real hangs are unbounded anyway;
+#   - triage any artifact with fuzz/classify.sh BEFORE reporting it.
 FUZZ_TIME ?= 60
 fuzz-run: fuzz
 	@mkdir -p $(BUILDDIR)/fuzz/corpus $(BUILDDIR)/fuzz/work $(BUILDDIR)/fuzz/artifacts
 	@find tests -name '*.astra' -exec cp -f {} $(BUILDDIR)/fuzz/corpus/ \;
+	ASTRA_FUZZ_QUIET=1 \
+	ASAN_OPTIONS="$${ASAN_OPTIONS:+$${ASAN_OPTIONS}:}log_path=$(BUILDDIR)/fuzz/asan" \
 	./$(BUILDDIR)/fuzz/astra-fuzz $(BUILDDIR)/fuzz/work $(BUILDDIR)/fuzz/corpus \
 	    -artifact_prefix=$(BUILDDIR)/fuzz/artifacts/ \
-	    -dict=$(FUZZDIR)/astra.dict -max_len=16384 -timeout=5 \
+	    -dict=$(FUZZDIR)/astra.dict -max_len=16384 -timeout=10 \
 	    -rss_limit_mb=512 -malloc_limit_mb=64 \
 	    -max_total_time=$(FUZZ_TIME) 2>$(BUILDDIR)/fuzz/campaign.log
+	@echo "campaign done: artifacts in $(BUILDDIR)/fuzz/artifacts/ (triage with fuzz/classify.sh)"
 
 # Link
 $(TARGET): $(OBJS)

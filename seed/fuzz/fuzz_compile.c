@@ -12,39 +12,81 @@
  * Rules for this file (fuzzing skill):
  *   - never exit()/abort() on bad input: diagnostics and error counts are
  *     normal outcomes, a crash is a finding;
- *   - do not redirect stderr — ASan/UBSan reports travel through it;
- *   - keep the target fast: one malloc, one compile, one free per input.
+ *   - keep the target fast: one malloc, one compile, one free per input;
+ *   - quiet mode is OPT-IN (ASTRA_FUZZ_QUIET=1, set by `make fuzz-run`):
+ *     fd 2 is masked to /dev/null only for the duration of one input, so
+ *     campaigns do not print tens of thousands of error lines per second —
+ *     a stalled write under memory pressure showed up once as a fake
+ *     libFuzzer "timeout" for an input that runs in ~1 ms (2026-10-12).
+ *     ASan/LSan reports travel through fd 2 as well, so quiet runs MUST
+ *     set ASAN_OPTIONS=log_path=... (the fuzz-run recipe does); standalone
+ *     replays and CI leave the variable unset and keep full stderr.
  */
 
 #include "astra/astra.h"
 
+#include <fcntl.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Generous cap: past every conformance file. Larger inputs are dropped
  * before they reach the lexer so the fuzzer cannot blow the RSS limit
  * with one giant token stream. */
 #define FUZZ_MAX_LEN (64u * 1024u)
 
+/* getenv once per process: the environment cannot change under libFuzzer. */
+static bool fuzz_quiet(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *q = getenv("ASTRA_FUZZ_QUIET");
+        cached = (q && q[0] != '\0' && q[0] != '0') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size > FUZZ_MAX_LEN)
         return 0;
+
+    /* Mask fd 2 for this input; on any failure keep the diagnostics
+     * instead of the mask (silence is an optimization, not a contract). */
+    int fd_saved = -1, fd_devnull = -1;
+    if (fuzz_quiet()) {
+        fd_saved = dup(2);
+        fd_devnull = open("/dev/null", O_WRONLY);
+        if (fd_saved >= 0 && fd_devnull >= 0) {
+            if (dup2(fd_devnull, 2) < 0) {
+                close(fd_saved);
+                fd_saved = -1;
+            }
+        } else {
+            if (fd_saved >= 0)
+                close(fd_saved);
+            if (fd_devnull >= 0)
+                close(fd_devnull);
+            fd_saved = -1;
+            fd_devnull = -1;
+        }
+    }
 
     /* read_file() hands the compiler a NUL-terminated buffer; mirror that
      * shape. NUL is not special to the lexer (it takes a length), but the
      * terminator keeps the fuzzed buffer indistinguishable from a real one. */
     char *source = malloc(size + 1);
     if (!source)
-        return 0; /* OOM: skip this input, keep fuzzing */
+        goto out; /* OOM: skip this input, keep fuzzing */
     memcpy(source, data, size);
     source[size] = '\0';
 
     Compiler *c = compiler_create("fuzz.astra", source, size);
     if (!c) {
         free(source);
-        return 0; /* arena OOM: reported by driver_create, nothing to do */
+        source = NULL;
+        goto out; /* arena OOM: reported by driver_create, nothing to do */
     }
 
     Node *module = parser_parse_module(c->parser);
@@ -75,5 +117,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     compiler_destroy(c);
     free(source);
+
+out:
+    if (fd_saved >= 0) {
+        dup2(fd_saved, 2);
+        close(fd_saved);
+    }
+    if (fd_devnull >= 0)
+        close(fd_devnull);
     return 0;
 }
