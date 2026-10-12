@@ -32,6 +32,15 @@ fi
 pass=0
 fail=0
 
+# Fixed-string search over captured output. NEVER `printf | grep -q` here:
+# with `pipefail`, grep -q exits at the first match, the writer then dies of
+# EPIPE, and the pipeline reports failure even though the string WAS found —
+# a false FAIL that fired in CI on block_nesting_too_deep. A here-string
+# gives grep a file, so there is no writer to race against.
+contains() {
+    grep -qF "$1" <<<"$2"
+}
+
 # ------------------------------------------------------------
 # Construct registry invariants
 # ------------------------------------------------------------
@@ -63,7 +72,7 @@ while IFS= read -r file; do
             fail=$((fail + 1))
             continue
         fi
-        if [ -n "$expected" ] && ! printf '%s' "$actual" | grep -qF "$expected"; then
+        if [ -n "$expected" ] && ! contains "$expected" "$actual"; then
             echo "FAIL $rel: runtime error did not contain '$expected'"
             printf '      got: %s\n' "$actual"
             fail=$((fail + 1))
@@ -83,7 +92,7 @@ while IFS= read -r file; do
             fail=$((fail + 1))
             continue
         fi
-        if [ -n "$expected" ] && ! printf '%s' "$actual" | grep -qF "$expected"; then
+        if [ -n "$expected" ] && ! contains "$expected" "$actual"; then
             echo "FAIL $rel: error message did not contain '$expected'"
             printf '      got: %s\n' "$actual"
             fail=$((fail + 1))
@@ -141,7 +150,7 @@ if [ -d "$CGDIR" ]; then
                     fail=$((fail + 1))
                     continue
                 fi
-                if [ -n "$expected" ] && ! printf '%s' "$actual" | grep -qF "$expected"; then
+                if [ -n "$expected" ] && ! contains "$expected" "$actual"; then
                     echo "FAIL $rel: --emit-c error did not contain '$expected'"
                     printf '      got: %s\n' "$actual"
                     rm -f "$cfile"
@@ -175,7 +184,7 @@ if [ -d "$CGDIR" ]; then
             # required rather than "any failure": a segfault also exits non-zero,
             # and a crash is precisely what these tests exist to rule out.
             if grep -qE '^// *EXPECT-RUNTIME-ERROR:' "$file"; then
-                if [ "$rc" -ne 1 ] || ! printf '%s' "$actual" | grep -qF "runtime error"; then
+                if [ "$rc" -ne 1 ] || ! contains "runtime error" "$actual"; then
                     echo "FAIL $rel: expected a clean runtime error from the generated program"
                     printf '      exit=%s got: %s\n' "$rc" "$actual"
                     fail=$((fail + 1))
