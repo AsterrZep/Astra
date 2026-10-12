@@ -1490,6 +1490,15 @@ static Node *parse_statement(Parser *p) {
 
     if (check(p, TOKEN_BREAK)) {
         advance(p);
+        /* A bare `break` ends at a statement boundary; anything else right
+         * after it can only be a break-with-value, which Astra-0 does not
+         * support (no `loop` construct to receive it — see constructs/break.c).
+         * Newlines are tokens, so the next statement on its own line is not
+         * mistaken for a value. */
+        if (!check(p, TOKEN_SEMICOLON) && !check(p, TOKEN_NEWLINE) &&
+            !check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+            parser_error(p, "break with a value is not supported in Astra-0");
+        }
         optional_semi(p);
         return node_new(p->arena, NODE_BREAK, p->previous.loc);
     }

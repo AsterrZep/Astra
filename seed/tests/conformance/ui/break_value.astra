@@ -1,0 +1,11 @@
+// `break` con valor: la gramática de research/010 permite
+// `break Expression?`, pero Astra-0 no tiene `loop` para recibir el valor
+// (constructs/break.c documenta el hueco) y ambos parsers se lo tragaban
+// en silencio: `break 5` compilaba como `break` más una expresión muerta.
+// Ahora es un error de compilación en seed y Zig.
+// EXPECT-ERROR: break with a value is not supported in Astra-0
+fn main() {
+    while true {
+        break 5
+    }
+}

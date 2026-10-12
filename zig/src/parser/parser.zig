@@ -302,6 +302,15 @@ pub const Parser = struct {
 
         if (self.match(.kw_break)) {
             const loc = self.previous.loc;
+            // A bare `break` ends at a statement boundary; anything else right
+            // after it can only be a break-with-value, which Astra-0 does not
+            // support. Newlines are tokens, so the next statement on its own
+            // line is not mistaken for a value (mirrors the seed parser).
+            if (!self.check(.semicolon) and !self.check(.newline) and
+                !self.check(.rbrace) and !self.check(.eof))
+            {
+                return self.fail("break with a value is not supported in Astra-0");
+            }
             self.optionalSemi();
             return try self.add(.{ .break_stmt = {} }, loc);
         }
