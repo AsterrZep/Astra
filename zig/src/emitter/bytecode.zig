@@ -393,10 +393,9 @@ pub fn printValue(writer: anytype, v: Value) anyerror!void {
     }
 }
 
-/// `vm_dump_bytecode` (seed/src/vm.c). Note the seed writes the surrounding
-/// lines to stderr but the constant values through `value_print` to stdout;
-/// this renders everything to the given writer, which the caller decides how
-/// to present.
+/// `vm_dump_bytecode` (seed/src/vm.c). The seed writes everything —
+/// surrounding lines and constant values — to stderr, matching this renderer;
+/// program output stays on stdout in both compilers.
 pub fn dump(writer: anytype, code: []const Instruction, constants: []const Value) anyerror!void {
     try writer.print("=== Bytecode ({d} instructions, {d} constants) ===\n", .{ code.len, constants.len });
     for (code, 0..) |inst, i| {

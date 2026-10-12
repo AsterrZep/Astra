@@ -196,38 +196,41 @@ static const char *type_name(Value v) {
     return "unknown";
 }
 
-void value_print(Value v) {
+/* Renders a value to an explicit stream. The dumps (bytecode, ASTRA_DUMP_VM,
+ * ASTRA_TRACE) use this with stderr so that program output (stdout) never
+ * interleaves with diagnostics — matching the Zig compiler. */
+static void value_print_stream(FILE *out, Value v) {
     switch (v.kind) {
-    case VAL_NIL:    printf("nil"); break;
-    case VAL_BOOL:   printf(v.as.bool_val ? "true" : "false"); break;
-    case VAL_INT:    printf("%ld", (long)v.as.int_val); break;
-    case VAL_FLOAT:  printf("%g", v.as.float_val); break;
-    case VAL_STRING: printf("%s", v.as.string_val); break;
+    case VAL_NIL:    fprintf(out, "nil"); break;
+    case VAL_BOOL:   fprintf(out, "%s", v.as.bool_val ? "true" : "false"); break;
+    case VAL_INT:    fprintf(out, "%ld", (long)v.as.int_val); break;
+    case VAL_FLOAT:  fprintf(out, "%g", v.as.float_val); break;
+    case VAL_STRING: fprintf(out, "%s", v.as.string_val); break;
     case VAL_ARRAY:
-        printf("[");
+        fprintf(out, "[");
         if (v.as.array_val) {
             for (size_t i = 0; i < v.as.array_val->len; i++) {
-                if (i > 0) printf(", ");
-                value_print(v.as.array_val->elems[i]);
+                if (i > 0) fprintf(out, ", ");
+                value_print_stream(out, v.as.array_val->elems[i]);
             }
         }
-        printf("]");
+        fprintf(out, "]");
         break;
     case VAL_STRUCT: {
         StructObj *s = v.as.struct_val;
-        if (!s || !s->def) { printf("<struct>"); break; }
-        printf("%s { ", s->def->name ? s->def->name : "?");
+        if (!s || !s->def) { fprintf(out, "<struct>"); break; }
+        fprintf(out, "%s { ", s->def->name ? s->def->name : "?");
         for (size_t i = 0; i < s->def->field_count; i++) {
-            if (i > 0) printf(", ");
-            printf("%s: ", s->def->field_names[i]);
-            value_print(s->fields[i]);
+            if (i > 0) fprintf(out, ", ");
+            fprintf(out, "%s: ", s->def->field_names[i]);
+            value_print_stream(out, s->fields[i]);
         }
-        printf(" }");
+        fprintf(out, " }");
         break;
     }
-    case VAL_STRUCT_DEF: printf("<struct_def>"); break;
+    case VAL_STRUCT_DEF: fprintf(out, "<struct_def>"); break;
     case VAL_ENUM:
-        printf("%s.%s",
+        fprintf(out, "%s.%s",
                v.as.enum_val.enum_name ? v.as.enum_val.enum_name : "?",
                v.as.enum_val.variant_name ? v.as.enum_val.variant_name : "?");
         break;
@@ -235,31 +238,35 @@ void value_print(Value v) {
         /* Data-carrying value: print with a Rust-like constructor form. */
         const EnumDef *d = v.as.enum_obj->def;
         size_t vi = v.as.enum_obj->variant;
-        printf("%s.%s",
+        fprintf(out, "%s.%s",
                (d && d->name) ? d->name : "?",
                (d && vi < d->variant_count && d->variants[vi].name)
                    ? d->variants[vi].name : "?");
         size_t nf = (d && vi < d->variant_count) ? d->variants[vi].field_count : 0;
         if (nf == 1) {
-            printf("(");
-            value_print(v.as.enum_obj->fields[0]);
-            printf(")");
+            fprintf(out, "(");
+            value_print_stream(out, v.as.enum_obj->fields[0]);
+            fprintf(out, ")");
         } else if (nf > 1) {
-            printf("(");
+            fprintf(out, "(");
             for (size_t i = 0; i < nf; i++) {
-                if (i > 0) printf(", ");
-                value_print(v.as.enum_obj->fields[i]);
+                if (i > 0) fprintf(out, ", ");
+                value_print_stream(out, v.as.enum_obj->fields[i]);
             }
-            printf(")");
+            fprintf(out, ")");
         }
     } break;
-    case VAL_ENUM_DEF: printf("<enum_def>"); break;
-    case VAL_FN:     printf("<fn>"); break;
-    case VAL_OK:     printf("ok("); value_print(*v.as.ok_val.inner); printf(")"); break;
-    case VAL_ERR:    printf("err("); value_print(*v.as.err_val.inner); printf(")"); break;
-    case VAL_SOME:   printf("some("); value_print(*v.as.some_val.inner); printf(")"); break;
+    case VAL_ENUM_DEF: fprintf(out, "<enum_def>"); break;
+    case VAL_FN:     fprintf(out, "<fn>"); break;
+    case VAL_OK:     fprintf(out, "ok("); value_print_stream(out, *v.as.ok_val.inner); fprintf(out, ")"); break;
+    case VAL_ERR:    fprintf(out, "err("); value_print_stream(out, *v.as.err_val.inner); fprintf(out, ")"); break;
+    case VAL_SOME:   fprintf(out, "some("); value_print_stream(out, *v.as.some_val.inner); fprintf(out, ")"); break;
     }
 }
+
+/* Public API: the print builtin and OPCODE_PRINT always write program output
+ * to stdout. */
+void value_print(Value v) { value_print_stream(stdout, v); }
 
 /* Structural equality: arrays compare element-wise. */
 static bool value_eq(Value a, Value b) {
@@ -513,8 +520,9 @@ static const char *opname(OpCode op) {
  *
  * Public because it is the compiler's own view of a program: `--dump-bytecode`
  * and ASTRA_DUMP_VM both go through here, so there is exactly one place that
- * decides how an instruction and its operands are rendered. It writes to stderr
- * to stay out of the way of a program's stdout. */
+ * decides how an instruction and its operands are rendered — constants
+ * included (value_print_stream). Everything goes to stderr so program output
+ * on stdout never interleaves with diagnostics, matching the Zig compiler. */
 void vm_dump_bytecode(const Instruction *code, size_t code_len,
                       const Value *constants, size_t const_len) {
     fprintf(stderr, "=== Bytecode (%zu instructions, %zu constants) ===\n",
@@ -528,7 +536,7 @@ void vm_dump_bytecode(const Instruction *code, size_t code_len,
             fprintf(stderr, " %u", code[i].arg.index);
             if (code[i].op == OPCODE_CONST && constants && code[i].arg.index < const_len) {
                 fprintf(stderr, " (");
-                value_print(constants[code[i].arg.index]);
+                value_print_stream(stderr, constants[code[i].arg.index]);
                 fprintf(stderr, ")");
             }
             break;
@@ -1399,7 +1407,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                         fprintf(stderr, " %u", fn->code[di].arg.index);
                         if (fn->code[di].op == OPCODE_CONST && fn->constants && fn->code[di].arg.index < fn->const_len) {
                             fprintf(stderr, " (");
-                            value_print(fn->constants[fn->code[di].arg.index]);
+                            value_print_stream(stderr, fn->constants[fn->code[di].arg.index]);
                             fprintf(stderr, ")");
                         }
                         break;
@@ -1645,7 +1653,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             fprintf(stderr, "  sp=%u base=%u frame=%u | ", vm->sp, base, vm->frame_count);
             for (uint16_t s = 0; s < vm->sp && s < 20; s++) {
                 fprintf(stderr, "[");
-                value_print(vm->stack[s]);
+                value_print_stream(stderr, vm->stack[s]);
                 fprintf(stderr, "]");
             }
             fprintf(stderr, "\n");
