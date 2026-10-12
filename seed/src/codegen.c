@@ -101,6 +101,32 @@ static void cg_write_c_escaped(Codegen *cg, const char *s) {
     }
 }
 
+/* Opcodes whose execution can raise a runtime error. Each such instruction
+ * is annotated with its source line (astra_line) before it runs, so the C
+ * runtime reports `file:line: runtime error: ...` like the VM's driver. */
+static bool opcode_is_fallible(OpCode op) {
+    switch (op) {
+    case OPCODE_ADD: case OPCODE_SUB: case OPCODE_MUL: case OPCODE_DIV:
+    case OPCODE_MOD: case OPCODE_NEG:
+    case OPCODE_LT: case OPCODE_GT: case OPCODE_LE: case OPCODE_GE:
+    case OPCODE_BIT_AND: case OPCODE_BIT_OR: case OPCODE_BIT_XOR:
+    case OPCODE_SHL: case OPCODE_SHR: case OPCODE_BIT_NOT:
+    case OPCODE_INDEX: case OPCODE_SET_INDEX:
+    case OPCODE_CALL: case OPCODE_TRY_UNWRAP:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Emits `astra_line = <line>;` only when the line changed: consecutive
+ * fallible instructions from the same source line share one store. */
+static void cg_set_line(Codegen *cg, unsigned *last_line, unsigned line) {
+    if (line == *last_line) return;
+    cg_writef(cg, "    astra_line = %u;\n", line);
+    *last_line = line;
+}
+
 /* -----------------------------------------------------------
  * Name generation
  * ----------------------------------------------------------- */
@@ -658,12 +684,14 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
 
     /* Translate bytecode */
     size_t ip = 0;
+    unsigned fn_line = 0;
     while (ip < fn->code_len) {
         if (is_label[ip]) {
             cg_writef(cg, "    L_%zu: ;\n", ip);
         }
 
         Instruction inst = fn->code[ip];
+        if (opcode_is_fallible(inst.op)) cg_set_line(cg, &fn_line, inst.line);
 
         switch (inst.op) {
         case OPCODE_CONST: {
@@ -885,7 +913,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
                      "_fnv.as.fn_val->fun(frame + _fn_slot, %u);\n", argc);
             cg_writef(cg, "            sp = _fn_slot + 1;\n");
             cg_writef(cg, "        } else {\n");
-            cg_writef(cg, "            astra_runtime_error(\"cannot call non-function\");\n");
+            cg_writef(cg, "            astra_runtime_error(\"cannot call non-function value\");\n");
             cg_writef(cg, "        }\n");
             cg_writef(cg, "    }\n");
         } break;
@@ -1137,6 +1165,12 @@ static void emit_module_code(Codegen *cg) {
      * instead of exit(1). */
     cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { astra_error_active = 0; return 1; }\n");
 
+    /* Source file for runtime-error positions; set before any user code
+     * runs so every error prints `file:line: ` like the VM driver. */
+    cg_write(cg, "    astra_file = \"");
+    cg_write_c_escaped(cg, cg->filename ? cg->filename : "<input>");
+    cg_write(cg, "\";\n");
+
     size_t code_len = 0;
     const Instruction *code = emitter_get_code(cg->emitter, &code_len);
 
@@ -1169,12 +1203,14 @@ static void emit_module_code(Codegen *cg) {
     }
 
     /* Second pass: emit code */
+    unsigned mod_line = 0;
     for (size_t ip = 0; ip < code_len; ip++) {
         if (is_label[ip]) {
             cg_writef(cg, "    L_%zu: ;\n", ip);
         }
 
         Instruction inst = code[ip];
+        if (opcode_is_fallible(inst.op)) cg_set_line(cg, &mod_line, inst.line);
 
         switch (inst.op) {
         case OPCODE_CONST: {
@@ -1411,8 +1447,7 @@ static void emit_module_code(Codegen *cg) {
                      "_fnv.as.fn_val->fun(frame + _fn_slot, %u);\n", argc);
             cg_writef(cg, "            sp = _fn_slot + 1;\n");
             cg_writef(cg, "        } else {\n");
-            cg_writef(cg, "            fprintf(stderr, \"runtime error: cannot call non-function\\n\");\n");
-            cg_writef(cg, "            return 1;\n");
+            cg_writef(cg, "            astra_runtime_error(\"cannot call non-function value\");\n");
             cg_writef(cg, "        }\n");
             cg_writef(cg, "    }\n");
         } break;

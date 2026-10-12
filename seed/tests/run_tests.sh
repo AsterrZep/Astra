@@ -190,6 +190,16 @@ if [ -d "$CGDIR" ]; then
                     fail=$((fail + 1))
                     continue
                 fi
+                # Mirror the VM loop: when the header carries expected text
+                # (file:line: message), the C backend's error must match it.
+                expected="$(grep -E '^// *EXPECT-RUNTIME-ERROR:' "$file" \
+                    | sed -E 's|^// *EXPECT-RUNTIME-ERROR: *||' | head -1)"
+                if [ -n "$expected" ] && ! contains "$expected" "$actual"; then
+                    echo "FAIL $rel: runtime error did not contain '$expected'"
+                    printf '      got: %s\n' "$actual"
+                    fail=$((fail + 1))
+                    continue
+                fi
                 echo "ok   $rel (--emit-c runtime error as expected)"
                 pass=$((pass + 1))
                 continue

@@ -1,4 +1,4 @@
-// EXPECT-RUNTIME-ERROR:
+// EXPECT-RUNTIME-ERROR: string_order_rejected.astra:8: runtime error: cannot compare string and string
 //
 // C backend twin of conformance/expressions/string_order_rejected.astra (S14).
 // astra_lt/gt/le/ge returned `false` for any unsupported operand pair; they now

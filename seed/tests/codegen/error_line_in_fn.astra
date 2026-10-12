@@ -1,0 +1,10 @@
+// EXPECT-RUNTIME-ERROR: error_line_in_fn.astra:8: runtime error: index 3 out of bounds (len 1)
+//
+// The failing INDEX sits on line 8 inside boom(), the print that reaches it
+// on line 10: the C runtime must report the failing instruction's own line,
+// exactly like the VM's driver, not the call site or a stale line.
+fn boom() {
+    let a = [1]
+    return a[3]
+}
+print(boom())

@@ -1,4 +1,4 @@
-// EXPECT-RUNTIME-ERROR:
+// EXPECT-RUNTIME-ERROR: float_divide_by_zero.astra:8: runtime error: division by zero
 //
 // C backend twin of conformance/expressions/float_divide_by_zero.astra (S14):
 // the generated program must stop with "division by zero" like the VM, not print

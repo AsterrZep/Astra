@@ -1,4 +1,4 @@
-// EXPECT-RUNTIME-ERROR:
+// EXPECT-RUNTIME-ERROR: toplevel_oob.astra:10: runtime error: index 5 out of bounds (len 3)
 //
 // C backend twin of conformance/arrays/out_of_bounds.astra at MODULE level.
 // The function-body path was fixed by out_of_bounds.astra, but the

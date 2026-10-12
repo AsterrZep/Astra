@@ -115,6 +115,13 @@ struct AstraValue {
  * here lets the operations above it report through it. */
 static inline void astra_runtime_error(const char *msg);
 
+/* Source position of the instruction currently executing, written by the
+ * generated code before each fallible instruction (cg_set_line in
+ * codegen.c) so runtime errors print `file:line: ` exactly like the VM's
+ * driver. astra_line == 0 reproduces the VM's line-less errors. */
+extern const char *astra_file;
+extern unsigned    astra_line;
+
 static inline void astra_errorf(const char *fmt, ...) {
     char msg[192];
     va_list ap;
@@ -696,7 +703,7 @@ static inline AstraValue astra_builtin_print(AstraValue *args, uint8_t argc) {
 
 /* ---------- Runtime error ---------- */
 static inline void astra_runtime_error(const char *msg) {
-    fprintf(stderr, "runtime error: %s\n", msg);
+    fprintf(stderr, "%s:%u: runtime error: %s\n", astra_file, astra_line, msg);
     if (astra_error_active) {
         longjmp(astra_error_jmp, 1);
     }
@@ -765,6 +772,9 @@ AstraValue astra_frame[ASTRA_FRAME_SIZE];
 jmp_buf    astra_error_jmp;
 int        astra_error_active;
 AstraValue astra_error_value;
+
+const char *astra_file = "<generated>";
+unsigned    astra_line = 0;
 
 /* ---------- Module init/cleanup ---------- */
 static inline void astra_runtime_init(void) {

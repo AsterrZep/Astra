@@ -1,4 +1,4 @@
-// EXPECT-RUNTIME-ERROR:
+// EXPECT-RUNTIME-ERROR: out_of_bounds.astra:12: runtime error: index 5 out of bounds (len 3)
 //
 // C backend twin of conformance/arrays/out_of_bounds.astra (audit finding S11).
 // The generated code wrote `a[5]` straight through `AstraArray.elems`, so this
