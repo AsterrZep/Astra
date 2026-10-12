@@ -894,6 +894,50 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
             cg_write(cg, "    return frame[sp - 1];\n");
         } break;
 
+        case OPCODE_CLOSURE: {
+            uint32_t packed = inst.arg.index;
+            uint32_t fn_const = packed >> 8;
+            uint32_t n_cap = packed & 0xFF;
+            const char *cname = "NULL";
+            unsigned pc = 0;
+            if (fn_const < fn->const_len &&
+                fn->constants[fn_const].kind == VAL_FN &&
+                fn->constants[fn_const].as.fn_val) {
+                const char *found =
+                    find_fn_obj_cname(cg, fn->constants[fn_const].as.fn_val);
+                if (found) {
+                    cname = found;
+                    pc = fn->constants[fn_const].as.fn_val->param_count;
+                }
+            }
+            /* The captured values are already on the stack, in env order. */
+            cg_writef(cg, "    /* CLOSURE fn=%u captures=%u */\n", fn_const, n_cap);
+            cg_write(cg, "    {\n");
+            if (n_cap > 0) {
+                cg_writef(cg, "        AstraValue _env[%u];\n", n_cap);
+                for (uint32_t j = 0; j < n_cap; j++) {
+                    cg_writef(cg, "        _env[%u] = frame[sp - %u];\n",
+                              j, n_cap - j);
+                }
+                cg_writef(cg, "        sp -= %u;\n", n_cap);
+                cg_writef(cg, "        ASTRA_PUSH(frame, sp, "
+                         "astra_closure_new((AstraFnPtr)%s, %u, _env, %u));\n",
+                          cname, pc, n_cap);
+            } else {
+                cg_writef(cg, "        ASTRA_PUSH(frame, sp, "
+                         "astra_closure_new((AstraFnPtr)%s, %u, NULL, 0));\n",
+                          cname, pc);
+            }
+            cg_write(cg, "    }\n");
+        } break;
+
+        case OPCODE_GET_CAPTURE: {
+            /* Slot 0 of a user-function frame is the callee for the whole call
+             * (CALL passes frame + _fn_slot), same contract the VM relies on. */
+            cg_writef(cg, "    ASTRA_PUSH(frame, sp, frame[0].as.fn_val->env[%u]);\n",
+                      inst.arg.index);
+        } break;
+
         case OPCODE_NEW_ARRAY: {
             uint32_t n = inst.arg.index;
             cg_writef(cg, "    {\n");
@@ -1380,6 +1424,44 @@ static void emit_module_code(Codegen *cg) {
         case OPCODE_HALT:
             cg_write(cg, "    return 0;\n");
             break;
+
+        case OPCODE_CLOSURE: {
+            /* Module-level lambdas capture nothing (their free names are
+             * globals), but the opcode is the same as inside functions. */
+            uint32_t packed = inst.arg.index;
+            uint32_t fn_const = packed >> 8;
+            uint32_t n_cap = packed & 0xFF;
+            const char *cname = "NULL";
+            unsigned pc = 0;
+            if (fn_const < const_len &&
+                constants[fn_const].kind == VAL_FN &&
+                constants[fn_const].as.fn_val) {
+                const char *found =
+                    find_fn_obj_cname(cg, constants[fn_const].as.fn_val);
+                if (found) {
+                    cname = found;
+                    pc = constants[fn_const].as.fn_val->param_count;
+                }
+            }
+            cg_writef(cg, "    /* CLOSURE fn=%u captures=%u */\n", fn_const, n_cap);
+            cg_write(cg, "    {\n");
+            if (n_cap > 0) {
+                cg_writef(cg, "        AstraValue _env[%u];\n", n_cap);
+                for (uint32_t j = 0; j < n_cap; j++) {
+                    cg_writef(cg, "        _env[%u] = frame[sp - %u];\n",
+                              j, n_cap - j);
+                }
+                cg_writef(cg, "        sp -= %u;\n", n_cap);
+                cg_writef(cg, "        ASTRA_PUSH(frame, sp, "
+                         "astra_closure_new((AstraFnPtr)%s, %u, _env, %u));\n",
+                          cname, pc, n_cap);
+            } else {
+                cg_writef(cg, "        ASTRA_PUSH(frame, sp, "
+                         "astra_closure_new((AstraFnPtr)%s, %u, NULL, 0));\n",
+                          cname, pc);
+            }
+            cg_write(cg, "    }\n");
+        } break;
 
         case OPCODE_NEW_ARRAY: {
             uint32_t n = inst.arg.index;

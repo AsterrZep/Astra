@@ -1,0 +1,40 @@
+// EXPECT: 6
+// EXPECT: 111
+// EXPECT: 50
+// EXPECT: 30
+//
+// C-backend twin of capture-by-value closures: OPCODE_CLOSURE builds an
+// AstraFn with a malloc'd env copy, and OPCODE_GET_CAPTURE reads it back as
+// frame[0].as.fn_val->env[i] — slot 0 of a user-function frame is the callee
+// for the whole call, the same contract the VM relies on.
+fn outer() -> i32 {
+    let n = 5;
+    let f = |x: i32| -> i32 { x + n };
+    return f(1);
+}
+print(outer());
+
+fn chain() -> i32 {
+    let a = 1;
+    let outer_l = |x: i32| -> i32 {
+        let inner = |y: i32| -> i32 { x + y + a };
+        return inner(10);
+    };
+    return outer_l(100);
+}
+print(chain());
+
+let g = 42;
+let top = |x: i32| -> i32 { x + g };
+print(top(8));
+
+// The env must outlive the frame that produced it: the closure is stored in
+// a global and called after `store` returned, so a borrowed frame slot would
+// be use-after-free here.
+let mut saved = |x: i32| -> i32 { x; };
+fn store() {
+    let base = 7;
+    saved = |x: i32| -> i32 { x + base };
+}
+store();
+print(saved(23));

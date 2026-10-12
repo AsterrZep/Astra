@@ -54,6 +54,12 @@ typedef AstraValue (*AstraFnPtr)(AstraValue *args, uint8_t argc);
 typedef struct {
     AstraFnPtr fun;
     uint8_t    param_count;
+    /* Closure env: captured values in capture-index order (capture-by-value,
+     * ARCHITECTURE.md §30.5). Plain functions leave it NULL; a lambda body
+     * reads it as frame[0].as.fn_val->env[i] because slot 0 of the frame is
+     * the callee for the whole call (same contract as the VM). */
+    AstraValue *env;
+    uint8_t     env_len;
 } AstraFn;
 
 /* ---------- StructDef + StructObj (matches VM layout) ---------- */
@@ -267,6 +273,25 @@ static inline AstraValue astra_fn_new(AstraFnPtr fun, uint8_t param_count) {
     AstraFn *f = (AstraFn *)malloc(sizeof(AstraFn));
     f->fun = fun;
     f->param_count = param_count;
+    f->env = NULL;
+    f->env_len = 0;
+    AstraValue r; r.tag = AST_FN; r.as.fn_val = f; return r;
+}
+
+/* Create a closure: a function value plus its captured environment. The env
+ * is copied so the caller's stack slots die with the frame, matching the VM's
+ * arena-cloned capture-by-value semantics. */
+static inline AstraValue astra_closure_new(AstraFnPtr fun, uint8_t param_count,
+                                           const AstraValue *env, uint8_t env_len) {
+    AstraFn *f = (AstraFn *)malloc(sizeof(AstraFn));
+    f->fun = fun;
+    f->param_count = param_count;
+    f->env = NULL;
+    f->env_len = env_len;
+    if (env_len > 0) {
+        f->env = (AstraValue *)malloc(sizeof(AstraValue) * env_len);
+        for (uint8_t i = 0; i < env_len; i++) f->env[i] = env[i];
+    }
     AstraValue r; r.tag = AST_FN; r.as.fn_val = f; return r;
 }
 
