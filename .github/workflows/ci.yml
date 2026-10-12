@@ -53,3 +53,23 @@ jobs:
       - name: Unit tests + seed conformance
         run: zig build test --summary all
         working-directory: zig
+
+  # Dump parity (PHASE2 §4 #6): --dump-tokens and --dump-ast must be
+  # byte-for-byte identical between the seed reference and astra-zig on
+  # every conformance/codegen file plus the parse-only probes.
+  parity:
+    name: dump parity (seed <-> zig)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build seed (reference)
+        run: make debug
+        working-directory: seed
+      - name: Build zig
+        run: zig build
+        working-directory: zig
+      - name: Byte-for-byte dump comparison
+        run: ./zig/tests/dump_parity.sh

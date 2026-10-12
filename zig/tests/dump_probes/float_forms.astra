@@ -1,0 +1,7 @@
+// Float forms the seed prints through C %g (6 significant digits).
+let a: f64 = 3.5
+let b: f64 = 1e20
+let c: f64 = 1.2345e-5
+let d: f64 = 999999.5
+let e: f64 = 0.0001
+let f: f64 = -2.75

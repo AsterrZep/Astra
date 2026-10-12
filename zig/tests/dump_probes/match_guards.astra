@@ -1,0 +1,7 @@
+fn grade(score: i32) -> i32 {
+    return match score {
+        s if s >= 90 => 4,
+        s if s >= 80 => 3,
+        _ => 0,
+    }
+}

@@ -1,0 +1,11 @@
+enum Mover {
+    Paso(i32)
+    Doble(x: i32, y: i32)
+}
+
+fn total(p: Mover) -> i32 {
+    return match p {
+        Mover.Paso(n) => n,
+        Mover.Doble(nx, ny) => nx + ny,
+    }
+}

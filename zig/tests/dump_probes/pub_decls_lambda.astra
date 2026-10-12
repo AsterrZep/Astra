@@ -1,0 +1,16 @@
+pub fn outer(x: i32) -> i32 {
+    let f = |y: i32| -> i32 { return y + x }
+    return f(1)
+}
+
+pub struct Pair {
+    left: i32
+    right: i32
+}
+
+pub enum Shape {
+    Circle
+    Square(i32)
+}
+
+pub const LIMIT: i32 = 10

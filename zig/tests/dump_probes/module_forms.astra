@@ -1,0 +1,3 @@
+use std.io
+import path.to.pkg as alias
+from pkg.subpkg import one, two as deux
