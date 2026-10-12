@@ -454,13 +454,22 @@ import std/io                          // biblioteca estándar
 
 ```
 // utils.astra
-pub use @/internal/logger
-pub use @/internal/config
+use internal.logger
+use internal.config
 
 // Consumidor:
 import utils
 utils.Logger.info("hello")  // re-exportado desde internal/logger
 ```
+
+`use` es re-export puro: no ata nada en el módulo que lo declara y
+reenvía los exports públicos del módulo dependencia (un nivel por
+sentencia; las cadenas componen en orden de dependencias).
+
+> Nota: adelantar el *nombre* del módulo dependencia como namespace
+> (`utils.Logger` arriba) es la forma que §10.5 ilustra; cómo `use`
+> expone el nombre del módulo sigue abierto
+> (`PHASE2_GAP_ANALYSIS.md` App. B #13).
 
 ### 10.6 Prohibición de Dependencias Circulares
 

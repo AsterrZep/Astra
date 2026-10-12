@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Agregados foráneos y re-exports (`use`) en el compilador Zig**: el
+  emitter de cada módulo recibe los `StructInfo`/`EnumInfo` de sus
+  dependencias en orden post-order (los propios se registran antes que los
+  foráneos, así un nombre local gana cualquier colisión), de modo que
+  `Vec2 { … }`, el valor `Enum.Variant` y los patterns de match sobre un
+  enum importado emiten igual que en un archivo único. La forma namespace
+  `m.Enum.Variant` se resuelve en compile time contra los registros del
+  módulo exportador — antes compilaba y moría en runtime con
+  `undefined global 'm0.Shape'`, porque los defs de struct/enum nunca son
+  globals. `use` pasa a ser re-export: el driver fusiona los exports del
+  módulo dependencia (el nombre propio gana), registra el módulo dueño de
+  cada nombre para que los bindings `from` apunten a su global manglado,
+  entrega a los importadores una tabla de alias por nombre para las
+  lecturas `m.x`, y adelanta también los registros de tipos. Lo que §10.5
+  pinta como re-export del nombre de un módulo (`utils.Logger`) queda como
+  pregunta abierta (App. B #13), igual que la importación de variantes de
+  enums (#14); las raíces `@/`/`std/` siguen fuera (#10, reafirmado).
+  Fijado por los fixtures `zig/tests/link/foreign/` y
+  `zig/tests/link/reexport/` (62 pruebas Zig, 104 seed).
 - **`break` con valor es error de compilación (seed + Zig)**: la gramática de
   `research/010` permite `break Expression?`, pero Astra-0 no tiene `loop` para
   recibir el valor y ambos parsers se lo tragaban en silencio — `break 5`

@@ -72,7 +72,8 @@ Requires **Zig 0.16.x**. The Astra-0 frontend (lexer, flat AST, parser, type
 checker, emitter, VM) is ported and verified against the seed suite. The module
 system (`src/modules/` + the multi-module path in `src/main.zig`) compiles and
 runs multi-file programs: `pub` gating, shared type pool, mangled globals,
-dependency-order execution (`Documentacion/PHASE2_PROGRESS.md` §7). Diagnostics
+dependency-order execution, `use` re-exports and foreign struct/enum values
+(`Documentacion/PHASE2_PROGRESS.md` §7). Diagnostics
 from every phase go through one sink (`src/diagnostics.zig`, §7.4).
 
 ```bash

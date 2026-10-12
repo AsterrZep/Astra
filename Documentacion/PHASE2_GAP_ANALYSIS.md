@@ -704,8 +704,17 @@ Because the toolchain is ours, debugging can go further than C++:
    accept the same form, pinned by
    `seed/tests/conformance/module/use_paths.astra` and
    `ui/use_colon_colon.astra`. A path-string form (`use "std/io"`) is not adopted.
-   **Still open:** how `use` vs `import` vs `from` divide the work (§5.1 steps
-   4–6), and the two items below. One half of "how a path maps to files on disk"
+   **Resolved (2026-10-12): how `use`, `import` and `from` divide the work.**
+   `import` binds a namespace (last segment or alias), `from` binds individual
+   names, and `use` is **re-export only**: it binds nothing in the declaring
+   module and forwards the dependency's public exports through it —
+   `from m import x` and `m.x` both reach a forwarded name (the emitter
+   redirects `m.x` to the owning module's global through a per-name alias;
+   re-exported types resolve through the registries). One level per
+   statement, chains compose in graph order. Implemented in the Zig driver
+   and pinned by `zig/tests/link/reexport/`. Whether a `use` also rebinds the
+   dependency's *module name* itself (`utils.Logger` of §10.5) is still open
+   — item 13. One half of "how a path maps to files on disk"
    landed on 2026-09-29: `zig/src/modules/modules.zig` implements rules 1–2 of
    `ARCHITECTURE.md` §10.4 (relative and sub-route) — see #10 for the roots.
 7. **Operator overloading scope:** Trait-only, or allow ad-hoc overloading for user types?
@@ -719,6 +728,8 @@ Because the toolchain is ours, debugging can go further than C++:
     `ImportPath`. Deferred, not guessed (2026-09-29): neither `astra.toml` nor a
     stdlib exists yet, and both need a root marker the grammar does not have.
     Until it is decided, `std.io` is an ordinary relative path.
+    Reaffirmed (2026-10-12): roots stay out of the module-system sweep —
+    §7.3's multi-module work covers relative paths only.
 11. **What a bare `import a.b` binds:** `ARCHITECTURE.md` §10.5 imports `utils`
     and then uses `utils.Logger` (first segment), but for a multi-segment path
     nothing says whether `import geometry.mesh` binds `geometry` or `mesh`.
@@ -738,6 +749,25 @@ Because the toolchain is ours, debugging can go further than C++:
     `fn main() { import inner.thing }`, although §12.1 makes these constructs
     `Item`s rather than statements. Rejecting them changes behaviour in both
     compilers and belongs to the resolution step (`PHASE1_PROGRESS.md` §6.7).
+13. **Does `use` rebind the dependency's module name?** §10.5 shows
+    `use internal.logger` in `utils` and then `utils.Logger.info(...)`, i.e.
+    the dependency's *module name* itself becomes a namespace export of the
+    re-exporting module. The implementation of #6 forwards the dependency's
+    *exports* (fns, consts, types) under their own names; whether `use path`
+    additionally binds `path`'s last segment as a forwarded module namespace
+    is not stated anywhere else in the spec. Deferred, not guessed
+    (2026-10-12): needs the same file-as-module reasoning as #11, and a
+    decision either way must be mirrored in the seed's single-file rules
+    before it can mean anything there.
+14. **Are a `pub` enum's variant names part of its export surface?**
+    `ARCHITECTURE.md` never says whether `from m import Circle` may name a
+    data-carrying variant, and both compilers reject the qualified
+    constructor `Shape.Circle(r)` (`research/010` defines bare variant names
+    only: `Rgb(1, 2, 3)` inside the declaring file). Cross-module
+    construction therefore goes through a `pub fn` wrapper in the declaring
+    module, which the foreign-aggregate support of §7.3 already runs.
+    Deferred, not guessed (2026-10-12): importing a variant would need a
+    seed-side (single-file) rule first, to keep the two compilers in parity.
 
 ---
 

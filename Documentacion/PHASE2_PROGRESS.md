@@ -30,7 +30,7 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 | VM (`src/vm/vm.zig`) | ✅ | ~50 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; **closures** (`closure` clona el FnObj plantilla con el env capturado; `get_capture` lee `stack[base]`, que guarda el callee durante toda la llamada); mismos textos de error que el seed; salida de floats con `%g` de C |
 | Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-modules`, `--dump-bytecode`; salida 1 ante error de compilación o de runtime. Diagnósticos por fase ruteados a un sink único (`src/diagnostics.zig`, §7.4) |
 | Diagnósticos (`src/diagnostics.zig`) | ✅ | Registro `Diagnostic{file, span, msg}` con un único formato `file:line:col: error: msg` (degrada a `file:line:` / `file:` / `error:`); parser, type checker, emitter y loader emiten a través de él; las fases sin sink imprime directo con el mismo formato |
-| Módulos (`src/modules/` + driver) | 🟡 | Carga, gating `pub` y compilación multi-módulo en el CLI Zig (§7.3): `import`/`from` resuelven (reglas 1–2), imports tipados contra los exports del módulo exportador, globals manglados y ejecución en orden de dependencias. Faltan re-exports (`use`), raíces `@/`/`std/` (§7.1) y valores de structs/enums foráneos |
+| Módulos (`src/modules/` + driver) | 🟡 | Carga, gating `pub` y compilación multi-módulo en el CLI Zig (§7.3): `import`/`from` resuelven (reglas 1–2), imports tipados contra los exports del módulo exportador, globals manglados y ejecución en orden de dependencias. `use` (re-exports) y valores de structs/enums foráneos quedaron cubiertos (2026-10-12, §7.3); faltan raíces `@/`/`std/` (§7.1, App. B #10) |
 
 ### Verificación medida
 
@@ -38,10 +38,11 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **29/29** ficheros `ui/` son rechazados. El emitter cierra
+- **30/30** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop` y la asignación a una variable capturada
-  (`capture_assign`), que el type checker deja pasar a propósito.
-- **60 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
+  (`capture_assign`), que el type checker deja pasar a propósito; ambos
+  parsers cierran `break` con valor (`break_value`).
+- **62 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
   bytecode, VM, módulos, depurador, link multi-módulo, diagnósticos y
   conformance) en `zig build test`.
 
@@ -134,7 +135,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | 🟡 | hoy el formato es propio; la comparación es por aceptación, no por texto |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
 | 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
-| 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | ✅ | Carga, exports `pub`, gating y compilación multi-módulo en el CLI (§7.3). Faltan re-exports (`use`) y raíces `@/`/`std/` (§7.1) |
+| 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | ✅ | Carga, exports `pub`, gating y compilación multi-módulo en el CLI (§7.3). Los re-exports (`use`) y los valores struct/enum foráneos quedaron cubiertos (2026-10-12); faltan raíces `@/`/`std/` (§7.1) |
 | 10 | **InternPool de tipos** (substrato de genéricos) | ✅ | `src/typechecker/types.zig`: pool hash-consed con identidad canónica (struct/enum por nombre); `typeEq` = fast-path de puntero + reglas de unificación del seed recursivas en compuestos (`array(int_literal)` ≡ `[]i32`); fn sin retorno anotado normalizado a `void` (paridad con `a.ret orelse voidType` del seed). 53/53 tests. Sustituye el diseño "un heap-node por ocurrencia" (`PHASE2_ARCHITECTURE.md` §3.3) |
 | 11 | **Colección de declaraciones** (forward-refs de tipo) | ✅ | Pase 0 en ambos compiladores (`typecheck_module_pass`/`checkModule`): registra nombres de struct/enum con layout vacío antes de resolver firmas y fields, así las declaraciones se referencian en cualquier orden (incl. recursión mutua). Caso nuevo `types/forward_type_refs.astra`; suite 96/96 seed, 53/53 zig. Los structs anidados en cuerpos de función siguen sin funcionar (paridad — ya fallaban igual antes) |
 
@@ -405,9 +406,11 @@ paso multi-módulo (`compileAndRunMulti`):
    segmento** como espacio de nombres de módulo (decisión #11 de
    `PHASE2_GAP_ANALYSIS.md` App. B, confirmada con el dueño del lenguaje),
    `import a.b as m` ata `m`. Un nombre que no está en los exports es un error
-   de compilación (`module 'x' does not export 'y'`); un `use` (re-export) se
-   rechaza con un mensaje claro por ahora. `alias.x` resuelve en los exports
-   del módulo (un solo nivel — file-as-module, §10.1).
+   de compilación (`module 'x' does not export 'y'`); un `use` re-exporta
+   los exports del módulo declarante (los nombres propios ganan, App. B #6).
+   `alias.x` resuelve en los exports del módulo (un solo nivel —
+   file-as-module, §10.1); un nombre re-exportado por `use` se lee a través
+   de una tabla de alias por nombre que apunta al global del módulo dueño.
 4. **Emisión.** Cada módulo lleva un prefijo `m{i}.` que mangla sus globals de
    nivel módulo (la tabla de globals de la VM es plana y por nombre), y un mapa
    de imports que traduce cada nombre importado al global real (`m0.add`, o
@@ -423,17 +426,34 @@ Alcance y límites conocidos, todos documentados en el código:
 
 - `fn` y `const` cruzan módulos completos (firmas, llamadas, valores).
 - Structs/enums **exportados** se pueden importar para anotaciones y firmas
-  (el pool es compartido), pero **construir** un valor struct/enum foráneo
-  (`Vec2 { … }`, `Shape.Circle`, match sobre un enum importado) todavía no:
-  el emitter lo rechaza en compile time (los `StructDef`/registros de enums
-  son por módulo; extenderlos es el siguiente paso natural).
-- `use`/re-exports y las raíces `@/`/`std/` (§7.1) siguen fuera.
+  (el pool es compartido) **y construir valores**: `collectForeign` entrega al
+  emitter de cada módulo los `StructInfo`/`EnumInfo` de sus dependencias en
+  orden post-order (los propios se registran antes que los foráneos, así un
+  nombre local gana cualquier colisión) y resuelve `Vec2 { … }`, el valor
+  `Enum.Variant` — forma plana y namespace `m.Enum.Variant`, que antes
+  compilaba y moría en runtime con `undefined global` — y los patterns de
+  match sobre un enum importado, incluidos los que `use` adelanta. La
+  construcción de variantes con datos sigue siendo la forma plana `Circle(r)`
+  dentro del módulo que declara el enum (App. B #14).
+- `use` re-exporta los exports públicos del módulo dependencia (un nivel por
+  sentencia; las cadenas componen en orden post-order): el nombre propio
+  gana, el binding `from` apunta al global manglado del **dueño** del nombre
+  y los lectores `m.x` consultan una tabla de alias por nombre. Los tipos
+  re-exportados se resuelven por registro, no por global. Lo que §10.5 pinta
+  como re-export del **nombre de un módulo** (`utils.Logger.info`) sigue
+  abierto (App. B #13).
+- Las raíces `@/`/`std/` (§7.1) siguen fuera (App. B #10, reafirmado
+  2026-10-12).
+- `let x = Shape` (tipo como valor) es un error de runtime
+  (`undefined global`) **compartido con el seed**: ambos compiladores lo
+  aceptan en compile time, así que no es una divergencia de módulos.
 - `--debug` sobre un programa multi-módulo mapea las líneas contra el fuente
   de la raíz para todos los módulos (limitación conocida).
 
 Fijado por `zig/src/link.zig` (test e2e sobre los fixtures `zig/tests/link/`:
-`from`, alias, import desnudo con #11, gating de `pub` privado) y verificado a
-mano con `--dump-modules`/`--dump-bytecode`.
+`from`, alias, import desnudo con #11, gating de `pub` privado, aggregates
+foráneos en `foreign/` y re-exports en `reexport/`) y verificado a mano con
+`--dump-modules`/`--dump-bytecode`.
 
 ### 7.4 Diagnósticos: un sink, un formato (Zig)
 
