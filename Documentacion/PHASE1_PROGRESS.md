@@ -332,17 +332,16 @@ ASAN_OPTIONS=detect_leaks=0 ./astra-seed --emit-c input.astra  # sin leak detect
 
 La regla que se aplicó a fondo el 2026-09-21: **si el programa compila en ambos
 backends, su comportamiento observable debe ser el mismo** — misma salida, mismo
-código de salida y, cuando ambos fallan, el mismo texto de error (al VM se le
-añade su prefijo `fichero:línea:`, que el runtime de C no tiene). Esa regla
-destapó las divergencias S12–S14 de §6 (igualdad estructural, `%` con flotantes,
-orden de comparaciones, división por cero en `0.0`). Asimetrías que quedan a
-propósito:
+código de salida y, cuando ambos fallan, el mismo texto de error con el mismo
+prefijo `fichero:línea:` (los dos lo llevan desde la tanda de deuda menor de
+2026-10-12: el runtime de C imprime `astra_file:astra_line:` igual que el driver
+del VM). Esa regla destapó las divergencias S12–S14 de §6 (igualdad estructural,
+`%` con flotantes, orden de comparaciones, división por cero en `0.0`).
+Asimetrías que quedan a propósito:
 
 | Asimetría | Por qué |
 |:----------|:--------|
 | El VM corta por **profundidad de llamada** (256 frames, `VM_CALL_DEPTH`) y el C por **ranuras de pila** (`ASTRA_FRAME_SIZE`) | El VM necesita un array fijo de metadatos por frame; el backend de C usa la pila de C como metadatos y solo tiene el presupuesto de operandos. Los dos topes son distintos en *tipo*, no en intención: ambos terminan con diagnóstico |
-| El runtime de C no imprime `fichero:línea:` en sus errores | El código generado no lleva posiciones de origen; añadirlas es trabajo de Fase 2 (el emisor tendría que anotar cada instrucción que puede fallar) |
-| `--dump-bytecode` imprime los valores de las constantes por stdout y el resto por stderr | `value_print()` escribe a stdout y lo comparte con el builtin `print`; darle un `FILE*` es una refactorización aparte. Consecuencia práctica: `--dump-bytecode > f 2>&1` es la forma de capturarlo entero |
 
 ## 4. Pendiente para completar la Fase 1
 
@@ -591,10 +590,10 @@ Documentado para que no se lea como resuelto:
 | Tema | Estado |
 |:-----|:-------|
 | **Ancho de los enteros no verificado en runtime** | `u32`/`u64`/`i64` existen en el checker y los valores son `int64_t` en los dos backends. No se comprueba rango al sumar ni al asignar: `let a: u32 = -1` compila y `a` vale `-1`. Un `u64` por encima de `INT64_MAX` tampoco es representable (el lexer lo rechaza). Es consecuencia de que el seed modela **un** entero de 64 bits y le pone nombres; darle semántica real de anchuras es trabajo de Fase 2 (`research/011` §9.2 es lo que lo exige) |
-| **`while`/`for` como expresión** | No soportado a propósito (ver §4bis#20) |
+| **`while`/`for` como expresión** | No soportado a propósito (ver §4bis#20; requiere decisión de diseño sobre el valor de salida). `break` con valor, que la gramática de research/010 permite, es ahora error de compilación en ambos parsers en vez del mis-parse silencioso anterior |
 | **Closures** | Capturan **por valor** (ARCHITECTURE.md §30.5): asignar a una variable capturada es error de compilación y las funciones con nombre anidadas no capturan. No hay semántica de referencia ni quéjas de ARC que resolver (ver §4bis#16) |
 | **Módulos** | Un fichero; el module system es Fase 2 |
-| **Fuzzing y CI** | Pendientes (§4bis#23 y #26). El fuzzing es la forma natural de buscar la *próxima* clase de fallo del lexer/parser, ahora que los siete vectores conocidos se cierran por el límite de profundidad |
+| **Fuzzing y CI** | El fuzzing sigue pendiente (§4bis#23). La CI está activa desde septiembre (`.github/workflows/ci.yml`): job seed con ASan/UBSan/LSan + suite completa, job Zig con la conformidad del seed. El fuzzing es la forma natural de buscar la *próxima* clase de fallo del lexer/parser, ahora que los siete vectores conocidos se cierran por el límite de profundidad |
 | **Posiciones de origen en los errores del C generado** | No las lleva; añadirlas exigiría anotar cada instrucción que puede fallar |
 
 ### 6.5 Hallazgos de la Fase 2.2 (2026-09-28)

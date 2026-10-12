@@ -176,9 +176,10 @@ porque son fáciles de romper sin que la suite lo note a simple vista:
 
 El modo de depuración del seed también está portado: `ASTRA_DUMP_VM=1` vuelca el
 bytecode del módulo y de cada función llamada, y `ASTRA_TRACE=1` imprime
-`sp=/base=/frame=` más la pila (hasta 20 valores) tras cada instrucción. A
-diferencia del seed — que deja los valores en stdout y los corchetes en stderr,
-partiendo cada línea — aquí todo va a stderr.
+`sp=/base=/frame=` más la pila (hasta 20 valores) tras cada instrucción. Igual
+que aquí, el seed manda ahora todo el volcado (constantes incluidas) a stderr
+desde la tanda de deuda menor de 2026-10-12; la salida del programa queda en
+stdout sin mezclarse.
 
 ### Depurador de bytecode (`--debug`)
 

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`break` con valor es error de compilación (seed + Zig)**: la gramática de
+  `research/010` permite `break Expression?`, pero Astra-0 no tiene `loop` para
+  recibir el valor y ambos parsers se lo tragaban en silencio — `break 5`
+  compilaba como `break` más una expresión muerta que imprimía `0`. Ahora
+  `break` exige límite de sentencia (`;`, newline, `}` o EOF) tras él, y cualquier
+  otro token produce `break with a value is not supported in Astra-0`. Los
+  newlines son tokens en ambos lexers, así que la sentencia siguiente en su
+  propia línea no se confunde con un valor. Fijado por
+  `tests/conformance/ui/break_value.astra` (104 casos seed, 60 Zig)
 - **Closures (seed + C backend + Zig)**: lambdas now capture free variables
   from the enclosing frame **by value** (ARCHITECTURE.md §30.5). The emitter
   analyzes the lambda body for free names against the enclosing scopes, pushes
@@ -90,7 +99,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Module resolution groundwork (Phase 2.2, step 2)**: `zig/src/modules/modules.zig` resolves an `ImportPath` to a file (relative and sub-route, `ARCHITECTURE.md` §10.4 rules 1–2, rejected if a segment could escape the module directory), collects a file's declarations into a `ModuleTable`, and lists the names each declaration states explicitly
 - **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
 
+### Changed
+- **`--dump-bytecode` y los volcados de depuración van enteros a stderr
+  (seed)**: `value_print()` escribía las constantes por stdout mientras el
+  resto del volcado iba a stderr, partiendo cada línea entre los dos streams e
+  intercalando diagnóstico con la salida del programa. Nuevo
+  `value_print_stream(FILE*, Value)` alimenta los tres sitios de volcado
+  (`--dump-bytecode`, `ASTRA_DUMP_VM`, `ASTRA_TRACE`) con stderr;
+  `value_print()` queda como envoltorio a stdout para el builtin `print` y
+  `OPCODE_PRINT`, sin cambios en la salida de programa. Paridad con el
+  compilador Zig, que ya volcaba todo a stderr; los dumps seed vs Zig ahora
+  son byte a byte idénticos
+- **Errores runtime del C generado con `fichero:línea:` (seed `--emit-c`)**:
+  `astra_runtime_error` imprimía solo `runtime error: msg`. El código
+  generado ahora escribe `astra_line = N;` antes de cada instrucción que
+  puede fallar (deduplicando cuando la línea no cambia) y el runtime imprime
+  `file:line: runtime error: msg`, el mismo formato que el driver del VM
+  (anteriormente asimetría documentada en PHASE1 §3). El CALL de nivel
+  módulo pasó de imprimir a mano `cannot call non-function` (sin longjmp) a
+  `astra_runtime_error("cannot call non-function value")`, con la misma
+  palabra que `vm.c`. `run_tests.sh` compara ahora también el texto esperado
+  en la rama del C backend; `error_line_in_fn.astra` fija la línea del fallo
+  dentro de una función
+
 ### Fixed
+- **INDEX/SET_INDEX de nivel módulo en el C backend sin bounds checks**:
+  `emit_module_code` emitía acceso crudo a `elems[idx]`, así que
+  `print(a[5])` a nivel superior leía fuera del buffer del heap, imprimía
+  basura y salía con 0 (clase de fallo S11: el twin dentro de funciones ya
+  estaba arreglado pero el camino de módulo no). Ambos casos pasan ahora por
+  `astra_array_get`/`astra_array_set`, con el mismo error de límites que la
+  VM. Pinned by `tests/codegen/toplevel_oob.astra`
 - **Type references may point forward (seed + Zig)**: signatures, struct
   fields, variable annotations and enum payloads referring to a struct or enum
   declared later in the file used to fail with `unknown type '...'`. Both

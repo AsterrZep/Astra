@@ -213,7 +213,7 @@ LSan). That covers:
 
 | Item | Issue | Effort |
 |:-----|:------|:-------|
-| Module-level runtime errors | `astra_runtime_error` used outside a setjmp context in generated module code — **unverified** | Low |
+| Module-level runtime errors | `astra_runtime_error` outside a setjmp context in generated module code — **verified 2026-10-12**: module main installs `ASTRA_TRY_CONTEXT` unconditionally; `tests/codegen/toplevel_oob.astra` and `error_line_in_fn.astra` exercise the longjmp path with `file:line:` positions | Done |
 
 Everything else that was on this list (lambdas, match, Option/Result, `?`,
 data-carrying enums, the full suite through the C backend) is implemented and now
