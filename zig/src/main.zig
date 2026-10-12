@@ -297,17 +297,26 @@ fn compileAndRunMulti(
     }
     if (errors > 0) std.process.exit(1);
 
+    // Each module's struct/enum registries, filled as modules emit (the
+    // loader's post-order guarantees a dependency is done before an importer
+    // asks for it) so literals and patterns can cross module boundaries.
+    const own_types = try a.alloc(emitter.ModuleTypes, n);
+    for (own_types) |*t| t.* = .{};
+
     if (mode == .bytecode) {
         var bw = std.Io.Writer.fixed(out);
         for (graph.modules, 0..) |*m, i| {
             var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
             mem.diag = diag;
+            const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types);
+            mem.setForeignTypes(ft.structs, ft.enums);
             if (i == n - 1) {
                 mem.emit(m.root);
             } else {
                 mem.emitModule(m.root);
             }
             if (mem.error_count > 0) std.process.exit(1);
+            own_types[i] = .{ .structs = mem.structs.items, .enums = mem.enums.items };
             try bw.print("== {s} ==\n", .{m.file});
             try bytecode.dump(&bw, mem.code.items, mem.constants.items);
         }
@@ -332,12 +341,15 @@ fn compileAndRunMulti(
     for (graph.modules, 0..) |*m, i| {
         var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
         mem.diag = diag;
+        const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types);
+        mem.setForeignTypes(ft.structs, ft.enums);
         if (i == n - 1) {
             mem.emit(m.root);
         } else {
             mem.emitModule(m.root);
         }
         if (mem.error_count > 0) std.process.exit(1);
+        own_types[i] = .{ .structs = mem.structs.items, .enums = mem.enums.items };
 
         // Each module's code is arena-owned and stays valid: `run` only keeps
         // pointers into it, and the globals table carries across calls, so

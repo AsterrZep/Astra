@@ -27,6 +27,7 @@ const lexer = @import("../lexer/lexer.zig");
 const ast = @import("../ast/ast.zig");
 const bc = @import("bytecode.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
+const modules = @import("../modules/modules.zig");
 
 const OpCode = bc.OpCode;
 const Instruction = bc.Instruction;
@@ -47,7 +48,7 @@ const Local = struct { name: []const u8, slot: u8, depth: u8 };
 const Capture = struct { name: []const u8, index: u8 };
 
 /// Compile-time view of a struct declaration.
-const StructInfo = struct {
+pub const StructInfo = struct {
     name: []const u8,
     fields: []const []const u8,
     def: *bc.StructDef,
@@ -55,7 +56,7 @@ const StructInfo = struct {
 
 /// Compile-time view of an enum declaration. `field_names[v]` is parallel to
 /// the variant's payload; an unnamed field keeps an empty name.
-const EnumInfo = struct {
+pub const EnumInfo = struct {
     name: []const u8,
     variants: []const []const u8,
     field_names: []const []const []const u8,
@@ -110,6 +111,14 @@ pub const Emitter = struct {
     enums: std.ArrayListUnmanaged(EnumInfo) = .empty,
     variant_index: std.ArrayListUnmanaged(VariantEntry) = .empty,
     fns: std.ArrayListUnmanaged(FnName) = .empty,
+
+    /// Struct/enum declarations of the modules this one imports, handed over
+    /// by the driver before emission and merged into the registries by
+    /// `registerTypes` after this module's own (a local name wins a
+    /// collision). Kept separately as well so namespace-qualified lookups
+    /// (`m.Shape.Circle`) can search only what came from imports.
+    foreign_structs: []const StructInfo = &.{},
+    foreign_enums: []const EnumInfo = &.{},
 
     sp: i32 = 0,
     sp_high: i32 = 0,
@@ -568,6 +577,14 @@ pub const Emitter = struct {
         return false;
     }
 
+    /// Give the emitter the declarations its imports bring in. Must run
+    /// before emission (the driver builds the lists between `init` and
+    /// `emitModule`): `registerTypes` merges them after this module's own.
+    pub fn setForeignTypes(self: *Emitter, structs: []const StructInfo, enums: []const EnumInfo) void {
+        self.foreign_structs = structs;
+        self.foreign_enums = enums;
+    }
+
     /// Collect struct/enum/function declarations before emitting code so that
     /// literals, field accesses and variants resolve without a type table.
     fn registerTypes(self: *Emitter, module: u32) void {
@@ -640,6 +657,33 @@ pub const Emitter = struct {
                     self.structs.append(self.a, .{ .name = s.name, .fields = names, .def = def }) catch @panic("OOM");
                 },
                 else => {},
+            }
+        }
+        // Imported declarations come after this module's own, so a local name
+        // wins any collision. Their `def` pointers stay in the exporting
+        // module's arena; sharing them across modules is safe (arena lives
+        // for the whole compilation).
+        for (self.foreign_structs) |fs| {
+            if (self.structs.items.len >= MAX_STRUCTS) {
+                self.err(0, "too many struct declarations (max {d})", .{MAX_STRUCTS});
+                break;
+            }
+            self.structs.append(self.a, fs) catch @panic("OOM");
+        }
+        for (self.foreign_enums) |fe| {
+            if (self.enums.items.len >= MAX_ENUMS) {
+                self.err(0, "too many enum declarations (max {d})", .{MAX_ENUMS});
+                break;
+            }
+            const enum_idx = self.enums.items.len;
+            self.enums.append(self.a, fe) catch @panic("OOM");
+            for (fe.variants, 0..) |vname, j| {
+                if (fe.field_counts[j] == 0) continue;
+                if (self.variant_index.items.len >= MAX_VARIANTS) {
+                    self.err(0, "too many enum variants (max {d})", .{MAX_VARIANTS});
+                    break;
+                }
+                self.variant_index.append(self.a, .{ .variant = vname, .enum_idx = enum_idx }) catch @panic("OOM");
             }
         }
     }
@@ -1795,6 +1839,59 @@ pub const Emitter = struct {
         self.emitInst(.halt, 0);
     }
 };
+
+// ── Foreign declarations ─────────────────────────────────────────
+
+/// The struct/enum registries of one emitted module, as seen by its importers.
+pub const ModuleTypes = struct {
+    structs: []const StructInfo = &.{},
+    enums: []const EnumInfo = &.{},
+};
+
+/// The struct/enum declarations a module's `import`/`from` declarations bring
+/// in, assembled by the driver after each dependency has emitted (post-order:
+/// `own[i]` is only read for i below the current module). `use` re-exports are
+/// the driver's to forward (PHASE2 §7), not collected here.
+pub fn collectForeign(
+    a: std.mem.Allocator,
+    graph: *const modules.Graph,
+    decls: []const modules.Decl,
+    own: []const ModuleTypes,
+) !ModuleTypes {
+    var structs: std.ArrayListUnmanaged(StructInfo) = .empty;
+    var enums: std.ArrayListUnmanaged(EnumInfo) = .empty;
+    errdefer structs.deinit(a);
+    errdefer enums.deinit(a);
+    for (decls) |decl| {
+        if (decl.kind == .use) continue;
+        const dep_i = graph.find(decl.file) orelse continue;
+        if (dep_i >= own.len) continue;
+        const dep = own[dep_i];
+        switch (decl.kind) {
+            .from => for (decl.items) |item| {
+                const bound = modules.itemBindingName(item);
+                for (dep.structs) |si| {
+                    if (!std.mem.eql(u8, si.name, item.name)) continue;
+                    var cp = si;
+                    if (!std.mem.eql(u8, bound, item.name)) cp.name = bound;
+                    try structs.append(a, cp);
+                }
+                for (dep.enums) |ei| {
+                    if (!std.mem.eql(u8, ei.name, item.name)) continue;
+                    var cp = ei;
+                    if (!std.mem.eql(u8, bound, item.name)) cp.name = bound;
+                    try enums.append(a, cp);
+                }
+            },
+            .import => {
+                try structs.appendSlice(a, dep.structs);
+                try enums.appendSlice(a, dep.enums);
+            },
+            else => {}, // `.use`: re-exports, forwarded by the driver.
+        }
+    }
+    return .{ .structs = structs.items, .enums = enums.items };
+}
 
 // ── Tests ─────────────────────────────────────────────────────────
 

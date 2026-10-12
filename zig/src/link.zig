@@ -28,27 +28,21 @@ fn lastSegment(path: []const u8) []const u8 {
     return path;
 }
 
-test "multi-module program compiles and runs" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
-    const root = try fixtureRoot(io, cwd);
+/// Everything the typechecker pass hands to the emitter, per module.
+const Compiled = struct {
+    mangled: []const []const u8,
+    exports: [][]typechecker.Export,
+    module_imports: [][]emitter.ImportRef,
+    errors: usize,
+};
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    var loader = modules.Loader.init(a, io, cwd);
-    defer loader.deinit();
-    const entry = try std.fs.path.join(a, &.{ root, "main.astra" });
-    const graph = try loader.load(entry);
-    try std.testing.expectEqual(@as(usize, 0), loader.error_count);
-    // mathx, shape, then main (post-order).
-    try std.testing.expectEqual(@as(usize, 3), graph.modules.len);
-    try std.testing.expectEqual(@as(?usize, 2), graph.find(entry));
-
-    const pool = try a.create(typechecker.TypePool);
-    pool.* = try typechecker.TypePool.init(a);
-
+/// Typecheck every module in dependency order against one shared pool,
+/// collecting each module's exports and import map for the emitter.
+fn typecheckGraph(
+    a: std.mem.Allocator,
+    graph: modules.Graph,
+    pool: *typechecker.TypePool,
+) !Compiled {
     const n = graph.modules.len;
     const mangled = try a.alloc([]const u8, n);
     for (mangled, 0..) |*slot, i| {
@@ -101,30 +95,97 @@ test "multi-module program compiles and runs" {
         exports[i] = mtc.collectExports(m.tree.extraSlice(m.tree.node(m.root).source_file));
         module_imports[i] = em_imports.items;
     }
-    try std.testing.expectEqual(@as(usize, 0), errors);
+    return .{ .mangled = mangled, .exports = exports, .module_imports = module_imports, .errors = errors };
+}
 
-    // mathx exports exactly the two `pub` declarations; shape and main export
-    // what their sources mark (main: none).
-    try std.testing.expectEqual(@as(usize, 2), exports[0].len);
-    try std.testing.expectEqualStrings("PI2", exports[0][0].name);
-    try std.testing.expectEqualStrings("add", exports[0][1].name);
-    try std.testing.expectEqual(@as(usize, 0), exports[2].len);
-
+/// Emit and run every module in dependency order on one VM; returns the
+/// program's stdout (arena-owned).
+fn runGraph(a: std.mem.Allocator, graph: modules.Graph, linked: Compiled) ![]const u8 {
+    const n = graph.modules.len;
     var out_buf: [4096]u8 = undefined;
     var out_w = std.Io.Writer.fixed(&out_buf);
     var machine = try vm.VM.init(a, &out_w);
+    const own_types = try a.alloc(emitter.ModuleTypes, n);
+    for (own_types) |*t| t.* = .{};
     for (graph.modules, 0..) |*m, i| {
-        var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
+        var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, linked.mangled[i], linked.module_imports[i]);
+        const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types);
+        mem.setForeignTypes(ft.structs, ft.enums);
         if (i == n - 1) {
             mem.emit(m.root);
         } else {
             mem.emitModule(m.root);
         }
         try std.testing.expectEqual(@as(usize, 0), mem.error_count);
+        own_types[i] = .{ .structs = mem.structs.items, .enums = mem.enums.items };
         const res = try machine.run(mem.code.items, mem.constants.items);
         try std.testing.expectEqual(vm.VMResult.ok, res);
     }
-    try std.testing.expectEqualStrings("5\n6\n8\n20\n30\n", out_w.buffered());
+    return std.fmt.allocPrint(a, "{s}", .{out_w.buffered()}) catch @panic("OOM");
+}
+
+test "multi-module program compiles and runs" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = modules.Loader.init(a, io, cwd);
+    defer loader.deinit();
+    const entry = try std.fs.path.join(a, &.{ root, "main.astra" });
+    const graph = try loader.load(entry);
+    try std.testing.expectEqual(@as(usize, 0), loader.error_count);
+    // mathx, shape, then main (post-order).
+    try std.testing.expectEqual(@as(usize, 3), graph.modules.len);
+    try std.testing.expectEqual(@as(?usize, 2), graph.find(entry));
+
+    const pool = try a.create(typechecker.TypePool);
+    pool.* = try typechecker.TypePool.init(a);
+
+    const linked = try typecheckGraph(a, graph, pool);
+    try std.testing.expectEqual(@as(usize, 0), linked.errors);
+
+    // mathx exports exactly the two `pub` declarations; shape and main export
+    // what their sources mark (main: none).
+    try std.testing.expectEqual(@as(usize, 2), linked.exports[0].len);
+    try std.testing.expectEqualStrings("PI2", linked.exports[0][0].name);
+    try std.testing.expectEqualStrings("add", linked.exports[0][1].name);
+    try std.testing.expectEqual(@as(usize, 0), linked.exports[2].len);
+
+    const out = try runGraph(a, graph, linked);
+    try std.testing.expectEqualStrings("5\n6\n8\n20\n30\n", out);
+}
+
+test "foreign aggregates cross module boundaries" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = modules.Loader.init(a, io, cwd);
+    defer loader.deinit();
+    const entry = try std.fs.path.join(a, &.{ root, "foreign", "main.astra" });
+    const graph = try loader.load(entry);
+    try std.testing.expectEqual(@as(usize, 0), loader.error_count);
+    // geometry, then main (post-order).
+    try std.testing.expectEqual(@as(usize, 2), graph.modules.len);
+
+    const pool = try a.create(typechecker.TypePool);
+    pool.* = try typechecker.TypePool.init(a);
+
+    const linked = try typecheckGraph(a, graph, pool);
+    try std.testing.expectEqual(@as(usize, 0), linked.errors);
+
+    // Struct literal, field read, enum value from a dependency and a match
+    // over an imported enum with a payload binding.
+    const out = try runGraph(a, graph, linked);
+    try std.testing.expectEqualStrings("3\n12\n42\n", out);
 }
 
 test "importing a private name is rejected" {
