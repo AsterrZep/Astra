@@ -109,8 +109,8 @@ fn runGraph(a: std.mem.Allocator, graph: modules.Graph, linked: Compiled) ![]con
     for (own_types) |*t| t.* = .{};
     for (graph.modules, 0..) |*m, i| {
         var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, linked.mangled[i], linked.module_imports[i]);
-        const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types);
-        mem.setForeignTypes(ft.structs, ft.enums);
+        const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types, linked.mangled);
+        mem.setForeignTypes(ft.structs, ft.enums, ft.namespaces);
         if (i == n - 1) {
             mem.emit(m.root);
         } else {
@@ -182,10 +182,11 @@ test "foreign aggregates cross module boundaries" {
     const linked = try typecheckGraph(a, graph, pool);
     try std.testing.expectEqual(@as(usize, 0), linked.errors);
 
-    // Struct literal, field read, enum value from a dependency and a match
-    // over an imported enum with a payload binding.
+    // Struct literal, field read, enum value from a dependency, a match over
+    // an imported enum with a payload binding, and the namespace form
+    // `geo.Shape.Dot` resolved at compile time.
     const out = try runGraph(a, graph, linked);
-    try std.testing.expectEqualStrings("3\n12\n42\n", out);
+    try std.testing.expectEqualStrings("3\n12\n42\n3\n", out);
 }
 
 test "importing a private name is rejected" {

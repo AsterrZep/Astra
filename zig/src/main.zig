@@ -308,8 +308,8 @@ fn compileAndRunMulti(
         for (graph.modules, 0..) |*m, i| {
             var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
             mem.diag = diag;
-            const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types);
-            mem.setForeignTypes(ft.structs, ft.enums);
+            const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types, mangled);
+            mem.setForeignTypes(ft.structs, ft.enums, ft.namespaces);
             if (i == n - 1) {
                 mem.emit(m.root);
             } else {
@@ -341,8 +341,8 @@ fn compileAndRunMulti(
     for (graph.modules, 0..) |*m, i| {
         var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
         mem.diag = diag;
-        const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types);
-        mem.setForeignTypes(ft.structs, ft.enums);
+        const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types, mangled);
+        mem.setForeignTypes(ft.structs, ft.enums, ft.namespaces);
         if (i == n - 1) {
             mem.emit(m.root);
         } else {

@@ -119,6 +119,10 @@ pub const Emitter = struct {
     /// (`m.Shape.Circle`) can search only what came from imports.
     foreign_structs: []const StructInfo = &.{},
     foreign_enums: []const EnumInfo = &.{},
+    /// One entry per `import` binding: the exporting module's registries,
+    /// keyed by its mangled prefix, so `m.Enum.Variant` resolves at compile
+    /// time (`m.Enum` itself is not a runtime global).
+    namespaces: []const NamespaceTypes = &.{},
 
     sp: i32 = 0,
     sp_high: i32 = 0,
@@ -580,9 +584,26 @@ pub const Emitter = struct {
     /// Give the emitter the declarations its imports bring in. Must run
     /// before emission (the driver builds the lists between `init` and
     /// `emitModule`): `registerTypes` merges them after this module's own.
-    pub fn setForeignTypes(self: *Emitter, structs: []const StructInfo, enums: []const EnumInfo) void {
+    pub fn setForeignTypes(
+        self: *Emitter,
+        structs: []const StructInfo,
+        enums: []const EnumInfo,
+        namespaces: []const NamespaceTypes,
+    ) void {
         self.foreign_structs = structs;
         self.foreign_enums = enums;
+        self.namespaces = namespaces;
+    }
+
+    /// An enum of `prefix`'s module named `name`, for `m.Enum.Variant`.
+    fn findNamespaceEnum(self: *const Emitter, prefix: []const u8, name: []const u8) ?*const EnumInfo {
+        for (self.namespaces) |ns| {
+            if (!std.mem.eql(u8, ns.prefix, prefix)) continue;
+            for (ns.types.enums) |*ei| {
+                if (std.mem.eql(u8, ei.name, name)) return ei;
+            }
+        }
+        return null;
     }
 
     /// Collect struct/enum/function declarations before emitting code so that
@@ -1193,6 +1214,27 @@ pub const Emitter = struct {
             },
             .field_access => |fa| {
                 const obj = self.tree.node(fa.object);
+                // `m.Enum.Variant` is a value, like the bare `Enum.Variant`
+                // below — resolved against the exporting module's own
+                // declarations here, because `m.Enum` is not a runtime global.
+                if (std.meta.activeTag(obj) == .field_access) {
+                    const inner = obj.field_access;
+                    const iobj = self.tree.node(inner.object);
+                    if (std.meta.activeTag(iobj) == .identifier) {
+                        if (self.importFor(iobj.identifier)) |iref| {
+                            if (iref.module_prefix.len > 0) {
+                                if (self.findNamespaceEnum(iref.module_prefix, inner.field)) |ei| {
+                                    if (enumVariantIndex(ei, fa.field) == null) {
+                                        self.err(ln, "enum '{s}' has no variant '{s}'", .{ ei.name, fa.field });
+                                    }
+                                    const ci = self.addConstant(bc.vEnum(ei.name, fa.field));
+                                    self.emitInstIndex(.const_, ci, ln);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 // `alias.x` where `alias` is a module binding: a plain global
                 // read of the exporting module's mangled name.
                 if (std.meta.activeTag(obj) == .identifier) {
@@ -1848,20 +1890,38 @@ pub const ModuleTypes = struct {
     enums: []const EnumInfo = &.{},
 };
 
-/// The struct/enum declarations a module's `import`/`from` declarations bring
-/// in, assembled by the driver after each dependency has emitted (post-order:
-/// `own[i]` is only read for i below the current module). `use` re-exports are
-/// the driver's to forward (PHASE2 §7), not collected here.
+/// One `import` binding: the exporting module's registries under its
+/// mangled prefix, for namespace-qualified paths (`m.Enum.Variant`).
+pub const NamespaceTypes = struct {
+    prefix: []const u8,
+    types: ModuleTypes,
+};
+
+/// What this module's declarations bring in: the flat lists for `from`
+/// bindings (they name types directly) and the prefix-keyed tables for
+/// `import` bindings (they name types through the namespace).
+pub const Foreign = struct {
+    structs: []const StructInfo = &.{},
+    enums: []const EnumInfo = &.{},
+    namespaces: []const NamespaceTypes = &.{},
+};
+
+/// Assembled by the driver after each dependency has emitted (post-order:
+/// `own[i]` is only read for i below the current module). `use` re-exports
+/// are the driver's to forward (PHASE2 §7), not collected here.
 pub fn collectForeign(
     a: std.mem.Allocator,
     graph: *const modules.Graph,
     decls: []const modules.Decl,
     own: []const ModuleTypes,
-) !ModuleTypes {
+    mangled: []const []const u8,
+) !Foreign {
     var structs: std.ArrayListUnmanaged(StructInfo) = .empty;
     var enums: std.ArrayListUnmanaged(EnumInfo) = .empty;
+    var namespaces: std.ArrayListUnmanaged(NamespaceTypes) = .empty;
     errdefer structs.deinit(a);
     errdefer enums.deinit(a);
+    errdefer namespaces.deinit(a);
     for (decls) |decl| {
         if (decl.kind == .use) continue;
         const dep_i = graph.find(decl.file) orelse continue;
@@ -1883,14 +1943,11 @@ pub fn collectForeign(
                     try enums.append(a, cp);
                 }
             },
-            .import => {
-                try structs.appendSlice(a, dep.structs);
-                try enums.appendSlice(a, dep.enums);
-            },
+            .import => try namespaces.append(a, .{ .prefix = mangled[dep_i], .types = dep }),
             else => {}, // `.use`: re-exports, forwarded by the driver.
         }
     }
-    return .{ .structs = structs.items, .enums = enums.items };
+    return .{ .structs = structs.items, .enums = enums.items, .namespaces = namespaces.items };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ pub struct Vec2 {
 pub enum Shape {
     Circle(f64)
     Square(f64)
+    Dot
 }
 
 pub fn circle(r: f64) -> Shape {
@@ -19,6 +20,7 @@ pub fn area(s: Shape) -> f64 {
     let a = match s {
         Shape.Circle(r) => 3.0 * r * r,
         Shape.Square(w) => w * w,
+        Shape.Dot => 0.0,
     }
     a
 }

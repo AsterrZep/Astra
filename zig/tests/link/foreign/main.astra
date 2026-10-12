@@ -1,6 +1,8 @@
 // Multi-module fixture root: struct literals, enum values and match patterns
-// over types declared in `geometry` (foreign aggregates).
+// over types declared in `geometry` (foreign aggregates), both by `from`
+// bindings (bare names) and through the `geo` namespace (`geo.Shape.Square`).
 from geometry import Vec2, Shape, circle, area
+import geometry as geo
 
 fn main() {
     let v = Vec2 { x: 1.0, y: 2.0 };
@@ -10,6 +12,14 @@ fn main() {
     let n = match s {
         Shape.Circle(r) => 42,
         Shape.Square(w) => 0,
+        Shape.Dot => 1,
     };
     print(n);
+    let u = geo.Shape.Dot;
+    let k = match u {
+        Shape.Circle(r) => 0,
+        Shape.Square(w) => 7,
+        Shape.Dot => 3,
+    };
+    print(k);
 }
