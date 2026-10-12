@@ -23,6 +23,18 @@ jobs:
       - name: Release build compiles clean
         run: make release
         working-directory: seed
+      # libFuzzer harness (PHASE1 §4bis#23): build it, then execute every
+      # test program through the instrumented binary exactly once (-runs=0).
+      # This is a deterministic replay, not a campaign — seconds, and it
+      # fails the job on any sanitizer hit or harness crash while feeding
+      # the whole suite through the fuzzed pipeline.
+      - name: Fuzz harness (clang + libFuzzer) + corpus replay
+        run: |
+          make fuzz
+          mkdir -p build/fuzz/corpus build/fuzz/work
+          find tests -name '*.astra' -exec cp -f {} build/fuzz/corpus/ \;
+          ./build/fuzz/astra-fuzz build/fuzz/work build/fuzz/corpus -runs=0
+        working-directory: seed
 
   zig:
     name: zig (Phase 2) — zig build test

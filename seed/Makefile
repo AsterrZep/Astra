@@ -67,10 +67,17 @@ release:
 # -O1 overrides the default -O0 (last flag wins) because in-process fuzzing
 # at -O0 loses most of its exec/s for no debugging benefit — traces still
 # carry -g and frame pointers.
+#
+# libFuzzer ships with clang, and CI images often expose it only under a
+# versioned name, so accept clang, clang-18, clang-17 or clang-16.
+FUZZ_CC := $(or $(shell command -v clang 2>/dev/null), \
+                 $(shell command -v clang-18 2>/dev/null), \
+                 $(shell command -v clang-17 2>/dev/null), \
+                 $(shell command -v clang-16 2>/dev/null))
 fuzz:
-	@command -v clang >/dev/null 2>&1 || { \
+	@[ -n "$(FUZZ_CC)" ] || { \
 	    echo "make fuzz: clang not found — libFuzzer requires it"; exit 1; }
-	@$(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/fuzz CC=clang \
+	@$(MAKE) --no-print-directory BUILDDIR=$(BUILDDIR)/fuzz CC="$(FUZZ_CC)" \
 	    CFLAGS="$(CFLAGS) -O1 -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer" \
 	    SRCS="$(FUZZ_SRCS)" fuzz-link
 
