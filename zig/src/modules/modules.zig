@@ -4,14 +4,17 @@
 //! where they start to mean something, and it does exactly three things:
 //!
 //! 1. **Path → file.** `ARCHITECTURE.md` §10.4 turns an import path into a file
-//!    on disk. Only rules 1 and 2 ("relative" and "sub-route") are implemented:
-//!    `mesh` → `mesh.astra`, `geometry.mesh` → `geometry/mesh.astra`, relative to
-//!    the directory of the importing file. Rules 3 and 4 (`@/utils/logger` from
-//!    the `astra.toml` root, `std/io` from the stdlib) are deferred on purpose:
-//!    neither `astra.toml` nor a stdlib exists yet, and both spell those roots
-//!    with `/`, a separator the language no longer uses (`research/010` §12.1,
-//!    decided in `PHASE2_GAP_ANALYSIS.md` App. B #6). Guessing a dotted spelling
-//!    for a root nobody has defined would be inventing language.
+//!    on disk. Rules 1 and 2 ("relative" and "sub-route") resolve against the
+//!    directory of the importing file: `mesh` → `mesh.astra`, `geometry.mesh`
+//!    → `geometry/mesh.astra`, with `.` and `/` equivalent separators (the
+//!    grammar accepts both, `ImportPath ::= ("@" "/")? …`). Rule 3 (`@/…`)
+//!    anchors at the project root: the nearest directory above the entry file
+//!    that contains an `astra.toml`, found by walking up from the entry
+//!    (`Loader.load`). Only the manifest's existence is consulted — parsing
+//!    `[package]` and dependencies is the package manager's job
+//!    (`research/package-manager-design.md`). Rule 4 (`std/…`) is accepted by
+//!    the grammar and rejected here with an explicit error: there is no
+//!    stdlib yet, and guessing one would be inventing it.
 //! 2. **Declarations per file.** `collect` turns a parsed tree plus the file it
 //!    came from into a `ModuleTable`: every module declaration in that file with
 //!    its resolved file path, plus the names the file marks `pub` (the export
@@ -49,34 +52,36 @@ const diagnostics_mod = @import("../diagnostics.zig");
 /// `error.InvalidImportPath` covers both an empty path and a segment that is not
 /// an identifier. It is one error because both mean the same thing at this
 /// boundary: the caller passed something `ImportPath` cannot produce.
-pub const Error = error{InvalidImportPath};
+///
+/// `error.Reported` is the soft-failure signal of `resolve`: the problem was
+/// already turned into a user-facing diagnostic (no `astra.toml` for `@/`,
+/// no stdlib for `std/…`), and the caller only has to count it.
+pub const Error = error{ InvalidImportPath, Reported };
 
-/// A module path as written (`geometry.mesh`) resolved to a file path relative
-/// to the importing file's directory (`geometry/mesh.astra`).
+/// A module path as written (`geometry.mesh` or `geometry/mesh`) resolved to a
+/// file path relative to the base directory the caller chose (`geometry/mesh.astra`).
 ///
 /// `.astra` is only appended to the last segment: `a.b.c` is the file `a/b/c.astra`,
 /// not the directory `a/b/c`.
 ///
 /// The segments are re-validated even though the parser guarantees them, because
-/// this is where a module path becomes a filesystem path: `a/b` and `..` reaching
-/// the loader from anywhere else would be a path-traversal bug, and the check is
-/// the only thing standing between a source-level identifier and a file name.
+/// this is where a module path becomes a filesystem path: `..` reaching the
+/// loader from anywhere else would be a path-traversal bug, and the check is the
+/// only thing standing between a source-level identifier and a file name.
 /// Mirrors the lexer's rule (`isAlpha`/`isDigit` in `lexer/lexer.zig`): letters
-/// and `_` to start, plus digits after.
+/// and `_` to start, plus digits after. Both source separators (`.`, `/`) are
+/// accepted and `/` is always what comes out — the spelling `std.fs` and the
+/// loader work with on every platform Zig targets.
 pub fn pathToFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (path.len == 0) return Error.InvalidImportPath;
 
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    var segments = std.mem.splitScalar(u8, path, '.');
+    var segments = std.mem.splitAny(u8, path, "./");
     var first = true;
     while (segments.next()) |segment| {
         if (!isPathSegment(segment)) return Error.InvalidImportPath;
-        // `/` is the internal spelling of a module path. It is not a separator
-        // the language ever sees; it is what `ARCHITECTURE.md` §10.4 writes and
-        // what the loader will hand to `std.fs` (which accepts it on every
-        // platform Zig targets).
         if (!first) try out.append(allocator, '/');
         try out.appendSlice(allocator, segment);
         first = false;
@@ -101,6 +106,47 @@ pub fn resolveFromFile(
     // `orelse` must copy, not return `relative`: the defer above frees it.
     const dir = std.fs.path.dirname(importing_file) orelse return allocator.dupe(u8, relative);
     return std.mem.concat(allocator, u8, &.{ dir, "/", relative });
+}
+
+/// Full resolution of one `ImportPath` — every rule of `ARCHITECTURE.md`
+/// §10.4 that Astra-0 implements:
+///
+/// - `@/…` (rule 3) anchors at `project_root`, the directory containing
+///   `astra.toml`. Without one the path cannot mean anything, so a diagnostic
+///   is emitted (naming the path and the file it was written in) and
+///   `error.Reported` is returned — soft, already user-visible.
+/// - `std/…` (rule 4) is rejected the same way: the grammar accepts the
+///   spelling, but no stdlib exists yet to resolve it against. The dotted
+///   `std.io` form is *not* special-cased — as a rule-2 path it resolves
+///   relative like any other, which is what lets a project ship its own
+///   `std/io.astra` (`use_paths.astra` depends on that).
+/// - anything else is rule 1-2, relative to the importing file.
+pub fn resolve(
+    allocator: std.mem.Allocator,
+    importing_file: []const u8,
+    path: []const u8,
+    project_root: ?[]const u8,
+    diag: ?*diagnostics_mod.Sink,
+) ![]u8 {
+    if (std.mem.startsWith(u8, path, "std/")) {
+        diagnostics_mod.emit(diag, importing_file, diagnostics_mod.no_span,
+            "cannot resolve '{s}': no standard library exists yet", .{path});
+        return error.Reported;
+    }
+    if (std.mem.startsWith(u8, path, "@/")) {
+        const root = project_root orelse {
+            diagnostics_mod.emit(diag, importing_file, diagnostics_mod.no_span,
+                "cannot resolve '{s}': no astra.toml found (project root)", .{path});
+            return error.Reported;
+        };
+        const relative = try pathToFile(allocator, path[2..]);
+        defer allocator.free(relative);
+        // `""` means the manifest sits at the cwd: joining "" and "/" would
+        // forge an absolute path from the filesystem root.
+        if (root.len == 0) return allocator.dupe(u8, relative);
+        return std.mem.concat(allocator, u8, &.{ root, "/", relative });
+    }
+    return resolveFromFile(allocator, importing_file, path);
 }
 
 fn isPathSegment(text: []const u8) bool {
@@ -187,6 +233,18 @@ pub const ModuleTable = struct {
     }
 };
 
+/// Extra resolution context for `collect`.
+///
+/// `project_root` is the directory holding `astra.toml` (rule 3), discovered
+/// once per build by `Loader.load`. `diag` lets `resolve` report its soft
+/// failures (`@/` without a manifest, `std/…` without a stdlib) with the
+/// importing file's name; with no sink the message goes straight to stderr,
+/// which is what the CLI does.
+pub const CollectOptions = struct {
+    project_root: ?[]const u8 = null,
+    diag: ?*diagnostics_mod.Sink = null,
+};
+
 /// Collect the module declarations of `file` from a parsed tree.
 ///
 /// Module-level items only, which is what `research/010` §12.1 makes them
@@ -200,6 +258,7 @@ pub fn collect(
     tree: *const ast.Tree,
     root: u32,
     file: []const u8,
+    opts: CollectOptions,
 ) !ModuleTable {
     var decls: std.ArrayListUnmanaged(Decl) = .empty;
     var exports: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -220,11 +279,15 @@ pub fn collect(
             else => {},
         }
         const decl: Decl = switch (tree.node(item)) {
-            .use_decl => |path| .{ .kind = .use, .path = path, .file = try resolveFromFile(allocator, file, path) },
+            .use_decl => |path| .{
+                .kind = .use,
+                .path = path,
+                .file = try resolve(allocator, file, path, opts.project_root, opts.diag),
+            },
             .import_decl => |d| .{
                 .kind = .import,
                 .path = d.path,
-                .file = try resolveFromFile(allocator, file, d.path),
+                .file = try resolve(allocator, file, d.path, opts.project_root, opts.diag),
                 .alias = d.alias,
             },
             .from_decl => |d| blk: {
@@ -237,7 +300,7 @@ pub fn collect(
                 break :blk .{
                     .kind = .from,
                     .path = d.path,
-                    .file = try resolveFromFile(allocator, file, d.path),
+                    .file = try resolve(allocator, file, d.path, opts.project_root, opts.diag),
                     .items = parsed,
                 };
             },
@@ -304,6 +367,10 @@ pub const Loader = struct {
     modules: std.ArrayListUnmanaged(LoadedModule) = .empty,
     /// Files being loaded right now, outermost first.
     visiting: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// The directory holding `astra.toml`, or null when there is none — the
+    /// anchor of `@/…` paths (`ARCHITECTURE.md` §10.4 rule 3). Discovered once
+    /// per `load` by walking up from the entry file's directory.
+    project_root: ?[]const u8 = null,
     /// Optional sink: when wired, errors are recorded there (and echoed to
     /// stderr); when null, they print directly. Both paths share one format.
     diag: ?*diagnostics_mod.Sink = null,
@@ -325,8 +392,32 @@ pub const Loader = struct {
     /// partial graph is worth looking at, exactly as with a file that has type
     /// errors.
     pub fn load(self: *Loader, root_file: []const u8) !Graph {
+        self.project_root = self.findProjectRoot(root_file);
         try self.loadFile(root_file);
         return .{ .modules = self.modules.items };
+    }
+
+    /// Nearest directory at or above `entry_file` containing an `astra.toml`
+    /// (rule 3's anchor), or null. Existence only: the manifest's contents are
+    /// the package manager's to read. The walk climbs the *string* parents of
+    /// the entry path (all CLI paths are cwd-relative), stops at the top of the
+    /// relative tree, and is bounded — a runaway prefix cannot loop.
+    fn findProjectRoot(self: *Loader, entry_file: []const u8) ?[]const u8 {
+        var dir_name = std.fs.path.dirname(entry_file);
+        var guard: usize = 0;
+        while (guard < 64) : (guard += 1) {
+            const dir = dir_name orelse ""; // "" = the cwd itself
+            const manifest = if (dir.len == 0)
+                "astra.toml"
+            else
+                std.fmt.allocPrint(self.a, "{s}/astra.toml", .{dir}) catch return null;
+            if (self.dir.access(self.io, manifest, .{})) |_| {
+                return if (dir.len == 0) "" else dir;
+            } else |_| {}
+            if (dir_name == null) return null; // reached the cwd, nothing above
+            dir_name = std.fs.path.dirname(dir_name.?);
+        }
+        return null;
     }
 
     fn loadFile(self: *Loader, file: []const u8) !void {
@@ -360,7 +451,19 @@ pub const Loader = struct {
             return;
         };
 
-        const table = try collect(self.a, &tree, root, file);
+        const table = collect(self.a, &tree, root, file, .{
+            .project_root = self.project_root,
+            .diag = self.diag,
+        }) catch |err| switch (err) {
+            // `resolve` already emitted the diagnostic naming the path and
+            // this file; the module cannot be graphed (its decls have no
+            // file to follow), so it fails exactly like a parse error.
+            error.Reported => {
+                self.error_count += 1;
+                return;
+            },
+            else => return err,
+        };
 
         // Post-order: dependencies (and their trees) are complete before this
         // module is appended, so the graph is executable dep-before-user.
@@ -477,9 +580,13 @@ test "import path to file: relative (rule 1) and sub-route (rule 2)" {
         .{ "mesh", "mesh.astra" },
         .{ "geometry.mesh", "geometry/mesh.astra" },
         .{ "a.b.c", "a/b/c.astra" },
-        // Rule 4 is not implemented: with no stdlib yet, `std` is a plain
-        // segment and `std.io` is just a file, which is what a project that
-        // ships its own `std/io.astra` would want.
+        // `/` and `.` are equivalent separators (the grammar accepts both).
+        .{ "geometry/mesh", "geometry/mesh.astra" },
+        .{ "a/b/c", "a/b/c.astra" },
+        // Rule 4 rejects the *slash* spelling in `resolve`; as a plain rule-2
+        // path `std.io` still maps to a file, which is what a project that
+        // ships its own `std/io.astra` wants (and what `use_paths.astra`
+        // relies on).
         .{ "std.io", "std/io.astra" },
     };
     for (cases) |case| {
@@ -493,7 +600,7 @@ test "import path refuses anything that could escape the module directory" {
     const a = std.testing.allocator;
     const bad = [_][]const u8{
         "", ".", "a.", ".a", "a..b", // empty segments
-        "a/b", "..", "../etc/passwd", ".hidden", // traversal / separators
+        "..", "../etc/passwd", ".hidden", // traversal
         "a. b", "a.\u{e9}", "1a", "-x", // not identifiers
     };
     for (bad) |path| {
@@ -507,12 +614,69 @@ test "the importing file's directory is the base for resolution" {
         .{ "main.astra", "geometry.mesh", "geometry/mesh.astra" },
         .{ "src/main.astra", "mesh", "src/mesh.astra" },
         .{ "src/main.astra", "geometry.mesh", "src/geometry/mesh.astra" },
+        .{ "src/main.astra", "lib/util", "src/lib/util.astra" },
     };
     for (cases) |case| {
         const got = try resolveFromFile(a, case[0], case[1]);
         defer a.free(got);
         try std.testing.expectEqualStrings(case[2], got);
     }
+}
+
+test "rule 3: @/ anchors at the project root, not the importing file" {
+    const a = std.testing.allocator;
+    const cases = [_][4][]const u8{
+        // importing file, project root, path, expected file
+        .{ "src/nested/main.astra", "proj", "@/utils/logger", "proj/utils/logger.astra" },
+        .{ "main.astra", "proj", "@/lib", "proj/lib.astra" },
+        // The manifest at the cwd keeps the result relative: "" must not
+        // forge a leading "/" out of root + "/" + file.
+        .{ "src/main.astra", "", "@/lib", "lib.astra" },
+    };
+    for (cases) |case| {
+        const got = try resolve(a, case[0], case[2], case[1], null);
+        defer a.free(got);
+        try std.testing.expectEqualStrings(case[3], got);
+    }
+}
+
+test "rule 3 without an astra.toml is reported, not guessed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var sink = diagnostics_mod.Sink.init(a);
+    sink.echo = false;
+    defer sink.deinit();
+
+    try std.testing.expectError(
+        error.Reported,
+        resolve(a, "src/main.astra", "@/lib", null, &sink),
+    );
+    try std.testing.expectEqual(@as(usize, 1), sink.count());
+    try std.testing.expect(sink.items.items[0].msg.len != 0);
+    try std.testing.expect(
+        std.mem.indexOf(u8, sink.items.items[0].msg, "astra.toml") != null,
+    );
+    // The diagnostic names the file the bad import was written in.
+    try std.testing.expectEqualStrings("src/main.astra", sink.items.items[0].file);
+}
+
+test "rule 4: std/ is rejected until a stdlib exists" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var sink = diagnostics_mod.Sink.init(a);
+    sink.echo = false;
+    defer sink.deinit();
+
+    try std.testing.expectError(
+        error.Reported,
+        resolve(a, "main.astra", "std/io", "proj", &sink),
+    );
+    try std.testing.expectEqual(@as(usize, 1), sink.count());
+    try std.testing.expect(
+        std.mem.indexOf(u8, sink.items.items[0].msg, "standard library") != null,
+    );
 }
 
 test "collect: declarations, resolved files, explicit bindings and exports" {
@@ -540,7 +704,7 @@ test "collect: declarations, resolved files, explicit bindings and exports" {
     var p = parser.Parser.init(a, source, &tree);
     const root = try p.parse();
 
-    const table = try collect(a, &tree, root, "src/main.astra");
+    const table = try collect(a, &tree, root, "src/main.astra", .{});
     try std.testing.expectEqualStrings("src/main.astra", table.file);
     try std.testing.expectEqual(@as(usize, 4), table.decls.len);
 
@@ -603,7 +767,7 @@ test "collect ignores module declarations nested in a function body" {
     var p = parser.Parser.init(a, source, &tree);
     const root = try p.parse();
 
-    const table = try collect(a, &tree, root, "main.astra");
+    const table = try collect(a, &tree, root, "main.astra", .{});
     try std.testing.expectEqual(@as(usize, 0), table.decls.len);
 }
 
@@ -622,7 +786,7 @@ test "a file with no module declarations has an empty table" {
     var p = parser.Parser.init(a, source, &tree);
     const root = try p.parse();
 
-    const table = try collect(a, &tree, root, "main.astra");
+    const table = try collect(a, &tree, root, "main.astra", .{});
     try std.testing.expectEqual(@as(usize, 0), table.decls.len);
     try std.testing.expectEqual(@as(?usize, null), table.find("mesh"));
 
@@ -756,4 +920,85 @@ test "a module that is not on disk is reported, not fatal" {
     // away the file that was fine.
     try std.testing.expectEqual(@as(usize, 1), graph.modules.len);
     try std.testing.expectEqualStrings(entry, graph.modules[0].file);
+}
+
+test "the project root anchors @/ imports (rule 3)" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = Loader.init(a, io, cwd);
+    defer loader.deinit();
+    const entry = try fixture(a, root, "rootproj/main.astra");
+    const graph = try loader.load(entry);
+
+    try std.testing.expectEqual(@as(usize, 0), loader.error_count);
+    // The walk up from main.astra stopped at rootproj/ — its astra.toml.
+    const proj = try fixture(a, root, "rootproj");
+    try std.testing.expectEqualStrings(proj, loader.project_root.?);
+    // lib/leaf (post-order), then main: `@/lib.leaf` resolved from the root,
+    // not from the importing file's directory.
+    try std.testing.expectEqual(@as(usize, 2), graph.modules.len);
+    const leaf = try fixture(a, root, "rootproj/lib/leaf.astra");
+    try std.testing.expectEqualStrings(leaf, graph.modules[0].file);
+    try std.testing.expectEqualStrings(entry, graph.modules[1].file);
+}
+
+test "@/ without an astra.toml anywhere is reported, not guessed" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var sink = diagnostics_mod.Sink.init(a);
+    sink.echo = false;
+    defer sink.deinit();
+
+    var loader = Loader.init(a, io, cwd);
+    defer loader.deinit();
+    loader.diag = &sink;
+    const entry = try fixture(a, root, "noroot/main.astra");
+    const graph = try loader.load(entry);
+
+    try std.testing.expectEqual(@as(usize, 1), loader.error_count);
+    // The file with the bad import cannot be graphed at all.
+    try std.testing.expectEqual(@as(usize, 0), graph.modules.len);
+    try std.testing.expectEqual(@as(usize, 1), sink.count());
+    const msg = sink.items.items[0].msg;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "astra.toml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "@/lib") != null);
+}
+
+test "std/ is rejected until a stdlib exists (rule 4)" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var sink = diagnostics_mod.Sink.init(a);
+    sink.echo = false;
+    defer sink.deinit();
+
+    var loader = Loader.init(a, io, cwd);
+    defer loader.deinit();
+    loader.diag = &sink;
+    const entry = try fixture(a, root, "stdlib/main.astra");
+    const graph = try loader.load(entry);
+
+    try std.testing.expectEqual(@as(usize, 1), loader.error_count);
+    try std.testing.expectEqual(@as(usize, 0), graph.modules.len);
+    try std.testing.expectEqual(@as(usize, 1), sink.count());
+    const msg = sink.items.items[0].msg;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "standard library") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "std/io") != null);
 }

@@ -1,0 +1,6 @@
+# Project marker for the '@/' module root (ARCHITECTURE §10.4 rule 3).
+# The compiler only probes for this file today; [package] is read by the
+# package manager (research/package-manager-design.md).
+[package]
+name = "rootproj"
+version = "0.1.0"

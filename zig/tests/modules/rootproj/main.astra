@@ -1,0 +1,4 @@
+// Loader fixture: `@/` from the entry's own directory — the nearest
+// astra.toml is right here, so lib/leaf.astra resolves from the root.
+import @/lib.leaf
+fn main() { print(1) }

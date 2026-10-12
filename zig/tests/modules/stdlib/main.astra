@@ -1,0 +1,4 @@
+// Rule 4 placeholder: the grammar accepts `std/io`, but no stdlib exists —
+// resolution must say so instead of looking for a local std/io.astra.
+import std/io
+fn main() { print(1) }

@@ -1,0 +1,4 @@
+// Reached through `@/lib.leaf` from the project root, not relatively.
+pub fn leaf() -> i32 {
+    1
+}

@@ -1,0 +1,4 @@
+// Project-root library: one export, imported from two directories.
+pub fn twice(x: i32) -> i32 {
+    x * 2
+}

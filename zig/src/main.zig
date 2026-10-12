@@ -210,11 +210,12 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-/// Last segment of a dotted import path: `import geometry.mesh` (no `as`)
-/// binds `mesh` (decision recorded in `PHASE2_GAP_ANALYSIS.md` App. B #11,
-/// per `ARCHITECTURE.md` §10.1 file-as-module).
+/// Last segment of an import path: `import geometry.mesh` (no `as`) binds
+/// `mesh`, `import @/utils/logger` binds `logger` — both separators of
+/// `ImportPath` count (decision recorded in `PHASE2_GAP_ANALYSIS.md` App. B
+/// #11, per `ARCHITECTURE.md` §10.1 file-as-module).
 fn lastSegment(path: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, path, '.')) |i| return path[i + 1 ..];
+    if (std.mem.lastIndexOfAny(u8, path, "./")) |i| return path[i + 1 ..];
     return path;
 }
 

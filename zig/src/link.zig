@@ -23,8 +23,10 @@ fn fixtureRoot(io: std.Io, cwd: std.Io.Dir) ![]const u8 {
     return error.LinkFixturesNotFound;
 }
 
+/// Last segment of an import path — `.` and `/` both separate segments
+/// (`ImportPath ::= ("@" "/")? …`), so `@/utils/logger` binds `logger`.
 fn lastSegment(path: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, path, '.')) |i| return path[i + 1 ..];
+    if (std.mem.lastIndexOfAny(u8, path, "./")) |i| return path[i + 1 ..];
     return path;
 }
 
@@ -317,4 +319,32 @@ test "importing a private name is rejected" {
     var user_tc = try typechecker.TypeChecker.initWithPool(a, &user_tree, "main.astra", pool);
     user_tc.check(user_root);
     try std.testing.expect(user_tc.error_count > 0);
+}
+
+test "@/ project-root imports compile and run" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    const root = try fixtureRoot(io, cwd);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var loader = modules.Loader.init(a, io, cwd);
+    defer loader.deinit();
+    const entry = try std.fs.path.join(a, &.{ root, "rootproj", "main.astra" });
+    const graph = try loader.load(entry);
+    try std.testing.expectEqual(@as(usize, 0), loader.error_count);
+    // util (reached from main and from the nested file), inner, then main.
+    try std.testing.expectEqual(@as(usize, 3), graph.modules.len);
+    try std.testing.expectEqual(@as(?usize, 2), graph.find(entry));
+
+    const pool = try a.create(typechecker.TypePool);
+    pool.* = try typechecker.TypePool.init(a);
+
+    const linked = try typecheckGraph(a, graph, pool);
+    try std.testing.expectEqual(@as(usize, 0), linked.errors);
+
+    const out = try runGraph(a, graph, linked);
+    try std.testing.expectEqualStrings("42\n42\n", out);
 }
