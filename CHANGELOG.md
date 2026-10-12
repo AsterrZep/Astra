@@ -127,6 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
 
 ### Changed
+- **Dispatchers del backend de C unificados** (`--emit-c`): los dos
+  switches de opcodes paralelos de `seed/src/codegen.c` (cuerpo de
+  función y código de módulo) pasan a un único
+  `emit_instructions(cg, code, code_len, constants, const_len, last_line)`.
+  La duplicación había producido cuatro bugs (POP de módulo, operadores
+  bit a bit de módulo, el gemelo de S4 y `VAL_STRUCT_DEF` → SEGV en
+  struct literals de nivel superior); los 72 `.c` generados sobre la
+  suite son byte-idénticos antes y después del refactor.
 - **`--dump-bytecode` y los volcados de depuración van enteros a stderr
   (seed)**: `value_print()` escribía las constantes por stdout mientras el
   resto del volcado iba a stderr, partiendo cada línea entre los dos streams e

@@ -299,13 +299,16 @@ Dos ítems que sí eran reales y quedaron cerrados en la misma pasada:
 | **Errores de runtime en código de módulo** | ✅ verificado: el runtime reporta y termina con salida 1 (`astra_runtime_error` imprime y sale, no depende de `setjmp`). `tests/codegen/frame_overflow.astra` y `out_of_bounds.astra` lo ejercitan en el nivel superior |
 | **Agregados en código de módulo** | ✅ el dispatcher de módulo no conocía `NEW_STRUCT`, `GET_FIELD`, `SET_FIELD`, `NEW_ENUM*` ni `GET_ENUM_FIELD`, y además su `CONST` no emitía el `VAL_STRUCT_DEF` (caía en `default:` y empujaba `nil`, así que un `let p = P { … }` de nivel superior construía el struct desde un puntero NULL: SEGV, no diagnóstico). Cubierto por `module/toplevel_aggregates.astra` (§6, S16) |
 
-**Lo que queda en esta sección es deuda estructural, no un fallo funcional:** el
-backend de C tiene **dos dispatchers de opcodes** (cuerpo de función y código de
-módulo) que hay que mantener en paralelo. Esa duplicación ha causado ya cuatro
-bugs (S4 y su gemelo, el `POP` de módulo, los operadores bit a bit de módulo y
-el `VAL_STRUCT_DEF` de arriba). El error duro de "opcode sin handler" los vuelve
-*ruidosos* en vez de silenciosos, que es lo que permitió cerrarlos; la
-unificación en un solo `emit_instructions` parametrizado está en §4bis#32.
+**Deuda estructural cerrada el 2026-10-12 (§4bis#32):** el backend de C tenía
+**dos dispatchers de opcodes** (cuerpo de función y código de módulo) que había
+que mantener en paralelo. Esa duplicación causó cuatro bugs (S4 y su gemelo, el
+`POP` de módulo, los operadores bit a bit de módulo y el `VAL_STRUCT_DEF`); el
+error duro de "opcode sin handler" los volvió *ruidosos* en vez de silenciosos,
+que es lo que permitió cerrarlos. Hoy existe un solo
+`emit_instructions(cg, code, code_len, constants, const_len, last_line)` — la
+pasada de `is_label`, la traducción y el switch viven allí; `emit_fn_body` y
+`emit_module_code` conservan solo su prólogo/epílogo. Verificado con los 72
+`.c` generados byte-idénticos antes/después y los logs de error idénticos.
 
 ### Cómo usar
 
@@ -405,8 +408,9 @@ Ordenado por valor para el objetivo de bootstrap.
       `CONSTRUCT_REGISTRY.md` §8; resumen: `research/011` §2.3.1 lista la
       sobre-ingeniería del seed como su primer anti-patrón y §3.3 no incluye
       siquiera un directorio `constructs/`.
-- [ ] **Unificar los dos dispatchers del backend de C** (deuda estructural, ver
-      §3c y §4bis#32).
+- [x] **Unificar los dos dispatchers del backend de C** (cerrado el
+      2026-10-12, ver §3c y §4bis#32): un único `emit_instructions` parametrizado
+      en `codegen.c`; los 72 `.c` de la suite son byte-idénticos al refactor.
 
 ### Tooling
 - [x] **`--emit-c`** (ruta de bootstrap a C del diseño original).
@@ -464,7 +468,7 @@ Ordenado por valor para el objetivo de bootstrap.
 | 29 | Migración completa de constructos (44 hooks) | Medio | ✖ decidido no hacer | `CONSTRUCT_REGISTRY.md` §8 |
 | 30 | Standard library mínima | Bajo | [ ] | **Fase 2** |
 | 31 | LSP básico | Bajo | [ ] | **Fase 2** |
-| 32 | Unificar los dispatchers del backend de C | Medio | [ ] | `codegen.c` — origen de cuatro bugs (§3c); el error duro de opcode sin handler los vuelve ruidosos mientras siga duplicado |
+| 32 | Unificar los dispatchers del backend de C | Medio | [x] | ✅ cerrado el 2026-10-12: un único `emit_instructions` parametrizado (prólogo/epílogo en los llamadores); fusión de divergencias documentada en el commit `refactor(seed)` y verificada con los 72 `.c` byte-idénticos + logs de error idénticos (canary `global_limit`) |
 
 ### Estado de hallazgos de auditoría (COHERENCE_AUDIT.md)
 
