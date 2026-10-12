@@ -803,6 +803,10 @@ typedef enum {
     /* Functions */
     OPCODE_CALL,          /* call function */
     OPCODE_RET,           /* return from function */
+    OPCODE_CLOSURE,       /* operand: (fn_const << 8) | capture_count; pop N captured
+                             values, clone the template FnObj with them as env, push */
+    OPCODE_GET_CAPTURE,   /* operand: capture index; push env[index] of the callee
+                             (slot 0 of the current frame holds the closure) */
 
     /* I/O */
     OPCODE_PRINT,         /* print value */
@@ -916,7 +920,12 @@ typedef struct {
     Value           *fields;
 } StructObj;
 
-/* Function object */
+/* Function object.
+ *
+ * A closure is a FnObj clone whose `env` holds the values captured at
+ * creation time (capture-by-value, ARCHITECTURE.md §30.5). Plain functions
+ * and lambdas without captures keep env == NULL; the clone shares the
+ * template's code/constants pointers, so only the shell is duplicated. */
 typedef struct {
     const Instruction *code;
     size_t             code_len;
@@ -924,6 +933,8 @@ typedef struct {
     size_t             const_len;
     uint8_t            param_count;
     uint8_t            local_count;
+    Value             *env;        /* captured values; NULL when not a closure */
+    uint8_t            env_len;    /* live entries of env */
 } FnObj;
 
 struct Value {

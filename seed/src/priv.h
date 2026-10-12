@@ -90,6 +90,14 @@ typedef struct {
     uint8_t        depth;
 } Local;
 
+/* One entry of a function's capture list (its closure env). `index` is the
+ * position in the env array, i.e. the operand of GET_CAPTURE inside the body
+ * and the order in which the creation site pushes the values. */
+typedef struct {
+    InternedString name;
+    uint8_t        index;
+} Capture;
+
 /* Top-level function names, so the emitter can apply the same
  * "the function wins" tie-break the checker applies when a variant name
  * collides with a function name in a call position. */
@@ -126,6 +134,12 @@ struct Emitter {
     Local          locals[EMITTER_MAX_LOCALS];
     uint16_t       local_count;
     uint8_t        scope_depth;
+
+    /* Captures of the function/lambda currently being emitted: names free in
+     * its body that resolve to the enclosing frame's locals (or captures).
+     * Saved/restored around nested-lambda emission exactly like `locals`. */
+    Capture        captures[EMITTER_MAX_LOCALS];
+    uint16_t       capture_count;
 
     LoopPatch      loops[EMITTER_MAX_LOOP_DEPTH];
     int            loop_depth;

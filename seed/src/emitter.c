@@ -27,6 +27,7 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
     case OPCODE_DUP:
     case OPCODE_GET_LOCAL:
     case OPCODE_GET_GLOBAL:
+    case OPCODE_GET_CAPTURE:
         return 1;
 
     case OPCODE_POP:
@@ -61,6 +62,12 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
 
     case OPCODE_NEW_ARRAY:
         return 1 - (int)operand;
+
+    /* Pops the N captured values the creation site pushed and pushes the
+     * finished closure: net 1 - N, same operand convention as NEW_ARRAY
+     * (the emitter applies the real effect via sp_set_index). */
+    case OPCODE_CLOSURE:
+        return 1 - (int)(operand & 0xFF);
 
     case OPCODE_NEW_STRUCT:
     case OPCODE_CALL:
@@ -280,6 +287,229 @@ static void pop_scope(Emitter *e) {
     while (e->local_count > 0 &&
            e->locals[e->local_count - 1].depth >= e->scope_depth) {
         e->local_count--;
+    }
+}
+
+/* Index in the current function's capture list, or -1. Captures sit *after*
+ * locals in the name-resolution order: a lambda parameter always shadows an
+ * enclosing captured variable of the same name. */
+static int find_capture(Emitter *e, InternedString name) {
+    for (int i = 0; i < (int)e->capture_count; i++) {
+        if (string_eq(e->captures[i].name, name)) {
+            return (int)e->captures[i].index;
+        }
+    }
+    return -1;
+}
+
+/* -----------------------------------------------------------
+ * Free-variable analysis for closures (§30.5 capture-by-value)
+ * -----------------------------------------------------------
+ * Walks a lambda body and collects the names that resolve to the *enclosing*
+ * frame's locals or captures but are not bound inside the lambda. Those
+ * become the lambda's env: the creation site pushes their current values and
+ * OPCODE_CLOSURE clones the template around them. Nested lambdas contribute
+ * their own free names too — a name free at any depth must be reachable from
+ * the outermost lambda's env, because inner creation sites read it through
+ * GET_LOCAL / GET_CAPTURE of the frame that contains them. Nested `fn`
+ * declarations are skipped: only lambdas capture, and a nested fn body keeps
+ * the pre-closure behaviour of resolving free names as globals. */
+
+#define FREE_SCOPE_MAX 256
+
+typedef struct {
+    Emitter       *e;
+    InternedString names[EMITTER_MAX_LOCALS];
+    int            name_count;
+    int            marks[FREE_SCOPE_MAX];
+    int            scope_depth;
+    Capture        caps[EMITTER_MAX_LOCALS];
+    int            cap_count;
+    bool           overflow;
+} FreeVars;
+
+static void fv_push_scope(FreeVars *fv) {
+    if (fv->scope_depth < FREE_SCOPE_MAX) {
+        fv->marks[fv->scope_depth++] = fv->name_count;
+    }
+}
+
+static void fv_pop_scope(FreeVars *fv) {
+    if (fv->scope_depth > 0) {
+        fv->name_count = fv->marks[--fv->scope_depth];
+    }
+}
+
+static void fv_bind(FreeVars *fv, InternedString name) {
+    if (fv->name_count < EMITTER_MAX_LOCALS) {
+        fv->names[fv->name_count++] = name;
+    }
+}
+
+static bool fv_bound(FreeVars *fv, InternedString name) {
+    for (int i = fv->name_count - 1; i >= 0; i--) {
+        if (string_eq(fv->names[i], name)) return true;
+    }
+    return false;
+}
+
+static void fv_ref(FreeVars *fv, InternedString name) {
+    if (fv_bound(fv, name)) return;
+    /* Not bound inside the lambda: a capture iff the enclosing frame can
+     * supply it (a local of the enclosing function or lambda, or one of its
+     * own captures). Anything else is a global and stays a global. */
+    if (find_local(fv->e, name) < 0 && find_capture(fv->e, name) < 0) return;
+    for (int i = 0; i < fv->cap_count; i++) {
+        if (string_eq(fv->caps[i].name, name)) return;
+    }
+    if (fv->cap_count >= 255) { fv->overflow = true; return; }
+    fv->caps[fv->cap_count].name = name;
+    fv->caps[fv->cap_count].index = (uint8_t)fv->cap_count;
+    fv->cap_count++;
+}
+
+static void fv_walk(FreeVars *fv, Node *n);
+static void fv_pattern(FreeVars *fv, Node *pat);
+
+static void fv_pattern(FreeVars *fv, Node *pat) {
+    if (!pat) return;
+    switch (pat->kind) {
+    case NODE_PATTERN_BIND:
+        fv_bind(fv, pat->as.pattern_bind.name);
+        break;
+    case NODE_PATTERN_VARIANT_BIND:
+        for (size_t i = 0; i < pat->as.pattern_variant_bind.bindings.len; i++)
+            fv_bind(fv, pat->as.pattern_variant_bind.bindings.data[i]);
+        break;
+    case NODE_PATTERN_BUILTIN_VARIANT:
+        fv_pattern(fv, pat->as.pattern_builtin_variant.payload);
+        break;
+    case NODE_PATTERN_OR:
+        for (size_t i = 0; i < pat->as.pattern_or.alts.len; i++)
+            fv_pattern(fv, pat->as.pattern_or.alts.data[i]);
+        break;
+    default:
+        break; /* wildcard / literal patterns bind nothing */
+    }
+}
+
+static void fv_walk(FreeVars *fv, Node *n) {
+    if (!n) return;
+    switch (n->kind) {
+    case NODE_IDENT:
+        fv_ref(fv, n->as.ident.name);
+        break;
+    case NODE_BINARY_OP:
+        fv_walk(fv, n->as.binary.left);
+        fv_walk(fv, n->as.binary.right);
+        break;
+    case NODE_UNARY_OP:
+        fv_walk(fv, n->as.unary.operand);
+        break;
+    case NODE_CALL:
+        fv_walk(fv, n->as.call.callee);
+        for (size_t i = 0; i < n->as.call.args.len; i++)
+            fv_walk(fv, n->as.call.args.data[i]);
+        break;
+    case NODE_INDEX:
+        fv_walk(fv, n->as.index.object);
+        fv_walk(fv, n->as.index.index);
+        break;
+    case NODE_ARRAY_LIT:
+        for (size_t i = 0; i < n->as.array_lit.elems.len; i++)
+            fv_walk(fv, n->as.array_lit.elems.data[i]);
+        break;
+    case NODE_RANGE:
+        fv_walk(fv, n->as.range.start);
+        fv_walk(fv, n->as.range.end);
+        break;
+    case NODE_STRUCT_LIT:
+        for (size_t i = 0; i < n->as.struct_lit.field_values.len; i++)
+            fv_walk(fv, n->as.struct_lit.field_values.data[i]);
+        break;
+    case NODE_FIELD_ACCESS:
+        fv_walk(fv, n->as.field_access.object);
+        break;
+    case NODE_SOME_EXPR: fv_walk(fv, n->as.some_expr.value); break;
+    case NODE_OK_EXPR:   fv_walk(fv, n->as.ok_expr.value); break;
+    case NODE_ERR_EXPR:  fv_walk(fv, n->as.err_expr.value); break;
+    case NODE_TRY_EXPR:  fv_walk(fv, n->as.try_expr.inner); break;
+    case NODE_NONE_EXPR:
+    case NODE_INT_LIT: case NODE_FLOAT_LIT: case NODE_STRING_LIT: case NODE_BOOL_LIT:
+    case NODE_BREAK: case NODE_CONTINUE:
+        break;
+    case NODE_BLOCK:
+        fv_push_scope(fv);
+        for (size_t i = 0; i < n->as.block.stmts.len; i++)
+            fv_walk(fv, n->as.block.stmts.data[i]);
+        fv_walk(fv, n->as.block.last_expr);
+        fv_pop_scope(fv);
+        break;
+    case NODE_IF:
+        fv_walk(fv, n->as.if_expr.cond);
+        fv_walk(fv, n->as.if_expr.then_block);
+        fv_walk(fv, n->as.if_expr.else_block);
+        break;
+    case NODE_WHILE:
+        fv_walk(fv, n->as.while_expr.cond);
+        fv_walk(fv, n->as.while_expr.body);
+        break;
+    case NODE_FOR:
+        fv_walk(fv, n->as.for_expr.iter);
+        fv_push_scope(fv);
+        fv_bind(fv, n->as.for_expr.var);
+        fv_walk(fv, n->as.for_expr.body);
+        fv_pop_scope(fv);
+        break;
+    case NODE_MATCH:
+        fv_walk(fv, n->as.match_expr.target);
+        for (size_t i = 0; i < n->as.match_expr.arms.len; i++) {
+            fv_push_scope(fv);
+            fv_pattern(fv, n->as.match_expr.arms.data[i].pattern);
+            fv_walk(fv, n->as.match_expr.arms.data[i].guard);
+            fv_walk(fv, n->as.match_expr.arms.data[i].body);
+            fv_pop_scope(fv);
+        }
+        break;
+    case NODE_RETURN:
+        fv_walk(fv, n->as.return_expr.value);
+        break;
+    case NODE_ASSIGN:
+    case NODE_COMPOUND_ASSIGN:
+        /* The target is a write, but it resolves like a read: assigning to a
+         * captured name must be diagnosed, which needs it in the capture set
+         * for the body emitter to find (and reject) via find_capture. */
+        if (n->as.assign.target && n->as.assign.target->kind == NODE_IDENT)
+            fv_ref(fv, n->as.assign.target->as.ident.name);
+        else
+            fv_walk(fv, n->as.assign.target);
+        fv_walk(fv, n->as.assign.value);
+        break;
+    case NODE_FN_DECL:
+        /* Nested named functions do not capture (closures are lambda-only);
+         * their bodies keep resolving free names as globals. The declaration
+         * itself binds the name in the enclosing lambda. */
+        fv_bind(fv, n->as.fn_decl.name);
+        break;
+    case NODE_LAMBDA:
+        fv_push_scope(fv);
+        for (size_t i = 0; i < n->as.lambda.params.len; i++)
+            fv_bind(fv, n->as.lambda.params.data[i]);
+        fv_walk(fv, n->as.lambda.body);
+        fv_pop_scope(fv);
+        break;
+    case NODE_VAR_DECL:
+        fv_walk(fv, n->as.var_decl.value);
+        fv_bind(fv, n->as.var_decl.name);
+        break;
+    case NODE_CONST_DECL:
+        fv_walk(fv, n->as.const_decl.value);
+        fv_bind(fv, n->as.const_decl.name);
+        break;
+    default:
+        /* Type nodes, patterns outside arms, declarations without value
+         * children: nothing that can capture. */
+        break;
     }
 }
 
@@ -782,8 +1012,16 @@ static void emit_expr(Emitter *e, Node *node) {
         if (slot >= 0) {
             emit_inst_index(e, OPCODE_GET_LOCAL, (uint32_t)slot, node->loc.line);
         } else {
-            uint32_t idx = add_constant(e, value_string(node->as.ident.name.str));
-            emit_inst_index(e, OPCODE_GET_GLOBAL, idx, node->loc.line);
+            int cap = find_capture(e, node->as.ident.name);
+            if (cap >= 0) {
+                /* Free variable of the enclosing lambda: read it out of the
+                 * closure's env. Slot 0 of this frame still holds the callee,
+                 * so GET_CAPTURE reaches it without a CallFrame change. */
+                emit_inst_index(e, OPCODE_GET_CAPTURE, (uint32_t)cap, node->loc.line);
+            } else {
+                uint32_t idx = add_constant(e, value_string(node->as.ident.name.str));
+                emit_inst_index(e, OPCODE_GET_GLOBAL, idx, node->loc.line);
+            }
         }
     } break;
 
@@ -1448,6 +1686,17 @@ static void emit_expr(Emitter *e, Node *node) {
             if (slot >= 0) {
                 emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)slot, line);
                 emit_inst_index(e, OPCODE_GET_LOCAL, (uint32_t)slot, line);
+            } else if (find_capture(e, name) >= 0) {
+                /* Closures capture by value (ARCHITECTURE.md §30.5): there is
+                 * no cell to store into, and writing only the local copy would
+                 * silently diverge from the enclosing frame. Refuse at compile
+                 * time instead. */
+                fprintf(stderr,
+                        "error:%s:%u: cannot assign to captured variable '%.*s' "
+                        "(closures capture by value)\n",
+                        node->loc.filename ? node->loc.filename : "?", line,
+                        (int)name.len, name.str);
+                e->error_count++;
             } else {
                 uint32_t idx = add_constant(e, value_string(name.str));
                 emit_inst_index(e, OPCODE_SET_GLOBAL, idx, line);
@@ -1534,6 +1783,50 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_LAMBDA: {
         uint32_t line = node->loc.line;
+
+        /* Free-variable analysis against the *enclosing* frame: the names it
+         * yields become this lambda's env, pushed at the creation site before
+         * OPCODE_CLOSURE clones the template around them (capture-by-value,
+         * ARCHITECTURE.md §30.5). */
+        FreeVars fv = {0};
+        fv.e = e;
+        fv_push_scope(&fv);
+        for (size_t i = 0; i < node->as.lambda.params.len; i++) {
+            fv_bind(&fv, node->as.lambda.params.data[i]);
+        }
+        fv_walk(&fv, node->as.lambda.body);
+        fv_pop_scope(&fv);
+        if (fv.overflow) {
+            fprintf(stderr, "error: too many captured variables (max 255)\n");
+            e->error_count++;
+        }
+
+        /* Push each captured value in env order. A name from the enclosing
+         * function is a local slot; one the enclosing lambda itself captured
+         * is read from *its* env — we are still emitting the outer frame, so
+         * both resolve through the outer frame's tables. */
+        for (int i = 0; i < fv.cap_count; i++) {
+            int slot = find_local(e, fv.caps[i].name);
+            if (slot >= 0) {
+                emit_inst_index(e, OPCODE_GET_LOCAL, (uint32_t)slot, line);
+            } else {
+                int cap = find_capture(e, fv.caps[i].name);
+                if (cap >= 0) {
+                    emit_inst_index(e, OPCODE_GET_CAPTURE, (uint32_t)cap, line);
+                } else {
+                    /* Analysis and emission must agree; a miss here would
+                     * build an env with the wrong layout. */
+                    fprintf(stderr, "error:%s:%u: internal: capture '%.*s' "
+                            "unresolved at creation site\n",
+                            node->loc.filename ? node->loc.filename : "?", line,
+                            (int)fv.caps[i].name.len, fv.caps[i].name.str);
+                    e->error_count++;
+                    uint32_t z = add_constant(e, value_nil());
+                    emit_inst_index(e, OPCODE_CONST, z, line);
+                }
+            }
+        }
+
         FnObj *fn = arena_alloc_zero(e->arena, sizeof(FnObj), _Alignof(FnObj));
         if (!fn) return;
 
@@ -1544,11 +1837,16 @@ static void emit_expr(Emitter *e, Node *node) {
         uint16_t saved_local_count = e->local_count;
         uint8_t saved_scope_depth = e->scope_depth;
         int32_t saved_sp = e->sp;
+        uint16_t saved_capture_count = e->capture_count;
 
         /* Save the local slots we're about to overwrite (indices 0..N-1) */
         Local saved_locals[EMITTER_MAX_LOCALS];
         for (uint16_t i = 0; i < saved_local_count && i < EMITTER_MAX_LOCALS; i++) {
             saved_locals[i] = e->locals[i];
+        }
+        Capture saved_captures[EMITTER_MAX_LOCALS];
+        for (uint16_t i = 0; i < saved_capture_count && i < EMITTER_MAX_LOCALS; i++) {
+            saved_captures[i] = e->captures[i];
         }
 
         e->code = NULL;
@@ -1560,6 +1858,12 @@ static void emit_expr(Emitter *e, Node *node) {
         e->scope_depth = 1;
         e->local_count = 0;
         e->sp = 0;
+        /* Inside the body, free names resolve through this lambda's captures
+         * (GET_CAPTURE), not the enclosing frame's. */
+        e->capture_count = (uint16_t)fv.cap_count;
+        for (int i = 0; i < fv.cap_count; i++) {
+            e->captures[i] = fv.caps[i];
+        }
 
         add_local(e, hidden_local(e, "ret"));
 
@@ -1608,14 +1912,22 @@ static void emit_expr(Emitter *e, Node *node) {
         e->local_count = saved_local_count;
         e->scope_depth = saved_scope_depth;
         e->sp = saved_sp;
+        e->capture_count = saved_capture_count;
 
         /* Restore the local slots we overwrote */
         for (uint16_t i = 0; i < saved_local_count && i < EMITTER_MAX_LOCALS; i++) {
             e->locals[i] = saved_locals[i];
         }
+        for (uint16_t i = 0; i < saved_capture_count && i < EMITTER_MAX_LOCALS; i++) {
+            e->captures[i] = saved_captures[i];
+        }
 
+        /* The captured values are already on the stack (pushed above, in the
+         * enclosing frame); CLOSURE pops them and pushes the finished closure,
+         * which is the lambda expression's one value. */
         uint32_t fn_idx = add_constant(e, value_fn(fn));
-        emit_inst_index(e, OPCODE_CONST, fn_idx, line);
+        emit_inst_index(e, OPCODE_CLOSURE,
+                        (fn_idx << 8) | (uint32_t)(uint8_t)fv.cap_count, line);
     } break;
 
     default:
@@ -1647,6 +1959,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         uint16_t saved_local_count = e->local_count;
         uint8_t saved_scope_depth = e->scope_depth;
         int32_t saved_sp = e->sp;
+        uint16_t saved_capture_count = e->capture_count;
 
         e->code = NULL;
         e->code_len = 0;
@@ -1657,6 +1970,10 @@ static void emit_stmt(Emitter *e, Node *node) {
         e->scope_depth = 1;
         e->local_count = 0;
         e->sp = 0;   /* the callee starts with an empty frame of its own */
+        /* Named functions do not capture: inside their body even the enclosing
+         * lambda's captured names must resolve as globals (the callee in slot
+         * 0 has no env), so the capture table starts empty here. */
+        e->capture_count = 0;
 
         /* Reserve slot 0 for the callee/return value: the VM reuses the
          * function-value slot as the return-value slot, so parameters must
@@ -1717,6 +2034,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         e->local_count = saved_local_count;
         e->scope_depth = saved_scope_depth;
         e->sp = saved_sp;
+        e->capture_count = saved_capture_count;
 
         /* Top-level functions become globals so any function can call them
          * (function frames reset their local table). */

@@ -495,6 +495,8 @@ static const char *opname(OpCode op) {
     case OPCODE_GET_ENUM_FIELD: return "GET_ENUM_FIELD";
     case OPCODE_CALL:         return "CALL";
     case OPCODE_RET:          return "RET";
+    case OPCODE_CLOSURE:      return "CLOSURE";
+    case OPCODE_GET_CAPTURE:  return "GET_CAPTURE";
     case OPCODE_PRINT:        return "PRINT";
     case OPCODE_WRAP_OK:      return "WRAP_OK";
     case OPCODE_WRAP_ERR:     return "WRAP_ERR";
@@ -536,6 +538,14 @@ void vm_dump_bytecode(const Instruction *code, size_t code_len,
             break;
         case OPCODE_CALL:
             fprintf(stderr, " argc=%u", code[i].arg.arg_count);
+            break;
+        case OPCODE_CLOSURE:
+            /* (fn_const << 8) | capture_count, same packing style as NEW_ENUM */
+            fprintf(stderr, " fn=%u captures=%u", code[i].arg.index >> 8,
+                    code[i].arg.index & 0xFF);
+            break;
+        case OPCODE_GET_CAPTURE:
+            fprintf(stderr, " cap=%u", code[i].arg.index);
             break;
         case OPCODE_JUMP:
         case OPCODE_JUMP_IF_FALSE:
@@ -1400,6 +1410,13 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                     case OPCODE_CALL:
                         fprintf(stderr, " argc=%u", fn->code[di].arg.arg_count);
                         break;
+                    case OPCODE_CLOSURE:
+                        fprintf(stderr, " fn=%u captures=%u", fn->code[di].arg.index >> 8,
+                                fn->code[di].arg.index & 0xFF);
+                        break;
+                    case OPCODE_GET_CAPTURE:
+                        fprintf(stderr, " cap=%u", fn->code[di].arg.index);
+                        break;
                     case OPCODE_JUMP:
                     case OPCODE_JUMP_IF_FALSE:
                     case OPCODE_JUMP_IF_TRUE:
@@ -1424,6 +1441,70 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             ip = vm->frames[vm->frame_count].ip - 1;
             end = vm->code + vm->code_len;
+        } break;
+
+        case OPCODE_CLOSURE: {
+            /* operand: (fn_const << 8) | capture_count. Pop the captured
+             * values (pushed in capture order by the emitter), clone the
+             * template FnObj, and attach them as env. Capture-by-value
+             * (ARCHITECTURE.md §30.5): the env holds the values as they were
+             * at creation time. The clone shares code/constants pointers, so
+             * only the shell is arena-allocated. */
+            uint32_t packed   = inst.arg.index;
+            uint32_t fn_const = packed >> 8;
+            uint8_t  n_cap    = (uint8_t)(packed & 0xFF);
+            if (fn_const >= vm->const_len ||
+                vm->constants[fn_const].kind != VAL_FN ||
+                !vm->constants[fn_const].as.fn_val) {
+                vm_runtime_error(vm, line, "closure template is not a function");
+                return VM_RUNTIME_ERROR;
+            }
+            if (vm->sp < n_cap) {
+                vm_runtime_error(vm, line, "not enough captured values on stack");
+                return VM_RUNTIME_ERROR;
+            }
+            FnObj *tmpl = vm->constants[fn_const].as.fn_val;
+            FnObj *clos = arena_alloc_zero(vm->arena, sizeof(FnObj), _Alignof(FnObj));
+            if (!clos) {
+                vm_runtime_error(vm, line, "out of memory allocating closure");
+                return VM_RUNTIME_ERROR;
+            }
+            clos->code       = tmpl->code;
+            clos->code_len   = tmpl->code_len;
+            clos->constants  = tmpl->constants;
+            clos->const_len  = tmpl->const_len;
+            clos->param_count = tmpl->param_count;
+            clos->local_count = tmpl->local_count;
+            clos->env_len    = n_cap;
+            clos->env        = n_cap > 0
+                ? arena_new_array(vm->arena, Value, n_cap)
+                : NULL;
+            /* The emitter pushed captures in order, so env[0] is the deepest
+             * stack entry: copy from the bottom of the popped range up. */
+            for (uint8_t i = 0; i < n_cap; i++) {
+                clos->env[i] = vm->stack[vm->sp - n_cap + i];
+            }
+            vm->sp = (uint16_t)(vm->sp - n_cap);
+            if (!vm_push(vm, value_fn(clos))) return VM_RUNTIME_ERROR;
+        } break;
+
+        case OPCODE_GET_CAPTURE: {
+            /* Slot 0 of the current frame holds the callee (the closure), and
+             * is never overwritten inside the body (no SET_LOCAL 0 is emitted
+             * in function bodies), so env is readable for the whole call. */
+            uint32_t cap = inst.arg.index;
+            if (vm->frame_count == 0) {
+                vm_runtime_error(vm, line, "GET_CAPTURE outside a function");
+                return VM_RUNTIME_ERROR;
+            }
+            uint16_t base = vm->frames[vm->frame_count - 1].base;
+            Value callee = vm->stack[base];
+            if (callee.kind != VAL_FN || !callee.as.fn_val ||
+                !callee.as.fn_val->env || cap >= callee.as.fn_val->env_len) {
+                vm_runtime_error(vm, line, "no captured variable at index %u", cap);
+                return VM_RUNTIME_ERROR;
+            }
+            if (!vm_push(vm, callee.as.fn_val->env[cap])) return VM_RUNTIME_ERROR;
         } break;
 
         /* ---- I/O ---- */
