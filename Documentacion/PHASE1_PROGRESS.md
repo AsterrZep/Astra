@@ -671,6 +671,10 @@ ImportPath ::= Identifier ("." Identifier)*
 ImportItem ::= Identifier ("as" Identifier)?
 ```
 
+(La producción vive hoy en `constructs/use.c`: creció en 2026-10-12 con la
+raíz `@/` y `/` como separador intercambiable con `.` — App. B #10 de
+`PHASE2_GAP_ANALYSIS.md`.)
+
 Lo que se añadió, y por qué en cada sitio:
 
 | Pieza | Sitio | Nota |

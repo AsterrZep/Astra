@@ -235,9 +235,12 @@ la superficie sintáctica del lenguaje.
 ExportStmt ::= "use" ImportPath
 ImportStmt ::= "import" ImportPath ("as" Identifier)?
              | "from" ImportPath "import" ImportItem ("," ImportItem)*
-ImportPath ::= Identifier ("." Identifier)*
+ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*
 ImportItem ::= Identifier ("as" Identifier)?
 ```
+
+(La producción creció en 2026-10-12 con la raíz `@/` y el separador `/`
+intercambiable con `.` — App. B #10; el rechazo de `::` no cambia.)
 
 **Decisión: el separador de ruta es `.`, no `::`.** Los tres documentos de
 diseño (`research/010` §12.1, `ARCHITECTURE.md` §10) y todos los ejemplos de
@@ -281,21 +284,25 @@ multifichero y resolución de referencias cruzadas.
 en C**: el seed compila un fichero y no carga nada (`research/011` §5.2), así que
 la paridad no dice nada de este terreno. Hace cuatro cosas y ninguna más.
 
-**Ruta → fichero.** Sólo las reglas 1 y 2 de `ARCHITECTURE.md` §10.4 (relativa y
-sub-ruta): `mesh` → `mesh.astra`, `geometry.mesh` → `geometry/mesh.astra`, ambas
-relativas al directorio del fichero que importa. El sufijo `.astra` se añade sólo
-al último segmento (`a.b.c` → `a/b/c.astra`, no `a/b/c/.astra`). Las reglas 3 y 4
-(`@/utils/logger` desde la raíz de `astra.toml`, `std/io` de la stdlib) quedan
-aplazadas a propósito: no existe ni `astra.toml` ni stdlib, y las dos escriben sus
-raíces con `/`, un separador que el lenguaje ya no usa. Inventar una grafía
-punteada para una raíz que nadie ha definido sería inventar lenguaje, no
-implementarlo.
+**Ruta → fichero.** Las cuatro reglas de `ARCHITECTURE.md` §10.4, con `.` y
+`/` como separadores intercambiables (gramática `ImportPath ::= ("@" "/")?
+Identifier (("." | "/") Identifier)*`, App. B #10): las reglas 1 y 2 (relativa
+y sub-ruta) resuelven contra el directorio del fichero que importa — `mesh` →
+`mesh.astra`, `geometry.mesh` → `geometry/mesh.astra`; la regla 3 ancla `@/…`
+al directorio con `astra.toml` más cercano por encima del fichero de entrada,
+descubierto una vez por `Loader.load` (**sólo se comprueba la existencia**:
+leer `[package]` y las dependencias es trabajo del package manager); la
+regla 4 rechaza `std/…` con un diagnóstico explícito (aún no hay stdlib),
+mientras `std.io` punteado sigue siendo una ruta relativa normal —
+`use_paths.astra` depende de eso. El sufijo `.astra` se añade sólo
+al último segmento (`a.b.c` → `a/b/c.astra`, no `a/b/c/.astra`).
 
 **Segmentos revalidados.** `pathToFile` comprueba cada segmento contra la regla
 del lexer (letra o `_`, luego alfanumérico) aunque el parser ya lo garantice:
-aquí es donde una ruta de módulo se convierte en un nombre de fichero, y `a/b` o
-`..` que llegasen de cualquier otro sitio serían una travesía de rutas. Es la
-única frontera entre un identificador del fuente y el sistema de ficheros.
+aquí es donde una ruta de módulo se convierte en un nombre de fichero, y `..`
+o un trozo que no sea identificador llegando de cualquier otro sitio serían una
+travesía de rutas. Es la única frontera entre un identificador del fuente y el
+sistema de ficheros.
 
 **Tabla de módulos.** `collect` convierte el AST de un fichero en una
 `ModuleTable`: cada declaración con la ruta escrita y el fichero al que apunta,
@@ -304,11 +311,11 @@ función se ignora; ver `PHASE1_PROGRESS.md` §6.7).
 
 **Nombres explícitos.** `explicitBindings` lista los nombres que el fichero
 introduce **cuando la gramática los dice**: el alias de `import … as x` y los
-items de `from … import a, b as c`. Lo que ata un `import a.b` a secas no está
-especificado en ningún sitio —`ARCHITECTURE.md` §10.5 escribe `import utils` y
-luego `utils.Logger.info(…)`, lo que sugiere el primer segmento, pero para
-`import geometry.mesh` ni eso— así que el módulo no lo adivina: es una pregunta
-abierta en `PHASE2_GAP_ANALYSIS.md` App. B.
+items de `from … import a, b as c`. Lo que ata un `import a.b` a secas no lo
+declara la tabla: es el **último segmento**, decisión App. B #11 (confirmada
+con el dueño del lenguaje, 2026-10-10) que derivan los drivers con
+`lastSegment` — `import geometry.mesh` ata `mesh`,
+`import @/utils/logger` ata `logger`.
 
 **El cargador y los ciclos.** `Loader` lee el fichero al que apunta cada
 declaración y sigue sus propios imports, recursivamente, construyendo un `Graph`
@@ -442,8 +449,10 @@ Alcance y límites conocidos, todos documentados en el código:
   re-exportados se resuelven por registro, no por global. Lo que §10.5 pinta
   como re-export del **nombre de un módulo** (`utils.Logger.info`) sigue
   abierto (App. B #13).
-- Las raíces `@/`/`std/` (§7.1) siguen fuera (App. B #10, reafirmado
-  2026-10-12).
+- La raíz `@/` (§7.1, regla 3) se resuelve desde el `astra.toml` que el
+  loader descubre caminando hacia arriba desde el fichero de entrada, y
+  `std/…` se rechaza con un diagnóstico explícito (App. B #10, resuelto
+  2026-10-12); la stdlib en sí sigue sin existir.
 - `let x = Shape` (tipo como valor) es un error de runtime
   (`undefined global`) **compartido con el seed**: ambos compiladores lo
   aceptan en compile time, así que no es una divergencia de módulos.
@@ -452,8 +461,8 @@ Alcance y límites conocidos, todos documentados en el código:
 
 Fijado por `zig/src/link.zig` (test e2e sobre los fixtures `zig/tests/link/`:
 `from`, alias, import desnudo con #11, gating de `pub` privado, aggregates
-foráneos en `foreign/` y re-exports en `reexport/`) y verificado a mano con
-`--dump-modules`/`--dump-bytecode`.
+foráneos en `foreign/`, re-exports en `reexport/` y la raíz de proyecto en
+`rootproj/`) y verificado a mano con `--dump-modules`/`--dump-bytecode`.
 
 ### 7.4 Diagnósticos: un sink, un formato (Zig)
 

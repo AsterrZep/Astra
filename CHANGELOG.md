@@ -125,6 +125,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Module declarations in the seed (Phase 2.2, step 1)**: `import`/`from`/`as` are lexed and parsed into `NODE_IMPORT`/`NODE_FROM`/`NODE_IMPORT_ITEM`, sharing one dot-separated `ImportPath` builder with `use`. The registry grows to 46 constructs (`seed/src/`). Parsed and discarded, as before: no module resolution in the seed
 - **Module resolution groundwork (Phase 2.2, step 2)**: `zig/src/modules/modules.zig` resolves an `ImportPath` to a file (relative and sub-route, `ARCHITECTURE.md` §10.4 rules 1–2, rejected if a segment could escape the module directory), collects a file's declarations into a `ModuleTable`, and lists the names each declaration states explicitly
 - **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
+- **Prefijo raíz `@/` y separador `/` en `ImportPath` (gramática + resolución)**:
+  la producción pasa a `ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*`
+  en ambos parsers — token `@` nuevo (`TOKEN_AT`/`.at`), `.` y `/` como
+  separadores intercambiables y el path guardado tal cual está escrito (el
+  seed comparte un único `parse_module_path` entre `use`/`import`/`from`, así
+  `--dump-ast` imprime el mismo slice en ambos lados). En el Zig, la regla 3
+  de `ARCHITECTURE.md` §10.4 resuelve `@/…` contra el directorio con
+  `astra.toml` más cercano por encima del fichero de entrada (walk-up en
+  `Loader.load`; sólo existencia — leer `[package]` queda para el package
+  manager), y la regla 4 rechaza `std/…` con «no standard library exists
+  yet», dejando `std.io` punteado como ruta relativa normal. `lastSegment`
+  de `main.zig`/`link.zig` acepta ambos separadores (`@/utils/logger` ata
+  `logger`). Fijado por `seed/tests/conformance/module/root_import.astra`,
+  `ui/import_at_noslash.astra` y los fixtures `zig/tests/link/rootproj/`
+  (end-to-end) y `zig/tests/modules/{rootproj,noroot,stdlib}` (seed 106,
+  zig 73, paridad 79/79; cierra App. B #10).
 
 ### Changed
 - **`--dump-tokens` y `--dump-ast` del Zig byte-idénticos al seed (PHASE2

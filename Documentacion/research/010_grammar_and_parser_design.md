@@ -765,7 +765,7 @@ ImplItem        ::= FunctionDef | ConstDef
 (* --- Import/Export --- *)
 ImportStmt      ::= "import" ImportPath ("as" Identifier)?
                  | "from" ImportPath "import" ImportItem ("," ImportItem)*
-ImportPath      ::= Identifier ("." Identifier)*
+ImportPath      ::= ("@" "/")? Identifier (("." | "/") Identifier)*
 ImportItem      ::= Identifier ("as" Identifier)?
 
 ExportStmt      ::= "use" ImportPath

@@ -397,6 +397,13 @@ covers the "resolve file paths, load source files" line of the list above.
 Still ahead: a symbol table per module, cross-module references, `pub`, and
 solving App. B #10–#12.
 
+**Update (2026-10-12):** the "still ahead" list above is done — the Zig
+multi-module pipeline carries a per-module symbol table, cross-module
+references and `pub` gating (`PHASE2_PROGRESS.md` §7.2–§7.3), and App. B
+#10 (`@/` anchored at the `astra.toml` root, `std/…` rejected until a
+stdlib exists) and #11 (a bare import binds the last segment) are resolved.
+Of this section's questions, only #12–#14 remain open.
+
 ---
 
 ## 9. Zig-Specific Considerations
@@ -693,10 +700,12 @@ Because the toolchain is ours, debugging can go further than C++:
 5. **C backend retention:** Keep as bootstrap tool, or replace once native backend works?
 6. **Module path syntax:** ~~`use std.io` (dot-separated) or `use "std/io"` (path string)?~~
    **Resolved (Phase 2.2, 2026-09-28): dot-separated.**
-   `ImportPath ::= Identifier ("." Identifier)*` — the form declared by
-   `seed/src/constructs/use.c` and `research/010` §12.1, and the one every module
-   example in the repository uses (`import geometry.mesh`,
-   `from geometry.vector import Vec2, add`, `std.os.linux`). `::` appeared only in
+   Dot-separated segments — the form every module example in the repository
+   uses (`import geometry.mesh`, `from geometry.vector import Vec2, add`,
+   `std.os.linux`), first pinned as `ImportPath ::= Identifier
+   ("." Identifier)*` in `seed/src/constructs/use.c` and `research/010`
+   §12.1 (the production has since grown `@/` and `/` as an equivalent
+   separator — #10). `::` appeared only in
    Rust comparison snippets, and `.` is already the language's path separator
    (`Color.Rojo`, `s.field`). The two parsers had drifted — the seed's `parse_use`
    matched `::` while its own grammar string said `.`, and `--check-constructs`
@@ -714,22 +723,39 @@ Because the toolchain is ours, debugging can go further than C++:
    statement, chains compose in graph order. Implemented in the Zig driver
    and pinned by `zig/tests/link/reexport/`. Whether a `use` also rebinds the
    dependency's *module name* itself (`utils.Logger` of §10.5) is still open
-   — item 13. One half of "how a path maps to files on disk"
-   landed on 2026-09-29: `zig/src/modules/modules.zig` implements rules 1–2 of
-   `ARCHITECTURE.md` §10.4 (relative and sub-route) — see #10 for the roots.
+    — item 13. One half of "how a path maps to files on disk"
+    landed on 2026-09-29: `zig/src/modules/modules.zig` implements rules 1–2 of
+    `ARCHITECTURE.md` §10.4 (relative and sub-route), with rules 3–4 (`@/`
+    from `astra.toml`, `std/` rejected) following on 2026-10-12 — see #10.
 7. **Operator overloading scope:** Trait-only, or allow ad-hoc overloading for user types?
 8. **Assembly/debug output:** which emit flags, and does the AOT backend emit
    DWARF itself or delegate to LLVM? (see §12)
 9. **Timing of low-level debugging:** ship the bytecode debugger with the VM
    (Phase 2.1/2.2) or defer all debug tooling to the native backend (2.6)?
-10. **Dotted spelling of the special roots:** `ARCHITECTURE.md` §10.4 rules 3–4
+10. **Dotted spelling of the special roots:** ~~`ARCHITECTURE.md` §10.4 rules 3–4
     spell the project root and the stdlib with `/` (`import @/utils/logger`,
     `import std/io`), a separator `research/010` §12.1 replaced with `.` for
     `ImportPath`. Deferred, not guessed (2026-09-29): neither `astra.toml` nor a
     stdlib exists yet, and both need a root marker the grammar does not have.
     Until it is decided, `std.io` is an ordinary relative path.
     Reaffirmed (2026-10-12): roots stay out of the module-system sweep —
-    §7.3's multi-module work covers relative paths only.
+    §7.3's multi-module work covers relative paths only.~~
+    **Resolved (2026-10-12): both spellings coexist.** The grammar now
+    declares `ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*`
+    — `/` and `.` are interchangeable segment separators and `@/` is the
+    project-root prefix (new `@` token in both lexers; the path is stored as
+    written, so `--dump-ast` prints the same slice on both sides). The Zig
+    resolver implements rule 3 by walking up from the entry file to the
+    nearest directory containing an `astra.toml` and anchoring `@/…` there
+    (existence only — reading `[package]` stays the package manager's job);
+    rule 4 rejects `std/…` with an explicit "no standard library exists
+    yet", while dotted `std.io` keeps resolving as an ordinary relative path
+    (`use_paths.astra` depends on it). The seed parses and discards the new
+    forms like every other import. Pinned by
+    `seed/tests/conformance/module/root_import.astra`,
+    `seed/tests/conformance/ui/import_at_noslash.astra` and the fixtures
+    `zig/tests/link/rootproj/` (end-to-end) + `zig/tests/modules/{rootproj,
+    noroot,stdlib}`.
 11. **What a bare `import a.b` binds:** `ARCHITECTURE.md` §10.5 imports `utils`
     and then uses `utils.Logger` (first segment), but for a multi-segment path
     nothing says whether `import geometry.mesh` binds `geometry` or `mesh`.
