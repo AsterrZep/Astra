@@ -413,7 +413,9 @@ Ordenado por valor para el objetivo de bootstrap.
 - [x] **`--dump-bytecode`** como flag estable (comparte implementación con
       `ASTRA_DUMP_VM` vía `vm_dump_bytecode()`).
 - [x] **CI**: `.github/workflows/ci.yml` (Linux) — `make debug` + suite, `make release`, y `zig build test` sobre la suite de conformidad.
-- [ ] Fuzzing del lexer/parser (`clang -fsanitize=fuzzer`).
+- [x] **Fuzzing del lexer/parser** (`clang -fsanitize=fuzzer`): harness en
+      `seed/fuzz/`, targets `make fuzz`/`make fuzz-run`, replay del corpus
+      en CI.
 
 ## 4bis. Inventario de tareas para completar la Fase 1
 
@@ -448,7 +450,7 @@ Ordenado por valor para el objetivo de bootstrap.
 | 20 | `while`/`for` como expresión | Medio | ✖ fuera de alcance | Un `while` como expresión exige `break valor` con tipo unificado; `research/010` §9 no lo incluye en el seed (su forma es `for` como *statement* + `if` como expresión). Documentado como no-soporteado |
 | 21 | Frame dinámico en C codegen | Bajo | ✅ | `ASTRA_FRAME_SIZE` + `ASTRA_PUSH` acotado (§6, S9) |
 | 22 | Manejo de opcodes desconocidos en C codegen | Bajo | ✅ | Es un **error duro**, no un comentario |
-| 23 | Fuzzing del lexer/parser | Bajo | [ ] | Nuevo target — pendiente |
+| 23 | Fuzzing del lexer/parser | Bajo | ✅ | `seed/fuzz/fuzz_compile.c` + `astra.dict`, targets `make fuzz`/`fuzz-run`, replay `-runs=0` en CI |
 
 ### Categoría C: Tareas LARGAS (4+ días)
 
@@ -593,7 +595,7 @@ Documentado para que no se lea como resuelto:
 | **`while`/`for` como expresión** | No soportado a propósito (ver §4bis#20; requiere decisión de diseño sobre el valor de salida). `break` con valor, que la gramática de research/010 permite, es ahora error de compilación en ambos parsers en vez del mis-parse silencioso anterior |
 | **Closures** | Capturan **por valor** (ARCHITECTURE.md §30.5): asignar a una variable capturada es error de compilación y las funciones con nombre anidadas no capturan. No hay semántica de referencia ni quéjas de ARC que resolver (ver §4bis#16) |
 | **Módulos** | Un fichero; el module system es Fase 2 |
-| **Fuzzing y CI** | El fuzzing sigue pendiente (§4bis#23). La CI está activa desde septiembre (`.github/workflows/ci.yml`): job seed con ASan/UBSan/LSan + suite completa, job Zig con la conformidad del seed. El fuzzing es la forma natural de buscar la *próxima* clase de fallo del lexer/parser, ahora que los siete vectores conocidos se cierran por el límite de profundidad |
+| **Fuzzing y CI** | El fuzzing está implementado desde el 2026-10-12 (§4bis#23): harness libFuzzer en `seed/fuzz/fuzz_compile.c` (lexer→parser→typechecker→emitter, sin VM para no quemar el presupuesto de timeout con `while true {}`) + diccionario `fuzz/astra.dict`; `make fuzz` lo construye y `make fuzz-run FUZZ_TIME=N` siembra el corpus desde `tests/` y campaña con **1 worker** y `-rss_limit_mb=512` (la caja de desarrollo tiene ~2 GB; los workers en paralelo la reiniciaron por OOM). La CI construye el harness y replay `-runs=0` de todo el corpus. Primera campaña: ~180k ejecuciones, 0 crashes/leaks, cobertura 7853→8638; un artefacto `timeout-5s` clasificado como **flake de entorno** (3000 repeticiones en 8 s con `-close_fd_mask=3`: los diagnósticos por stderr bajo presión de memoria paraban la escritura >5 s). Si aparece un crash: guardar el input en `seed/fuzz/regressions/` y añadir su replay al CI |
 | **Posiciones de origen en los errores del C generado** | Las lleva desde el 2026-10-12: `file:line:` en los errores de runtime vía `astra_file`/`astra_line` anotados por opcode caíble; fijados por `tests/codegen/error_line_in_fn.astra` y `tests/codegen/toplevel_oob.astra` |
 
 ### 6.5 Hallazgos de la Fase 2.2 (2026-09-28)

@@ -30,6 +30,8 @@ make            # development build (-g -O0) -> seed/astra-seed
 make debug      # ASan + UBSan + LSan (recommended while developing)
 make release    # gcc -O2
 make test       # runs tests/run_tests.sh
+make fuzz       # clang + libFuzzer -> build/fuzz/astra-fuzz (requires clang)
+make fuzz-run FUZZ_TIME=300   # campaign: seeds from tests/, dict, 1 worker
 
 # Each variant compiles into its own object tree (build/debug, build/release)
 # and drops the binary before linking, so switching variants always rebuilds.
@@ -40,6 +42,18 @@ make test       # runs tests/run_tests.sh
 `run_tests.sh` runs two paths: the VM (every case in `tests/conformance/`) and
 the C backend (`tests/codegen/*.astra` through `--emit-c` + `gcc`). When you add
 a codegen-only behaviour, add its case to `tests/codegen/`.
+
+Fuzzing (PHASE1 §4bis#23): `make fuzz` builds the libFuzzer harness
+(`seed/fuzz/fuzz_compile.c` — lexer, parser, typechecker and emitter, no VM);
+`make fuzz-run FUZZ_TIME=N` seeds the corpus from `tests/` and runs **one**
+worker with `-rss_limit_mb=512` (the ASan build costs ~250 MB; parallel
+workers will OOM a small box). Campaigns redirect stderr to
+`build/fuzz/campaign.log` — every rejected input prints diagnostics, and a
+stalled write under memory pressure shows up as a fake libFuzzer `timeout`;
+replay an artifact standalone before believing it. CI builds the harness and
+replays the whole corpus with `-runs=0`. When the fuzzer finds a crash, keep
+the artifact in `seed/fuzz/regressions/` with the fix and add its replay to
+`.github/workflows/ci.yml`.
 
 Compiling generated C requires `-Isrc` (the emitted file includes
 `codegen_runtime.h`, which lives in `seed/src/`):

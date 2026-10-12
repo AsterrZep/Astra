@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Fuzzing del lexer/parser del seed (libFuzzer)**: harness
+  `seed/fuzz/fuzz_compile.c` que recorre lexer→parser→typechecker→emitter
+  (sin VM), diccionario `seed/fuzz/astra.dict` con las keywords y
+  puntuación del lexer, y targets `make fuzz` / `make fuzz-run` (corpus
+  sembrado desde `tests/`, 1 worker con `-rss_limit_mb=512` para cajas
+  pequeñas). El job seed de CI construye el harness y hace replay
+  `-runs=0` de todo el corpus. Primera campaña: ~180k ejecuciones sin
+  hallazgos, cobertura 7853→8638.
 - **Agregados foráneos y re-exports (`use`) en el compilador Zig**: el
   emitter de cada módulo recibe los `StructInfo`/`EnumInfo` de sus
   dependencias en orden post-order (los propios se registran antes que los
