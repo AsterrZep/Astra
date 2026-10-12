@@ -182,6 +182,7 @@ typedef enum {
     TOKEN_LBRACE,      /* { */
     TOKEN_RBRACE,      /* } */
     TOKEN_QUESTION,    /* ? */
+    TOKEN_AT,          /* @ (module root prefix: "@/") */
     TOKEN_UNDERSCORE,  /* _ */
 
     /* Special */

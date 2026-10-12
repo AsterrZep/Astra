@@ -28,7 +28,8 @@ const ConstructSpec construct_use = {
     .in_astra0 = true,
     .deps      = NULL,
     .grammar   = "ExportStmt ::= \"use\" ImportPath\n"
-                 "ImportPath ::= Identifier (\".\" Identifier)*",
+                 "ImportPath ::= (\"@\" \"/\")? Identifier "
+                 "((\".\" | \"/\") Identifier)*",
     .research  = "research/010 §12.1 (import/export); research/package-manager-design.md; "
                  "research/011 §12.5",
     .note      = "Parsed and discarded: the seed compiles a single file (research/011 "

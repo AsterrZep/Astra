@@ -1,0 +1,17 @@
+// The module-root and slash forms of ImportPath (ARCHITECTURE §10.4 rules 3-4):
+//   ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*
+// `@/pkg` anchors at the directory containing astra.toml; `std/...` is the
+// stdlib root; `/` and `.` separate segments interchangeably. The seed parses
+// and discards every form (single-file driver, research/011 §5.2) — the Zig
+// compiler is the one that resolves `@/` (zig/tests/link/rootproj), and
+// conformance compiles this file single-file on both sides.
+//
+// EXPECT: 3
+import @/utils.logger
+from @/pkg.tools import thing
+use @/shared
+use shared/extra
+import std/io
+
+let x = 3
+print(x);

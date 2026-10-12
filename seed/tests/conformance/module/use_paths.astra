@@ -1,7 +1,9 @@
-// `use` takes a dot-separated module path (constructs/use.c, research/010
-// §12.1: `ImportPath ::= Identifier ("." Identifier)*`). The seed parses the
-// declaration and discards it: the driver compiles exactly one file, so module
-// resolution is deliberately not its job (research/011 §5.2).
+// `use` takes a module path (constructs/use.c, research/010 §12.1:
+// `ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*` — the
+// `@/` root and `/` separator forms are exercised by root_import.astra).
+// The seed parses the declaration and discards it: the driver compiles
+// exactly one file, so module resolution is deliberately not its job
+// (research/011 §5.2).
 //
 // This case exists because nothing covered `use` at all. With no test to hold
 // it in place the parser had drifted from its own grammar and matched `::`

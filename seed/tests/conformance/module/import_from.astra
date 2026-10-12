@@ -1,7 +1,7 @@
 // `import` / `from` are the module declarations of research/010 §12.1:
 //   ImportStmt ::= "import" ImportPath ("as" Identifier)?
 //                | "from" ImportPath "import" ImportItem ("," ImportItem)*
-//   ImportPath ::= Identifier ("." Identifier)*
+//   ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*
 //   ImportItem ::= Identifier ("as" Identifier)?
 //
 // The seed parses them and then discards them, exactly like `use`: the driver

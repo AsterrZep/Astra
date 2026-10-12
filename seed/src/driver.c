@@ -81,6 +81,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOKEN_LBRACE:     return "{";
     case TOKEN_RBRACE:     return "}";
     case TOKEN_QUESTION:   return "?";
+    case TOKEN_AT:         return "@";
     case TOKEN_DOTDOT:     return "..";
     case TOKEN_DOTDOT_EQ:  return "..=";
     case TOKEN_UNDERSCORE: return "_";

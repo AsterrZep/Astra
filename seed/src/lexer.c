@@ -512,6 +512,8 @@ static Token next_token(Lexer *l) {
         return make_token(l, TOKEN_RBRACE, start_line, start_col, start_off, "}", 1);
     case '?':
         return make_token(l, TOKEN_QUESTION, start_line, start_col, start_off, "?", 1);
+    case '@':
+        return make_token(l, TOKEN_AT, start_line, start_col, start_off, "@", 1);
     default:
         return make_error(l, "unexpected character", start_line, start_col, start_off);
     }

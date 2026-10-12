@@ -1207,19 +1207,20 @@ static Node *parse_var_decl(Parser *p, bool is_const, bool is_pub) {
  * Use declaration
  * ----------------------------------------------------------- */
 
+/* Forwards: `parse_use` delegates its path to the shared parser below so the
+ * three path consumers (`use`, `import`, `from`) can never drift apart. */
+static InternedString parse_module_path(Parser *p);
+
 static Node *parse_use(Parser *p) {
     SrcLoc loc = p->previous.loc;
-    /* Path: ident ("." ident)*, the dot-separated form declared by the
-     * construct grammar (constructs/use.c, research/010 §12.1). This used to
-     * match TOKEN_COLON_COLON, so `use a::b` was accepted here and nowhere
-     * else in the language — `::` is not a path separator anywhere else
-     * (variant paths are `Color.Rojo`, field access is `s.field`). The
+    /* Path: ImportPath, the shared form of the construct grammar
+     * (constructs/use.c, research/010 §12.1). This used to parse the shape on
+     * its own and matched TOKEN_COLON_COLON, so `use a::b` was accepted here
+     * and nowhere else in the language — `::` is not a path separator anywhere
+     * else (variant paths are `Color.Rojo`, field access is `s.field`). The
      * grammar was the spec and the parser had drifted from it; Phase 2.2
-     * resolved the drift by adopting the dot form. */
-    expect(p, TOKEN_IDENT, "module path");
-    while (match(p, TOKEN_DOT)) {
-        expect(p, TOKEN_IDENT, "module path segment");
-    }
+     * resolved the drift, and the path is now parsed in exactly one place. */
+    (void)parse_module_path(p);
     optional_semi(p);
     /* Parsed and discarded: the driver compiles a single file, so module
      * resolution is deliberately not the seed's job (research/011 §5.2). */
@@ -1231,46 +1232,31 @@ static Node *parse_use(Parser *p) {
  * Import / from declarations (research/010 §12.1)
  * ----------------------------------------------------------- */
 
-/* Path ::= Identifier ("." Identifier)* — the dot-separated form declared by
- * the construct grammar (constructs/import.c, constructs/from.c,
- * research/010 §12.1). Shared by `import` and `from` so the two cannot drift,
- * and identical to the form `use` already accepts. Returns the joined text
- * interned, e.g. "geometry.mesh". */
+/* ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)* — the form
+ * declared by the construct grammar (constructs/use.c, constructs/import.c,
+ * constructs/from.c; ARCHITECTURE §10.4 rules 3-4). Shared by `use`, `import`
+ * and `from` so the three cannot drift. The path is returned as written in the
+ * source (prefix, separators and spacing included), e.g. "@/geometry/mesh" or
+ * "geometry.mesh": both compilers report exactly that text in --dump-ast, so
+ * re-joining the segments would lose the `@/` and `/` spellings. The seed then
+ * discards it; the Zig compiler resolves it. */
 static InternedString parse_module_path(Parser *p) {
-    /* The arena has no realloc, so the path cannot be grown in place. Collect
-     * the interned segments, then join them into one buffer: allocations stay
-     * proportional to the segment count, not to the character count. */
-    size_t          seg_cap = 4;
-    size_t          seg_len = 0;
-    InternedString *segs    = arena_new_array(p->arena, InternedString, seg_cap);
+    size_t start = p->current.loc.offset;
 
+    if (match(p, TOKEN_AT)) {
+        expect(p, TOKEN_SLASH, "/ after @");
+    }
     expect(p, TOKEN_IDENT, "module path");
-    segs[seg_len++] = p->previous.text;
-
-    while (match(p, TOKEN_DOT)) {
+    while (match(p, TOKEN_DOT) || match(p, TOKEN_SLASH)) {
         expect(p, TOKEN_IDENT, "module path segment");
-        if (seg_len >= seg_cap) {
-            size_t          new_cap = seg_cap * 2;
-            InternedString *nd = arena_new_array(p->arena, InternedString, new_cap);
-            memcpy(nd, segs, sizeof(InternedString) * seg_len);
-            segs    = nd;
-            seg_cap = new_cap;
-        }
-        segs[seg_len++] = p->previous.text;
     }
 
-    size_t total = seg_len - 1; /* one '.' between every pair of segments */
-    for (size_t i = 0; i < seg_len; i++) total += segs[i].len;
-
-    char  *buf = arena_alloc(p->arena, total + 1, _Alignof(char));
-    size_t at  = 0;
-    for (size_t i = 0; i < seg_len; i++) {
-        if (i > 0) buf[at++] = '.';
-        memcpy(buf + at, segs[i].str, segs[i].len);
-        at += segs[i].len;
-    }
-    buf[at] = '\0';
-    return string_intern_cstr(p->strings, buf);
+    /* A failed expect() consumed nothing, so `previous` may still sit before
+     * `start` (e.g. the statement keyword); clamp instead of computing a
+     * slice that points backwards. */
+    size_t end = p->previous.loc.offset + p->previous.text.len;
+    if (end < start) end = start;
+    return string_intern(p->strings, p->lexer->source + start, end - start);
 }
 
 /* `import a.b as c` — binds a whole module under an optional alias

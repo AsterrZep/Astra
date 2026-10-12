@@ -1,3 +1,8 @@
 use std.io
 import path.to.pkg as alias
 from pkg.subpkg import one, two as deux
+import @/utils/logger
+use @/shared
+from @/pkg.tools import thing
+import std/io
+use shared/extra

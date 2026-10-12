@@ -1,0 +1,5 @@
+// The `@` project-root prefix is exactly `@/` (ARCHITECTURE §10.4 rule 3):
+// `@` must be followed by `/`. `@utils` is not a path — there is no
+// at-separated form anywhere in the grammar.
+// EXPECT-ERROR: expected / after @, got IDENT
+import @utils

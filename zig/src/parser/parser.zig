@@ -598,16 +598,22 @@ pub const Parser = struct {
             self.add(.{ .var_decl = decl }, loc);
     }
 
-    /// `ImportPath ::= Identifier ("." Identifier)*` (`research/010` §12.1).
-    /// Dot-separated, the same separator the rest of the language uses for
-    /// paths (`Color.Rojo`, `s.field`). The seed's `parse_use` used to match
-    /// `::` while its own grammar said `.`; Phase 2.2 fixed the seed, so this
-    /// accepts the dot form and rejects `::` exactly as the seed now does.
-    /// Returns the source text of the whole path.
+    /// `ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*`
+    /// (`research/010` §12.1, ARCHITECTURE §10.4 rules 3-4). Dot-separated —
+    /// the separator the rest of the language uses for paths (`Color.Rojo`,
+    /// `s.field`) — plus `/` as an equivalent module separator and the `@/`
+    /// project-root prefix. The seed's `parse_use` used to match `::` while
+    /// its own grammar said `.`; Phase 2.2 fixed the seed, and the path is
+    /// now parsed in exactly one place in each compiler, rejecting `::`
+    /// identically. Returns the source text of the whole path as written
+    /// (prefix, separators and spacing included), e.g. "@/utils/logger".
     fn parseImportPath(self: *Parser) anyerror![]const u8 {
+        const start = self.current.loc.start;
+        if (self.match(.at)) {
+            try self.expect(.slash);
+        }
         try self.expect(.identifier);
-        const start = self.previous.loc.start;
-        while (self.check(.dot)) {
+        while (self.check(.dot) or self.check(.slash)) {
             self.advance();
             try self.expect(.identifier);
         }
@@ -1359,6 +1365,39 @@ test "`::` is not a module path separator" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const src = "use std::io\n";
+    var tree = ast.Tree.init(arena.allocator(), src);
+    var p = Parser.init(arena.allocator(), src, &tree);
+    defer tree.deinit();
+    try testing.expectError(error.ParseError, p.parse());
+}
+
+// ARCHITECTURE §10.4 rules 3-4: `@/` anchors at the directory containing
+// astra.toml, `/` and `.` are equivalent segment separators, and the path is
+// kept exactly as written (the seed stores the same source slice, so
+// --dump-ast agrees byte for byte).
+test "module paths accept the @/ root prefix and slash separators" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parsed = try parseSource(arena.allocator(),
+        \\import @/utils/logger
+        \\from @/pkg.tools import thing
+        \\use shared/extra
+        \\let x = 1
+    );
+    defer parsed.tree.deinit();
+    const items = parsed.tree.extraSlice(parsed.tree.node(parsed.root).source_file);
+    try testing.expectEqual(@as(u32, 4), items.len);
+    const imp = parsed.tree.node(items[0]).import_decl;
+    try testing.expectEqualStrings("@/utils/logger", imp.path);
+    const f = parsed.tree.node(items[1]).from_decl;
+    try testing.expectEqualStrings("@/pkg.tools", f.path);
+    try testing.expectEqualStrings("shared/extra", parsed.tree.node(items[2]).use_decl);
+}
+
+test "`@` root prefix requires a following `/`" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const src = "import @utils\n";
     var tree = ast.Tree.init(arena.allocator(), src);
     var p = Parser.init(arena.allocator(), src, &tree);
     defer tree.deinit();

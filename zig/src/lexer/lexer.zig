@@ -106,6 +106,7 @@ pub const Tag = enum(u8) {
     lbrace, // {
     rbrace, // }
     question, // ?
+    at, // @ (module root prefix: "@/")
 
     // Special
     newline,
@@ -129,6 +130,7 @@ pub const Tag = enum(u8) {
             .newline => "NEWLINE",
             .eof => "EOF",
             .lex_err => "ERROR",
+            .at => "@",
             else => @tagName(self),
         };
     }
@@ -223,6 +225,7 @@ pub const Tag = enum(u8) {
             .lbrace => "{",
             .rbrace => "}",
             .question => "?",
+            .at => "@",
         };
     }
 };
@@ -542,6 +545,7 @@ pub const Tokenizer = struct {
             '{' => .lbrace,
             '}' => .rbrace,
             '?' => .question,
+            '@' => .at,
             else => return makeErr(self, line, col, start_off, "unexpected character"),
         };
         return self.make(tag, start_off, line, col, self.source[start_off..self.pos]);
