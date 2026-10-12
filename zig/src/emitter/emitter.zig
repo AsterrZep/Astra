@@ -66,6 +66,10 @@ pub const EnumInfo = struct {
 const VariantEntry = struct { variant: []const u8, enum_idx: usize };
 const FnName = struct { name: []const u8 };
 
+/// A re-exported name (`use`): `m.X` reads this global instead of `m.X` in
+/// module `m`, because the declaration lives in the module that owns it.
+pub const NameAlias = struct { name: []const u8, target: []const u8 };
+
 /// One imported name, as the importing module's emitter must resolve it.
 pub const ImportRef = struct {
     /// The name as written locally (`add`, or the alias / last segment).
@@ -77,6 +81,9 @@ pub const ImportRef = struct {
     /// (`import a.b as m` → `m0.`); `m.x` becomes global `m0.x`. Empty for a
     /// plain binding.
     module_prefix: []const u8 = "",
+    /// Names the module re-exports (`use`): checked before the prefix read,
+    /// since a forwarded name lives in its owning module's globals.
+    aliases: []const NameAlias = &.{},
 };
 
 /// Pending jump sites for the enclosing loop, patched once the exit / continue
@@ -1236,10 +1243,18 @@ pub const Emitter = struct {
                     }
                 }
                 // `alias.x` where `alias` is a module binding: a plain global
-                // read of the exporting module's mangled name.
+                // read of the exporting module's mangled name — or of the
+                // owning module's, when `x` reaches it through a `use`.
                 if (std.meta.activeTag(obj) == .identifier) {
                     if (self.importFor(obj.identifier)) |ref| {
                         if (ref.module_prefix.len > 0) {
+                            for (ref.aliases) |al| {
+                                if (std.mem.eql(u8, al.name, fa.field)) {
+                                    const ci = self.addConstant(bc.vString(al.target));
+                                    self.emitInstIndex(.get_global, ci, ln);
+                                    return;
+                                }
+                            }
                             const gname = std.fmt.allocPrint(self.a, "{s}{s}", .{ ref.module_prefix, fa.field }) catch @panic("OOM");
                             const ci = self.addConstant(bc.vString(gname));
                             self.emitInstIndex(.get_global, ci, ln);
@@ -1948,6 +1963,32 @@ pub fn collectForeign(
         }
     }
     return .{ .structs = structs.items, .enums = enums.items, .namespaces = namespaces.items };
+}
+
+/// Register what a module's importers may resolve through it: its own
+/// registries (already merged with its `from`/`import` types) plus what its
+/// `use` declarations forward — the deps' lists are complete by then
+/// (post-order). Call right after the module emits.
+pub fn captureOwnTypes(
+    a: std.mem.Allocator,
+    graph: *const modules.Graph,
+    decls: []const modules.Decl,
+    mem: *const Emitter,
+    own_types: []ModuleTypes,
+    i: usize,
+) !void {
+    var structs: std.ArrayListUnmanaged(StructInfo) = .empty;
+    var enums: std.ArrayListUnmanaged(EnumInfo) = .empty;
+    try structs.appendSlice(a, mem.structs.items);
+    try enums.appendSlice(a, mem.enums.items);
+    for (decls) |decl| {
+        if (decl.kind != .use) continue;
+        const d = graph.find(decl.file) orelse continue;
+        if (d >= own_types.len) continue;
+        try structs.appendSlice(a, own_types[d].structs);
+        try enums.appendSlice(a, own_types[d].enums);
+    }
+    own_types[i] = .{ .structs = structs.items, .enums = enums.items };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────

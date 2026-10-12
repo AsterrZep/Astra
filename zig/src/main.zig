@@ -244,6 +244,16 @@ fn compileAndRunMulti(
 
     const exports = try a.alloc([]typechecker.Export, n);
     const module_imports = try a.alloc([]emitter.ImportRef, n);
+    // Re-export bookkeeping per module: which module actually declares each
+    // exported name (`use` forwards it), and the alias table an `import`er of
+    // this module needs for `m.x` reads of forwarded names.
+    const OwnedExport = struct { ex: typechecker.Export, module: usize };
+    const owners = try a.alloc(std.ArrayListUnmanaged(OwnedExport), n);
+    const aliases = try a.alloc(std.ArrayListUnmanaged(emitter.NameAlias), n);
+    for (owners, aliases) |*os, *als| {
+        os.* = .empty;
+        als.* = .empty;
+    }
 
     var errors: usize = 0;
     for (graph.modules, 0..) |*m, i| {
@@ -271,28 +281,81 @@ fn compileAndRunMulti(
                             errors += 1;
                             continue;
                         }
+                        // A forwarded name's global lives in its owner, not in
+                        // the module the `from` names.
+                        var owner = dep_i;
+                        for (owners[dep_i].items) |ow| {
+                            if (std.mem.eql(u8, ow.ex.name, item.name)) {
+                                owner = ow.module;
+                                break;
+                            }
+                        }
                         try bindings.append(a, .{ .local = bound, .type_ = found.?.type_ });
                         try em_imports.append(a, .{
                             .local = bound,
-                            .target = std.fmt.allocPrint(a, "{s}{s}", .{ mangled[dep_i], item.name }) catch @panic("OOM"),
+                            .target = std.fmt.allocPrint(a, "{s}{s}", .{ mangled[owner], item.name }) catch @panic("OOM"),
                         });
                     }
                 },
                 .import => {
                     const local = decl.alias orelse lastSegment(decl.path);
                     try bindings.append(a, .{ .local = local, .type_ = undefined, .module_exports = dep_exports });
-                    try em_imports.append(a, .{ .local = local, .module_prefix = mangled[dep_i] });
+                    try em_imports.append(a, .{ .local = local, .module_prefix = mangled[dep_i], .aliases = aliases[dep_i].items });
                 },
-                .use => {
-                    diagnostics.emit(diag, m.file, diagnostics.no_span, "'use' (re-export) is not supported in multi-module builds yet; use 'import' or 'from'", .{});
-                    errors += 1;
-                },
+                .use => {}, // merged into this module's exports below
             }
         }
         mtc.injectImports(bindings.items);
         mtc.check(m.root);
         errors += mtc.error_count;
-        exports[i] = mtc.collectExports(m.tree.extraSlice(m.tree.node(m.root).source_file));
+
+        // Exports: this module's own `pub` decls first (a local name wins any
+        // collision), then each `use` dep's exports it doesn't already name.
+        // `owners` records where each name really lives, post-order so a dep's
+        // list is already complete.
+        const own = mtc.collectExports(m.tree.extraSlice(m.tree.node(m.root).source_file));
+        var merged: std.ArrayListUnmanaged(typechecker.Export) = .empty;
+        for (own) |ex| {
+            try merged.append(a, ex);
+            try owners[i].append(a, .{ .ex = ex, .module = i });
+        }
+        for (m.table.decls) |decl| {
+            if (decl.kind != .use) continue;
+            const d = graph.find(decl.file) orelse continue;
+            for (exports[d]) |ex| {
+                var dup = false;
+                for (owners[i].items) |ow| {
+                    if (std.mem.eql(u8, ow.ex.name, ex.name)) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (dup) continue;
+                var real = d;
+                for (owners[d].items) |ow| {
+                    if (std.mem.eql(u8, ow.ex.name, ex.name)) {
+                        real = ow.module;
+                        break;
+                    }
+                }
+                try merged.append(a, ex);
+                try owners[i].append(a, .{ .ex = ex, .module = real });
+            }
+        }
+        exports[i] = merged.items;
+
+        // Alias table for `import`ers: forwarded names are globals of their
+        // owner. Struct/enum exports are types, not globals — consumers
+        // resolve them through the registries (and a type read stays the
+        // shared single-file runtime error).
+        for (owners[i].items) |ow| {
+            if (ow.module == i) continue;
+            if (ow.ex.type_.kind == .struct_ or ow.ex.type_.kind == .enum_) continue;
+            try aliases[i].append(a, .{
+                .name = ow.ex.name,
+                .target = std.fmt.allocPrint(a, "{s}{s}", .{ mangled[ow.module], ow.ex.name }) catch @panic("OOM"),
+            });
+        }
         module_imports[i] = em_imports.items;
     }
     if (errors > 0) std.process.exit(1);
@@ -316,7 +379,7 @@ fn compileAndRunMulti(
                 mem.emitModule(m.root);
             }
             if (mem.error_count > 0) std.process.exit(1);
-            own_types[i] = .{ .structs = mem.structs.items, .enums = mem.enums.items };
+            try emitter.captureOwnTypes(a, &graph, m.table.decls, &mem, own_types, i);
             try bw.print("== {s} ==\n", .{m.file});
             try bytecode.dump(&bw, mem.code.items, mem.constants.items);
         }
@@ -349,7 +412,7 @@ fn compileAndRunMulti(
             mem.emitModule(m.root);
         }
         if (mem.error_count > 0) std.process.exit(1);
-        own_types[i] = .{ .structs = mem.structs.items, .enums = mem.enums.items };
+        try emitter.captureOwnTypes(a, &graph, m.table.decls, &mem, own_types, i);
 
         // Each module's code is arena-owned and stays valid: `run` only keeps
         // pointers into it, and the globals table carries across calls, so

@@ -1,0 +1,4 @@
+// Re-export fixture middle: `use base` forwards base's public exports
+// (one level), plus its own declaration.
+use base
+pub fn extra() -> i32 { 6 }

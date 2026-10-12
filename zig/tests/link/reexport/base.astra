@@ -1,0 +1,12 @@
+// Re-export fixture base: everything `middle` forwards lives here, so the
+// consumer must read these globals through `m0.`, never through `m1.`.
+pub fn twice(x: i32) -> i32 { x * 2 }
+pub const K = 5
+pub struct Point {
+    x: i32
+    y: i32
+}
+pub enum Color {
+    Red
+    Green
+}

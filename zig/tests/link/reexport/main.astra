@@ -1,0 +1,20 @@
+// Re-export fixture root: reads forwarded names both as `from` bindings
+// (targets point at base's globals) and through the `middle` namespace
+// (per-name aliases), plus forwarded struct/enum types.
+from middle import twice, K, Point, Color, extra
+import middle
+
+fn main() {
+    print(twice(K));
+    print(extra());
+    print(middle.twice(3));
+    print(middle.K);
+    let p = Point { x: 1, y: 2 };
+    print(p.x);
+    let c = middle.Color.Green;
+    let k = match c {
+        Color.Red => 1,
+        Color.Green => 2,
+    };
+    print(k);
+}
