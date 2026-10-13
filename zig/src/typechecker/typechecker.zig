@@ -40,6 +40,10 @@ const Symbol = struct {
     type_: *Type,
     is_mut: bool,
     is_fn: bool,
+    /// A generic function (Phase 2.4 step 2a): registered with TYPE_PARAM
+    /// placeholders; calls need call-site inference (step 2b) and the name
+    /// can never be used as a value.
+    is_generic: bool = false,
     /// Non-null when the name is a module binding (`import a.b as m`, or a
     /// bare `import a.b` which binds `b`): member access goes through this
     /// export list instead of the type system (`ARCHITECTURE.md` §10.1, §10.5).
@@ -107,6 +111,11 @@ fn isErrorType(t: *const Type) bool {
     return t.kind == .error_;
 }
 
+/// One generic parameter of the fn currently being checked (Phase 2.4 step
+/// 2a): a flat stack with save/restore marks, so `T` in an annotation
+/// resolves to the enclosing generic fn's placeholder.
+const GenericBinding = struct { name: []const u8, type_: *Type };
+
 pub const TypeChecker = struct {
     a: std.mem.Allocator,
     filename: []const u8,
@@ -120,6 +129,7 @@ pub const TypeChecker = struct {
     variants: std.ArrayListUnmanaged(Variant) = .empty,
     methods: std.ArrayListUnmanaged(Method) = .empty,
     traits: std.ArrayListUnmanaged(TraitInfo) = .empty,
+    generic_stack: std.ArrayListUnmanaged(GenericBinding) = .empty,
     current_fn_return: ?*Type = null,
     // Location of the function currently being checked, used for body-level
     // diagnostics (`checkFnDecl` sets it before `checkFnBody`).
@@ -354,6 +364,24 @@ pub const TypeChecker = struct {
 
     // ── Type node resolution ──────────────────────────────────────
 
+    /// Phase 2.4 step 2a: bind the `<T, U: Show>` parameters of `fn` as
+    /// `.param` placeholders for the duration of the signature and body
+    /// check. The owner node makes `T` of two different fns distinct even
+    /// when they share a name. Save/restore the mark like `current_fn_return`.
+    fn pushGenericScope(self: *TypeChecker, fn_idx: u32) usize {
+        const mark = self.generic_stack.items.len;
+        for (self.tree.extraSlice(self.tree.node(fn_idx).fn_decl.generics)) |g| {
+            const tp = self.tree.node(g).type_param;
+            const pt = self.pool.paramType(tp.name, fn_idx) catch @panic("OOM");
+            self.generic_stack.append(self.a, .{ .name = tp.name, .type_ = pt }) catch @panic("OOM");
+        }
+        return mark;
+    }
+
+    fn popGenericScope(self: *TypeChecker, mark: usize) void {
+        self.generic_stack.items.len = mark;
+    }
+
     fn resolveTypeNode(self: *TypeChecker, idx: ?u32) *Type {
         const i = idx orelse return self.newType(.unknown);
         const loc = self.tree.loc(i);
@@ -367,6 +395,14 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, name, "u64")) break :blk self.newType(.uint64);
                 if (std.mem.eql(u8, name, "f64")) break :blk self.newType(.float);
                 if (std.mem.eql(u8, name, "string")) break :blk self.newType(.string);
+                // A generic parameter of the fn being checked shadows every
+                // other binding (Phase 2.4 step 2a).
+                var g: usize = self.generic_stack.items.len;
+                while (g > 0) {
+                    g -= 1;
+                    if (std.mem.eql(u8, self.generic_stack.items[g].name, name))
+                        break :blk self.generic_stack.items[g].type_;
+                }
                 if (self.lookup(name)) |sym| break :blk sym.type_;
                 break :blk self.errorType(loc, "unknown type '{s}'", .{name});
             },
@@ -401,6 +437,11 @@ pub const TypeChecker = struct {
             if (sym.module_exports != null) {
                 return self.errorType(loc, "module '{s}' is not a value", .{name});
             }
+            // Phase 2.4 step 2a: a generic function has no single runtime
+            // value before call-site inference names an instance.
+            if (sym.is_fn and sym.is_generic) {
+                return self.errorType(loc, "generic function '{s}' used as a value", .{name});
+            }
             return sym.type_;
         }
         return self.errorType(loc, "undefined variable '{s}'", .{name});
@@ -411,6 +452,14 @@ pub const TypeChecker = struct {
         const right = self.checkNode(right_idx);
         if (isErrorType(left)) return left;
         if (isErrorType(right)) return right;
+
+        // Phase 2.4 step 2a: a type parameter carries no operations of its
+        // own. Bounds (`<T: Show>`) land with step 4; until then only
+        // pass-through (calls, returns, bindings) is valid.
+        if (left.kind == .param or right.kind == .param) {
+            const tp = if (left.kind == .param) left else right;
+            return self.errorType(loc, "operator '{s}' cannot be applied to type parameter '{s}'", .{ opName(op), tp.name });
+        }
 
         switch (op) {
             .and_and, .or_or => {
@@ -452,6 +501,10 @@ pub const TypeChecker = struct {
     fn checkUnary(self: *TypeChecker, op: lexer.Tag, operand_idx: u32, loc: lexer.Loc) *Type {
         const operand = self.checkNode(operand_idx);
         if (isErrorType(operand)) return operand;
+        // Phase 2.4 step 2a: see the binary counterpart.
+        if (operand.kind == .param) {
+            return self.errorType(loc, "operator not applicable to type parameter '{s}'", .{operand.name});
+        }
         return switch (op) {
             .minus => if (isNumeric(operand)) operand else self.errorType(loc, "negation requires numeric type, got {s}", .{operand.kind.name()}),
             .bang => if (operand.kind == .bool_) self.newType(.bool_) else self.errorType(loc, "logical not requires bool, got {s}", .{operand.kind.name()}),
@@ -526,6 +579,17 @@ pub const TypeChecker = struct {
                 // No method: fall through — the object re-typechecks below,
                 // but it was clean (an error type returned above), so no
                 // message repeats.
+            }
+        }
+
+        // Phase 2.4 step 2a: calling a generic function needs call-site
+        // inference (step 2b); until it lands the call is rejected here so
+        // the generic-as-value rule below never fires on a callee.
+        if (isTag(self.tree.node(callee_idx), .identifier)) {
+            if (self.lookup(self.tree.node(callee_idx).identifier)) |csym| {
+                if (csym.is_fn and csym.is_generic) {
+                    return self.errorType(loc, "type inference for generic call to '{s}' is not yet supported", .{csym.name});
+                }
             }
         }
 
@@ -958,21 +1022,31 @@ pub const TypeChecker = struct {
         const f = self.tree.node(fn_idx).fn_decl;
         const params = self.tree.extraSlice(f.params);
 
+        // Phase 2.4 step 2a: `<T>` binds as `.param` for the signature and
+        // the body check — a symbolic check over every instantiation.
+        const gmark = self.pushGenericScope(fn_idx);
+
         var param_types = self.a.alloc(*Type, params.len) catch @panic("OOM");
         for (params, 0..) |p, i| {
             param_types[i] = self.resolveTypeNode(self.tree.node(p).param.type_node);
-            if (isErrorType(param_types[i])) return;
+            if (isErrorType(param_types[i])) { self.popGenericScope(gmark); return; }
         }
         const ret_type: ?*Type = if (f.ret) |r| self.resolveTypeNode(r) else null;
-        if (ret_type) |r| if (isErrorType(r)) return;
+        if (ret_type) |r| {
+            if (isErrorType(r)) {
+                self.popGenericScope(gmark);
+                return;
+            }
+        }
 
         const fn_type = self.newFn(param_types, ret_type);
         if (self.lookup(f.name)) |existing| {
             existing.type_ = fn_type;
         } else {
-            self.insert(.{ .name = f.name, .type_ = fn_type, .is_mut = false, .is_fn = true });
+            self.insert(.{ .name = f.name, .type_ = fn_type, .is_mut = false, .is_fn = true, .is_generic = f.generics.len > 0 });
         }
         self.checkFnBody(f, param_types, ret_type);
+        self.popGenericScope(gmark);
     }
 
     fn nodeContainsReturn(self: *TypeChecker, idx: ?u32) bool {
@@ -1196,9 +1270,7 @@ pub const TypeChecker = struct {
                 _ = ident;
                 break :blk self.checkAssign(a.target, bin, loc);
             },
-            .fn_decl => |f| blk: {
-                // Inert until Phase 2.4 step 2 (the seed's checkNode case).
-                if (f.generics.len > 0) break :blk self.newType(.void);
+            .fn_decl => blk: {
                 self.pending_fn_loc = loc;
                 self.checkFnDecl(idx);
                 break :blk self.newType(.void);
@@ -1463,15 +1535,18 @@ pub const TypeChecker = struct {
         for (items) |it| {
             switch (self.tree.node(it)) {
                 .fn_decl => |f| {
-                    // A generic declaration is inert until Phase 2.4 step 2.
-                    if (f.generics.len > 0) continue;
+                    // A generic signature registers with `.param` placeholders
+                    // and is marked `is_generic` (Phase 2.4 step 2a); the body
+                    // is checked in pass 2 with the same placeholders in scope.
+                    const gmark = self.pushGenericScope(it);
                     const params = self.tree.extraSlice(f.params);
                     var param_types = self.a.alloc(*Type, params.len) catch @panic("OOM");
                     for (params, 0..) |p, j| {
                         param_types[j] = self.resolveTypeNode(self.tree.node(p).param.type_node);
                     }
                     const ret_type: ?*Type = if (f.ret) |r| self.resolveTypeNode(r) else null;
-                    self.insert(.{ .name = f.name, .type_ = self.newFn(param_types, ret_type), .is_mut = false, .is_fn = true });
+                    self.insert(.{ .name = f.name, .type_ = self.newFn(param_types, ret_type), .is_mut = false, .is_fn = true, .is_generic = f.generics.len > 0 });
+                    self.popGenericScope(gmark);
                 },
                 .struct_decl => self.checkStructDecl(it),
                 .enum_decl => self.checkEnumDecl(it),
@@ -1482,8 +1557,7 @@ pub const TypeChecker = struct {
         // Second pass: bodies and values.
         for (items) |it| {
             switch (self.tree.node(it)) {
-                .fn_decl => |f| {
-                    if (f.generics.len > 0) continue; // inert (Phase 2.4 step 1)
+                .fn_decl => {
                     self.pending_fn_loc = self.tree.loc(it);
                     self.checkFnDecl(it);
                 },
@@ -1503,6 +1577,8 @@ fn opName(tag: lexer.Tag) []const u8 {
         .star => "*",
         .slash => "/",
         .percent => "%",
+        .and_and => "and",
+        .or_or => "or",
         else => @tagName(tag),
     };
 }

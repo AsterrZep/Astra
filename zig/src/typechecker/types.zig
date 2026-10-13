@@ -41,6 +41,9 @@ pub const Kind = enum {
     struct_,
     enum_,
     nil,
+    /// One `<T>` placeholder of the generic fn being checked (Phase 2.4 step
+    /// 2a); interned per (name, owner declaration).
+    param,
     unknown,
     error_,
 
@@ -61,6 +64,7 @@ pub const Kind = enum {
             .struct_ => "struct",
             .enum_ => "enum",
             .nil => "nil",
+            .param => "type parameter",
             .unknown => "unknown",
             .error_ => "<error>",
         };
@@ -83,10 +87,13 @@ pub const Type = struct {
     elem: ?*Type = null, // array
     params: []const *Type = &.{}, // fn
     ret: ?*Type = null, // fn (normalized to void at interning, never null in practice)
-    name: []const u8 = "", // struct / enum
+    name: []const u8 = "", // struct / enum / param
     fields: []const Field = &.{}, // struct
     variants: []const []const u8 = &.{}, // enum
     payloads: []const VariantLayout = &.{}, // enum
+    /// The owning fn declaration node (param): two `<T>` placeholders are the
+    /// same type only when they come from the same declaration.
+    owner: ?u32 = null,
 };
 
 pub fn isInteger(t: *const Type) bool {
@@ -119,8 +126,9 @@ pub fn typeEq(a: *const Type, b: *const Type) bool {
             break :blk typeEq(a.ret.?, b.ret.?); // normalized to void at interning
         },
         // Same name is the same interned pointer (caught by the fast path);
-        // different pointers mean different names.
-        .struct_, .enum_ => false,
+        // different pointers mean different names. A param is interned per
+        // (name, owner), so pointer identity is full identity too.
+        .struct_, .enum_, .param => false,
         else => true,
     };
 }
@@ -136,7 +144,8 @@ pub const TypePool = struct {
         inner: ?*Type = null, // optional
         params: []const *Type = &.{}, // fn
         ret: ?*Type = null, // fn
-        name: []const u8 = "", // struct / enum
+        name: []const u8 = "", // struct / enum / param
+        owner: ?u32 = null, // param
     };
 
     const KeyContext = struct {
@@ -148,14 +157,17 @@ pub const TypePool = struct {
             if (k.ret) |p| h.update(std.mem.asBytes(&@intFromPtr(p)));
             for (k.params) |p| h.update(std.mem.asBytes(&@intFromPtr(p)));
             h.update(k.name);
+            if (k.owner) |o| h.update(std.mem.asBytes(&o));
             return h.final();
         }
 
         pub fn eql(_: KeyContext, a: Key, b: Key) bool {
             if (a.kind != b.kind) return false;
-            // Struct/enum identity is the name alone (seed `type_eq`).
+            // Struct/enum identity is the name alone (seed `type_eq`); a
+            // param adds its owner declaration.
             switch (a.kind) {
                 .struct_, .enum_ => return std.mem.eql(u8, a.name, b.name),
+                .param => return a.owner == b.owner and std.mem.eql(u8, a.name, b.name),
                 else => {},
             }
             if (a.elem != b.elem or a.inner != b.inner or a.ret != b.ret) return false;
@@ -224,6 +236,11 @@ pub const TypePool = struct {
         return self.intern(.{ .kind = .enum_, .name = name });
     }
 
+    /// One `<T>` placeholder, interned per (name, owner declaration node).
+    pub fn paramType(self: *Self, name: []const u8, owner: u32) !*Type {
+        return self.intern(.{ .kind = .param, .name = name, .owner = owner });
+    }
+
     fn intern(self: *Self, key: Key) !*Type {
         const gop = try self.map.getOrPut(key);
         if (gop.found_existing) return gop.value_ptr.*;
@@ -235,6 +252,7 @@ pub const TypePool = struct {
             .params = key.params,
             .ret = key.ret,
             .name = key.name,
+            .owner = key.owner,
         };
         try self.allocated.append(self.a, t);
         gop.value_ptr.* = t;

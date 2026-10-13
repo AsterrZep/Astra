@@ -1,0 +1,12 @@
+// A generic function name is never a value: there is no single runtime
+// binding to read before call-site inference names an instance
+// (Phase 2.4 step 2a).
+// EXPECT-ERROR: generic function 'identity' used as a value
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn main() {
+    let f = identity
+    print(1)
+}

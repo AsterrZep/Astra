@@ -956,7 +956,7 @@ static void fn_add_param(Parser *p, Node *fn, InternedString name, Node *type) {
  * are NODE_TYPE_IDENT nodes. Phase 2.4 step 1 parses it inert (the checker
  * and the emitter skip declarations that carry one). No newlines are
  * skipped inside `<...>`, mirroring the parameter list's strictness. */
-static void parse_generic_params(Parser *p, DYNARRAY(Node *) *out) {
+static void parse_generic_params(Parser *p, NodeList *out) {
     out->data = NULL;
     out->len  = 0;
     out->cap  = 0;

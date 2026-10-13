@@ -1,0 +1,11 @@
+// A type parameter carries no operations of its own until bounds land
+// (Phase 2.4 step 2a): arithmetic on `T` is rejected at the definition,
+// before any call site exists.
+// EXPECT-ERROR: operator '+' cannot be applied to type parameter 'T'
+fn double<T>(x: T) -> T {
+    x + x
+}
+
+fn main() {
+    print(1)
+}

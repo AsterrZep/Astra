@@ -76,6 +76,9 @@ bool type_eq(Type *a, Type *b) {
         return string_eq(a->as.struc.name, b->as.struc.name);
     case TYPE_ENUM:
         return string_eq(a->as.enumeration.name, b->as.enumeration.name);
+    case TYPE_PARAM:
+        return a->as.type_param.owner == b->as.type_param.owner &&
+               string_eq(a->as.type_param.name, b->as.type_param.name);
     default:
         return true;
     }
@@ -115,6 +118,7 @@ static const char *type_kind_name(TypeKind kind) {
     case TYPE_STRUCT:   return "struct";
     case TYPE_ENUM:     return "enum";
     case TYPE_NIL:      return "nil";
+    case TYPE_PARAM:    return "type parameter";
     case TYPE_UNKNOWN:  return "unknown";
     case TYPE_ERROR:    return "<error>";
     }
@@ -158,6 +162,9 @@ void type_print(Type *t) {
         printf("%.*s", (int)t->as.enumeration.name.len, t->as.enumeration.name.str);
         break;
     case TYPE_NIL:      printf("nil");      break;
+    case TYPE_PARAM:
+        printf("%.*s", (int)t->as.type_param.name.len, t->as.type_param.name.str);
+        break;
     case TYPE_UNKNOWN:  printf("unknown");  break;
     case TYPE_ERROR:    printf("<error>");   break;
     }
@@ -329,11 +336,18 @@ typedef struct {
     size_t         method_count;
 } TraitInfo;
 
+typedef struct { InternedString name; Type *type; } GenericBinding;
+
 struct TypeChecker {
     Arena     *arena;
     StringTable *strings;
     SymbolTable *symbols;
     Type      *current_fn_return; /* return type of enclosing fn, or NULL */
+    /* Generic parameters of the fn currently being checked (Phase 2.4 step
+     * 2a): a flat stack with save/restore marks, so `T` in an annotation
+     * resolves to the enclosing generic fn's placeholder. */
+    GenericBinding *generic_stack;
+    size_t     generic_len;
     int        error_count;
     VariantEntry *variants;
     size_t     variant_count;
@@ -626,8 +640,38 @@ static void  typecheck_fn_body(TypeChecker *tc, Node *fn_node);
 static int   enum_variant_index(Type *en, InternedString variant);
 
 /* ============================================================
- * §4: Type Node Resolution
+ * §4: Type Resolution
  * ============================================================ */
+
+/* Phase 2.4 step 2a: bind the `<T, U: Show>` parameters of `fn` as TYPE_PARAM
+ * placeholders for the duration of the signature and body check. The owner
+ * pointer makes `T` of two different fns distinct even when they share a
+ * name. Save/restore the mark like `current_fn_return` — a nested generic
+ * fn (an impl method) may push its own. */
+static size_t push_generic_scope(TypeChecker *tc, Node *fn) {
+    size_t mark = tc->generic_len;
+    size_t n = fn->as.fn_decl.generics.len;
+    if (n == 0) return mark;
+    for (size_t i = 0; i < n; i++) {
+        Node *tp = fn->as.fn_decl.generics.data[i];
+        if (!tp || tp->kind != NODE_TYPE_PARAM) continue;
+        Type *pt = type_new(tc->arena, TYPE_PARAM);
+        pt->as.type_param.name  = tp->as.type_param.name;
+        pt->as.type_param.owner = fn;
+        if (tc->generic_len >= 32) break; /* a sane cap; the parser allows fewer */
+        if (!tc->generic_stack) {
+            tc->generic_stack = arena_new_array(tc->arena, GenericBinding, 32);
+        }
+        tc->generic_stack[tc->generic_len].name = tp->as.type_param.name;
+        tc->generic_stack[tc->generic_len].type = pt;
+        tc->generic_len++;
+    }
+    return mark;
+}
+
+static void pop_generic_scope(TypeChecker *tc, size_t mark) {
+    tc->generic_len = mark;
+}
 
 static Type *resolve_type_node(TypeChecker *tc, Node *node) {
     if (!node) return NULL;
@@ -643,6 +687,13 @@ static Type *resolve_type_node(TypeChecker *tc, Node *node) {
         if (name.len == 3 && memcmp(name.str, "u64", 3) == 0) return type_new(tc->arena, TYPE_UINT64);
         if (name.len == 3 && memcmp(name.str, "f64", 3) == 0) return type_new(tc->arena, TYPE_FLOAT);
         if (name.len == 6 && memcmp(name.str, "string", 6) == 0) return type_new(tc->arena, TYPE_STRING);
+
+        /* A generic parameter of the fn being checked shadows every other
+         * binding (Phase 2.4 step 2a). */
+        for (size_t i = tc->generic_len; i > 0; i--) {
+            if (string_eq(tc->generic_stack[i - 1].name, name))
+                return tc->generic_stack[i - 1].type;
+        }
 
         /* Check for struct/enum types in symbol table */
         Symbol *sym = symbol_table_lookup(tc->symbols, name);
@@ -708,7 +759,38 @@ static Type *typecheck_ident(TypeChecker *tc, Node *node) {
         return tc_error_type(tc, node->loc, "undefined variable '%.*s'",
                              (int)name.len, name.str);
     }
+    /* Phase 2.4 step 2a: a generic function has no single runtime value
+     * before call-site inference names an instance. */
+    if (sym->is_fn && sym->is_generic) {
+        return tc_error_type(tc, node->loc,
+                             "generic function '%.*s' used as a value",
+                             (int)name.len, name.str);
+    }
     return sym->type;
+}
+
+static const char *op_symbol(BinaryOp op) {
+    switch (op) {
+    case OP_ADD: return "+";
+    case OP_SUB: return "-";
+    case OP_MUL: return "*";
+    case OP_DIV: return "/";
+    case OP_MOD: return "%";
+    case OP_EQ:  return "==";
+    case OP_NEQ: return "!=";
+    case OP_LT:  return "<";
+    case OP_GT:  return ">";
+    case OP_LE:  return "<=";
+    case OP_GE:  return ">=";
+    case OP_AND: return "and";
+    case OP_OR:  return "or";
+    case OP_BIT_AND: return "&";
+    case OP_BIT_OR:  return "|";
+    case OP_BIT_XOR: return "^";
+    case OP_SHL: return "<<";
+    case OP_SHR: return ">>";
+    }
+    return "?";
 }
 
 static Type *typecheck_binary(TypeChecker *tc, Node *node) {
@@ -719,6 +801,18 @@ static Type *typecheck_binary(TypeChecker *tc, Node *node) {
     if (type_is_error(right)) return right;
 
     BinaryOp op = node->as.binary.op;
+
+    /* Phase 2.4 step 2a: a type parameter carries no operations of its own.
+     * Bounds (`<T: Show>`) land with step 4; until then only pass-through
+     * (calls, returns, bindings) is valid. */
+    if (left->kind == TYPE_PARAM || right->kind == TYPE_PARAM) {
+        Type *tp = left->kind == TYPE_PARAM ? left : right;
+        return tc_error_type(tc, node->loc,
+                             "operator '%s' cannot be applied to type parameter '%.*s'",
+                             op_symbol(op),
+                             (int)tp->as.type_param.name.len,
+                             tp->as.type_param.name.str);
+    }
 
     /* Logical operators require bool operands */
     if (op == OP_AND || op == OP_OR) {
@@ -755,8 +849,7 @@ static Type *typecheck_binary(TypeChecker *tc, Node *node) {
         if (!type_eq(left, right)) {
             return tc_error_type(tc, node->loc,
                                  "type mismatch: cannot apply '%s' to %s and %s",
-                                 op == OP_ADD ? "+" : op == OP_SUB ? "-" :
-                                 op == OP_MUL ? "*" : op == OP_DIV ? "/" : "%",
+                                 op_symbol(op),
                                  type_kind_name(left->kind),
                                  type_kind_name(right->kind));
         }
@@ -799,6 +892,14 @@ static Type *typecheck_unary(TypeChecker *tc, Node *node) {
     if (type_is_error(operand)) return operand;
 
     UnaryOp op = node->as.unary.op;
+
+    /* Phase 2.4 step 2a: see the binary counterpart. */
+    if (operand->kind == TYPE_PARAM) {
+        return tc_error_type(tc, node->loc,
+                             "operator not applicable to type parameter '%.*s'",
+                             (int)operand->as.type_param.name.len,
+                             operand->as.type_param.name.str);
+    }
 
     switch (op) {
     case UNOP_NEG:
@@ -929,6 +1030,18 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
         }
         /* No method: fall through — the object re-typechecks below, but it
          * was clean (an error type returns above), so no message repeats. */
+    }
+
+    /* Phase 2.4 step 2a: calling a generic function needs call-site
+     * inference (step 2b); until it lands the call is rejected here so the
+     * generic-as-value rule below never fires on a callee. */
+    if (callee_node->kind == NODE_IDENT) {
+        Symbol *csym = symbol_table_lookup(tc->symbols, callee_node->as.ident.name);
+        if (csym && csym->is_fn && csym->is_generic) {
+            return tc_error_type(tc, node->loc,
+                                 "type inference for generic call to '%.*s' is not yet supported",
+                                 (int)csym->name.len, csym->name.str);
+        }
     }
 
     Type *callee = typecheck_node(tc, node->as.call.callee);
@@ -1693,19 +1806,24 @@ static void typecheck_const_decl(TypeChecker *tc, Node *node) {
 static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
     InternedString name = fn_node->as.fn_decl.name;
 
+    /* Phase 2.4 step 2a: `<T>` binds as TYPE_PARAM for the signature and
+     * the body check — a symbolic check over every instantiation. */
+    bool generic = fn_node->as.fn_decl.generics.len > 0;
+    size_t gmark = push_generic_scope(tc, fn_node);
+
     /* Resolve parameter types */
     size_t param_count = fn_node->as.fn_decl.params.len;
     Type **param_types = arena_new_array(tc->arena, Type *, param_count);
     for (size_t i = 0; i < param_count; i++) {
         param_types[i] = resolve_type_node(tc, fn_node->as.fn_decl.param_types.data[i]);
-        if (type_is_error(param_types[i])) return;
+        if (type_is_error(param_types[i])) { pop_generic_scope(tc, gmark); return; }
     }
 
     /* Resolve return type */
     Type *ret_type = NULL;
     if (fn_node->as.fn_decl.return_type) {
         ret_type = resolve_type_node(tc, fn_node->as.fn_decl.return_type);
-        if (type_is_error(ret_type)) return;
+        if (type_is_error(ret_type)) { pop_generic_scope(tc, gmark); return; }
     }
 
     Type *fn_type = type_new_fn(tc->arena, param_types, param_count, ret_type);
@@ -1716,6 +1834,7 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
         .type    = fn_type,
         .is_mut  = false,
         .is_fn   = true,
+        .is_generic = generic,
         .def_loc = fn_node->loc,
     };
 
@@ -1731,6 +1850,7 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
     if (fn_node->as.fn_decl.body) {
         typecheck_fn_body(tc, fn_node);
     }
+    pop_generic_scope(tc, gmark);
 }
 
 /* True when `node` contains a `return` anywhere. A function whose body
@@ -2055,9 +2175,12 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
         switch (item->kind) {
         case NODE_FN_DECL:
             /* First pass: register function signature only. A generic
-             * declaration is inert until Phase 2.4 step 2. */
-            if (item->as.fn_decl.generics.len > 0) break;
+             * signature registers with TYPE_PARAM placeholders and is marked
+             * `is_generic` (Phase 2.4 step 2a); the body is checked in pass 2
+             * with the same placeholders in scope. */
             {
+                size_t gmark = push_generic_scope(tc, item);
+                bool generic = item->as.fn_decl.generics.len > 0;
                 size_t param_count = item->as.fn_decl.params.len;
                 Type **param_types = arena_new_array(tc->arena, Type *, param_count);
                 for (size_t j = 0; j < param_count; j++) {
@@ -2073,9 +2196,11 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
                     .type    = fn_type,
                     .is_mut  = false,
                     .is_fn   = true,
+                    .is_generic = generic,
                     .def_loc = item->loc,
                 };
                 symbol_table_insert(tc->symbols, sym);
+                pop_generic_scope(tc, gmark);
             }
             break;
         case NODE_STRUCT_DECL:
@@ -2229,9 +2354,9 @@ static void typecheck_module_body(TypeChecker *tc, Node *module) {
         Node *item = module->as.module.items.data[i];
         switch (item->kind) {
         case NODE_FN_DECL:
-            /* Skip pure declarations, only type-check bodies. A generic
-             * declaration is inert until Phase 2.4 step 2. */
-            if (item->as.fn_decl.generics.len > 0) break;
+            /* Skip pure declarations, only type-check bodies. A generic body
+             * is checked symbolically with its `<T>` placeholders in scope
+             * (Phase 2.4 step 2a). */
             if (item->as.fn_decl.body) {
                 typecheck_fn_decl(tc, item);
             }

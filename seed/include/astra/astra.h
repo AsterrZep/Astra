@@ -297,6 +297,13 @@ typedef enum {
 /* Forward declaration */
 typedef struct Node Node;
 
+/* A growable array of AST node pointers. Named — not a DYNARRAY expansion —
+ * so a declaration's `generics` field and the helpers taking it by pointer
+ * agree on one struct type across translation units (each DYNARRAY(T)
+ * expansion is a distinct anonymous struct; passing one across TUs warned
+ * under -Wincompatible-pointer-types). */
+typedef struct { Node **data; size_t len; size_t cap; } NodeList;
+
 /* -----------------------------------------------------------
  * §8: AST Nodes
  * ----------------------------------------------------------- */
@@ -474,7 +481,7 @@ typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) params; /* param names; params[0] == "self" when has_self */
     DYNARRAY(Node *)      param_types; /* NULL entry for a typeless `self` receiver */
-    DYNARRAY(Node *)      generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
+    NodeList            generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
     Node                 *return_type; /* may be NULL */
     Node                 *body;        /* BlockExpr */
     bool                 is_pub;       /* `pub fn` — exported (ARCHITECTURE §10.2) */
@@ -492,7 +499,7 @@ typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) field_names;
     DYNARRAY(Node *)      field_types;
-    DYNARRAY(Node *)      generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
+    NodeList            generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
     bool                  is_pub; /* `pub struct` — exported */
 } StructDecl;
 
@@ -500,7 +507,7 @@ typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) variants;       /* unit variant names */
     DYNARRAY(Node *)      variant_payloads;  /* NODE_PAYLOAD, parallel to variants */
-    DYNARRAY(Node *)      generics;          /* NODE_TYPE_PARAM, empty when no `<...>` */
+    NodeList generics;          /* NODE_TYPE_PARAM, empty when no `<...>` */
     bool                  is_pub;            /* `pub enum` — exported */
 } EnumDecl;
 
@@ -510,7 +517,7 @@ typedef struct {
 typedef struct {
     InternedString   name;
     DYNARRAY(Node *) items;
-    DYNARRAY(Node *) generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
+    NodeList generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
     bool             is_pub; /* `pub trait` — exported (ARCHITECTURE §10.2) */
 } TraitDecl;
 
@@ -521,7 +528,7 @@ typedef struct {
     InternedString   trait_name; /* NULL when inherent */
     InternedString   type_name;
     DYNARRAY(Node *) items;
-    DYNARRAY(Node *) generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
+    NodeList generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
 } ImplDecl;
 
 /* Payload of a data-carrying enum variant:
@@ -700,6 +707,9 @@ typedef enum {
     TYPE_STRUCT,
     TYPE_ENUM,
     TYPE_NIL,       /* nil literal type — unifies with any optional */
+    TYPE_PARAM,     /* one `<T>` placeholder of the generic fn being checked
+                     * (Phase 2.4 step 2a); equal only to the same T of the
+                     * same owner function */
     TYPE_UNKNOWN,
     TYPE_ERROR,
 } TypeKind;
@@ -738,6 +748,12 @@ struct Type {
             StructField    *fields;
             size_t          field_count;
         } struc;
+        struct {
+            InternedString name;
+            /* The owning fn/struct declaration: two `<T>` placeholders are
+             * equal only when they come from the same declaration. */
+            Node           *owner;
+        } type_param;
     } as;
 };
 
@@ -756,6 +772,10 @@ struct Symbol {
     Type          *type;
     bool           is_mut;
     bool           is_fn;
+    /* A generic function: registered with TYPE_PARAM placeholders; calls
+     * need call-site inference (Phase 2.4 step 2b) and the name can never
+     * be used as a value. */
+    bool           is_generic;
     SrcLoc         def_loc;
     uint32_t       seq;  /* monotonic insertion order (for scoped removal) */
     Symbol        *next; /* for hash chain */

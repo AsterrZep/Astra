@@ -1,0 +1,15 @@
+// Passing a type parameter where a concrete type is required is a
+// definition-side error (Phase 2.4 step 2a): the symbolic check runs once,
+// for every instantiation at once.
+// EXPECT-ERROR: expected i32
+fn wants_i32(n: i32) -> i32 {
+    n
+}
+
+fn forward<T>(x: T) -> i32 {
+    wants_i32(x)
+}
+
+fn main() {
+    print(1)
+}

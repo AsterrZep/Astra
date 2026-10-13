@@ -131,7 +131,7 @@ static void dump_block(BlockExpr *b, int indent) {
 
 /* One `TypeParam(name: Bound + Bound)` line per generic parameter, at
  * indent+1 under the declaration header (zig's dump mirrors this format). */
-static void dump_generics(DYNARRAY(Node *) *gens, int indent) {
+static void dump_generics(NodeList *gens, int indent) {
     for (size_t i = 0; i < gens->len; i++) {
         Node *tp = gens->data[i];
         if (!tp || tp->kind != NODE_TYPE_PARAM) continue;
@@ -446,6 +446,20 @@ static void dump_node(Node *node, int indent) {
             dump_node(node->as.type_fn.param_types.data[i], indent + 1);
         }
         if (node->as.type_fn.return_type) dump_node(node->as.type_fn.return_type, indent + 1);
+        break;
+    case NODE_TYPE_PARAM:
+        /* Standalone fallback; a declaration prints these inline via
+         * dump_generics (bounds in the parens). */
+        printf("TypeParam(%.*s", (int)node->as.type_param.name.len,
+               node->as.type_param.name.str);
+        for (size_t i = 0; i < node->as.type_param.bounds.len; i++) {
+            Node *b = node->as.type_param.bounds.data[i];
+            if (!b || b->kind != NODE_TYPE_IDENT) continue;
+            printf(i == 0 ? ": %.*s" : " + %.*s",
+                   (int)b->as.type_ident.name.len,
+                   b->as.type_ident.name.str);
+        }
+        printf(")\n");
         break;
     case NODE_MODULE:
         printf("Module\n");
