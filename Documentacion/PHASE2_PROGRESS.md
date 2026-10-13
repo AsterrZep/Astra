@@ -34,17 +34,20 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 
 ### Verificación medida
 
-- **57/57** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **61/61** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
-  a fichero). Los 4 casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
+  a fichero). Los casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **30/30** ficheros `ui/` son rechazados. El emitter cierra
+- **44/44** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop` y la asignación a una variable capturada
   (`capture_assign`), que el type checker deja pasar a propósito; ambos
   parsers cierran `break` con valor (`break_value`).
-- **62 pruebas unitarias** (lexer, AST, parser, type checker, types, emitter,
+- **73 pruebas** (lexer, AST, parser, type checker, types, emitter,
   bytecode, VM, módulos, depurador, link multi-módulo, diagnósticos y
   conformance) en `zig build test`.
+- Gates de CI: suite seed **123/123** (105 conformance + 17 codegen +
+  `--check-constructs`), paridad de dumps **83/83 ficheros, 0
+  divergentes**.
 
 ---
 
@@ -55,7 +58,7 @@ Requiere **Zig 0.16.x**. En este entorno el binario vive en `~/zig/zig`.
 ```bash
 cd zig
 zig build                 # -> zig-out/bin/astra-zig
-zig build test            # 39 unit tests + conformance (compila y ejecuta) sobre seed/tests/conformance
+zig build test            # 73 tests (unit + conformance: compila y ejecuta) sobre seed/tests/conformance
 zig build -Doptimize=ReleaseFast
 
 # Introspección
@@ -138,6 +141,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | ✅ | Carga, exports `pub`, gating y compilación multi-módulo en el CLI (§7.3). Los re-exports (`use`) y los valores struct/enum foráneos quedaron cubiertos (2026-10-12); faltan raíces `@/`/`std/` (§7.1) |
 | 10 | **InternPool de tipos** (substrato de genéricos) | ✅ | `src/typechecker/types.zig`: pool hash-consed con identidad canónica (struct/enum por nombre); `typeEq` = fast-path de puntero + reglas de unificación del seed recursivas en compuestos (`array(int_literal)` ≡ `[]i32`); fn sin retorno anotado normalizado a `void` (paridad con `a.ret orelse voidType` del seed). 53/53 tests. Sustituye el diseño "un heap-node por ocurrencia" (`PHASE2_ARCHITECTURE.md` §3.3) |
 | 11 | **Colección de declaraciones** (forward-refs de tipo) | ✅ | Pase 0 en ambos compiladores (`typecheck_module_pass`/`checkModule`): registra nombres de struct/enum con layout vacío antes de resolver firmas y fields, así las declaraciones se referencian en cualquier orden (incl. recursión mutua). Caso nuevo `types/forward_type_refs.astra`; suite 96/96 seed, 53/53 zig. Los structs anidados en cuerpos de función siguen sin funcionar (paridad — ya fallaban igual antes) |
+| 12 | **Traits y métodos (Fase 2.3) — pasos 1–5** | ✅ | `trait`/`impl` parsean en nodos, el type checker registra la tabla de métodos por tipo nominal y baja los cuerpos, `x.m()` hace dispatch estático al global `Type.method`/`Type.Trait.method`, y un `impl T for X` se valida contra las firmas del trait (sin defaults). Semántica y límites en §8; suites 123/123 seed, 73/73 zig, paridad 83/83 |
 
 ---
 
@@ -499,3 +503,82 @@ Fijado por los tests de `diagnostics.zig` (formato degradado y
 truncamiento) y verificado a mano: error de parseo con fichero
 (`/tmp/err.astra:1:14: error: …`), export inexistente en multi-módulo, ciclo
 (`circular import: a -> b -> a`) y `break` fuera de bucle (`file:1: error: …`).
+
+---
+
+## 8. Traits y métodos (Fase 2.3) — pasos 1–5 completos
+
+Commits `13b2f5c` (parseo inerte), `96ade27` (dispatch) y `288b5ea`
+(conformidad). Spec: `research/010` §12 (`TraitDef`/`ImplBlock`) y
+`PHASE2_GAP_ANALYSIS.md` §11 (fase 2.3). El *exit criteria* de la fase —
+`impl Trait for Type` con dispatch de métodos — está cumplido en ambos
+compiladores, con mensajes de error byte-idénticos.
+
+### 8.1 Modelo de dispatch (estático, sin vtable)
+
+- **Registro.** El type checker de cada módulo recoge `impl` en su pase 1 en
+  una tabla de `MethodEntry`/`Method` con clave **(tipo nominal, nombre del
+  método, trait)**. `fn_type` conserva el receptor en el parámetro 0, así
+  que una llamada fuente de `k` argumentos chequea contra `params[1..]`.
+- **Resolución.** `x.m(args)` (callee `field_access`) se resuelve en la
+  tabla del receptor en compile time y **anota el callee** con el global
+  manglado; el emitter baja el call a `get_global` + receptor + argumentos +
+  `call` con `argc = args+1` — el layout que la VM ya esperaba. Sin vtable,
+  sin `dyn`, sin UFCS: `Type::method(x)` o equivalentes no existen aún.
+- **Mangle.** `Type.method` para un impl inherent, `Type.Trait.method` para
+  un impl de trait. El segmento del trait **no es cosmético**: sin él, dos
+  impls del mismo nombre comparten un global y el orden de emisión decide
+  el ganador — el VM lo enmascaraba como *last-write-wins* y el backend C
+  ata cada nombre a una sola función (regresso fijado por
+  `tests/codegen/method_dispatch.astra`).
+- **Precedencia.** Inherent gana sobre trait sin importar el orden; entre
+  dos traits con el mismo método, gana el primero declarado (ambigüedad
+  cross-trait: limitación documentada, resoluble con `impl Trait` explícito
+  cuando exista).
+- **Campo vs. método.** `x.m` (sin llamada) sigue siendo lectura de campo
+  o variante; si `m` solo existe como método, el error es
+  `method 'm' of 'T' must be called` — el split al estilo de Rust `x.m` /
+  `x.m()`.
+- **Receptores.** Solo struct y enum (`impl` sobre un primitivo es error);
+  `self` obligatorio como primer parámetro (ya lo exigía el parser),
+  typeless hereda el tipo del bloque y `self: T` debe nombrarlo exacto.
+
+### 8.2 Conformidad (paso 5)
+
+- Un pre-pase (`collect_trait_decls` / `collectTraitDecls`, tras la
+  colección de nombres de tipo) guarda las firmas requeridas de cada
+  `trait`, así un `impl T for X` puede aparecer antes que `trait T` en la
+  fuente.
+- Por cada `impl T for X`: `T` debe existir
+  (`unknown trait 'T'`), el bloque debe declarar **todos** los métodos
+  requeridos (`type 'X' does not implement trait 'T': missing method 'm'`)
+  y cada uno debe calzar en aridad, tipos de parámetros y retorno
+  (`signature of method 'm' of 'X' does not match trait 'T'`). La
+  conformidad es **por bloque de impl**: un método inherent nunca satisface
+  el requisito del trait (regla de Rust), solo sombrea su entrada en el
+  dispatch.
+- Un item de trait con cuerpo es rechazado:
+  `default trait methods are not yet supported` (los métodos default
+  llegan cuando existan sus reglas de lookup).
+
+### 8.3 Diferido a fases futuras
+
+| Qué | Dónde queda |
+|:----|:------------|
+| Objetos de trait / vtable (`dyn`) | GAP §11 paso 5 de la fase 2.3 (runtime) — el dispatch actual es 100 % estático |
+| UFCS (`T::method(x)`, métodos como valores) | Con genéricos (fase 2.4) |
+| `impl<T> Trait for T`, bounds en genéricos | Fase 2.4 |
+| Métodos y traits cross-módulo (tabla `pub trait` exportable, `impl m.T for X`) | Con la semántica multi-módulo de traits: las tablas viven en cada `TypeChecker`, un módulo no ve los métodos del otro, y `from dep import T` no se exporta aún; el emitter tampoco sabe a qué módulo pertenece un `Type.Trait.method` |
+| Métodos default en traits | Error explícito hoy (§8.2) |
+| Desambiguar entre traits con el mismo método | Requiere calificación explícita (nueva sintaxis) |
+
+### 8.4 Tests
+
+`tests/conformance/traits/` (`trait_inert`, `method_dispatch`,
+`trait_conformance`), `tests/codegen/method_dispatch.astra` (round-trip C:
+override inherent vs trait) y trece casos `ui/` (`self_outside_impl`,
+`impl_missing_self`, `trait_const_item`, `method_unknown`,
+`method_bare_access`, `method_duplicate`, `impl_self_type_mismatch`,
+`impl_primitive_receiver`, `method_arg_count`, `trait_unknown`,
+`trait_missing_method`, `trait_signature_mismatch`,
+`trait_default_method`).

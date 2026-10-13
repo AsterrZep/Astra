@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Traits y métodos con dispatch estático (seed + Zig, Fase 2.3)**: los
+  bloques `trait`/`impl` pasan de inertes a funcionales en tres pasos
+  (`13b2f5c` parseo, `96ade27` dispatch, `288b5ea` conformidad). El type
+  checker registra los métodos por **(tipo nominal, método, trait)** con el
+  receptor en el parámetro 0; `x.m(args)` anota el callee con el global
+  manglado y el emitter lo baja a `get_global` + receptor + argumentos +
+  `call` (`argc = args+1`), igual en la VM y en el backend C. Sin vtable:
+  la precedencia es inherent > trait (entre traits, el primero declarado),
+  `x.m` sin llamada sigue siendo campo/variante con error `must be called`,
+  y los receptores se limitan a struct/enum con `self` obligatorio. La
+  conformidad (paso 5) recoge las firmas de cada trait en un pre-pase y
+  exige por bloque de impl: trait existente, todos los métodos requeridos y
+  firmas calzadas (aridad, parámetros, retorno); un método inherent nunca
+  satisface al trait, solo sombrea su entrada. Item de trait con cuerpo →
+  `default trait methods are not yet supported`. El mangle incluye el trait
+  (`Type.Trait.method`): sin el segmento, inherent y trait del mismo nombre
+  compartían un global y el backend C — que ata cada nombre a una sola
+  función — enlazaba siempre el primero registrado mientras el VM lo
+  enmascaraba como last-write-wins (regresso en
+  `tests/codegen/method_dispatch.astra`). Quedan diferidos los objetos de
+  trait/vtable, UFCS, `impl<T>`, métodos default, la desambigüación
+  cross-trait y todo lo cross-módulo (tablas por checker, `pub trait` sin
+  exportar): `PHASE2_PROGRESS.md` §8.3. Fijado por
+  `tests/conformance/traits/{method_dispatch,trait_conformance}.astra`,
+  `tests/codegen/method_dispatch.astra` y 13 casos `ui/` — suite seed
+  123/123, zig 73/73, paridad de dumps 83/83, CI verde en ambos
+  compiladores.
 - **Fuzzing del lexer/parser del seed (libFuzzer)**: harness
   `seed/fuzz/fuzz_compile.c` que recorre lexer→parser→typechecker→emitter
   (sin VM), diccionario `seed/fuzz/astra.dict` con las keywords y

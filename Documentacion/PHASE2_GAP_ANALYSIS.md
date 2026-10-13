@@ -520,15 +520,30 @@ Zig catches most C UB at compile time or with safety checks:
 
 **Exit criteria:** Multi-file Astra programs compile and run correctly.
 
-### Phase 2.3 — Traits and Methods
+### Phase 2.3 — Traits and Methods ✅ (2026-10-13)
 
-1. **Parser:** Parse `trait`, `impl`, method definitions
-2. **AST:** Add `TraitDef`, `ImplBlock`, `MethodDecl` nodes
-3. **Type checker:** Trait bounds, method resolution, `self` parameter
-4. **Emitter:** Method calls → dispatch (static for now)
-5. **Runtime:** Trait object representation (vtable or monomorphization)
+1. **Parser:** ✅ `trait`, `impl`, firmas de métodos (`seed/src/parser.c`
+   `parse_trait_decl`/`parse_impl_block`, espejo en `zig/src/parser/parser.zig`);
+   `self` contextual obligatorio como primer parámetro (commits `13b2f5c`).
+2. **AST:** ✅ `TraitDecl`/`ImplBlock` (`NODE_TRAIT`/`NODE_IMPL`, tags
+   `trait_decl`/`impl_decl`), `FnDecl.has_self`, `FieldAccess.method`
+   anotado por el checker.
+3. **Type checker:** ✅ tabla de métodos por (tipo, método, trait),
+   registro/resolución de `self`, dispatch estático con precedencia
+   inherent > trait, conformidad por bloque de impl (existencia del trait,
+   métodos requeridos, firmas), métodos default rechazados (commit
+   `288b5ea`, `PHASE2_PROGRESS.md` §8).
+4. **Emitter:** ✅ `x.m()` → `get_global` del global manglado
+   (`Type.method` / `Type.Trait.method`) + receptor + args + `call`; los
+   bloques `impl` emiten sus métodos como globales (commit `96ade27`).
+5. **Runtime:** ⏭️ *deferred* — no hay objetos de trait: el dispatch es
+   100 % estático (sin vtable ni monomorfización de trait objects). Con
+   ello tampoco hay UFCS, métodos default ni métodos/traits cross-módulo
+   (tablas por `TypeChecker`); ver `PHASE2_PROGRESS.md` §8.3.
 
-**Exit criteria:** `impl Trait for Type` with method dispatch works.
+**Exit criteria:** `impl Trait for Type` with method dispatch works — ✅
+in both compilers (`seed/tests/conformance/traits/method_dispatch.astra` y
+`trait_conformance.astra`, mensajes byte-idénticos).
 
 ### Phase 2.4 — Generics
 
