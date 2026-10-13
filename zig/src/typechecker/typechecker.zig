@@ -557,17 +557,19 @@ pub const TypeChecker = struct {
 
     /// Mangled instance name: `identity<i32,string>` — the `<...>` cannot
     /// appear in a source identifier, so the name is unique per binding
-    /// tuple (the C backend sanitizes the punctuation into `_`).
-    fn mangleInstance(self: *TypeChecker, fn_idx: u32, env: []Binding) []const u8 {
+    /// tuple (the C backend sanitizes the punctuation). Null on buffer
+    /// overflow: a truncated name would collide with another truncated
+    /// name and silently merge two different instances.
+    fn mangleInstance(self: *TypeChecker, fn_idx: u32, env: []Binding) ?[]const u8 {
         var buf: [512]u8 = undefined;
         var pos: usize = 0;
-        bufPut(buf[0..], &pos, self.tree.node(fn_idx).fn_decl.name);
-        bufPut(buf[0..], &pos, "<");
+        if (!bufPut(buf[0..], &pos, self.tree.node(fn_idx).fn_decl.name)) return null;
+        if (!bufPut(buf[0..], &pos, "<")) return null;
         for (env, 0..) |b, i| {
-            if (i > 0) bufPut(buf[0..], &pos, ",");
-            pos = mangleTypeStr(b.type_ orelse unreachable, buf[0..], pos);
+            if (i > 0 and !bufPut(buf[0..], &pos, ",")) return null;
+            pos = mangleTypeStr(b.type_ orelse unreachable, buf[0..], pos) orelse return null;
         }
-        bufPut(buf[0..], &pos, ">");
+        if (!bufPut(buf[0..], &pos, ">")) return null;
         return self.a.dupe(u8, buf[0..pos]) catch @panic("OOM");
     }
 
@@ -650,9 +652,15 @@ pub const TypeChecker = struct {
     /// Materialize (or find) the instance of generic `fn_idx` under `env`
     /// and resolve the pending call sites recorded in its body against it.
     /// The instance is registered *before* those resolutions, so a recursive
-    /// call inside the body finds this very instance.
-    fn ensureInstance(self: *TypeChecker, fn_idx: u32, env: []Binding) u32 {
-        const mangled = self.mangleInstance(fn_idx, env);
+    /// call inside the body finds this very instance. Null when the mangled
+    /// name does not fit (already reported).
+    fn ensureInstance(self: *TypeChecker, fn_idx: u32, env: []Binding) ?u32 {
+        const mangled = self.mangleInstance(fn_idx, env) orelse {
+            _ = self.errorType(self.tree.loc(fn_idx),
+                "generic instance name for '{s}' is too long",
+                .{self.tree.node(fn_idx).fn_decl.name});
+            return null;
+        };
         for (self.instances.items) |inst| {
             if (std.mem.eql(u8, self.tree.node(inst.wrapper).fn_decl.name, mangled))
                 return inst.wrapper;
@@ -678,7 +686,7 @@ pub const TypeChecker = struct {
                 if (typeMentionsParamOf(nb[j].type_, fn_idx)) still = true;
             }
             if (still) continue;
-            const tidx = self.ensureInstance(pc.target, nb);
+            const tidx = self.ensureInstance(pc.target, nb) orelse continue;
             self.instances.items[gi_idx].rewrites.append(self.a, .{
                 .callee = pc.callee,
                 .name = self.tree.node(tidx).fn_decl.name,
@@ -757,7 +765,7 @@ pub const TypeChecker = struct {
             return ret;
         }
 
-        const widx = self.ensureInstance(fn_idx, env);
+        const widx = self.ensureInstance(fn_idx, env) orelse return self.newType(.error_);
         self.tree.nodes.items[callee_idx].identifier = self.tree.node(widx).fn_decl.name;
         return ret;
     }
@@ -1874,42 +1882,43 @@ fn opName(tag: lexer.Tag) []const u8 {
 
 /// Phase 2.4 step 2b: append `text` to a bounded mangle buffer, stopping
 /// silently at the cap (instance names stay far below 512 bytes).
-fn bufPut(buf: []u8, pos: *usize, text: []const u8) void {
+fn bufPut(buf: []u8, pos: *usize, text: []const u8) bool {
     for (text) |c| {
         if (pos.* + 1 < buf.len) {
             buf[pos.*] = c;
             pos.* += 1;
-        }
+        } else return false;
     }
+    return true;
 }
 
 /// One recursive step of the mangle: the type's source-level spelling, with
 /// fn types collapsed to `fn` (they cannot appear in a binding tuple in
-/// practice, and the punctuation would dominate the name).
-fn mangleTypeStr(t: *Type, buf: []u8, pos0: usize) usize {
+/// practice, and the punctuation would dominate the name). Null on overflow.
+fn mangleTypeStr(t: *Type, buf: []u8, pos0: usize) ?usize {
     var pos = pos0;
     switch (t.kind) {
-        .void => bufPut(buf, &pos, "void"),
-        .bool_ => bufPut(buf, &pos, "bool"),
-        .int, .int_literal => bufPut(buf, &pos, "i32"),
-        .int64 => bufPut(buf, &pos, "i64"),
-        .uint32 => bufPut(buf, &pos, "u32"),
-        .uint64 => bufPut(buf, &pos, "u64"),
-        .float => bufPut(buf, &pos, "f64"),
-        .string => bufPut(buf, &pos, "string"),
-        .nil => bufPut(buf, &pos, "nil"),
+        .void => if (!bufPut(buf, &pos, "void")) return null,
+        .bool_ => if (!bufPut(buf, &pos, "bool")) return null,
+        .int, .int_literal => if (!bufPut(buf, &pos, "i32")) return null,
+        .int64 => if (!bufPut(buf, &pos, "i64")) return null,
+        .uint32 => if (!bufPut(buf, &pos, "u32")) return null,
+        .uint64 => if (!bufPut(buf, &pos, "u64")) return null,
+        .float => if (!bufPut(buf, &pos, "f64")) return null,
+        .string => if (!bufPut(buf, &pos, "string")) return null,
+        .nil => if (!bufPut(buf, &pos, "nil")) return null,
         .optional => {
-            bufPut(buf, &pos, "?");
-            pos = mangleTypeStr(t.inner.?, buf, pos);
+            if (!bufPut(buf, &pos, "?")) return null;
+            pos = mangleTypeStr(t.inner.?, buf, pos) orelse return null;
         },
         .array => {
-            bufPut(buf, &pos, "[");
-            pos = mangleTypeStr(t.elem.?, buf, pos);
-            bufPut(buf, &pos, "]");
+            if (!bufPut(buf, &pos, "[")) return null;
+            pos = mangleTypeStr(t.elem.?, buf, pos) orelse return null;
+            if (!bufPut(buf, &pos, "]")) return null;
         },
-        .fn_type => bufPut(buf, &pos, "fn"),
-        .struct_, .enum_, .param => bufPut(buf, &pos, t.name),
-        else => bufPut(buf, &pos, "unknown"),
+        .fn_type => if (!bufPut(buf, &pos, "fn")) return null,
+        .struct_, .enum_, .param => if (!bufPut(buf, &pos, t.name)) return null,
+        else => if (!bufPut(buf, &pos, "unknown")) return null,
     }
     return pos;
 }

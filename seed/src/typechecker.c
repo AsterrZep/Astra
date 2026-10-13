@@ -1044,11 +1044,17 @@ static Type *type_subst(TypeChecker *tc, Type *t, Node *fn,
 
 /* Mangled instance name: `identity<i32,string>` — the `<...>` cannot appear
  * in a source identifier, so the name is unique per binding tuple; the C
- * backend sanitizes the punctuation into `_`. */
-static void mangle_type_str(Type *t, char *buf, size_t cap, size_t *pos) {
-#define PUT(c) do { if (*pos + 1 < cap) buf[(*pos)++] = (c); } while (0)
+ * backend sanitizes the punctuation into `_`. Overflow of the fixed buffer
+ * sets `*ov`: a truncated name would collide with another truncated name
+ * and silently merge two different instances. */
+static void mangle_type_str(Type *t, char *buf, size_t cap, size_t *pos,
+                            bool *ov) {
+#define PUT(c) do { if (*pos + 1 < cap) buf[(*pos)++] = (c); else *ov = true; } while (0)
 #define PUTS(s, n) do { \
-        for (size_t i_ = 0; i_ < (n) && *pos + 1 < cap; i_++) buf[(*pos)++] = (s)[i_]; \
+        for (size_t i_ = 0; i_ < (n); i_++) { \
+            if (*pos + 1 < cap) buf[(*pos)++] = (s)[i_]; \
+            else { *ov = true; break; } \
+        } \
     } while (0)
     if (!t) { PUTS("void", 4); return; }
     switch (t->kind) {
@@ -1064,11 +1070,11 @@ static void mangle_type_str(Type *t, char *buf, size_t cap, size_t *pos) {
     case TYPE_NIL:   PUTS("nil", 3); break;
     case TYPE_OPTIONAL:
         PUT('?');
-        mangle_type_str(t->as.optional.inner, buf, cap, pos);
+        mangle_type_str(t->as.optional.inner, buf, cap, pos, ov);
         break;
     case TYPE_ARRAY:
         PUT('[');
-        mangle_type_str(t->as.array.elem, buf, cap, pos);
+        mangle_type_str(t->as.array.elem, buf, cap, pos, ov);
         PUT(']');
         break;
     case TYPE_FN:    PUTS("fn", 2); break;
@@ -1092,17 +1098,25 @@ static InternedString mangle_instance(TypeChecker *tc, InternedString fn_name,
                                       GenericBinding *env, size_t env_n) {
     char buf[512];
     size_t pos = 0;
+    bool ov = false;
     if (fn_name.len < sizeof buf - 2) {
         memcpy(buf, fn_name.str, fn_name.len);
         pos = fn_name.len;
+    } else {
+        ov = true;
     }
     if (pos + 1 < sizeof buf) buf[pos++] = '<';
+    else ov = true;
     for (size_t i = 0; i < env_n; i++) {
-        if (i > 0 && pos + 1 < sizeof buf) buf[pos++] = ',';
-        mangle_type_str(env[i].type, buf, sizeof buf, &pos);
+        if (i > 0) {
+            if (pos + 1 < sizeof buf) buf[pos++] = ',';
+            else ov = true;
+        }
+        mangle_type_str(env[i].type, buf, sizeof buf, &pos, &ov);
     }
     if (pos + 2 < sizeof buf) { buf[pos++] = '>'; buf[pos] = '\0'; }
-    else buf[sizeof buf - 1] = '\0';
+    else { buf[sizeof buf - 1] = '\0'; ov = true; }
+    if (ov) return (InternedString){0};
     return string_intern(tc->strings, buf, pos);
 }
 
@@ -1143,6 +1157,12 @@ static void tc_pending_add(TypeChecker *tc, Node *fn, Node *callee, Node *target
 static GenericInstance *ensure_instance(TypeChecker *tc, Node *fn,
                                         GenericBinding *env, size_t env_n) {
     InternedString mangled = mangle_instance(tc, fn->as.fn_decl.name, env, env_n);
+    if (!mangled.str) {
+        tc_error(tc, fn->loc,
+                 "generic instance name for '%.*s' is too long",
+                 (int)fn->as.fn_decl.name.len, fn->as.fn_decl.name.str);
+        return NULL;
+    }
     for (size_t i = 0; i < tc->inst_count; i++) {
         if (string_eq(tc->instances[i].wrapper->as.fn_decl.name, mangled))
             return &tc->instances[i];
@@ -1182,6 +1202,7 @@ static GenericInstance *ensure_instance(TypeChecker *tc, Node *fn,
         if (still) continue;
         GenericInstance *ti = ensure_instance(tc, tc->pending[p].target,
                                               nb, tc->pending[p].binding_count);
+        if (!ti) continue; /* overflow reported; compilation fails anyway */
         GenericInstance *gi = &tc->instances[gi_idx]; /* re-fetch after grow */
         size_t rc = gi->rewrite_count;
         GenericRewrite *nr = arena_new_array(tc->arena, GenericRewrite, rc + 1);
@@ -1316,6 +1337,7 @@ static Type *typecheck_generic_call(TypeChecker *tc, Node *node, Symbol *csym) {
     }
 
     GenericInstance *gi = ensure_instance(tc, fn, env, env_n);
+    if (!gi) return type_new(tc->arena, TYPE_ERROR); /* already reported */
     node->as.call.callee->as.ident.name = gi->wrapper->as.fn_decl.name;
     return ret;
 }
