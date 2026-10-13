@@ -94,6 +94,16 @@ const LoopPatch = struct {
     continue_target: usize = 0,
 };
 
+/// Phase 2.4 step 2b: one callee-ident node of a generic body renamed to a
+/// mangled instance global. The same node is shared by every instance of
+/// the enclosing fn, so the name is resolved per wrapper emission.
+pub const Rewrite = struct { callee: u32, name: []const u8 };
+
+/// One materialized instantiation of a generic fn, handed over by the
+/// checker: `wrapper` is the cloned `fn_decl` whose body the emitter is
+/// currently emitting when `current_instance` points here.
+pub const Instance = struct { wrapper: u32, rewrites: []const Rewrite };
+
 pub const Emitter = struct {
     a: std.mem.Allocator,
     tree: *ast.Tree,
@@ -143,6 +153,12 @@ pub const Emitter = struct {
     /// (`print`) or an undefined global, and both keep the source name.
     module_globals: std.ArrayListUnmanaged([]const u8) = .empty,
 
+    /// Generic instances materialized by the checker (Phase 2.4 step 2b):
+    /// while a wrapper's body is being emitted, `current_instance` renames
+    /// the callee idents listed in its rewrites to the mangled globals.
+    instances: []const Instance = &.{},
+    current_instance: ?*const Instance = null,
+
     error_count: usize = 0,
     /// Optional sink: when wired, errors are recorded there (and echoed to
     /// stderr); when null, they print directly. Both paths share one format.
@@ -156,6 +172,12 @@ pub const Emitter = struct {
 
     pub fn init(a: std.mem.Allocator, tree: *ast.Tree, filename: []const u8) Emitter {
         return .{ .a = a, .tree = tree, .filename = filename };
+    }
+
+    /// Phase 2.4 step 2b: the checker's materialized generic instances.
+    /// Call before `emit`/`emitModule`.
+    pub fn setInstances(self: *Emitter, instances: []const Instance) void {
+        self.instances = instances;
     }
 
     /// Multi-module form: `prefix` mangles every module-level global this
@@ -1058,7 +1080,19 @@ pub const Emitter = struct {
                     const ci = self.addConstant(bc.vString(gname));
                     self.emitInstIndex(.get_global, ci, ln);
                 } else {
-                    const ci = self.addConstant(bc.vString(self.globalName(name)));
+                    // Phase 2.4 step 2b: inside an instance body a recorded
+                    // callee ident names the mangled global of its target
+                    // instance, not the source generic.
+                    var gname = self.globalName(name);
+                    if (self.current_instance) |inst| {
+                        for (inst.rewrites) |rw| {
+                            if (rw.callee == idx) {
+                                gname = self.globalName(rw.name);
+                                break;
+                            }
+                        }
+                    }
+                    const ci = self.addConstant(bc.vString(gname));
                     self.emitInstIndex(.get_global, ci, ln);
                 }
             },
@@ -1806,12 +1840,27 @@ pub const Emitter = struct {
 
         switch (self.tree.node(idx)) {
             .fn_decl => |f| {
-                // A generic declaration never reaches codegen: the checker
-                // skipped it (Phase 2.4 step 1).
+                // A generic source declaration never reaches codegen: every
+                // call targets a materialized instance wrapper instead
+                // (Phase 2.4 step 2b), so the shared body is emitted once
+                // per instance and once here would only register an unused
+                // global.
                 if (f.generics.len > 0) return;
+                // Phase 2.4 step 2b: while emitting an instance wrapper's
+                // body the recorded callee idents resolve to the mangled
+                // globals — the same body node is emitted once per instance
+                // with a different name at each shared call site.
+                const saved_inst = self.current_instance;
+                for (self.instances) |*inst| {
+                    if (inst.wrapper == idx) {
+                        self.current_instance = inst;
+                        break;
+                    }
+                }
                 // Named functions do not capture: their bodies keep resolving
                 // free names as globals (the callee has no env).
                 const fn_obj = self.emitFunctionBody(f.params, f.body, ln, &.{});
+                self.current_instance = saved_inst;
                 const fn_idx = self.addConstant(bc.vFn(fn_obj));
                 const name_idx = self.addConstant(bc.vString(self.globalName(f.name)));
                 if (self.scope_depth == 0) {

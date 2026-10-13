@@ -159,6 +159,13 @@ struct Emitter {
     FnName          fns[EMITTER_MAX_FNS];
     size_t          fn_count;
 
+    /* Generic instances materialized by the checker (Phase 2.4 step 2b):
+     * while a wrapper's body is being emitted, `current_instance` renames
+     * the callee idents listed in its rewrites to the mangled global. */
+    GenericInstance *instances;
+    size_t           instance_count;
+    GenericInstance *current_instance;
+
     /* Compile-time model of the VM stack height, relative to the current
      * frame base. Every emitted instruction updates it and every emit_expr /
      * emit_stmt call asserts the effect its node must have, so an unbalanced

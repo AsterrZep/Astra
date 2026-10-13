@@ -672,6 +672,13 @@ static bool run_full_pipeline(Compiler *c) {
         return false;
     }
 
+    /* Phase 2.4 step 2b: materialized generic instances become module items
+     * (right after their source) and tell the emitter which callee idents to
+     * rename per wrapper body. */
+    size_t inst_count = 0;
+    GenericInstance *insts = typechecker_instances(tc, &inst_count);
+    typechecker_append_instances(tc, module);
+
     Emitter *emitter = emitter_create(c->arena, c->strings);
     if (!emitter) {
         fprintf(stderr, "error: out of memory\n");
@@ -679,6 +686,7 @@ static bool run_full_pipeline(Compiler *c) {
     }
     c->emitter = emitter;
 
+    emitter_set_instances(emitter, insts, inst_count);
     emitter_emit(emitter, module);
 
     if (emitter_error_count(emitter) > 0) {

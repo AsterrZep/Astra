@@ -169,6 +169,19 @@ pub fn main(init: std.process.Init) !void {
 
     var em = emitter.Emitter.init(a, &tree, file);
     em.diag = &diag;
+    // Phase 2.4 step 2b: hand the materialized generic instances to the
+    // emitter (the checker already appended each wrapper to the module).
+    if (tc.instances.items.len > 0) {
+        var em_inst = try a.alloc(emitter.Instance, tc.instances.items.len);
+        for (tc.instances.items, 0..) |inst, i| {
+            const rws = try a.alloc(emitter.Rewrite, inst.rewrites.items.len);
+            for (inst.rewrites.items, 0..) |rw, j| {
+                rws[j] = .{ .callee = rw.callee, .name = rw.name };
+            }
+            em_inst[i] = .{ .wrapper = inst.wrapper, .rewrites = rws };
+        }
+        em.setInstances(em_inst);
+    }
     em.emit(root);
     if (em.error_count > 0) std.process.exit(1);
 
@@ -266,6 +279,10 @@ fn compileAndRunMulti(
         os.* = .empty;
         als.* = .empty;
     }
+    // Per-module generic instances (Phase 2.4 step 2b), converted for each
+    // emitter once the module is checked.
+    const module_instances = try a.alloc([]emitter.Instance, n);
+    for (module_instances) |*mi| mi.* = &.{};
 
     var errors: usize = 0;
     for (graph.modules, 0..) |*m, i| {
@@ -320,6 +337,20 @@ fn compileAndRunMulti(
         mtc.injectImports(bindings.items);
         mtc.check(m.root);
         errors += mtc.error_count;
+
+        // Phase 2.4 step 2b: convert this module's materialized instances
+        // for its emitter (the checker already appended the wrappers).
+        if (mtc.instances.items.len > 0) {
+            const em_inst = try a.alloc(emitter.Instance, mtc.instances.items.len);
+            for (mtc.instances.items, 0..) |inst, k| {
+                const rws = try a.alloc(emitter.Rewrite, inst.rewrites.items.len);
+                for (inst.rewrites.items, 0..) |rw, j| {
+                    rws[j] = .{ .callee = rw.callee, .name = rw.name };
+                }
+                em_inst[k] = .{ .wrapper = inst.wrapper, .rewrites = rws };
+            }
+            module_instances[i] = em_inst;
+        }
 
         // Exports: this module's own `pub` decls first (a local name wins any
         // collision), then each `use` dep's exports it doesn't already name.
@@ -383,6 +414,7 @@ fn compileAndRunMulti(
         for (graph.modules, 0..) |*m, i| {
             var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
             mem.diag = diag;
+            mem.setInstances(module_instances[i]);
             const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types, mangled);
             mem.setForeignTypes(ft.structs, ft.enums, ft.namespaces);
             if (i == n - 1) {
@@ -416,6 +448,7 @@ fn compileAndRunMulti(
     for (graph.modules, 0..) |*m, i| {
         var mem = emitter.Emitter.initWithModules(a, &m.tree, m.file, mangled[i], module_imports[i]);
         mem.diag = diag;
+        mem.setInstances(module_instances[i]);
         const ft = try emitter.collectForeign(a, &graph, m.table.decls, own_types, mangled);
         mem.setForeignTypes(ft.structs, ft.enums, ft.namespaces);
         if (i == n - 1) {

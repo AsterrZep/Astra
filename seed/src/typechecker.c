@@ -348,7 +348,26 @@ struct TypeChecker {
      * resolves to the enclosing generic fn's placeholder. */
     GenericBinding *generic_stack;
     size_t     generic_len;
+    /* The generic fn whose body is being checked (Phase 2.4 step 2b):
+     * call sites whose bindings still mention its parameters are recorded
+     * as pending and resolved per instance. */
+    Node      *current_generic_fn;
     int        error_count;
+    /* Phase 2.4 step 2b: instantiations materialized so far, and the
+     * not-yet-concrete call sites inside generic bodies that reference
+     * them. Both arena-owned, grown geometrically. */
+    GenericInstance *instances;
+    size_t     inst_count;
+    size_t     inst_cap;
+    struct {
+        Node *fn_decl;     /* the generic fn whose body holds the call */
+        Node *callee;      /* the callee NODE_IDENT inside that body */
+        Node *target;      /* the generic fn being called */
+        GenericBinding *bindings;
+        size_t binding_count;
+    } *pending;
+    size_t     pending_count;
+    size_t     pending_cap;
     VariantEntry *variants;
     size_t     variant_count;
     size_t     variant_cap;
@@ -961,6 +980,343 @@ static Type *typecheck_method_call(TypeChecker *tc, Node *node, MethodEntry *m) 
                                  : type_new(tc->arena, TYPE_VOID);
 }
 
+/* ============================================================
+ * §4bis: Generic call-site inference & instances (Phase 2.4 step 2b)
+ * ============================================================ */
+
+/* True when `t` mentions a type parameter owned by `fn` — i.e. the type is
+ * still abstract with respect to that declaration. */
+static bool type_mentions_param_of(Type *t, Node *fn) {
+    if (!t) return false;
+    switch (t->kind) {
+    case TYPE_PARAM:   return t->as.type_param.owner == fn;
+    case TYPE_OPTIONAL: return type_mentions_param_of(t->as.optional.inner, fn);
+    case TYPE_ARRAY:   return type_mentions_param_of(t->as.array.elem, fn);
+    case TYPE_FN:
+        for (size_t i = 0; i < t->as.fn.param_count; i++)
+            if (type_mentions_param_of(t->as.fn.params[i], fn)) return true;
+        return type_mentions_param_of(t->as.fn.ret, fn);
+    default: return false;
+    }
+}
+
+/* Replace the type parameters of `fn` inside `t` with their binding in
+ * `env`; everything else (including parameters of *other* fns, which stay
+ * abstract for the enclosing symbolic check) passes through. */
+static Type *type_subst(TypeChecker *tc, Type *t, Node *fn,
+                        GenericBinding *env, size_t env_n) {
+    if (!t) return t;
+    switch (t->kind) {
+    case TYPE_PARAM:
+        if (t->as.type_param.owner == fn) {
+            for (size_t i = 0; i < env_n; i++) {
+                if (string_eq(env[i].name, t->as.type_param.name) && env[i].type)
+                    return env[i].type;
+            }
+        }
+        return t;
+    case TYPE_OPTIONAL: {
+        Type *inner = type_subst(tc, t->as.optional.inner, fn, env, env_n);
+        if (inner == t->as.optional.inner) return t;
+        return type_new_optional(tc->arena, inner);
+    }
+    case TYPE_ARRAY: {
+        Type *elem = type_subst(tc, t->as.array.elem, fn, env, env_n);
+        if (elem == t->as.array.elem) return t;
+        return type_new_array(tc->arena, elem, NULL);
+    }
+    case TYPE_FN: {
+        bool changed = false;
+        Type **params = arena_new_array(tc->arena, Type *, t->as.fn.param_count);
+        for (size_t i = 0; i < t->as.fn.param_count; i++) {
+            params[i] = type_subst(tc, t->as.fn.params[i], fn, env, env_n);
+            if (params[i] != t->as.fn.params[i]) changed = true;
+        }
+        Type *ret = type_subst(tc, t->as.fn.ret, fn, env, env_n);
+        if (ret != t->as.fn.ret) changed = true;
+        if (!changed) return t;
+        return type_new_fn(tc->arena, params, t->as.fn.param_count, ret);
+    }
+    default:
+        return t;
+    }
+}
+
+/* Mangled instance name: `identity<i32,string>` — the `<...>` cannot appear
+ * in a source identifier, so the name is unique per binding tuple; the C
+ * backend sanitizes the punctuation into `_`. */
+static void mangle_type_str(Type *t, char *buf, size_t cap, size_t *pos) {
+#define PUT(c) do { if (*pos + 1 < cap) buf[(*pos)++] = (c); } while (0)
+#define PUTS(s, n) do { \
+        for (size_t i_ = 0; i_ < (n) && *pos + 1 < cap; i_++) buf[(*pos)++] = (s)[i_]; \
+    } while (0)
+    if (!t) { PUTS("void", 4); return; }
+    switch (t->kind) {
+    case TYPE_VOID:  PUTS("void", 4); break;
+    case TYPE_BOOL:  PUTS("bool", 4); break;
+    case TYPE_INT:   PUTS("i32", 3); break;
+    case TYPE_INT_LITERAL: PUTS("i32", 3); break; /* defaulted at binding */
+    case TYPE_INT64: PUTS("i64", 3); break;
+    case TYPE_UINT32: PUTS("u32", 3); break;
+    case TYPE_UINT64: PUTS("u64", 3); break;
+    case TYPE_FLOAT: PUTS("f64", 3); break;
+    case TYPE_STRING: PUTS("string", 6); break;
+    case TYPE_NIL:   PUTS("nil", 3); break;
+    case TYPE_OPTIONAL:
+        PUT('?');
+        mangle_type_str(t->as.optional.inner, buf, cap, pos);
+        break;
+    case TYPE_ARRAY:
+        PUT('[');
+        mangle_type_str(t->as.array.elem, buf, cap, pos);
+        PUT(']');
+        break;
+    case TYPE_FN:    PUTS("fn", 2); break;
+    case TYPE_STRUCT:
+    case TYPE_ENUM:
+        PUTS(t->kind == TYPE_STRUCT ? t->as.struc.name.str
+                                    : t->as.enumeration.name.str,
+             t->kind == TYPE_STRUCT ? t->as.struc.name.len
+                                    : t->as.enumeration.name.len);
+        break;
+    case TYPE_PARAM:
+        PUTS(t->as.type_param.name.str, t->as.type_param.name.len);
+        break;
+    default:         PUTS("unknown", 7); break;
+    }
+#undef PUT
+#undef PUTS
+}
+
+static InternedString mangle_instance(TypeChecker *tc, InternedString fn_name,
+                                      GenericBinding *env, size_t env_n) {
+    char buf[512];
+    size_t pos = 0;
+    if (fn_name.len < sizeof buf - 2) {
+        memcpy(buf, fn_name.str, fn_name.len);
+        pos = fn_name.len;
+    }
+    if (pos + 1 < sizeof buf) buf[pos++] = '<';
+    for (size_t i = 0; i < env_n; i++) {
+        if (i > 0 && pos + 1 < sizeof buf) buf[pos++] = ',';
+        mangle_type_str(env[i].type, buf, sizeof buf, &pos);
+    }
+    if (pos + 2 < sizeof buf) { buf[pos++] = '>'; buf[pos] = '\0'; }
+    else buf[sizeof buf - 1] = '\0';
+    return string_intern(tc->strings, buf, pos);
+}
+
+static void tc_inst_grow(TypeChecker *tc) {
+    if (tc->inst_count < tc->inst_cap) return;
+    size_t nc = tc->inst_cap == 0 ? 8 : tc->inst_cap * 2;
+    GenericInstance *nd = arena_new_array(tc->arena, GenericInstance, nc);
+    if (tc->instances)
+        memcpy(nd, tc->instances, sizeof(GenericInstance) * tc->inst_count);
+    tc->instances = nd;
+    tc->inst_cap = nc;
+}
+
+static void tc_pending_add(TypeChecker *tc, Node *fn, Node *callee, Node *target,
+                           GenericBinding *env, size_t env_n) {
+    if (tc->pending_count >= tc->pending_cap) {
+        size_t nc = tc->pending_cap == 0 ? 8 : tc->pending_cap * 2;
+        void *nd = arena_new_array(tc->arena, char, nc * sizeof(*tc->pending));
+        if (tc->pending)
+            memcpy(nd, tc->pending, sizeof(*tc->pending) * tc->pending_count);
+        tc->pending = nd;
+        tc->pending_cap = nc;
+    }
+    GenericBinding *env_copy = arena_new_array(tc->arena, GenericBinding, env_n ? env_n : 1);
+    memcpy(env_copy, env, sizeof(GenericBinding) * env_n);
+    tc->pending[tc->pending_count].fn_decl = fn;
+    tc->pending[tc->pending_count].callee = callee;
+    tc->pending[tc->pending_count].target = target;
+    tc->pending[tc->pending_count].bindings = env_copy;
+    tc->pending[tc->pending_count].binding_count = env_n;
+    tc->pending_count++;
+}
+
+/* Materialize (or find) the instance of generic `fn` under `env` and
+ * resolve the pending call sites recorded in `fn`'s body against it. The
+ * instance is registered *before* those resolutions so a recursive call
+ * inside the body finds this very instance instead of recursing forever. */
+static GenericInstance *ensure_instance(TypeChecker *tc, Node *fn,
+                                        GenericBinding *env, size_t env_n) {
+    InternedString mangled = mangle_instance(tc, fn->as.fn_decl.name, env, env_n);
+    for (size_t i = 0; i < tc->inst_count; i++) {
+        if (string_eq(tc->instances[i].wrapper->as.fn_decl.name, mangled))
+            return &tc->instances[i];
+    }
+
+    Node *w = node_new(tc->arena, NODE_FN_DECL, fn->loc);
+    w->as.fn_decl = fn->as.fn_decl; /* shares params/body; one emission each */
+    w->as.fn_decl.name = mangled;
+    w->as.fn_decl.generics.data = NULL;
+    w->as.fn_decl.generics.len = 0;
+    w->as.fn_decl.generics.cap = 0;
+
+    tc_inst_grow(tc);
+    GenericInstance *gi = &tc->instances[tc->inst_count++];
+    gi->source = fn;
+    gi->wrapper = w;
+    gi->rewrites = NULL;
+    gi->rewrite_count = 0;
+
+    for (size_t p = 0; p < tc->pending_count; p++) {
+        if (tc->pending[p].fn_decl != fn) continue;
+        /* Substitute this instance's bindings into the recorded (abstract)
+         * ones; a leftover parameter of `fn` means the env did not cover it
+         * and the resolution is skipped (unreachable: completeness checked
+         * the env at the call site). */
+        GenericBinding *nb = arena_new_array(tc->arena, GenericBinding,
+                                             tc->pending[p].binding_count);
+        bool still = false;
+        for (size_t j = 0; j < tc->pending[p].binding_count; j++) {
+            nb[j].name = tc->pending[p].bindings[j].name;
+            nb[j].type = type_subst(tc, tc->pending[p].bindings[j].type,
+                                    fn, env, env_n);
+            if (type_mentions_param_of(nb[j].type, fn)) still = true;
+        }
+        if (still) continue;
+        GenericInstance *ti = ensure_instance(tc, tc->pending[p].target,
+                                              nb, tc->pending[p].binding_count);
+        size_t rc = gi->rewrite_count;
+        GenericRewrite *nr = arena_new_array(tc->arena, GenericRewrite, rc + 1);
+        if (gi->rewrites)
+            memcpy(nr, gi->rewrites, sizeof(GenericRewrite) * rc);
+        nr[rc].callee = tc->pending[p].callee;
+        nr[rc].name = ti->wrapper->as.fn_decl.name;
+        gi->rewrites = nr;
+        gi->rewrite_count = rc + 1;
+    }
+    return gi;
+}
+
+/* One unification step of call-site inference: bind the type parameters of
+ * `fn` inside `template` to `arg`. On a conflict the offending parameter
+ * name and the rejected type are reported through the out-params. */
+static bool unify_bind(TypeChecker *tc, Type *template, Type *arg, Node *fn,
+                       GenericBinding *env, size_t env_n,
+                       InternedString *conflict_name, Type **conflict_type) {
+    if (template->kind == TYPE_PARAM && template->as.type_param.owner == fn) {
+        Type *bound = arg;
+        if (bound->kind == TYPE_INT_LITERAL) bound = type_new(tc->arena, TYPE_INT);
+        for (size_t i = 0; i < env_n; i++) {
+            if (!string_eq(env[i].name, template->as.type_param.name)) continue;
+            if (env[i].type == NULL) { env[i].type = bound; return true; }
+            if (!type_eq(env[i].type, bound)) {
+                *conflict_name = template->as.type_param.name;
+                *conflict_type = bound;
+                return false;
+            }
+            return true;
+        }
+        return true; /* not one of fn's declared parameters: nothing to bind */
+    }
+    if (template->kind == TYPE_OPTIONAL && arg->kind == TYPE_OPTIONAL)
+        return unify_bind(tc, template->as.optional.inner, arg->as.optional.inner,
+                          fn, env, env_n, conflict_name, conflict_type);
+    if (template->kind == TYPE_ARRAY && arg->kind == TYPE_ARRAY)
+        return unify_bind(tc, template->as.array.elem, arg->as.array.elem,
+                          fn, env, env_n, conflict_name, conflict_type);
+    if (template->kind == TYPE_FN && arg->kind == TYPE_FN) {
+        if (template->as.fn.param_count != arg->as.fn.param_count) return true;
+        for (size_t i = 0; i < template->as.fn.param_count; i++) {
+            if (!unify_bind(tc, template->as.fn.params[i], arg->as.fn.params[i],
+                            fn, env, env_n, conflict_name, conflict_type))
+                return false;
+        }
+        if (template->as.fn.ret && arg->as.fn.ret)
+            return unify_bind(tc, template->as.fn.ret, arg->as.fn.ret,
+                              fn, env, env_n, conflict_name, conflict_type);
+    }
+    return true;
+}
+
+/* Call-site of a generic function: infer the bindings from the arguments,
+ * instantiate the concrete ones and record the abstract ones (a call inside
+ * another generic body) for per-instance resolution. The call type is the
+ * return type with the bindings substituted in. */
+static Type *typecheck_generic_call(TypeChecker *tc, Node *node, Symbol *csym) {
+    Node *fn = csym->fn_ast;
+    Type *fn_type = csym->type;
+    size_t argc = node->as.call.args.len;
+
+    if (argc != fn_type->as.fn.param_count) {
+        return tc_error_type(tc, node->loc,
+                             "expected %zu arguments, got %zu",
+                             fn_type->as.fn.param_count, argc);
+    }
+
+    /* Env pre-seeded with the declared parameter names in declaration
+     * order (the mangle depends on that order). */
+    size_t env_n = fn->as.fn_decl.generics.len;
+    GenericBinding *env = arena_new_array(tc->arena, GenericBinding, env_n ? env_n : 1);
+    for (size_t i = 0; i < env_n; i++) {
+        Node *tp = fn->as.fn_decl.generics.data[i];
+        env[i].name = tp && tp->kind == NODE_TYPE_PARAM ? tp->as.type_param.name
+                                                        : (InternedString){0};
+        env[i].type = NULL;
+    }
+
+    for (size_t i = 0; i < argc; i++) {
+        Type *arg_type = typecheck_node(tc, node->as.call.args.data[i]);
+        if (type_is_error(arg_type)) return arg_type;
+        InternedString cname = {0};
+        Type *conflict = NULL;
+        if (!unify_bind(tc, fn_type->as.fn.params[i], arg_type, fn,
+                        env, env_n, &cname, &conflict)) {
+            /* Recover the previously bound type of the conflicting name. */
+            Type *prev = NULL;
+            for (size_t j = 0; j < env_n; j++)
+                if (string_eq(env[j].name, cname)) prev = env[j].type;
+            return tc_error_type(tc, node->loc,
+                                 "type parameter '%.*s' of '%.*s' cannot be both %s and %s",
+                                 (int)cname.len, cname.str,
+                                 (int)csym->name.len, csym->name.str,
+                                 type_kind_name(prev ? prev->kind : TYPE_UNKNOWN),
+                                 type_kind_name(conflict->kind));
+        }
+    }
+
+    for (size_t i = 0; i < env_n; i++) {
+        if (env[i].type == NULL) {
+            return tc_error_type(tc, node->loc,
+                                 "cannot infer type parameter '%.*s' of '%.*s'",
+                                 (int)env[i].name.len, env[i].name.str,
+                                 (int)csym->name.len, csym->name.str);
+        }
+    }
+
+    Type *ret = fn_type->as.fn.ret
+        ? type_subst(tc, fn_type->as.fn.ret, fn, env, env_n)
+        : type_new(tc->arena, TYPE_VOID);
+
+    /* Abstract bindings (an argument typed by the *enclosing* generic fn)
+     * cannot name an instance yet: the call is recorded and resolved when
+     * that fn is instantiated. Concrete calls instantiate now and rename
+     * the callee — safe, because a callee inside a non-generic body is
+     * emitted exactly once. */
+    bool abstract = false;
+    if (tc->generic_len > 0 && tc->current_generic_fn) {
+        for (size_t i = 0; i < env_n; i++) {
+            if (type_mentions_param_of(env[i].type, tc->current_generic_fn)) {
+                abstract = true;
+                break;
+            }
+        }
+    }
+    if (abstract) {
+        tc_pending_add(tc, tc->current_generic_fn, node->as.call.callee, fn,
+                       env, env_n);
+        return ret;
+    }
+
+    GenericInstance *gi = ensure_instance(tc, fn, env, env_n);
+    node->as.call.callee->as.ident.name = gi->wrapper->as.fn_decl.name;
+    return ret;
+}
+
 static Type *typecheck_call(TypeChecker *tc, Node *node) {
     Node *callee_node = node->as.call.callee;
 
@@ -1032,15 +1388,13 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
          * was clean (an error type returns above), so no message repeats. */
     }
 
-    /* Phase 2.4 step 2a: calling a generic function needs call-site
-     * inference (step 2b); until it lands the call is rejected here so the
-     * generic-as-value rule below never fires on a callee. */
+    /* Phase 2.4 step 2b: a generic callee is instantiated per call site
+     * instead of being rejected (the generic-as-value rule still fires on
+     * every non-call use, handled by typecheck_ident). */
     if (callee_node->kind == NODE_IDENT) {
         Symbol *csym = symbol_table_lookup(tc->symbols, callee_node->as.ident.name);
-        if (csym && csym->is_fn && csym->is_generic) {
-            return tc_error_type(tc, node->loc,
-                                 "type inference for generic call to '%.*s' is not yet supported",
-                                 (int)csym->name.len, csym->name.str);
+        if (csym && csym->is_fn && csym->is_generic && csym->fn_ast) {
+            return typecheck_generic_call(tc, node, csym);
         }
     }
 
@@ -1807,23 +2161,35 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
     InternedString name = fn_node->as.fn_decl.name;
 
     /* Phase 2.4 step 2a: `<T>` binds as TYPE_PARAM for the signature and
-     * the body check — a symbolic check over every instantiation. */
+     * the body check — a symbolic check over every instantiation. The
+     * enclosing-fn pointer (step 2b) is set even for a non-generic fn so
+     * a nested generic body always knows its owner. */
     bool generic = fn_node->as.fn_decl.generics.len > 0;
+    Node *saved_gfn = tc->current_generic_fn;
     size_t gmark = push_generic_scope(tc, fn_node);
+    tc->current_generic_fn = fn_node;
 
     /* Resolve parameter types */
     size_t param_count = fn_node->as.fn_decl.params.len;
     Type **param_types = arena_new_array(tc->arena, Type *, param_count);
     for (size_t i = 0; i < param_count; i++) {
         param_types[i] = resolve_type_node(tc, fn_node->as.fn_decl.param_types.data[i]);
-        if (type_is_error(param_types[i])) { pop_generic_scope(tc, gmark); return; }
+        if (type_is_error(param_types[i])) {
+            tc->current_generic_fn = saved_gfn;
+            pop_generic_scope(tc, gmark);
+            return;
+        }
     }
 
     /* Resolve return type */
     Type *ret_type = NULL;
     if (fn_node->as.fn_decl.return_type) {
         ret_type = resolve_type_node(tc, fn_node->as.fn_decl.return_type);
-        if (type_is_error(ret_type)) { pop_generic_scope(tc, gmark); return; }
+        if (type_is_error(ret_type)) {
+            tc->current_generic_fn = saved_gfn;
+            pop_generic_scope(tc, gmark);
+            return;
+        }
     }
 
     Type *fn_type = type_new_fn(tc->arena, param_types, param_count, ret_type);
@@ -1835,6 +2201,7 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
         .is_mut  = false,
         .is_fn   = true,
         .is_generic = generic,
+        .fn_ast  = fn_node,
         .def_loc = fn_node->loc,
     };
 
@@ -1842,6 +2209,7 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
     Symbol *existing = symbol_table_lookup(tc->symbols, name);
     if (existing) {
         existing->type = fn_type;
+        existing->fn_ast = fn_node;
     } else {
         symbol_table_insert(tc->symbols, sym);
     }
@@ -1850,6 +2218,7 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
     if (fn_node->as.fn_decl.body) {
         typecheck_fn_body(tc, fn_node);
     }
+    tc->current_generic_fn = saved_gfn;
     pop_generic_scope(tc, gmark);
 }
 
@@ -2179,8 +2548,10 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
              * `is_generic` (Phase 2.4 step 2a); the body is checked in pass 2
              * with the same placeholders in scope. */
             {
-                size_t gmark = push_generic_scope(tc, item);
                 bool generic = item->as.fn_decl.generics.len > 0;
+                Node *saved_gfn = tc->current_generic_fn;
+                size_t gmark = push_generic_scope(tc, item);
+                tc->current_generic_fn = item;
                 size_t param_count = item->as.fn_decl.params.len;
                 Type **param_types = arena_new_array(tc->arena, Type *, param_count);
                 for (size_t j = 0; j < param_count; j++) {
@@ -2197,9 +2568,11 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
                     .is_mut  = false,
                     .is_fn   = true,
                     .is_generic = generic,
+                    .fn_ast  = item,
                     .def_loc = item->loc,
                 };
                 symbol_table_insert(tc->symbols, sym);
+                tc->current_generic_fn = saved_gfn;
                 pop_generic_scope(tc, gmark);
             }
             break;
@@ -2591,4 +2964,27 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
 
 Type *typecheck(TypeChecker *tc, Node *node) {
     return typecheck_node(tc, node);
+}
+
+GenericInstance *typechecker_instances(TypeChecker *tc, size_t *out_count) {
+    if (out_count) *out_count = tc ? tc->inst_count : 0;
+    return tc ? tc->instances : NULL;
+}
+
+void typechecker_append_instances(TypeChecker *tc, Node *module) {
+    if (!tc || !module || tc->inst_count == 0) return;
+    Node **old_items = module->as.module.items.data;
+    size_t n_items = module->as.module.items.len;
+    Node **fresh = arena_new_array(tc->arena, Node *, n_items + tc->inst_count);
+    size_t w = 0;
+    for (size_t i = 0; i < n_items; i++) {
+        fresh[w++] = old_items[i];
+        for (size_t j = 0; j < tc->inst_count; j++) {
+            if (tc->instances[j].source == old_items[i])
+                fresh[w++] = tc->instances[j].wrapper;
+        }
+    }
+    module->as.module.items.data = fresh;
+    module->as.module.items.len = w;
+    module->as.module.items.cap = n_items + tc->inst_count;
 }

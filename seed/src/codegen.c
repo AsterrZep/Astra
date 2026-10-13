@@ -149,9 +149,11 @@ static const char *make_fn_cname(Codegen *cg, InternedString name) {
         return NULL;
     }
     snprintf(buf, len, "astra_fn_%.*s", (int)name.len, name.str);
-    /* Replace non-identifier chars */
-    for (char *p = buf + 10; *p; p++) {
-        if (*p == '.' || *p == '-' || *p == '/') *p = '_';
+    /* Replace every non-identifier char: mangled generic names carry `<`,
+     * `>` and `,` (`identity<i32,string>`), which are not valid in C. */
+    for (char *p = buf + 9; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || *p == '_')) *p = '_';
     }
     cg->fn_map[cg->fn_map_count].name = name;
     cg->fn_map[cg->fn_map_count].c_name = buf;
@@ -175,8 +177,11 @@ static const char *make_global_cname(Codegen *cg, InternedString name) {
         return NULL;
     }
     snprintf(buf, len, "g_%.*s", (int)name.len, name.str);
+    /* Same whitelist as make_fn_cname: mangled generic globals contain
+     * `<`, `>` and `,`. */
     for (char *p = buf + 2; *p; p++) {
-        if (*p == '.' || *p == '-' || *p == '/') *p = '_';
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || *p == '_')) *p = '_';
     }
     cg->global_map[cg->global_map_count].name = name;
     cg->global_map[cg->global_map_count].c_name = buf;

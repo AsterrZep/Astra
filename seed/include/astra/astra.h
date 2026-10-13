@@ -776,6 +776,10 @@ struct Symbol {
      * need call-site inference (Phase 2.4 step 2b) and the name can never
      * be used as a value. */
     bool           is_generic;
+    /* The NODE_FN_DECL this symbol was registered from; call-site inference
+     * needs the AST to read the `<...>` list and clone an instance wrapper
+     * (Phase 2.4 step 2b). NULL for non-function symbols. */
+    Node          *fn_ast;
     SrcLoc         def_loc;
     uint32_t       seq;  /* monotonic insertion order (for scoped removal) */
     Symbol        *next; /* for hash chain */
@@ -801,6 +805,32 @@ void         typechecker_destroy(TypeChecker *tc);
 
 /* Number of type errors recorded (0 = success) */
 int          typechecker_error_count(TypeChecker *tc);
+
+/* One materialized instantiation of a generic function (Phase 2.4 step 2b).
+ * `wrapper` is a NODE_FN_DECL sharing the source body but named with the
+ * mangled `fn<T1,T2>` global; it is appended to the module right after its
+ * source so module-level order stays decl-before-use. `rewrites` maps the
+ * callee-ident nodes of calls *inside the shared body* whose target depends
+ * on this instance's bindings (the same node needs a different mangled name
+ * per instance, so the emitter consults this table under the instance the
+ * body is being emitted for). */
+typedef struct { Node *callee; InternedString name; } GenericRewrite;
+
+typedef struct {
+    Node          *source; /* the original generic NODE_FN_DECL */
+    Node          *wrapper;
+    GenericRewrite *rewrites;
+    size_t         rewrite_count;
+} GenericInstance;
+
+/* The instances materialized by the last typecheck (borrowed; the arena owns
+ * them). Wire them into the emitter with emitter_set_instances. */
+GenericInstance *typechecker_instances(TypeChecker *tc, size_t *out_count);
+
+/* Append every instance wrapper to the module right after its source item,
+ * preserving module-level decl-before-use order. Call after typecheck and
+ * before emitter_set_instances/emitter_emit. */
+void typechecker_append_instances(TypeChecker *tc, Node *module);
 
 /* -----------------------------------------------------------
  * §14: Bytecode
@@ -911,6 +941,11 @@ typedef struct Emitter Emitter;
 Emitter *emitter_create(Arena *arena, StringTable *strings);
 void     emitter_emit(Emitter *e, Node *module);
 void     emitter_destroy(Emitter *e);
+
+/* The generic instances materialized by the checker (Phase 2.4 step 2b):
+ * while emitting a wrapper's body the emitter renames the callee idents
+ * listed in that instance's rewrites to the mangled global. */
+void     emitter_set_instances(Emitter *e, GenericInstance *instances, size_t count);
 
 /* Access emitted bytecode */
 const Instruction *emitter_get_code(Emitter *e, size_t *out_len);

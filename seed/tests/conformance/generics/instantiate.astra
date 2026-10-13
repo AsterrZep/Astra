@@ -1,0 +1,44 @@
+// Call-site inference materializes one instance per binding tuple
+// (Phase 2.4 step 2b): concrete calls rename the callee to the mangled
+// global, calls inside a generic body resolve when that body is
+// instantiated, and a recursive generic call finds its own instance.
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn choose<T>(cond: bool, a: T, b: T) -> T {
+    if cond { return a }
+    b
+}
+
+fn fwd<T>(x: T) -> T {
+    identity(x)
+}
+
+fn count<T>(x: T, n: i32) -> i32 {
+    if n > 0 {
+        return count(x, n - 1)
+    }
+    0
+}
+
+fn wrap<T>(x: T) -> T? {
+    some(x)
+}
+
+print(identity(1))
+// EXPECT: 1
+print(identity("hola"))
+// EXPECT: hola
+print(choose(true, 1, 2))
+// EXPECT: 1
+print(choose(false, "a", "b"))
+// EXPECT: b
+print(fwd(42))
+// EXPECT: 42
+print(count(7, 3))
+// EXPECT: 0
+print(wrap(5))
+// EXPECT: some(5)
+print(wrap("s"))
+// EXPECT: some(s)

@@ -181,6 +181,12 @@ int main(int argc, char **argv) {
             return 1;
         }
 
+        /* Phase 2.4 step 2b: see driver.c — instances become module items
+         * and the emitter renames the callee idents per wrapper body. */
+        size_t inst_count = 0;
+        GenericInstance *insts = typechecker_instances(tc, &inst_count);
+        typechecker_append_instances(tc, module);
+
         Emitter *emitter = emitter_create(c->arena, c->strings);
         if (!emitter) {
             fprintf(stderr, "error: out of memory\n");
@@ -190,6 +196,7 @@ int main(int argc, char **argv) {
         }
         c->emitter = emitter;
 
+        emitter_set_instances(emitter, insts, inst_count);
         emitter_emit(emitter, module);
 
         if (emitter_error_count(emitter) > 0) {

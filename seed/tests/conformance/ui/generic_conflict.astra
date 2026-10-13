@@ -1,0 +1,8 @@
+// One type parameter cannot unify two different argument types
+// (Phase 2.4 step 2b).
+// EXPECT-ERROR: type parameter 'T' of 'pair' cannot be both i32 and string
+fn pair<T>(a: T, b: T) -> T {
+    a
+}
+
+print(pair(1, "x"))

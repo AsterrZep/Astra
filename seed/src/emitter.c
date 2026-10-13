@@ -1026,7 +1026,19 @@ static void emit_expr(Emitter *e, Node *node) {
                  * so GET_CAPTURE reaches it without a CallFrame change. */
                 emit_inst_index(e, OPCODE_GET_CAPTURE, (uint32_t)cap, node->loc.line);
             } else {
-                uint32_t idx = add_constant(e, value_string(node->as.ident.name.str));
+                /* Phase 2.4 step 2b: inside an instance body a recorded
+                 * callee ident names the mangled global of its target
+                 * instance, not the source generic. */
+                InternedString gname = node->as.ident.name;
+                if (e->current_instance) {
+                    for (size_t i = 0; i < e->current_instance->rewrite_count; i++) {
+                        if (e->current_instance->rewrites[i].callee == node) {
+                            gname = e->current_instance->rewrites[i].name;
+                            break;
+                        }
+                    }
+                }
+                uint32_t idx = add_constant(e, value_string(gname.str));
                 emit_inst_index(e, OPCODE_GET_GLOBAL, idx, node->loc.line);
             }
         }
@@ -1973,8 +1985,10 @@ static void emit_stmt(Emitter *e, Node *node) {
 
     switch (node->kind) {
     case NODE_FN_DECL: {
-        /* A generic declaration never reaches codegen: the checker skipped
-         * it, so nothing can call it (Phase 2.4 step 1). */
+        /* A generic source declaration never reaches codegen: every call
+         * targets a materialized instance wrapper instead (Phase 2.4 step
+         * 2b), so the shared body is emitted once per instance and once
+         * here would only register an unused global. */
         if (node->as.fn_decl.generics.len > 0) break;
         uint32_t line = node->loc.line;
         FnObj *fn = arena_alloc_zero(e->arena, sizeof(FnObj), _Alignof(FnObj));
@@ -2022,9 +2036,23 @@ static void emit_stmt(Emitter *e, Node *node) {
         bool implicit_return = body_is_block &&
             node->as.fn_decl.body->as.block.last_expr != NULL;
 
+        /* Phase 2.4 step 2b: while emitting an instance wrapper's body the
+         * recorded callee idents resolve to the mangled globals — the same
+         * body node is emitted once per instance with a different name at
+         * each shared call site. */
+        GenericInstance *saved_inst = e->current_instance;
+        for (size_t i = 0; i < e->instance_count; i++) {
+            if (e->instances[i].wrapper == node) {
+                e->current_instance = &e->instances[i];
+                break;
+            }
+        }
+
         if (node->as.fn_decl.body) {
             emit_expr(e, node->as.fn_decl.body);
         }
+
+        e->current_instance = saved_inst;
 
         if (e->code_len == 0 || e->code[e->code_len - 1].op != OPCODE_RET) {
             if (!implicit_return) {
@@ -2205,6 +2233,12 @@ Emitter *emitter_create(Arena *arena, StringTable *strings) {
     e->arena   = arena;
     e->strings = strings;
     return e;
+}
+
+void emitter_set_instances(Emitter *e, GenericInstance *instances, size_t count) {
+    if (!e) return;
+    e->instances = instances;
+    e->instance_count = count;
 }
 
 void emitter_emit(Emitter *e, Node *module) {

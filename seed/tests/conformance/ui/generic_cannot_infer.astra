@@ -1,0 +1,7 @@
+// A type parameter that appears in no argument position cannot be inferred
+// from the call site (Phase 2.4 step 2b). The only body that type-checks
+// for such a signature is a recursive call, which fails the same way.
+// EXPECT-ERROR: cannot infer type parameter 'T' of 'make'
+fn make<T>() -> T {
+    make()
+}

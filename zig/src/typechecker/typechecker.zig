@@ -44,6 +44,10 @@ const Symbol = struct {
     /// placeholders; calls need call-site inference (step 2b) and the name
     /// can never be used as a value.
     is_generic: bool = false,
+    /// The `fn_decl` node this symbol was registered from (Phase 2.4 step
+    /// 2b): call-site inference reads the `<...>` list and clones an
+    /// instance wrapper from it. Null for non-function symbols.
+    fn_ast: ?u32 = null,
     /// Non-null when the name is a module binding (`import a.b as m`, or a
     /// bare `import a.b` which binds `b`): member access goes through this
     /// export list instead of the type system (`ARCHITECTURE.md` §10.1, §10.5).
@@ -70,6 +74,34 @@ pub const ImportBinding = struct {
 };
 
 const Variant = struct { name: []const u8, enum_type: *Type };
+
+/// Phase 2.4 step 2b: one generic-parameter binding of a call site. A null
+/// type means "not inferred yet" while the arguments are unified.
+const Binding = struct { name: []const u8, type_: ?*Type };
+
+/// One callee-ident node of a generic body renamed to a mangled instance
+/// global: the same node is shared by every instance of the enclosing fn,
+/// so the emitter resolves the name per instance (see emitter.Instance).
+pub const Rewrite = struct { callee: u32, name: []const u8 };
+
+/// One materialized instantiation of a generic fn. `rewrites` covers the
+/// calls inside the shared body whose target depended on the enclosing
+/// declaration's parameters; concrete call sites inside non-generic bodies
+/// are renamed in place and add none.
+pub const Instance = struct {
+    source: u32,
+    wrapper: u32,
+    rewrites: std.ArrayListUnmanaged(Rewrite) = .empty,
+};
+
+/// A call inside a generic body whose bindings still mention the enclosing
+/// fn's parameters; resolved once per instance of `fn_decl`.
+const PendingCall = struct {
+    fn_decl: u32,
+    callee: u32,
+    target: u32,
+    bindings: []Binding,
+};
 
 /// One method declared in an `impl` block (research/010 §12), keyed by the
 /// receiver's nominal type name plus the method name — static dispatch, no
@@ -130,6 +162,14 @@ pub const TypeChecker = struct {
     methods: std.ArrayListUnmanaged(Method) = .empty,
     traits: std.ArrayListUnmanaged(TraitInfo) = .empty,
     generic_stack: std.ArrayListUnmanaged(GenericBinding) = .empty,
+    /// The generic fn whose body is being checked (Phase 2.4 step 2b):
+    /// call sites whose bindings still mention its parameters are recorded
+    /// as pending and resolved per instance.
+    current_generic_fn: ?u32 = null,
+    /// Instantiations materialized so far and the not-yet-concrete call
+    /// sites inside generic bodies (Phase 2.4 step 2b).
+    instances: std.ArrayListUnmanaged(Instance) = .empty,
+    pending: std.ArrayListUnmanaged(PendingCall) = .empty,
     current_fn_return: ?*Type = null,
     // Location of the function currently being checked, used for body-level
     // diagnostics (`checkFnDecl` sets it before `checkFnBody`).
@@ -513,6 +553,215 @@ pub const TypeChecker = struct {
         };
     }
 
+    // ── Call-site inference & instances (Phase 2.4 step 2b) ──────
+
+    /// Mangled instance name: `identity<i32,string>` — the `<...>` cannot
+    /// appear in a source identifier, so the name is unique per binding
+    /// tuple (the C backend sanitizes the punctuation into `_`).
+    fn mangleInstance(self: *TypeChecker, fn_idx: u32, env: []Binding) []const u8 {
+        var buf: [512]u8 = undefined;
+        var pos: usize = 0;
+        bufPut(buf[0..], &pos, self.tree.node(fn_idx).fn_decl.name);
+        bufPut(buf[0..], &pos, "<");
+        for (env, 0..) |b, i| {
+            if (i > 0) bufPut(buf[0..], &pos, ",");
+            pos = mangleTypeStr(b.type_ orelse unreachable, buf[0..], pos);
+        }
+        bufPut(buf[0..], &pos, ">");
+        return self.a.dupe(u8, buf[0..pos]) catch @panic("OOM");
+    }
+
+    /// Replace the type parameters of `fn_idx` inside `t` with their binding
+    /// in `env`; everything else (including parameters of *other* fns, which
+    /// stay abstract for the enclosing symbolic check) passes through.
+    fn typeSubst(self: *TypeChecker, t: ?*Type, fn_idx: u32, env: []Binding) ?*Type {
+        const ty = t orelse return null;
+        switch (ty.kind) {
+            .param => {
+                if (ty.owner == fn_idx) {
+                    for (env) |b| {
+                        if (std.mem.eql(u8, b.name, ty.name)) return b.type_ orelse ty;
+                    }
+                }
+                return ty;
+            },
+            .optional => {
+                const inner = self.typeSubst(ty.inner, fn_idx, env);
+                if (inner == ty.inner) return ty;
+                return self.newOptional(inner.?);
+            },
+            .array => {
+                const elem = self.typeSubst(ty.elem, fn_idx, env);
+                if (elem == ty.elem) return ty;
+                return self.newArray(elem.?);
+            },
+            .fn_type => {
+                var changed = false;
+                const tparams = self.a.alloc(*Type, ty.params.len) catch @panic("OOM");
+                for (ty.params, 0..) |p, i| {
+                    tparams[i] = self.typeSubst(p, fn_idx, env).?;
+                    if (tparams[i] != p) changed = true;
+                }
+                const tret = self.typeSubst(ty.ret, fn_idx, env);
+                if (tret != ty.ret) changed = true;
+                if (!changed) return ty;
+                return self.newFn(tparams, tret);
+            },
+            else => return ty,
+        }
+    }
+
+    /// One unification step of call-site inference: bind the parameters of
+    /// `fn_idx` inside `template` to `arg`. A conflict reports the parameter
+    /// name and the rejected type.
+    const UnifyFail = struct { name: []const u8, got: *Type };
+    fn unifyBind(self: *TypeChecker, template: *Type, arg: *Type, fn_idx: u32, env: []Binding) ?UnifyFail {
+        if (template.kind == .param and template.owner == fn_idx) {
+            // An unadorned integer literal takes the default i32 (the same
+            // default typecheckVarDecl gives a `let` without annotation).
+            var bound = arg;
+            if (bound.kind == .int_literal) bound = self.newType(.int);
+            for (env) |*b| {
+                if (!std.mem.eql(u8, b.name, template.name)) continue;
+                if (b.type_ == null) {
+                    b.type_ = bound;
+                    return null;
+                }
+                if (!typeEq(b.type_.?, bound)) return .{ .name = template.name, .got = bound };
+                return null;
+            }
+            return null; // not one of fn's declared parameters
+        }
+        if (template.kind == .optional and arg.kind == .optional)
+            return self.unifyBind(template.inner.?, arg.inner.?, fn_idx, env);
+        if (template.kind == .array and arg.kind == .array)
+            return self.unifyBind(template.elem.?, arg.elem.?, fn_idx, env);
+        if (template.kind == .fn_type and arg.kind == .fn_type) {
+            if (template.params.len != arg.params.len) return null;
+            for (template.params, arg.params) |tp, ap| {
+                if (self.unifyBind(tp, ap, fn_idx, env)) |f| return f;
+            }
+            if (template.ret != null and arg.ret != null)
+                return self.unifyBind(template.ret.?, arg.ret.?, fn_idx, env);
+        }
+        return null;
+    }
+
+    /// Materialize (or find) the instance of generic `fn_idx` under `env`
+    /// and resolve the pending call sites recorded in its body against it.
+    /// The instance is registered *before* those resolutions, so a recursive
+    /// call inside the body finds this very instance.
+    fn ensureInstance(self: *TypeChecker, fn_idx: u32, env: []Binding) u32 {
+        const mangled = self.mangleInstance(fn_idx, env);
+        for (self.instances.items) |inst| {
+            if (std.mem.eql(u8, self.tree.node(inst.wrapper).fn_decl.name, mangled))
+                return inst.wrapper;
+        }
+
+        var n = self.tree.node(fn_idx);
+        n.fn_decl.name = mangled;
+        n.fn_decl.generics = .{ .start = 0, .len = 0 };
+        const widx = self.tree.addNode(n, self.tree.loc(fn_idx)) catch @panic("OOM");
+        self.instances.append(self.a, .{ .source = fn_idx, .wrapper = widx }) catch @panic("OOM");
+        const gi_idx = self.instances.items.len - 1;
+
+        for (self.pending.items) |pc| {
+            if (pc.fn_decl != fn_idx) continue;
+            // Substitute this instance's bindings into the recorded
+            // (abstract) ones; a leftover parameter of `fn_idx` means the
+            // env did not cover it (unreachable: completeness already
+            // checked the env at the call site).
+            var nb: []Binding = self.a.alloc(Binding, pc.bindings.len) catch @panic("OOM");
+            var still = false;
+            for (pc.bindings, 0..) |b, j| {
+                nb[j] = .{ .name = b.name, .type_ = self.typeSubst(b.type_, fn_idx, env) };
+                if (typeMentionsParamOf(nb[j].type_, fn_idx)) still = true;
+            }
+            if (still) continue;
+            const tidx = self.ensureInstance(pc.target, nb);
+            self.instances.items[gi_idx].rewrites.append(self.a, .{
+                .callee = pc.callee,
+                .name = self.tree.node(tidx).fn_decl.name,
+            }) catch @panic("OOM");
+        }
+        return widx;
+    }
+
+    /// Call site of a generic function: infer the bindings from the
+    /// arguments, instantiate the concrete ones and record the abstract
+    /// ones (a call inside another generic body) for per-instance
+    /// resolution. The call type is the return type with the bindings
+    /// substituted in.
+    fn checkGenericCall(self: *TypeChecker, callee_idx: u32, args: ast.List, loc: lexer.Loc, fn_idx: u32, fn_type: *Type, fname: []const u8) *Type {
+        const arg_slice = self.tree.extraSlice(args);
+        if (arg_slice.len != fn_type.params.len) {
+            return self.errorType(loc, "expected {d} arguments, got {d}", .{ fn_type.params.len, arg_slice.len });
+        }
+
+        // Env pre-seeded with the declared parameter names in declaration
+        // order (the mangle depends on that order).
+        const generics = self.tree.extraSlice(self.tree.node(fn_idx).fn_decl.generics);
+        var env = self.a.alloc(Binding, generics.len) catch @panic("OOM");
+        for (generics, 0..) |g, i| {
+            env[i] = .{ .name = self.tree.node(g).type_param.name, .type_ = null };
+        }
+
+        for (arg_slice, 0..) |arg, i| {
+            const at = self.checkNode(arg);
+            if (isErrorType(at)) return at;
+            if (self.unifyBind(fn_type.params[i], at, fn_idx, env)) |fail| {
+                var prev: *Type = undefined;
+                for (env) |b| {
+                    if (std.mem.eql(u8, b.name, fail.name)) prev = b.type_ orelse unreachable;
+                }
+                return self.errorType(loc, "type parameter '{s}' of '{s}' cannot be both {s} and {s}", .{
+                    fail.name, fname, prev.kind.name(), fail.got.kind.name(),
+                });
+            }
+        }
+
+        for (env) |b| {
+            if (b.type_ == null) {
+                return self.errorType(loc, "cannot infer type parameter '{s}' of '{s}'", .{ b.name, fname });
+            }
+        }
+
+        const ret: *Type = if (fn_type.ret) |r|
+            self.typeSubst(r, fn_idx, env) orelse self.newType(.void)
+        else
+            self.newType(.void);
+
+        // Abstract bindings (an argument typed by the *enclosing* generic
+        // fn) cannot name an instance yet: the call is recorded and resolved
+        // when that fn is instantiated. Concrete calls instantiate now and
+        // rename the callee — safe, because a callee inside a non-generic
+        // body is emitted exactly once.
+        var abstract = false;
+        if (self.generic_stack.items.len > 0) {
+            if (self.current_generic_fn) |cgf| {
+                for (env) |b| {
+                    if (typeMentionsParamOf(b.type_, cgf)) {
+                        abstract = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (abstract) {
+            self.pending.append(self.a, .{
+                .fn_decl = self.current_generic_fn.?,
+                .callee = callee_idx,
+                .target = fn_idx,
+                .bindings = env,
+            }) catch @panic("OOM");
+            return ret;
+        }
+
+        const widx = self.ensureInstance(fn_idx, env);
+        self.tree.nodes.items[callee_idx].identifier = self.tree.node(widx).fn_decl.name;
+        return ret;
+    }
+
     fn checkCall(self: *TypeChecker, callee_idx: u32, args: ast.List, loc: lexer.Loc) *Type {
         const arg_slice = self.tree.extraSlice(args);
 
@@ -582,13 +831,21 @@ pub const TypeChecker = struct {
             }
         }
 
-        // Phase 2.4 step 2a: calling a generic function needs call-site
-        // inference (step 2b); until it lands the call is rejected here so
-        // the generic-as-value rule below never fires on a callee.
+        // Phase 2.4 step 2b: a generic callee is instantiated per call site
+        // instead of being rejected (the generic-as-value rule still fires
+        // on every non-call use, handled by checkIdent).
         if (isTag(self.tree.node(callee_idx), .identifier)) {
             if (self.lookup(self.tree.node(callee_idx).identifier)) |csym| {
                 if (csym.is_fn and csym.is_generic) {
-                    return self.errorType(loc, "type inference for generic call to '{s}' is not yet supported", .{csym.name});
+                    if (csym.fn_ast) |fn_idx| {
+                        // Snapshot what is needed: checking the arguments may
+                        // insert symbols and reallocate the table under `csym`.
+                        const fname = csym.name;
+                        const ftype = csym.type_;
+                        if (ftype.kind == .fn_type) {
+                            return self.checkGenericCall(callee_idx, args, loc, fn_idx, ftype, fname);
+                        }
+                    }
                 }
             }
         }
@@ -1023,17 +1280,26 @@ pub const TypeChecker = struct {
         const params = self.tree.extraSlice(f.params);
 
         // Phase 2.4 step 2a: `<T>` binds as `.param` for the signature and
-        // the body check — a symbolic check over every instantiation.
+        // the body check — a symbolic check over every instantiation. The
+        // enclosing-fn pointer (step 2b) is set even for a non-generic fn
+        // so a nested generic body always knows its owner.
         const gmark = self.pushGenericScope(fn_idx);
+        const saved_gfn = self.current_generic_fn;
+        self.current_generic_fn = fn_idx;
 
         var param_types = self.a.alloc(*Type, params.len) catch @panic("OOM");
         for (params, 0..) |p, i| {
             param_types[i] = self.resolveTypeNode(self.tree.node(p).param.type_node);
-            if (isErrorType(param_types[i])) { self.popGenericScope(gmark); return; }
+            if (isErrorType(param_types[i])) {
+                self.current_generic_fn = saved_gfn;
+                self.popGenericScope(gmark);
+                return;
+            }
         }
         const ret_type: ?*Type = if (f.ret) |r| self.resolveTypeNode(r) else null;
         if (ret_type) |r| {
             if (isErrorType(r)) {
+                self.current_generic_fn = saved_gfn;
                 self.popGenericScope(gmark);
                 return;
             }
@@ -1042,10 +1308,12 @@ pub const TypeChecker = struct {
         const fn_type = self.newFn(param_types, ret_type);
         if (self.lookup(f.name)) |existing| {
             existing.type_ = fn_type;
+            existing.fn_ast = fn_idx;
         } else {
-            self.insert(.{ .name = f.name, .type_ = fn_type, .is_mut = false, .is_fn = true, .is_generic = f.generics.len > 0 });
+            self.insert(.{ .name = f.name, .type_ = fn_type, .is_mut = false, .is_fn = true, .is_generic = f.generics.len > 0, .fn_ast = fn_idx });
         }
         self.checkFnBody(f, param_types, ret_type);
+        self.current_generic_fn = saved_gfn;
         self.popGenericScope(gmark);
     }
 
@@ -1303,8 +1571,8 @@ pub const TypeChecker = struct {
             // error.
             .use_decl, .import_decl, .from_decl, .import_item => self.newType(.void),
             .payload => self.errorType(loc, "variant payload outside an enum declaration", .{}),
-            .source_file => |items| blk: {
-                self.checkModule(self.tree.extraSlice(items));
+            .source_file => blk: {
+                self.checkModule(idx);
                 break :blk self.newType(.void);
             },
             else => self.errorType(loc, "unhandled node kind", .{}),
@@ -1508,7 +1776,8 @@ pub const TypeChecker = struct {
         }
     }
 
-    fn checkModule(self: *TypeChecker, items: []const u32) void {
+    fn checkModule(self: *TypeChecker, module: u32) void {
+        const items = self.tree.extraSlice(self.tree.node(module).source_file);
         // Pass 0: bind every top-level struct/enum name to an empty type
         // before any signature or field type is resolved, so declarations may
         // reference each other in any order (forward references, mutual
@@ -1539,13 +1808,16 @@ pub const TypeChecker = struct {
                     // and is marked `is_generic` (Phase 2.4 step 2a); the body
                     // is checked in pass 2 with the same placeholders in scope.
                     const gmark = self.pushGenericScope(it);
+                    const saved_gfn = self.current_generic_fn;
+                    self.current_generic_fn = it;
                     const params = self.tree.extraSlice(f.params);
                     var param_types = self.a.alloc(*Type, params.len) catch @panic("OOM");
                     for (params, 0..) |p, j| {
                         param_types[j] = self.resolveTypeNode(self.tree.node(p).param.type_node);
                     }
                     const ret_type: ?*Type = if (f.ret) |r| self.resolveTypeNode(r) else null;
-                    self.insert(.{ .name = f.name, .type_ = self.newFn(param_types, ret_type), .is_mut = false, .is_fn = true, .is_generic = f.generics.len > 0 });
+                    self.insert(.{ .name = f.name, .type_ = self.newFn(param_types, ret_type), .is_mut = false, .is_fn = true, .is_generic = f.generics.len > 0, .fn_ast = it });
+                    self.current_generic_fn = saved_gfn;
                     self.popGenericScope(gmark);
                 },
                 .struct_decl => self.checkStructDecl(it),
@@ -1567,6 +1839,23 @@ pub const TypeChecker = struct {
                 else => _ = self.checkNode(it),
             }
         }
+
+        // Phase 2.4 step 2b: append every instance wrapper right after its
+        // source item, preserving module-level decl-before-use order. The
+        // emitter then sees plain non-generic fn decls; the callee idents
+        // of shared bodies resolve through the per-instance rewrites.
+        if (self.instances.items.len > 0) {
+            var new_items: std.ArrayListUnmanaged(u32) = .empty;
+            for (items) |it| {
+                new_items.append(self.a, it) catch @panic("OOM");
+                for (self.instances.items) |inst| {
+                    if (inst.source == it)
+                        new_items.append(self.a, inst.wrapper) catch @panic("OOM");
+                }
+            }
+            const list = self.tree.addExtra(new_items.items) catch @panic("OOM");
+            self.tree.nodes.items[module].source_file = list;
+        }
     }
 };
 
@@ -1581,6 +1870,66 @@ fn opName(tag: lexer.Tag) []const u8 {
         .or_or => "or",
         else => @tagName(tag),
     };
+}
+
+/// Phase 2.4 step 2b: append `text` to a bounded mangle buffer, stopping
+/// silently at the cap (instance names stay far below 512 bytes).
+fn bufPut(buf: []u8, pos: *usize, text: []const u8) void {
+    for (text) |c| {
+        if (pos.* + 1 < buf.len) {
+            buf[pos.*] = c;
+            pos.* += 1;
+        }
+    }
+}
+
+/// One recursive step of the mangle: the type's source-level spelling, with
+/// fn types collapsed to `fn` (they cannot appear in a binding tuple in
+/// practice, and the punctuation would dominate the name).
+fn mangleTypeStr(t: *Type, buf: []u8, pos0: usize) usize {
+    var pos = pos0;
+    switch (t.kind) {
+        .void => bufPut(buf, &pos, "void"),
+        .bool_ => bufPut(buf, &pos, "bool"),
+        .int, .int_literal => bufPut(buf, &pos, "i32"),
+        .int64 => bufPut(buf, &pos, "i64"),
+        .uint32 => bufPut(buf, &pos, "u32"),
+        .uint64 => bufPut(buf, &pos, "u64"),
+        .float => bufPut(buf, &pos, "f64"),
+        .string => bufPut(buf, &pos, "string"),
+        .nil => bufPut(buf, &pos, "nil"),
+        .optional => {
+            bufPut(buf, &pos, "?");
+            pos = mangleTypeStr(t.inner.?, buf, pos);
+        },
+        .array => {
+            bufPut(buf, &pos, "[");
+            pos = mangleTypeStr(t.elem.?, buf, pos);
+            bufPut(buf, &pos, "]");
+        },
+        .fn_type => bufPut(buf, &pos, "fn"),
+        .struct_, .enum_, .param => bufPut(buf, &pos, t.name),
+        else => bufPut(buf, &pos, "unknown"),
+    }
+    return pos;
+}
+
+/// True when `t` mentions a type parameter owned by `fn_idx` — i.e. the
+/// type is still abstract with respect to that declaration.
+fn typeMentionsParamOf(t: ?*Type, fn_idx: u32) bool {
+    const ty = t orelse return false;
+    switch (ty.kind) {
+        .param => return ty.owner == fn_idx,
+        .optional => return typeMentionsParamOf(ty.inner, fn_idx),
+        .array => return typeMentionsParamOf(ty.elem, fn_idx),
+        .fn_type => {
+            for (ty.params) |p| {
+                if (typeMentionsParamOf(p, fn_idx)) return true;
+            }
+            return typeMentionsParamOf(ty.ret, fn_idx);
+        },
+        else => return false,
+    }
 }
 
 const testing = std.testing;

@@ -69,6 +69,18 @@ fn runProgram(arena: std.mem.Allocator, source: []const u8, name: []const u8, ou
     tc.check(root);
     if (tc.error_count != 0) return .{ .parsed = true, .type_ok = false, .emit_ok = true, .ran = false, .output = "", .runtime_error = null };
     var em = emitter.Emitter.init(arena, &tree, name);
+    // Phase 2.4 step 2b: same instance wiring as main.zig's single-file path.
+    if (tc.instances.items.len > 0) {
+        var em_inst = arena.alloc(emitter.Instance, tc.instances.items.len) catch return .{ .parsed = true, .type_ok = true, .emit_ok = false, .ran = false, .output = "", .runtime_error = null };
+        for (tc.instances.items, 0..) |inst, i| {
+            const rws = arena.alloc(emitter.Rewrite, inst.rewrites.items.len) catch return .{ .parsed = true, .type_ok = true, .emit_ok = false, .ran = false, .output = "", .runtime_error = null };
+            for (inst.rewrites.items, 0..) |rw, j| {
+                rws[j] = .{ .callee = rw.callee, .name = rw.name };
+            }
+            em_inst[i] = .{ .wrapper = inst.wrapper, .rewrites = rws };
+        }
+        em.setInstances(em_inst);
+    }
     em.emit(root);
     if (em.error_count != 0) return .{ .parsed = true, .type_ok = true, .emit_ok = false, .ran = false, .output = "", .runtime_error = null };
 
