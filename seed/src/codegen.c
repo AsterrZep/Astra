@@ -131,6 +131,32 @@ static void cg_set_line(Codegen *cg, unsigned *last_line, unsigned line) {
  * Name generation
  * ----------------------------------------------------------- */
 
+/* Encode a source (or mangled) name as a C identifier fragment: `_` doubles
+ * to `__`, every other non-[A-Za-z0-9] byte becomes `_` plus two lowercase
+ * hex digits. The encoding is injective, so `f<[?i32]>` and `f<?[i32]>` —
+ * which a one-char-per-char mapping collapsed onto the same `f__i32_` —
+ * stay distinct, and so do the pre-existing method-global collisions
+ * (`A.b_c` vs `A_b.c`). `dst` must have room for 3 * src_n + 1 bytes. */
+static void cg_encode_ident(char *dst, const char *src, size_t src_n) {
+    static const char hex[] = "0123456789abcdef";
+    char *d = dst;
+    for (size_t i = 0; i < src_n; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9')) {
+            *d++ = (char)c;
+        } else if (c == '_') {
+            *d++ = '_';
+            *d++ = '_';
+        } else {
+            *d++ = '_';
+            *d++ = hex[c >> 4];
+            *d++ = hex[c & 0xf];
+        }
+    }
+    *d = '\0';
+}
+
 static const char *make_fn_cname(Codegen *cg, InternedString name) {
     /* Check if already registered */
     for (size_t i = 0; i < cg->fn_map_count; i++) {
@@ -141,20 +167,15 @@ static const char *make_fn_cname(Codegen *cg, InternedString name) {
         cg->error_count++;
         return NULL;
     }
-    /* Generate: astra_fn_<name> */
-    size_t len = name.len + 16;
+    /* Generate: astra_fn_<encoded name> */
+    size_t len = name.len * 3 + 16;
     char *buf = malloc(len);
     if (!buf) {
         cg->error_count++;
         return NULL;
     }
-    snprintf(buf, len, "astra_fn_%.*s", (int)name.len, name.str);
-    /* Replace every non-identifier char: mangled generic names carry `<`,
-     * `>` and `,` (`identity<i32,string>`), which are not valid in C. */
-    for (char *p = buf + 9; *p; p++) {
-        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-              (*p >= '0' && *p <= '9') || *p == '_')) *p = '_';
-    }
+    snprintf(buf, len, "astra_fn_");
+    cg_encode_ident(buf + 9, name.str, name.len);
     cg->fn_map[cg->fn_map_count].name = name;
     cg->fn_map[cg->fn_map_count].c_name = buf;
     cg->fn_map_count++;
@@ -170,19 +191,14 @@ static const char *make_global_cname(Codegen *cg, InternedString name) {
         cg->error_count++;
         return NULL;
     }
-    size_t len = name.len + 16;
+    size_t len = name.len * 3 + 16;
     char *buf = malloc(len);
     if (!buf) {
         cg->error_count++;
         return NULL;
     }
-    snprintf(buf, len, "g_%.*s", (int)name.len, name.str);
-    /* Same whitelist as make_fn_cname: mangled generic globals contain
-     * `<`, `>` and `,`. */
-    for (char *p = buf + 2; *p; p++) {
-        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-              (*p >= '0' && *p <= '9') || *p == '_')) *p = '_';
-    }
+    snprintf(buf, len, "g_");
+    cg_encode_ident(buf + 2, name.str, name.len);
     cg->global_map[cg->global_map_count].name = name;
     cg->global_map[cg->global_map_count].c_name = buf;
     cg->global_map_count++;

@@ -1,0 +1,12 @@
+// EXPECT: [some(1)]
+// EXPECT: some([1])
+//
+// C-backend identifiers must be an injective encoding: `f<[?i32]>` and
+// `f<?[i32]>` used to sanitize to the same `astra_fn_f__i32_`, so the two
+// instances shared one C function. Identity bodies hide the merge today;
+// generic structs (Phase 2.4 step 3) would not.
+fn f<T>(x: T) -> T {
+    x
+}
+print(f([some(1)]))
+print(f(some([1])))
