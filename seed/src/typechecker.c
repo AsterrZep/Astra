@@ -1156,11 +1156,13 @@ static GenericInstance *ensure_instance(TypeChecker *tc, Node *fn,
     w->as.fn_decl.generics.cap = 0;
 
     tc_inst_grow(tc);
-    GenericInstance *gi = &tc->instances[tc->inst_count++];
-    gi->source = fn;
-    gi->wrapper = w;
-    gi->rewrites = NULL;
-    gi->rewrite_count = 0;
+    /* Index, not pointer: the recursive ensure_instance calls below may
+     * grow tc->instances and reallocate it. */
+    size_t gi_idx = tc->inst_count++;
+    tc->instances[gi_idx].source = fn;
+    tc->instances[gi_idx].wrapper = w;
+    tc->instances[gi_idx].rewrites = NULL;
+    tc->instances[gi_idx].rewrite_count = 0;
 
     for (size_t p = 0; p < tc->pending_count; p++) {
         if (tc->pending[p].fn_decl != fn) continue;
@@ -1180,6 +1182,7 @@ static GenericInstance *ensure_instance(TypeChecker *tc, Node *fn,
         if (still) continue;
         GenericInstance *ti = ensure_instance(tc, tc->pending[p].target,
                                               nb, tc->pending[p].binding_count);
+        GenericInstance *gi = &tc->instances[gi_idx]; /* re-fetch after grow */
         size_t rc = gi->rewrite_count;
         GenericRewrite *nr = arena_new_array(tc->arena, GenericRewrite, rc + 1);
         if (gi->rewrites)
@@ -1189,7 +1192,7 @@ static GenericInstance *ensure_instance(TypeChecker *tc, Node *fn,
         gi->rewrites = nr;
         gi->rewrite_count = rc + 1;
     }
-    return gi;
+    return &tc->instances[gi_idx];
 }
 
 /* One unification step of call-site inference: bind the type parameters of

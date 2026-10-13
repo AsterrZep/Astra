@@ -1,0 +1,25 @@
+// Regression: resolving the pending calls of one instance can create new
+// instances and reallocate the instance array mid-loop; the earlier
+// instance's callee rewrites must survive that reallocation (Phase 2.4
+// step 2b audit — the seed used to keep a pointer across the grow).
+// EXPECT: done
+fn p1<T>(x: T) { x }
+fn p2<T>(x: T) { x }
+fn p3<T>(x: T) { x }
+fn p4<T>(x: T) { x }
+fn p5<T>(x: T) { x }
+fn p6<T>(x: T) { x }
+fn p7<T>(x: T) { x }
+fn b<T>(x: T) { x }
+fn c<T>(x: T) { x }
+fn a<T>(x: T) { b(x); c(x) }
+
+p1(1)
+p2(1)
+p3(1)
+p4(1)
+p5(1)
+p6(1)
+p7(1)
+a(1)
+print("done")
