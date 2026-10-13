@@ -926,6 +926,7 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_IMPORT:            return "Import";
     case NODE_FROM:              return "From";
     case NODE_IMPORT_ITEM:       return "ImportItem";
+    case NODE_TRAIT:             return "Trait";
     case NODE_IMPL:              return "Impl";
     }
     return "?";
@@ -951,6 +952,7 @@ static int node_value_effect(Node *node) {
     case NODE_IMPORT:
     case NODE_FROM:
     case NODE_IMPORT_ITEM:
+    case NODE_TRAIT:
     case NODE_IMPL:
     case NODE_MODULE:
     case NODE_RANGE:
@@ -2109,6 +2111,7 @@ static void emit_stmt(Emitter *e, Node *node) {
     case NODE_IMPORT:
     case NODE_FROM:
     case NODE_IMPORT_ITEM:
+    case NODE_TRAIT:
     case NODE_IMPL:
         break;
 

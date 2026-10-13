@@ -1,0 +1,12 @@
+// Trait items are `fn` only for now: research/010 §12.1 declares
+// `TraitItem ::= FunctionDef | ConstDef`, but const items in a trait have no
+// checking or emission in Phase 2.3, so the parser rejects them explicitly
+// instead of silently accepting them.
+// EXPECT-ERROR: only 'fn' items are supported in a trait
+trait T {
+    const X: i32 = 1
+}
+
+fn main() {
+    print(1)
+}

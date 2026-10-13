@@ -338,7 +338,10 @@ static void dump_node(Node *node, int indent) {
             printf("Param(%.*s)\n",
                    (int)node->as.fn_decl.params.data[i].len,
                    node->as.fn_decl.params.data[i].str);
-            dump_node(node->as.fn_decl.param_types.data[i], indent + 2);
+            /* A typeless `self` receiver has no type node; print nothing for
+             * it (zig's dump matches: a null type_node prints nothing). */
+            if (node->as.fn_decl.param_types.data[i])
+                dump_node(node->as.fn_decl.param_types.data[i], indent + 2);
         }
         if (node->as.fn_decl.return_type) {
             indent_print(indent + 1);
@@ -453,8 +456,25 @@ static void dump_node(Node *node, int indent) {
         }
         printf(")\n");
         break;
+    case NODE_TRAIT:
+        printf("%sTrait(%.*s)\n", node->as.trait_decl.is_pub ? "Pub" : "",
+               (int)node->as.trait_decl.name.len,
+               node->as.trait_decl.name.str);
+        for (size_t i = 0; i < node->as.trait_decl.items.len; i++)
+            dump_node(node->as.trait_decl.items.data[i], indent + 1);
+        break;
     case NODE_IMPL:
-        printf("Impl\n");
+        printf("Impl(");
+        if (node->as.impl_decl.trait_name.str) {
+            printf("%.*s for ",
+                   (int)node->as.impl_decl.trait_name.len,
+                   node->as.impl_decl.trait_name.str);
+        }
+        printf("%.*s)\n",
+               (int)node->as.impl_decl.type_name.len,
+               node->as.impl_decl.type_name.str);
+        for (size_t i = 0; i < node->as.impl_decl.items.len; i++)
+            dump_node(node->as.impl_decl.items.data[i], indent + 1);
         break;
     case NODE_COMPOUND_ASSIGN:
         printf("CompoundAssign\n");

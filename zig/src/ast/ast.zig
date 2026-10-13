@@ -27,6 +27,8 @@ pub const Tag = enum {
     use_decl,
     import_decl,
     from_decl,
+    trait_decl,
+    impl_decl,
 
     // Declarations / auxiliary nodes
     param,
@@ -89,6 +91,13 @@ pub const FnDecl = struct { name: []const u8, params: List, ret: ?u32, body: u32
 pub const Lambda = struct { params: List, ret: ?u32, body: u32 };
 pub const StructDecl = struct { name: []const u8, fields: List, is_pub: bool = false };
 pub const EnumDecl = struct { name: []const u8, variants: List, is_pub: bool = false };
+/// `trait Name { fn ... }` (research/010 §12.1 TraitDef). A signature-only
+/// method carries an empty body block, so every consumer sees a well-formed
+/// `fn_decl`.
+pub const TraitDecl = struct { name: []const u8, items: List, is_pub: bool = false };
+/// `impl [TraitName for] Type { fn methods }` (research/010 §12.1 ImplBlock).
+/// `trait_name` is null for an inherent impl; generics/where are Phase 2.4.
+pub const ImplDecl = struct { trait_name: ?[]const u8, type_name: []const u8, items: List };
 pub const VarDecl = struct { name: []const u8, type_node: ?u32, value: ?u32, is_mut: bool, is_pub: bool = false };
 /// `import ImportPath ("as" Identifier)?` (research/010 §12.1). `path` is the
 /// source text of the whole path (`a.b.c`).
@@ -134,6 +143,8 @@ pub const Node = union(Tag) {
     use_decl: []const u8,
     import_decl: ImportDecl,
     from_decl: FromDecl,
+    trait_decl: TraitDecl,
+    impl_decl: ImplDecl,
     param: Param,
     field_decl: FieldDecl,
     struct_init_field: StructInitField,
@@ -284,6 +295,16 @@ pub const Tree = struct {
             .enum_decl => |e| {
                 try writer.print("{s}EnumDecl({s})\n", .{ if (e.is_pub) "Pub" else "", e.name });
                 for (self.extraSlice(e.variants)) |c| try self.dumpNode(writer, c, depth + 1);
+            },
+            .trait_decl => |t| {
+                try writer.print("{s}Trait({s})\n", .{ if (t.is_pub) "Pub" else "", t.name });
+                for (self.extraSlice(t.items)) |c| try self.dumpNode(writer, c, depth + 1);
+            },
+            .impl_decl => |im| {
+                try writer.writeAll("Impl(");
+                if (im.trait_name) |tn| try writer.print("{s} for ", .{tn});
+                try writer.print("{s})\n", .{im.type_name});
+                for (self.extraSlice(im.items)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .var_decl => |v| {
                 try writer.print("VarDecl({s}{s})\n", .{ v.name, if (v.is_mut) ", mut" else "" });

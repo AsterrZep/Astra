@@ -1049,6 +1049,11 @@ pub const TypeChecker = struct {
                 self.checkVarDecl(v, loc, true);
                 break :blk self.newType(.void);
             },
+            // Phase 2.3 steps 1-2: `trait`/`impl` parse into nodes but the
+            // checks (method table, `self` binding, trait conformance) are
+            // not wired yet, so the blocks are inert: their items are not
+            // walked. The seed behaves the same way (typechecker.c).
+            .trait_decl, .impl_decl => self.newType(.void),
             // Module declarations carry no value: they type as `void`, and the
             // drivers give them their semantics (namespace bindings, `pub`
             // gating — PHASE2_PROGRESS §7). Parsing them must not be a type

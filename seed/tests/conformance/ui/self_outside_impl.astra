@@ -1,0 +1,10 @@
+// `self` is only a receiver parameter inside a trait or impl block
+// (research/010 §12.1 FunctionParam); in a free function it is an error.
+// EXPECT-ERROR: 'self' parameter outside a trait or impl
+fn free_fn(self) {
+    print(1)
+}
+
+fn main() {
+    print(2)
+}

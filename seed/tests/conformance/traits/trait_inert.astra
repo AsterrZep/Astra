@@ -1,0 +1,35 @@
+// Phase 2.3 step 1-2 (both compilers): `trait` and `impl` parse into nodes
+// and are inert — the type checker does not walk their bodies and the
+// emitter skips them, so declaring methods changes nothing yet. `self` is a
+// contextual keyword: a plain identifier everywhere else (`let self` works).
+// EXPECT: inert
+// EXPECT: 42
+pub trait Show {
+    fn show(self)
+}
+
+trait Marker {
+    fn mark(self);
+}
+
+struct Point {
+    x: i32
+}
+
+impl Show for Point {
+    fn show(self) {
+        print("show")
+    }
+}
+
+impl Point {
+    fn dump(self) {
+        print(self.x)
+    }
+}
+
+fn main() {
+    print("inert")
+    let self = 41
+    print(self + 1)
+}

@@ -1968,6 +1968,13 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_FROM:
     case NODE_IMPORT_ITEM:  return type_new(tc->arena, TYPE_VOID);
 
+    /* Phase 2.3 step 1-2: `trait`/`impl` parse into nodes but the checks
+     * (method table, `self` binding, trait conformance) are not wired yet,
+     * so the blocks are inert: their items are not walked. Until then a
+     * program may declare them, but nothing may call a method. */
+    case NODE_TRAIT:
+    case NODE_IMPL:        return type_new(tc->arena, TYPE_VOID);
+
     /* Module */
     case NODE_MODULE:
         typecheck_module_pass(tc, node);

@@ -40,6 +40,14 @@ struct Parser {
      * flag an expression statement ending in `;` was indistinguishable from a
      * tail expression, because optional_semi swallows both `;` and newlines. */
     bool          last_stmt_semi;
+    /* True while parsing the items of a trait or impl block: a typeless
+     * `self` receiver is legal only there (research/010 §12.1 FunctionParam;
+     * `self` stays a plain identifier everywhere else, so `let self = 5`
+     * keeps compiling). */
+    bool          allow_self;
+    /* True only inside a trait block: a method may be a signature without a
+     * body (`fn show(self)`), the trait-item form of research/010 §12.1. */
+    bool          allow_sig_only;
 };
 
 /* -----------------------------------------------------------
@@ -125,6 +133,7 @@ static void synchronize(Parser *p) {
         if (check(p, TOKEN_SEMICOLON) || check(p, TOKEN_RBRACE)) return;
         switch (p->current.kind) {
             case TOKEN_FN: case TOKEN_STRUCT: case TOKEN_ENUM:
+            case TOKEN_TRAIT: case TOKEN_IMPL:
             case TOKEN_LET: case TOKEN_CONST: case TOKEN_USE:
             case TOKEN_IMPORT: case TOKEN_FROM: case TOKEN_PUB:
             case TOKEN_IF: case TOKEN_WHILE: case TOKEN_FOR:
@@ -910,12 +919,43 @@ static Node *parse_return(Parser *p) {
  * Function declaration
  * ----------------------------------------------------------- */
 
+/* `self` is an ordinary identifier everywhere except as the typeless
+ * receiver parameter of a trait/impl method (fn.c FunctionParam grammar):
+ * it must not become a keyword, or `let self = 5` would stop compiling. */
+static bool is_self_name(InternedString s) {
+    return s.len == 4 && memcmp(s.str, "self", 4) == 0;
+}
+
+/* Push one parameter onto a function, keeping `params` and `param_types`
+ * perfectly parallel (a typeless `self` records a NULL type). */
+static void fn_add_param(Parser *p, Node *fn, InternedString name, Node *type) {
+    FnDecl *f = &fn->as.fn_decl;
+    if (f->params.len >= f->params.cap) {
+        size_t new_cap = f->params.cap == 0 ? 8 : f->params.cap * 2;
+        InternedString *nd = arena_new_array(p->arena, InternedString, new_cap);
+        Node **nt = arena_new_array(p->arena, Node *, new_cap);
+        if (f->params.data) {
+            memcpy(nd, f->params.data, sizeof(InternedString) * f->params.len);
+            memcpy(nt, f->param_types.data, sizeof(Node *) * f->params.len);
+        }
+        f->params.data      = nd;
+        f->params.cap       = new_cap;
+        f->param_types.data = nt;
+        f->param_types.cap  = new_cap;
+    }
+    f->params.data[f->params.len]      = name;
+    f->param_types.data[f->params.len] = type;
+    f->params.len++;
+    f->param_types.len++;
+}
+
 static Node *parse_fn_decl(Parser *p, bool is_pub) {
     SrcLoc loc = p->previous.loc;
     expect(p, TOKEN_IDENT, "function name");
     Node *n = node_new(p->arena, NODE_FN_DECL, loc);
     n->as.fn_decl.name = p->previous.text;
     n->as.fn_decl.is_pub = is_pub;
+    n->as.fn_decl.has_self = false;
     n->as.fn_decl.params.data    = NULL;
     n->as.fn_decl.params.len     = 0;
     n->as.fn_decl.params.cap     = 0;
@@ -926,47 +966,65 @@ static Node *parse_fn_decl(Parser *p, bool is_pub) {
 
     /* Parameters */
     expect(p, TOKEN_LPAREN, "'('");
+    bool self_err = false;
     if (!check(p, TOKEN_RPAREN)) {
         do {
             expect(p, TOKEN_IDENT, "parameter name");
-            /* param name */
-            if (n->as.fn_decl.params.len >= n->as.fn_decl.params.cap) {
-                size_t new_cap = n->as.fn_decl.params.cap == 0 ? 8 : n->as.fn_decl.params.cap * 2;
-                InternedString *new_data = arena_new_array(p->arena, InternedString, new_cap);
-                if (n->as.fn_decl.params.data) {
-                    memcpy(new_data, n->as.fn_decl.params.data, sizeof(InternedString) * n->as.fn_decl.params.len);
+            InternedString pname = p->previous.text;
+            /* A typeless `self` receiver: the name stands alone (`,` or `)`
+             * follows), so `self: Point` keeps meaning an ordinary parameter
+             * literally named `self` (research/010 §12.1 FunctionParam). */
+            if (is_self_name(pname) && !check(p, TOKEN_COLON)) {
+                if (!p->allow_self) {
+                    parser_error(p, "'self' parameter outside a trait or impl");
+                    self_err = true;
+                } else if (n->as.fn_decl.params.len > 0) {
+                    parser_error(p, "'self' must be the first parameter");
+                    self_err = true;
                 }
-                n->as.fn_decl.params.data = new_data;
-                n->as.fn_decl.params.cap  = new_cap;
+                fn_add_param(p, n, pname, NULL);
+                if (n->as.fn_decl.params.len == 1) n->as.fn_decl.has_self = true;
+            } else {
+                expect(p, TOKEN_COLON, "':'");
+                Node *ptype = parse_type(p);
+                fn_add_param(p, n, pname, ptype);
             }
-            n->as.fn_decl.params.data[n->as.fn_decl.params.len++] = p->previous.text;
-
-            /* parameter type */
-            expect(p, TOKEN_COLON, "':'");
-            Node *ptype = parse_type(p);
-            if (n->as.fn_decl.param_types.len >= n->as.fn_decl.param_types.cap) {
-                size_t new_cap = n->as.fn_decl.param_types.cap == 0 ? 8 : n->as.fn_decl.param_types.cap * 2;
-                Node **new_data = arena_new_array(p->arena, Node *, new_cap);
-                if (n->as.fn_decl.param_types.data) {
-                    memcpy(new_data, n->as.fn_decl.param_types.data, sizeof(Node *) * n->as.fn_decl.param_types.len);
-                }
-                n->as.fn_decl.param_types.data = new_data;
-                n->as.fn_decl.param_types.cap  = new_cap;
-            }
-            n->as.fn_decl.param_types.data[n->as.fn_decl.param_types.len++] = ptype;
         } while (match(p, TOKEN_COMMA));
     }
     expect(p, TOKEN_RPAREN, "')'");
+
+    /* A trait/impl item is a method: the receiver is params[0]. One without
+     * it would be a static function with no call syntax in the language, so
+     * reject it at the source instead of leaving it uncallable. */
+    if (p->allow_self) {
+        if (n->as.fn_decl.params.len > 0 &&
+            is_self_name(n->as.fn_decl.params.data[0])) {
+            n->as.fn_decl.has_self = true;
+        } else if (!self_err) {
+            parser_error(p, "'self' is required as the first parameter of a method");
+        }
+    }
 
     /* Return type */
     if (match(p, TOKEN_ARROW)) {
         n->as.fn_decl.return_type = parse_type(p);
     }
 
-    /* Body */
+    /* Body. Inside a trait a method may stop at its signature
+     * (research/010 §12.1 TraitItem); an empty block stands in for the
+     * missing body so every later phase sees a well-formed function. */
     skip_newlines(p);
-    expect(p, TOKEN_LBRACE, "'{' for function body");
-    n->as.fn_decl.body = parse_block(p);
+    if (p->allow_sig_only && !check(p, TOKEN_LBRACE)) {
+        match(p, TOKEN_SEMICOLON); /* optional terminator: `fn show(self);` */
+        n->as.fn_decl.body = node_new(p->arena, NODE_BLOCK, loc);
+        n->as.fn_decl.body->as.block.stmts.data = NULL;
+        n->as.fn_decl.body->as.block.stmts.len  = 0;
+        n->as.fn_decl.body->as.block.stmts.cap  = 0;
+        n->as.fn_decl.body->as.block.last_expr  = NULL;
+    } else {
+        expect(p, TOKEN_LBRACE, "'{' for function body");
+        n->as.fn_decl.body = parse_block(p);
+    }
     return n;
 }
 
@@ -1156,6 +1214,127 @@ static Node *parse_enum_decl(Parser *p, bool is_pub) {
             break;
         }
     }
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) advance(p);
+    expect(p, TOKEN_RBRACE, "'}'");
+    return n;
+}
+
+/* -----------------------------------------------------------
+ * Trait declaration (research/010 §12.1 TraitDef)
+ * ----------------------------------------------------------- */
+
+static Node *parse_trait_decl(Parser *p, bool is_pub) {
+    SrcLoc loc = p->previous.loc;
+    expect(p, TOKEN_IDENT, "trait name");
+    Node *n = node_new(p->arena, NODE_TRAIT, loc);
+    n->as.trait_decl.name = p->previous.text;
+    n->as.trait_decl.is_pub = is_pub;
+    n->as.trait_decl.items.data = NULL;
+    n->as.trait_decl.items.len  = 0;
+    n->as.trait_decl.items.cap  = 0;
+
+    expect(p, TOKEN_LBRACE, "'{'");
+    bool saved_self = p->allow_self;
+    bool saved_sig  = p->allow_sig_only;
+    p->allow_self    = true;
+    p->allow_sig_only = true;
+    skip_newlines(p);
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !p->aborted) {
+        /* An iteration that consumes nothing would report the same error
+         * forever; the guards below bail instead (as struct/enum do). */
+        uint32_t iter_start = p->current.loc.offset;
+        if (!check(p, TOKEN_FN)) {
+            parser_error(p, "only 'fn' items are supported in a trait");
+            break;
+        }
+        advance(p);
+        Node *fn = parse_fn_decl(p, false);
+        if (n->as.trait_decl.items.len >= n->as.trait_decl.items.cap) {
+            size_t new_cap = n->as.trait_decl.items.cap == 0 ? 8 : n->as.trait_decl.items.cap * 2;
+            Node **nd = arena_new_array(p->arena, Node *, new_cap);
+            if (n->as.trait_decl.items.data) {
+                memcpy(nd, n->as.trait_decl.items.data,
+                       sizeof(Node *) * n->as.trait_decl.items.len);
+            }
+            n->as.trait_decl.items.data = nd;
+            n->as.trait_decl.items.cap  = new_cap;
+        }
+        n->as.trait_decl.items.data[n->as.trait_decl.items.len++] = fn;
+        skip_newlines(p);
+        if (p->current.loc.offset == iter_start && !p->had_error) {
+            fprintf(stderr, "error:");
+            srcloc_print(p->current.loc);
+            fprintf(stderr, ": aborting trait body after parse error\n");
+            break;
+        }
+    }
+    p->allow_self    = saved_self;
+    p->allow_sig_only = saved_sig;
+    /* A malformed body is swallowed up to its closing brace so the stray '}'
+     * is not re-reported at module level (as in struct/enum bodies). */
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) advance(p);
+    expect(p, TOKEN_RBRACE, "'}'");
+    return n;
+}
+
+/* -----------------------------------------------------------
+ * Impl block (research/010 §12.1 ImplBlock)
+ * ----------------------------------------------------------- */
+
+static Node *parse_impl_block(Parser *p) {
+    SrcLoc loc = p->previous.loc; /* the `impl` keyword */
+    expect(p, TOKEN_IDENT, "type name");
+    InternedString first = p->previous.text;
+    Node *n = node_new(p->arena, NODE_IMPL, loc);
+    n->as.impl_decl.trait_name = (InternedString){0}; /* NULL when inherent */
+    n->as.impl_decl.type_name  = (InternedString){0};
+    n->as.impl_decl.items.data = NULL;
+    n->as.impl_decl.items.len  = 0;
+    n->as.impl_decl.items.cap  = 0;
+
+    if (match(p, TOKEN_FOR)) {
+        n->as.impl_decl.trait_name = first;
+        expect(p, TOKEN_IDENT, "type name");
+        n->as.impl_decl.type_name = p->previous.text;
+    } else {
+        n->as.impl_decl.type_name = first;
+    }
+
+    expect(p, TOKEN_LBRACE, "'{'");
+    bool saved_self = p->allow_self;
+    bool saved_sig  = p->allow_sig_only;
+    p->allow_self    = true;
+    p->allow_sig_only = false; /* an impl method always has a body */
+    skip_newlines(p);
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !p->aborted) {
+        uint32_t iter_start = p->current.loc.offset;
+        if (!check(p, TOKEN_FN)) {
+            parser_error(p, "only 'fn' items are supported in an impl block");
+            break;
+        }
+        advance(p);
+        Node *fn = parse_fn_decl(p, false);
+        if (n->as.impl_decl.items.len >= n->as.impl_decl.items.cap) {
+            size_t new_cap = n->as.impl_decl.items.cap == 0 ? 8 : n->as.impl_decl.items.cap * 2;
+            Node **nd = arena_new_array(p->arena, Node *, new_cap);
+            if (n->as.impl_decl.items.data) {
+                memcpy(nd, n->as.impl_decl.items.data,
+                       sizeof(Node *) * n->as.impl_decl.items.len);
+            }
+            n->as.impl_decl.items.data = nd;
+            n->as.impl_decl.items.cap  = new_cap;
+        }
+        n->as.impl_decl.items.data[n->as.impl_decl.items.len++] = fn;
+        skip_newlines(p);
+        if (p->current.loc.offset == iter_start && !p->had_error) {
+            fprintf(stderr, "error:");
+            srcloc_print(p->current.loc);
+            fprintf(stderr, ": aborting impl body after parse error\n");
+            break;
+        }
+    }
+    p->allow_self    = saved_self;
+    p->allow_sig_only = saved_sig;
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) advance(p);
     expect(p, TOKEN_RBRACE, "'}'");
     return n;
@@ -1444,14 +1623,15 @@ static Node *parse_statement(Parser *p) {
 
     /* `pub` marks a declaration as exported (ARCHITECTURE §10.2). Recorded on
      * the AST node; per-module visibility kicks in with the module system.
-     * research/010 §12.1 allows repeated qualifiers (`pub*`); only the four
-     * exportable kinds take it. */
+     * research/010 §12.1 allows repeated qualifiers (`pub*`); only the
+     * exportable kinds take it (`impl` never is — it attaches to a type). */
     bool is_pub = false;
     if (check(p, TOKEN_PUB)) {
         while (match(p, TOKEN_PUB)) is_pub = true;
         if (!check(p, TOKEN_FN) && !check(p, TOKEN_STRUCT) &&
-            !check(p, TOKEN_ENUM) && !check(p, TOKEN_CONST)) {
-            parser_error(p, "'pub' can only precede fn, struct, enum or const");
+            !check(p, TOKEN_ENUM) && !check(p, TOKEN_TRAIT) &&
+            !check(p, TOKEN_CONST)) {
+            parser_error(p, "'pub' can only precede fn, struct, enum, trait or const");
             return NULL;
         }
     }
@@ -1460,6 +1640,8 @@ static Node *parse_statement(Parser *p) {
     if (check(p, TOKEN_FN))     { advance(p); return parse_fn_decl(p, is_pub); }
     if (check(p, TOKEN_STRUCT)) { advance(p); return parse_struct_decl(p, is_pub); }
     if (check(p, TOKEN_ENUM))   { advance(p); return parse_enum_decl(p, is_pub); }
+    if (check(p, TOKEN_TRAIT))  { advance(p); return parse_trait_decl(p, is_pub); }
+    if (check(p, TOKEN_IMPL))   { advance(p); return parse_impl_block(p); }
     if (check(p, TOKEN_CONST))  { advance(p); return parse_var_decl(p, true, is_pub); }
     if (check(p, TOKEN_USE))    { advance(p); return parse_use(p); }
     if (check(p, TOKEN_IMPORT)) { advance(p); return parse_import(p); }
@@ -1759,6 +1941,8 @@ Parser *parser_create(Lexer *lexer, Arena *arena, StringTable *strings) {
     p->strings = strings;
     p->had_error = false;
     p->no_struct_lit = false;
+    p->allow_self = false;
+    p->allow_sig_only = false;
     /* Load first token */
     advance(p);
     return p;

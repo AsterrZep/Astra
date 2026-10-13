@@ -1,0 +1,17 @@
+// Every impl item is a method: the receiver is the first parameter, so an
+// impl item without `self` would be an uncallable static function (Phase 2.3
+// has no call syntax for those).
+// EXPECT-ERROR: 'self' is required as the first parameter of a method
+impl Point {
+    fn bad(x: i32) {
+        print(x)
+    }
+}
+
+struct Point {
+    x: i32
+}
+
+fn main() {
+    print(1)
+}

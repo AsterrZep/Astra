@@ -98,6 +98,14 @@ pub const Parser = struct {
     depth: u32 = 0,
     no_struct_lit: bool = false,
     last_stmt_semi: bool = false,
+    /// True while parsing the items of a trait or impl block: a typeless
+    /// `self` receiver is legal only there (research/010 §12.1 FunctionParam;
+    /// `self` stays a plain identifier everywhere else, so `let self = 5`
+    /// keeps compiling).
+    allow_self: bool = false,
+    /// True only inside a trait block: a method may be a signature without a
+    /// body (`fn show(self)`), the trait-item form of research/010 §12.1.
+    allow_sig_only: bool = false,
     err_msg: []const u8 = "",
     err_loc: lexer.Loc = .{ .start = 0, .end = 0, .line = 0, .col = 0 },
     /// File being parsed, for diagnostics. Empty when the caller does not
@@ -145,10 +153,18 @@ pub const Parser = struct {
     }
 
     fn fail(self: *Parser, msg: []const u8) anyerror {
-        // Remember the first error for callers, but report *every* one: the
-        // module loop recovers after each and keeps parsing, so a file with two
-        // bad declarations should name both (the seed's `parser_error` does the
-        // same).
+        // Report *every* error: the module loop recovers after each and keeps
+        // parsing, so a file with two bad declarations should name both (the
+        // seed's `parser_error` does the same).
+        self.report(msg);
+        return error.ParseError;
+    }
+
+    /// Record and emit a diagnostic *without* aborting the current parse
+    /// function — the report-and-continue shape the seed's `parser_error`
+    /// has (trait/impl bodies swallow the rest of the block after one).
+    fn report(self: *Parser, msg: []const u8) void {
+        // Remember the first error for callers.
         if (!self.had_error) {
             self.err_msg = msg;
             self.err_loc = self.current.loc;
@@ -159,7 +175,6 @@ pub const Parser = struct {
             msg,
             self.current.tag.name(),
         });
-        return error.ParseError;
     }
 
     /// Is this token a point where a fresh statement may start? Mirrors the
@@ -167,7 +182,7 @@ pub const Parser = struct {
     fn isSyncToken(tag: lexer.Tag) bool {
         return switch (tag) {
             .semicolon, .rbrace => true,
-            .kw_fn, .kw_struct, .kw_enum, .kw_let, .kw_const, .kw_use, .kw_if, .kw_while, .kw_for, .kw_return, .kw_break, .kw_continue => true,
+            .kw_fn, .kw_struct, .kw_enum, .kw_trait, .kw_impl, .kw_let, .kw_const, .kw_use, .kw_if, .kw_while, .kw_for, .kw_return, .kw_break, .kw_continue => true,
             else => false,
         };
     }
@@ -275,18 +290,22 @@ pub const Parser = struct {
         // `pub` marks a declaration as exported (ARCHITECTURE §10.2). Recorded
         // on the AST node; per-module visibility kicks in with the module
         // system. research/010 §12.1 allows repeated qualifiers (`pub*`);
-        // only the four exportable kinds take it here.
+        // only the exportable kinds take it here (`impl` never is — it
+        // attaches to a type).
         var is_pub = false;
         while (self.match(.kw_pub)) is_pub = true;
         if (is_pub and !self.check(.kw_fn) and !self.check(.kw_struct) and
-            !self.check(.kw_enum) and !self.check(.kw_const))
+            !self.check(.kw_enum) and !self.check(.kw_trait) and
+            !self.check(.kw_const))
         {
-            return self.fail("'pub' can only precede fn, struct, enum or const");
+            return self.fail("'pub' can only precede fn, struct, enum, trait or const");
         }
 
         if (self.match(.kw_fn)) return try self.parseFnDecl(is_pub);
         if (self.match(.kw_struct)) return try self.parseStructDecl(is_pub);
         if (self.match(.kw_enum)) return try self.parseEnumDecl(is_pub);
+        if (self.match(.kw_trait)) return try self.parseTraitDecl(is_pub);
+        if (self.match(.kw_impl)) return try self.parseImplBlock();
         if (self.match(.kw_const)) return try self.parseVarDecl(true, is_pub);
         if (self.match(.kw_let)) return try self.parseVarDecl(false, false);
         if (self.match(.kw_var)) return try self.parseVarDecl(false, false);
@@ -478,20 +497,49 @@ pub const Parser = struct {
             while (true) {
                 try self.expect(.identifier);
                 const pname = self.previous.text;
-                try self.expect(.colon);
-                const ptype = try self.parseType();
-                try params.append(self.allocator, try self.add(.{ .param = .{ .name = pname, .type_node = ptype } }, self.previous.loc));
+                // A typeless `self` receiver: the name stands alone (`,` or
+                // `)` follows), so `self: Point` keeps meaning an ordinary
+                // parameter literally named `self` (research/010 §12.1).
+                if (std.mem.eql(u8, pname, "self") and !self.check(.colon)) {
+                    if (!self.allow_self) return self.fail("'self' parameter outside a trait or impl");
+                    if (params.items.len > 0) return self.fail("'self' must be the first parameter");
+                    try params.append(self.allocator, try self.add(.{ .param = .{ .name = pname, .type_node = null } }, self.previous.loc));
+                } else {
+                    try self.expect(.colon);
+                    const ptype = try self.parseType();
+                    try params.append(self.allocator, try self.add(.{ .param = .{ .name = pname, .type_node = ptype } }, self.previous.loc));
+                }
                 if (!self.match(.comma)) break;
             }
         }
         try self.expect(.rparen);
 
+        // A trait/impl item is a method: the receiver is params[0]. One
+        // without it would be a static function with no call syntax in the
+        // language, so reject it at the source instead of leaving it
+        // uncallable. (Typed `self: T` counts too — same name, same slot.)
+        if (self.allow_self and
+            (params.items.len == 0 or
+            !std.mem.eql(u8, self.tree.node(params.items[0]).param.name, "self")))
+        {
+            return self.fail("'self' is required as the first parameter of a method");
+        }
+
         var ret: ?u32 = null;
         if (self.match(.arrow)) ret = try self.parseType();
 
+        // Body. Inside a trait a method may stop at its signature
+        // (research/010 §12.1 TraitItem); an empty block stands in for the
+        // missing body so every later phase sees a well-formed function.
         self.skipNewlines();
-        try self.expect(.lbrace);
-        const body = try self.parseBlock();
+        const body = if (self.allow_sig_only and !self.check(.lbrace)) blk: {
+            _ = self.match(.semicolon); // optional terminator: `fn show(self);`
+            const empty = try self.tree.addExtra(@as([]const u32, &.{}));
+            break :blk try self.add(.{ .block = .{ .stmts = empty, .tail = null } }, loc);
+        } else blk: {
+            try self.expect(.lbrace);
+            break :blk try self.parseBlock();
+        };
         const list = try self.tree.addExtra(params.items);
         return self.add(.{ .fn_decl = .{ .name = name, .params = list, .ret = ret, .body = body, .is_pub = is_pub } }, loc);
     }
@@ -571,6 +619,92 @@ pub const Parser = struct {
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(variants.items);
         return self.add(.{ .enum_decl = .{ .name = name, .variants = list, .is_pub = is_pub } }, loc);
+    }
+
+    /// `trait Name { fn ... }` (research/010 §12.1 TraitDef). Items are `fn`
+    /// only and a method may be a signature without a body; generics and
+    /// where-clauses are Phase 2.4 territory.
+    fn parseTraitDecl(self: *Parser, is_pub: bool) anyerror!u32 {
+        const loc = self.previous.loc;
+        try self.expect(.identifier);
+        const name = self.previous.text;
+
+        var items: std.ArrayListUnmanaged(u32) = .empty;
+        defer items.deinit(self.allocator);
+
+        try self.expect(.lbrace);
+        const saved_self = self.allow_self;
+        const saved_sig = self.allow_sig_only;
+        self.allow_self = true;
+        self.allow_sig_only = true;
+        defer {
+            self.allow_self = saved_self;
+            self.allow_sig_only = saved_sig;
+        }
+
+        self.skipNewlines();
+        while (!self.check(.rbrace) and !self.check(.eof) and !self.aborted) {
+            if (!self.check(.kw_fn)) {
+                // Report and keep going: the loop below swallows the rest of
+                // the body up to `}`, exactly as the seed does.
+                self.report("only 'fn' items are supported in a trait");
+                break;
+            }
+            self.advance();
+            try items.append(self.allocator, try self.parseFnDecl(false));
+            self.skipNewlines();
+        }
+        while (!self.check(.rbrace) and !self.check(.eof)) self.advance();
+        try self.expect(.rbrace);
+        const list = try self.tree.addExtra(items.items);
+        return self.add(.{ .trait_decl = .{ .name = name, .items = list, .is_pub = is_pub } }, loc);
+    }
+
+    /// `impl [TraitName for] Type { fn methods }` (research/010 §12.1
+    /// ImplBlock). An inherent impl omits `for`; every item is a method taking
+    /// a typeless `self` as its first parameter.
+    fn parseImplBlock(self: *Parser) anyerror!u32 {
+        const loc = self.previous.loc;
+        try self.expect(.identifier);
+        const first = self.previous.text;
+
+        var trait_name: ?[]const u8 = null;
+        var type_name: []const u8 = undefined;
+        if (self.match(.kw_for)) {
+            trait_name = first;
+            try self.expect(.identifier);
+            type_name = self.previous.text;
+        } else {
+            type_name = first;
+        }
+
+        var items: std.ArrayListUnmanaged(u32) = .empty;
+        defer items.deinit(self.allocator);
+
+        try self.expect(.lbrace);
+        const saved_self = self.allow_self;
+        const saved_sig = self.allow_sig_only;
+        self.allow_self = true;
+        self.allow_sig_only = false; // an impl method always has a body
+        defer {
+            self.allow_self = saved_self;
+            self.allow_sig_only = saved_sig;
+        }
+
+        self.skipNewlines();
+        while (!self.check(.rbrace) and !self.check(.eof) and !self.aborted) {
+            if (!self.check(.kw_fn)) {
+                self.report("only 'fn' items are supported in an impl block");
+                break;
+            }
+            self.advance();
+            try items.append(self.allocator, try self.parseFnDecl(false));
+            self.skipNewlines();
+        }
+        while (!self.check(.rbrace) and !self.check(.eof)) self.advance();
+        try self.expect(.rbrace);
+        const list = try self.tree.addExtra(items.items);
+        return self.add(.{ .impl_decl = .{ .trait_name = trait_name, .type_name = type_name, .items = list } }, loc);
     }
 
     fn parseVarDecl(self: *Parser, is_const: bool, is_pub: bool) anyerror!u32 {

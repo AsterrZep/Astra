@@ -283,6 +283,7 @@ typedef enum {
     NODE_USE,
     NODE_IMPORT,
     NODE_FROM,
+    NODE_TRAIT,
     NODE_IMPL,
 
     /* Import item (sub-production of ImportStmt) */
@@ -462,11 +463,12 @@ typedef struct {
 /* Declaration nodes */
 typedef struct {
     InternedString        name;
-    DYNARRAY(InternedString) params; /* param names */
-    DYNARRAY(Node *)      param_types;
+    DYNARRAY(InternedString) params; /* param names; params[0] == "self" when has_self */
+    DYNARRAY(Node *)      param_types; /* NULL entry for a typeless `self` receiver */
     Node                 *return_type; /* may be NULL */
     Node                 *body;        /* BlockExpr */
     bool                 is_pub;       /* `pub fn` — exported (ARCHITECTURE §10.2) */
+    bool                 has_self;     /* receiver method (params[0] is the receiver) */
 } FnDecl;
 
 typedef struct {
@@ -489,6 +491,24 @@ typedef struct {
     DYNARRAY(Node *)      variant_payloads;  /* NODE_PAYLOAD, parallel to variants */
     bool                  is_pub;            /* `pub enum` — exported */
 } EnumDecl;
+
+/* Trait declaration: `trait Name { fn ... }` (research/010 §12.1 TraitDef).
+ * Items are NODE_FN_DECL nodes; a signature-only method (no block) carries an
+ * empty body block, so every consumer sees a well-formed function. */
+typedef struct {
+    InternedString   name;
+    DYNARRAY(Node *) items;
+    bool             is_pub; /* `pub trait` — exported (ARCHITECTURE §10.2) */
+} TraitDecl;
+
+/* Impl block: `impl [TraitName for] Type { fn methods }` (research/010 §12.1
+ * ImplBlock). `trait_name` is NULL for an inherent impl. Items are NODE_FN_DECL
+ * with has_self; generics and where-clauses are Phase 2.4 territory. */
+typedef struct {
+    InternedString   trait_name; /* NULL when inherent */
+    InternedString   type_name;
+    DYNARRAY(Node *) items;
+} ImplDecl;
 
 /* Payload of a data-carrying enum variant:
  * `enum Mover { Paso(i32) PasoDoble(x: i32, y: i32) }`.
@@ -598,6 +618,8 @@ struct Node {
         LambdaExpr      lambda;
         StructDecl      struct_decl;
         EnumDecl        enum_decl;
+        TraitDecl       trait_decl;
+        ImplDecl        impl_decl;
         ConstDecl       const_decl;
         VarDecl         var_decl;
         TypeIdent       type_ident;
