@@ -80,6 +80,23 @@ const Method = struct {
     global: []const u8, // mangled runtime global `Type.method`
     inherent: bool,
     fn_type: *Type,
+    loc: lexer.Loc, // the impl item, for conformance errors
+};
+
+/// One required method of a trait declaration (Phase 2.3 step 5): the
+/// signature an `impl T for X` must provide. Collected in its own pre-pass so
+/// the impl may appear before the trait in source order. `param_types` skips
+/// the receiver — both sides of a conformance check compare what follows
+/// `self` — and `ret` is null when the signature omits `->`.
+const TraitMethod = struct {
+    name: []const u8,
+    param_types: []const *Type,
+    ret: ?*Type,
+};
+
+const TraitInfo = struct {
+    name: []const u8,
+    methods: []const TraitMethod,
 };
 
 fn isNumeric(t: *const Type) bool {
@@ -102,6 +119,7 @@ pub const TypeChecker = struct {
     scopes: std.ArrayListUnmanaged(usize) = .empty,
     variants: std.ArrayListUnmanaged(Variant) = .empty,
     methods: std.ArrayListUnmanaged(Method) = .empty,
+    traits: std.ArrayListUnmanaged(TraitInfo) = .empty,
     current_fn_return: ?*Type = null,
     // Location of the function currently being checked, used for body-level
     // diagnostics (`checkFnDecl` sets it before `checkFnBody`).
@@ -219,6 +237,7 @@ pub const TypeChecker = struct {
             .global = self.methodGlobal(type_name, trait_name, method_name),
             .inherent = inherent,
             .fn_type = fn_type,
+            .loc = loc,
         }) catch @panic("OOM");
     }
 
@@ -239,6 +258,33 @@ pub const TypeChecker = struct {
             if (trait_fallback == null) trait_fallback = m;
         }
         return trait_fallback;
+    }
+
+    fn addTrait(self: *TypeChecker, name: []const u8, methods: []const TraitMethod) void {
+        self.traits.append(self.a, .{ .name = name, .methods = methods }) catch @panic("OOM");
+    }
+
+    fn findTrait(self: *TypeChecker, name: []const u8) ?*const TraitInfo {
+        for (self.traits.items) |*t| {
+            if (std.mem.eql(u8, t.name, name)) return t;
+        }
+        return null;
+    }
+
+    /// Exact (type, method, trait) lookup for conformance — unlike findMethod
+    /// it never falls back to an inherent entry or another trait of the same
+    /// name.
+    fn findTraitMethod(self: *TypeChecker, type_name: []const u8,
+        method_name: []const u8, trait_name: []const u8) ?Method {
+        for (self.methods.items) |m| {
+            if (std.mem.eql(u8, m.type_name, type_name) and
+                std.mem.eql(u8, m.method_name, method_name) and
+                std.mem.eql(u8, m.trait_name, trait_name))
+            {
+                return m;
+            }
+        }
+        return null;
     }
 
     fn enumVariantIndex(en: *const Type, variant: []const u8) ?usize {
@@ -1228,6 +1274,46 @@ pub const TypeChecker = struct {
         return list.toOwnedSlice(self.a) catch @panic("OOM");
     }
 
+    /// Phase 2.3 step 5: collect every trait's required method signatures.
+    /// Runs after pass 0 (struct/enum names bound), so parameter and return
+    /// types resolve in any source order, and before the impl pass, so
+    /// `impl T for X` can verify conformance. A trait item with statements or
+    /// a tail expression is a default method — rejected until a later phase
+    /// defines the lookup rules; the empty block a signature-only item gets
+    /// from the parser carries no statements, so it passes untouched.
+    fn collectTraitDecls(self: *TypeChecker, items: []const u32) void {
+        for (items) |it| {
+            if (std.meta.activeTag(self.tree.node(it)) != .trait_decl) continue;
+            const tr = self.tree.node(it).trait_decl;
+            var methods: std.ArrayListUnmanaged(TraitMethod) = .empty;
+            for (self.tree.extraSlice(tr.items)) |fidx| {
+                if (std.meta.activeTag(self.tree.node(fidx)) != .fn_decl) continue;
+                const f = self.tree.node(fidx).fn_decl;
+                const body = self.tree.node(f.body);
+                const has_content = switch (body) {
+                    .block => |b| self.tree.extraSlice(b.stmts).len > 0 or b.tail != null,
+                    else => false,
+                };
+                if (has_content) {
+                    self.errFmt(self.tree.loc(fidx), "default trait methods are not yet supported", .{});
+                }
+                const params = self.tree.extraSlice(f.params);
+                if (params.len == 0) continue; // the parser already reported it
+                const param_types = self.a.alloc(*Type, params.len - 1) catch @panic("OOM");
+                for (params[1..], 1..) |p, k| {
+                    param_types[k - 1] = self.resolveTypeNode(self.tree.node(p).param.type_node);
+                }
+                const ret: ?*Type = if (f.ret) |r| self.resolveTypeNode(r) else null;
+                methods.append(self.a, .{
+                    .name = f.name,
+                    .param_types = param_types,
+                    .ret = ret,
+                }) catch @panic("OOM");
+            }
+            self.addTrait(tr.name, methods.items);
+        }
+    }
+
     /// Phase 2.3 step 3 (pass 1): register every `impl` item as a method of
     /// the receiver's nominal type. The receiver resolves through the same
     /// path a type annotation uses (builtins resolve, unknown names report),
@@ -1283,6 +1369,41 @@ pub const TypeChecker = struct {
             self.tree.nodes.items[fidx].fn_decl.name = mangled;
             self.addMethod(im.type_name, f.name, trait_name, inherent, self.newFn(param_types, ret), floc);
         }
+
+        // Phase 2.3 step 5: a trait impl must name a known trait and provide
+        // every required method with the required signature. Conformance is
+        // per-impl-block — an inherent method never satisfies a trait
+        // requirement (Rust's rule); it only shadows the trait's entry at
+        // dispatch.
+        if (im.trait_name) |trname| {
+            if (self.findTrait(trname)) |ti| {
+                for (ti.methods) |tm| {
+                    const m = self.findTraitMethod(im.type_name, tm.name, trname) orelse {
+                        self.errFmt(self.tree.loc(impl_idx), "type '{s}' does not implement trait '{s}': missing method '{s}'", .{ im.type_name, ti.name, tm.name });
+                        continue;
+                    };
+                    var sig_ok = m.fn_type.params.len == tm.param_types.len + 1;
+                    if (sig_ok) {
+                        for (tm.param_types, 0..) |pt, q| {
+                            if (!typeEq(m.fn_type.params[q + 1], pt)) {
+                                sig_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (sig_ok) {
+                        const iret = m.fn_type.ret orelse self.newType(.void);
+                        const tret = tm.ret orelse self.newType(.void);
+                        if (!typeEq(iret, tret)) sig_ok = false;
+                    }
+                    if (!sig_ok) {
+                        self.errFmt(m.loc, "signature of method '{s}' of '{s}' does not match trait '{s}'", .{ tm.name, im.type_name, ti.name });
+                    }
+                }
+            } else {
+                self.errFmt(self.tree.loc(impl_idx), "unknown trait '{s}'", .{trname});
+            }
+        }
     }
 
     /// Phase 2.3 step 4 (pass 2): type-check the bodies of `impl` methods,
@@ -1319,6 +1440,7 @@ pub const TypeChecker = struct {
                 else => {},
             }
         }
+        self.collectTraitDecls(items);
         // First pass: register signatures and type declarations.
         for (items) |it| {
             switch (self.tree.node(it)) {

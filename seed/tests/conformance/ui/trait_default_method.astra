@@ -1,0 +1,13 @@
+// Trait items are signatures only: a body would be a default method, and
+// their lookup rules (which impl wins, which module they come from) are a
+// later phase, so the body is rejected instead of silently ignored.
+// EXPECT-ERROR: default trait methods are not yet supported
+trait Show {
+    fn show(self) -> string {
+        return "default"
+    }
+}
+
+fn main() {
+    print(1)
+}

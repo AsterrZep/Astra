@@ -308,7 +308,26 @@ typedef struct {
     InternedString global;     /* mangled runtime global `Type.method` */
     bool           inherent;
     Type          *fn_type;    /* fn(self: T, ...) -> R */
+    SrcLoc         loc;        /* the impl item, for conformance errors */
 } MethodEntry;
+
+/* Trait signature registry (Phase 2.3 step 5): a trait declaration is a list
+ * of required method signatures (research/010 §12). Signatures are collected
+ * in their own pre-pass so an `impl T for X` may appear before `trait T`,
+ * and a body on a trait item is rejected there — default methods are a later
+ * phase. */
+typedef struct {
+    InternedString name;
+    Type         **param_types; /* parameters after `self` */
+    size_t         param_count;
+    Type          *ret;         /* NULL when the signature omits `->` */
+} TraitMethod;
+
+typedef struct {
+    InternedString name;
+    TraitMethod   *methods;
+    size_t         method_count;
+} TraitInfo;
 
 struct TypeChecker {
     Arena     *arena;
@@ -322,6 +341,9 @@ struct TypeChecker {
     MethodEntry *methods;
     size_t     method_count;
     size_t     method_cap;
+    TraitInfo  *traits;
+    size_t     trait_count;
+    size_t     trait_cap;
 };
 
 static void checker_add_variant(TypeChecker *tc, InternedString variant, Type *et) {
@@ -413,6 +435,7 @@ static void checker_add_method(TypeChecker *tc, InternedString type_name,
         .global      = checker_method_global(tc, type_name, trait_name, method_name),
         .inherent    = inherent,
         .fn_type     = fn_type,
+        .loc         = loc,
     };
     tc->method_count++;
 }
@@ -444,6 +467,50 @@ static MethodEntry *checker_find_method(TypeChecker *tc, Type *recv,
         if (!trait_fallback) trait_fallback = m;
     }
     return trait_fallback;
+}
+
+static void checker_add_trait(TypeChecker *tc, InternedString name,
+                              TraitMethod *methods, size_t method_count) {
+    if (tc->trait_count >= tc->trait_cap) {
+        size_t nc = tc->trait_cap == 0 ? 8 : tc->trait_cap * 2;
+        TraitInfo *nd = arena_new_array(tc->arena, TraitInfo, nc);
+        if (tc->traits) {
+            memcpy(nd, tc->traits, sizeof(TraitInfo) * tc->trait_count);
+        }
+        tc->traits = nd;
+        tc->trait_cap = nc;
+    }
+    tc->traits[tc->trait_count] = (TraitInfo){
+        .name         = name,
+        .methods      = methods,
+        .method_count = method_count,
+    };
+    tc->trait_count++;
+}
+
+static TraitInfo *checker_find_trait(TypeChecker *tc, InternedString name) {
+    for (size_t i = 0; i < tc->trait_count; i++) {
+        if (string_eq(tc->traits[i].name, name)) return &tc->traits[i];
+    }
+    return NULL;
+}
+
+/* Exact (type, method, trait) lookup for conformance — unlike
+ * checker_find_method it never falls back to an inherent entry or another
+ * trait of the same name. */
+static MethodEntry *checker_find_trait_method(TypeChecker *tc,
+                                              InternedString type_name,
+                                              InternedString method_name,
+                                              InternedString trait_name) {
+    for (size_t i = 0; i < tc->method_count; i++) {
+        MethodEntry *m = &tc->methods[i];
+        if (string_eq(m->type_name, type_name) &&
+            string_eq(m->method_name, method_name) &&
+            string_eq(m->trait_name, trait_name)) {
+            return m;
+        }
+    }
+    return NULL;
 }
 
 TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
@@ -1915,8 +1982,60 @@ static void declare_type_decls(TypeChecker *tc, Node *module) {
     }
 }
 
+/* Phase 2.3 step 5: collect every trait's required method signatures. Runs
+ * after declare_type_decls, so parameter and return types resolve in any
+ * source order, and before the impl pass, so `impl T for X` can verify
+ * conformance. A trait item with statements or a tail expression is a
+ * default method — rejected until a later phase defines the lookup rules;
+ * the empty block a signature-only item gets from the parser carries no
+ * statements, so it passes untouched. */
+static void collect_trait_decls(TypeChecker *tc, Node *module) {
+    for (size_t i = 0; i < module->as.module.items.len; i++) {
+        Node *item = module->as.module.items.data[i];
+        if (item->kind != NODE_TRAIT) continue;
+        Node *tr = item;
+        TraitMethod *methods = NULL;
+        size_t count = 0, cap = 0;
+        for (size_t j = 0; j < tr->as.trait_decl.items.len; j++) {
+            Node *fn = tr->as.trait_decl.items.data[j];
+            if (fn->kind != NODE_FN_DECL) continue; /* the parser already reported it */
+            Node *body = fn->as.fn_decl.body;
+            if (body && (body->as.block.stmts.len > 0 ||
+                         body->as.block.last_expr)) {
+                tc_error(tc, fn->loc, "default trait methods are not yet supported");
+            }
+            size_t pc = fn->as.fn_decl.params.len;
+            if (pc == 0) continue; /* the parser already reported it */
+            if (count >= cap) {
+                size_t nc = cap == 0 ? 8 : cap * 2;
+                TraitMethod *nd = arena_new_array(tc->arena, TraitMethod, nc);
+                if (methods) {
+                    memcpy(nd, methods, sizeof(TraitMethod) * count);
+                }
+                methods = nd;
+                cap = nc;
+            }
+            TraitMethod *tm = &methods[count];
+            tm->name = fn->as.fn_decl.name;
+            tm->param_count = pc - 1; /* params[0] is the receiver */
+            tm->param_types = arena_new_array(tc->arena, Type *, pc - 1);
+            for (size_t k = 1; k < pc; k++) {
+                tm->param_types[k - 1] =
+                    resolve_type_node(tc, fn->as.fn_decl.param_types.data[k]);
+            }
+            tm->ret = NULL;
+            if (fn->as.fn_decl.return_type) {
+                tm->ret = resolve_type_node(tc, fn->as.fn_decl.return_type);
+            }
+            count++;
+        }
+        checker_add_trait(tc, tr->as.trait_decl.name, methods, count);
+    }
+}
+
 static void typecheck_module_pass(TypeChecker *tc, Node *module) {
     declare_type_decls(tc, module);
+    collect_trait_decls(tc, module);
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
         switch (item->kind) {
@@ -1955,9 +2074,8 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
              * `Type.method` it is emitted as (--dump-ast runs before checking,
              * so nothing user-visible changes). A typeless receiver gets a
              * synthesized type node so the body pass resolves `self` through
-             * the normal path. Trait *declarations* stay unwalked until step
-             * 5 (conformance); an impl's methods are live regardless of
-             * whether the trait name resolves. */
+             * the normal path. Trait impls are then checked for conformance
+             * (step 5, after the item loop). */
             {
                 Node *impl = item;
                 InternedString tname = impl->as.impl_decl.type_name;
@@ -2026,6 +2144,58 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
                                        impl->as.impl_decl.trait_name, inherent,
                                        type_new_fn(tc->arena, pts, pc, ret),
                                        fn->loc);
+                }
+
+                /* Phase 2.3 step 5: a trait impl must name a known trait and
+                 * provide every required method with the required signature.
+                 * Conformance is per-impl-block — an inherent method never
+                 * satisfies a trait requirement (Rust's rule); it only
+                 * shadows the trait's entry at dispatch. */
+                if (!inherent) {
+                    InternedString trname = impl->as.impl_decl.trait_name;
+                    TraitInfo *ti = checker_find_trait(tc, trname);
+                    if (!ti) {
+                        tc_error(tc, impl->loc, "unknown trait '%.*s'",
+                                 (int)trname.len, trname.str);
+                    } else {
+                        for (size_t k = 0; k < ti->method_count; k++) {
+                            TraitMethod *tm = &ti->methods[k];
+                            MethodEntry *m = checker_find_trait_method(
+                                tc, tname, tm->name, trname);
+                            if (!m) {
+                                tc_error(tc, impl->loc,
+                                         "type '%.*s' does not implement trait '%.*s': missing method '%.*s'",
+                                         (int)tname.len, tname.str,
+                                         (int)ti->name.len, ti->name.str,
+                                         (int)tm->name.len, tm->name.str);
+                                continue;
+                            }
+                            Type *fn = m->fn_type;
+                            bool sig_ok =
+                                fn->as.fn.param_count == tm->param_count + 1;
+                            for (size_t q = 0;
+                                 sig_ok && q < tm->param_count; q++) {
+                                if (!type_eq(fn->as.fn.params[q + 1],
+                                             tm->param_types[q])) {
+                                    sig_ok = false;
+                                }
+                            }
+                            Type *iret = fn->as.fn.ret
+                                ? fn->as.fn.ret
+                                : type_new(tc->arena, TYPE_VOID);
+                            Type *tret = tm->ret
+                                ? tm->ret
+                                : type_new(tc->arena, TYPE_VOID);
+                            if (!type_eq(iret, tret)) sig_ok = false;
+                            if (!sig_ok) {
+                                tc_error(tc, m->loc,
+                                         "signature of method '%.*s' of '%.*s' does not match trait '%.*s'",
+                                         (int)tm->name.len, tm->name.str,
+                                         (int)tname.len, tname.str,
+                                         (int)ti->name.len, ti->name.str);
+                            }
+                        }
+                    }
                 }
             }
             break;

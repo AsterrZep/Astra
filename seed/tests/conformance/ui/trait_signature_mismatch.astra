@@ -1,0 +1,20 @@
+// A method that satisfies a trait requirement must keep the required
+// parameter and return types — same arity, wrong types, still a mismatch.
+// EXPECT-ERROR: does not match trait 'Show'
+struct Point {
+    x: i32
+}
+
+trait Show {
+    fn show(self, prefix: string) -> string
+}
+
+impl Show for Point {
+    fn show(self, times: i32) -> string {
+        "shown"
+    }
+}
+
+fn main() {
+    print(1)
+}

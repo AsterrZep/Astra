@@ -1,0 +1,28 @@
+// Conformance is per-impl-block: the impl must declare every method the
+// trait requires, and an inherent method with the same name does not stand
+// in for it (Rust's rule).
+// EXPECT-ERROR: does not implement trait 'Show': missing method 'label'
+struct Point {
+    x: i32
+}
+
+trait Show {
+    fn show(self) -> string
+    fn label(self) -> string
+}
+
+impl Show for Point {
+    fn show(self) -> string {
+        "shown"
+    }
+}
+
+impl Point {
+    fn label(self) -> string {
+        "inherent"
+    }
+}
+
+fn main() {
+    print(1)
+}

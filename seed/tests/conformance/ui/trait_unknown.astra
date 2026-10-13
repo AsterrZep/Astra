@@ -1,0 +1,16 @@
+// A trait impl must name a trait that exists in the module; the name is
+// looked up at check time, not trusted like the receiver type.
+// EXPECT-ERROR: unknown trait 'Nope'
+struct Point {
+    x: i32
+}
+
+impl Nope for Point {
+    fn show(self) -> string {
+        "x"
+    }
+}
+
+fn main() {
+    print(1)
+}
