@@ -785,6 +785,11 @@ static Type *typecheck_ident(TypeChecker *tc, Node *node) {
                              "generic function '%.*s' used as a value",
                              (int)name.len, name.str);
     }
+    if (!sym->type) {
+        return tc_error_type(tc, node->loc,
+                             "symbol '%.*s' has no type",
+                             (int)name.len, name.str);
+    }
     return sym->type;
 }
 
@@ -2321,6 +2326,7 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
     /* Type-check body */
     if (fn_node->as.fn_decl.body) {
         Type *body_type = typecheck_node(tc, fn_node->as.fn_decl.body);
+        if (!body_type) body_type = type_new(tc->arena, TYPE_ERROR);
 
         /* The body's value must satisfy the declared return type, whether it
          * arrives through the tail expression (research/010 §4.2) or through an

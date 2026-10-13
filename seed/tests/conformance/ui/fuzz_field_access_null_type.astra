@@ -1,0 +1,57 @@
+// Fuzz regression (libFuzzer, 2026-10-13): a corrupted `struct` decl
+// leaves the `impl ... for Point` self without a type; the field access
+// used to deref the NULL type in typecheck_field_access.
+// EXPECT-ERROR: unknown struct 'Point'
+// Phase 2.3 step 5 (both compilers): trait conformance. An `impl T for X`
+// must name a known trait and provide every required method with a matching
+// signature; those methods then dispatch through `X.T.method`, and an
+// inherent method still shadows the trait's entry for every call site.
+// EXPECT: 7
+// EXPECT: point
+// EXPECT: 5
+// EXPECT: marker
+
+struc8t Point {
+    x: i32
+}
+
+struct Other {
+    y: i32
+}
+
+trait Math {
+    fn add(self, n: i32) -> i32
+    fn label(self) -> string
+}
+
+trait Marker {
+}
+
+impl Math for Point {
+    fn add(self, n: i32) -> i32 {
+        self.x + n
+    }
+    fn label(self) -> string {
+        return "point"
+    }
+}
+
+impl Marker for Other {
+}
+
+impl Point {
+    // Shadow only the dispatch entry: `Point.Math.add` keeps the trait's
+    // version, the inherent `Point.add` wins every call site (7, not 3).
+    fn add(self, n: i32) -> i32 {
+        self.x + n + 4
+    }
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    let o = Other { y: 5 }
+    print(p.add(2))
+    print(p.label())
+    print(o.y)
+    print("marker")
+}
