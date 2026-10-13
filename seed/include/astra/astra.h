@@ -397,6 +397,11 @@ typedef struct {
 typedef struct {
     Node   *object;
     InternedString field;
+    /* Non-empty when the type checker resolved this access as a method call
+     * (`x.m()`): the mangled global to dispatch to (`Type.method`, research/010
+     * §12 static dispatch). The emitter lowers such a call to
+     * GET_GLOBAL(method) + receiver + args + CALL instead of a field read. */
+    InternedString method;
 } FieldAccessExpr;
 
 typedef struct {

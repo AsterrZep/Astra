@@ -192,14 +192,20 @@ pub const Emitter = struct {
             else => return,
         };
         for (items) |item| {
-            const name: ?[]const u8 = switch (self.tree.node(item)) {
-                .fn_decl => |f| f.name,
-                .var_decl => |v| v.name,
-                .const_decl => |v| v.name,
-                else => null,
-            };
-            if (name) |n| {
-                self.module_globals.append(self.a, n) catch @panic("OOM");
+            switch (self.tree.node(item)) {
+                .fn_decl => |f| self.module_globals.append(self.a, f.name) catch @panic("OOM"),
+                .var_decl => |v| self.module_globals.append(self.a, v.name) catch @panic("OOM"),
+                .const_decl => |v| self.module_globals.append(self.a, v.name) catch @panic("OOM"),
+                // Method names are already mangled (`Type.method`) — the
+                // checker rewrote them — and must prefix like any global.
+                .impl_decl => |im| {
+                    for (self.tree.extraSlice(im.items)) |fidx| {
+                        if (std.meta.activeTag(self.tree.node(fidx)) == .fn_decl) {
+                            self.module_globals.append(self.a, self.tree.node(fidx).fn_decl.name) catch @panic("OOM");
+                        }
+                    }
+                },
+                else => {},
             }
         }
     }
@@ -1134,12 +1140,26 @@ pub const Emitter = struct {
                 if (op) |o| self.emitInst(o, ln);
             },
             .call_expr => |c| {
+                const callee = self.tree.node(c.callee);
+                // Static method dispatch (Phase 2.3 step 4): the checker
+                // annotated the callee with its mangled global, so push that
+                // function, then the receiver (argument 0), then the source
+                // arguments — the frame layout the VM expects for methods.
+                if (std.meta.activeTag(callee) == .field_access and callee.field_access.method.len > 0) {
+                    const name_idx = self.addConstant(bc.vString(self.globalName(callee.field_access.method)));
+                    self.emitInstIndex(.get_global, name_idx, ln);
+                    self.emitExpr(callee.field_access.object);
+                    for (self.tree.extraSlice(c.args)) |arg| self.emitExpr(arg);
+                    self.emitInst(.call, ln);
+                    self.spSetArgcount(self.code.items.len - 1, @truncate(self.tree.extraSlice(c.args).len + 1));
+                    self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
+                    return;
+                }
                 // A bare-identifier callee may name a data-carrying enum variant
                 // (`Paso(x)`); mirror the checker's rule: variant, else call.
                 // An imported name is never a local variant — skip the search
                 // so `from dep import helper` cannot be shadowed by a variant
                 // that happens to share the name.
-                const callee = self.tree.node(c.callee);
                 const callee_imported = std.meta.activeTag(callee) == .identifier and
                     self.importFor(callee.identifier) != null;
                 if (std.meta.activeTag(callee) == .identifier and !callee_imported and !self.isKnownFn(callee.identifier)) {
@@ -1819,7 +1839,12 @@ pub const Emitter = struct {
                     }
                 }
             },
-            .struct_decl, .enum_decl, .trait_decl, .impl_decl, .use_decl, .import_decl, .from_decl, .import_item => {},
+            // An impl block is pure declaration: emit its methods (Phase 2.3
+            // step 4), which are fn_decls at scope 0 with mangled names.
+            .impl_decl => |im| {
+                for (self.tree.extraSlice(im.items)) |item| self.emitStmt(item);
+            },
+            .struct_decl, .enum_decl, .trait_decl, .use_decl, .import_decl, .from_decl, .import_item => {},
             .source_file => |list| {
                 for (self.tree.extraSlice(list)) |item| self.emitStmt(item);
             },

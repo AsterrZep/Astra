@@ -116,7 +116,15 @@ pub const Binary = struct { op: lexer.Tag, left: u32, right: u32 };
 pub const Unary = struct { op: lexer.Tag, operand: u32 };
 pub const Call = struct { callee: u32, args: List };
 pub const Index = struct { object: u32, index: u32 };
-pub const FieldAccess = struct { object: u32, field: []const u8 };
+pub const FieldAccess = struct {
+    object: u32,
+    field: []const u8,
+    /// Non-empty when the type checker resolved this access as a method call
+    /// (`x.m()`): the mangled global to dispatch to (`Type.method`, static
+    /// dispatch). The emitter lowers such a call to get_global + receiver +
+    /// args + call instead of a field read.
+    method: []const u8 = "",
+};
 pub const Range = struct { start_node: ?u32, end_node: ?u32, inclusive: bool };
 pub const StructLiteral = struct { name: []const u8, fields: List };
 pub const IfExpr = struct { cond: u32, then_block: u32, else_block: ?u32 };

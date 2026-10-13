@@ -1,7 +1,8 @@
-// Phase 2.3 step 1-2 (both compilers): `trait` and `impl` parse into nodes
-// and are inert — the type checker does not walk their bodies and the
-// emitter skips them, so declaring methods changes nothing yet. `self` is a
-// contextual keyword: a plain identifier everywhere else (`let self` works).
+// Phase 2.3 step 1-2 (both compilers): `trait` and `impl` parse into nodes.
+// Trait declarations stay inert (conformance is step 5), while impl methods
+// now compile with static dispatch (step 3-4) — this program just never calls
+// one. `self` is a contextual keyword: a plain identifier everywhere else
+// (`let self` works).
 // EXPECT: inert
 // EXPECT: 42
 pub trait Show {

@@ -1,0 +1,18 @@
+// A typed receiver must name the impl's type: the whole point of the typeless
+// `self` is that the impl block supplies it, so `self: i32` inside
+// `impl for Point` is a mismatch, not an override.
+// EXPECT-ERROR: type of 'self' must be 'Point'
+struct Point {
+    x: i32
+}
+
+impl Point {
+    fn get(self: i32) -> i32 {
+        self.x
+    }
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    print(p.get())
+}

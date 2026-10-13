@@ -293,6 +293,23 @@ typedef struct {
     Type          *enum_type;
 } VariantEntry;
 
+/* One entry per method declared in an `impl` block (research/010 §12). The
+ * registry is keyed by the receiver's *nominal* type name plus the method
+ * name — there is no vtable: `x.m()` resolves at compile time to the mangled
+ * global `Type.method` (static dispatch, Phase 2.3 step 3-4). `fn_type`
+ * includes the receiver as parameter 0, so a call site checks its arguments
+ * against `params[1..]`. `trait_name` is empty for an inherent impl and
+ * participates in the duplicate check, so an inherent method may shadow a
+ * trait method of the same name (precedence: inherent first). */
+typedef struct {
+    InternedString type_name;
+    InternedString method_name;
+    InternedString trait_name; /* empty for an inherent impl */
+    InternedString global;     /* mangled runtime global `Type.method` */
+    bool           inherent;
+    Type          *fn_type;    /* fn(self: T, ...) -> R */
+} MethodEntry;
+
 struct TypeChecker {
     Arena     *arena;
     StringTable *strings;
@@ -302,6 +319,9 @@ struct TypeChecker {
     VariantEntry *variants;
     size_t     variant_count;
     size_t     variant_cap;
+    MethodEntry *methods;
+    size_t     method_count;
+    size_t     method_cap;
 };
 
 static void checker_add_variant(TypeChecker *tc, InternedString variant, Type *et) {
@@ -326,6 +346,104 @@ static Type *checker_find_variant(TypeChecker *tc, InternedString name) {
         }
     }
     return NULL;
+}
+
+static void tc_error(TypeChecker *tc, SrcLoc loc, const char *fmt, ...);
+
+/* The runtime global a method compiles to: `Type.method` for an inherent
+ * impl, `Type.Trait.method` for a trait impl. The trait segment keeps two
+ * impls of the same method name from sharing one runtime slot — without it
+ * the inherent and the trait version of `show` both write `Point.show` and
+ * emission order alone decides which one every call site gets (the VM masks
+ * it as last-write-wins; the C backend maps a name to one function and
+ * silently kept the first). No module prefix: the seed is one file, and '.'
+ * cannot collide with a source identifier (codegen sanitizes it to '_'). */
+static InternedString checker_method_global(TypeChecker *tc,
+                                            InternedString type_name,
+                                            InternedString trait_name,
+                                            InternedString method_name) {
+    size_t len = type_name.len + 1;
+    if (trait_name.str) len += trait_name.len + 1;
+    len += method_name.len;
+    char *buf = arena_alloc(tc->arena, len + 1, 1);
+    if (!buf) return method_name;
+    char *p = buf;
+    memcpy(p, type_name.str, type_name.len);
+    p += type_name.len;
+    *p++ = '.';
+    if (trait_name.str) {
+        memcpy(p, trait_name.str, trait_name.len);
+        p += trait_name.len;
+        *p++ = '.';
+    }
+    memcpy(p, method_name.str, method_name.len);
+    p += method_name.len;
+    *p = '\0';
+    return string_intern(tc->strings, buf, len);
+}
+
+static void checker_add_method(TypeChecker *tc, InternedString type_name,
+                               InternedString method_name,
+                               InternedString trait_name, bool inherent,
+                               Type *fn_type, SrcLoc loc) {
+    for (size_t i = 0; i < tc->method_count; i++) {
+        MethodEntry *m = &tc->methods[i];
+        if (string_eq(m->type_name, type_name) &&
+            string_eq(m->method_name, method_name) &&
+            string_eq(m->trait_name, trait_name)) {
+            tc_error(tc, loc, "method '%.*s' is already defined for type '%.*s'",
+                     (int)method_name.len, method_name.str,
+                     (int)type_name.len, type_name.str);
+            return;
+        }
+    }
+    if (tc->method_count >= tc->method_cap) {
+        size_t nc = tc->method_cap == 0 ? 16 : tc->method_cap * 2;
+        MethodEntry *nd = arena_new_array(tc->arena, MethodEntry, nc);
+        if (tc->methods) {
+            memcpy(nd, tc->methods, sizeof(MethodEntry) * tc->method_count);
+        }
+        tc->methods = nd;
+        tc->method_cap = nc;
+    }
+    tc->methods[tc->method_count] = (MethodEntry){
+        .type_name   = type_name,
+        .method_name = method_name,
+        .trait_name  = trait_name,
+        .global      = checker_method_global(tc, type_name, trait_name, method_name),
+        .inherent    = inherent,
+        .fn_type     = fn_type,
+    };
+    tc->method_count++;
+}
+
+/* Static-dispatch lookup for `recv.name()`. Inherent impls beat trait impls
+ * regardless of declaration order; between trait impls the first declared
+ * wins (ambiguity across traits is a documented Phase 2.4 limitation). Only
+ * struct and enum receivers have a nominal name, so primitives resolve to
+ * nothing — the impl pass rejects them up front. */
+static MethodEntry *checker_find_method(TypeChecker *tc, Type *recv,
+                                        InternedString name) {
+    if (!recv) return NULL;
+    InternedString tname;
+    if (recv->kind == TYPE_STRUCT) {
+        tname = recv->as.struc.name;
+    } else if (recv->kind == TYPE_ENUM) {
+        tname = recv->as.enumeration.name;
+    } else {
+        return NULL;
+    }
+    MethodEntry *trait_fallback = NULL;
+    for (size_t i = 0; i < tc->method_count; i++) {
+        MethodEntry *m = &tc->methods[i];
+        if (!string_eq(m->method_name, name) ||
+            !string_eq(m->type_name, tname)) {
+            continue;
+        }
+        if (m->inherent) return m;
+        if (!trait_fallback) trait_fallback = m;
+    }
+    return trait_fallback;
 }
 
 TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
@@ -648,6 +766,33 @@ static Type *typecheck_unary(TypeChecker *tc, Node *node) {
     return type_new(tc->arena, TYPE_ERROR);
 }
 
+/* Argument checking for a resolved method call. The registered signature
+ * keeps the receiver at parameter 0 (it is what the callee slot + first
+ * argument bind to at run time), so source-level arguments check against
+ * params[1..] with the same messages an ordinary call produces. */
+static Type *typecheck_method_call(TypeChecker *tc, Node *node, MethodEntry *m) {
+    size_t want = m->fn_type->as.fn.param_count - 1;
+    size_t got = node->as.call.args.len;
+    if (got != want) {
+        return tc_error_type(tc, node->loc,
+                             "expected %zu arguments, got %zu", want, got);
+    }
+    for (size_t i = 0; i < got; i++) {
+        Type *arg_type = typecheck_node(tc, node->as.call.args.data[i]);
+        if (type_is_error(arg_type)) return arg_type;
+        Type *expected = m->fn_type->as.fn.params[i + 1];
+        if (!type_eq(arg_type, expected)) {
+            return tc_error_type(tc, node->loc,
+                                 "argument %zu: expected %s, got %s",
+                                 i + 1,
+                                 type_kind_name(expected->kind),
+                                 type_kind_name(arg_type->kind));
+        }
+    }
+    return m->fn_type->as.fn.ret ? m->fn_type->as.fn.ret
+                                 : type_new(tc->arena, TYPE_VOID);
+}
+
 static Type *typecheck_call(TypeChecker *tc, Node *node) {
     Node *callee_node = node->as.call.callee;
 
@@ -697,6 +842,26 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
                 return et;
             }
         }
+    }
+
+    /* `x.m(args)` is a static method call when `m` resolves in the receiver's
+     * method table (Phase 2.3 step 3-4): the callee node is annotated with
+     * the mangled global and the arguments check against the signature with
+     * the receiver removed. A field that holds a function still works — the
+     * method table is consulted only when it has an entry. Module-namespace
+     * callees do not exist in the seed (single file), so no export layer
+     * precedes this. */
+    if (callee_node->kind == NODE_FIELD_ACCESS) {
+        Type *obj = typecheck_node(tc, callee_node->as.field_access.object);
+        if (type_is_error(obj)) return obj;
+        MethodEntry *m = checker_find_method(tc, obj,
+                                             callee_node->as.field_access.field);
+        if (m) {
+            callee_node->as.field_access.method = m->global;
+            return typecheck_method_call(tc, node, m);
+        }
+        /* No method: fall through — the object re-typechecks below, but it
+         * was clean (an error type returns above), so no message repeats. */
     }
 
     Type *callee = typecheck_node(tc, node->as.call.callee);
@@ -837,6 +1002,16 @@ static Type *typecheck_field_access(TypeChecker *tc, Node *node) {
     if (object->kind == TYPE_ENUM) {
         InternedString v = node->as.field_access.field;
         if (enum_variant_index(object, v) < 0) {
+            /* Not a variant, but maybe a method: say so instead of pretending
+             * the name is a typo (fields and variants win over methods on a
+             * bare access — same split as Rust's `x.m` vs `x.m()`). */
+            if (checker_find_method(tc, object, v)) {
+                return tc_error_type(tc, node->loc,
+                                     "method '%.*s' of '%.*s' must be called",
+                                     (int)v.len, v.str,
+                                     (int)object->as.enumeration.name.len,
+                                     object->as.enumeration.name.str);
+            }
             return tc_error_type(tc, node->loc, "enum '%.*s' has no variant '%.*s'",
                                  (int)object->as.enumeration.name.len,
                                  object->as.enumeration.name.str,
@@ -857,6 +1032,14 @@ static Type *typecheck_field_access(TypeChecker *tc, Node *node) {
         if (string_eq(object->as.struc.fields[i].name, field)) {
             return object->as.struc.fields[i].type;
         }
+    }
+
+    if (checker_find_method(tc, object, field)) {
+        return tc_error_type(tc, node->loc,
+                             "method '%.*s' of '%.*s' must be called",
+                             (int)field.len, field.str,
+                             (int)object->as.struc.name.len,
+                             object->as.struc.name.str);
     }
 
     return tc_error_type(tc, node->loc, "struct '%.*s' has no field '%.*s'",
@@ -1766,6 +1949,86 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
         case NODE_ENUM_DECL:
             typecheck_enum_decl(tc, item);
             break;
+        case NODE_IMPL:
+            /* Phase 2.3 step 3-4: register every method in the static-dispatch
+             * table and rewrite the fn's name to the mangled global
+             * `Type.method` it is emitted as (--dump-ast runs before checking,
+             * so nothing user-visible changes). A typeless receiver gets a
+             * synthesized type node so the body pass resolves `self` through
+             * the normal path. Trait *declarations* stay unwalked until step
+             * 5 (conformance); an impl's methods are live regardless of
+             * whether the trait name resolves. */
+            {
+                Node *impl = item;
+                InternedString tname = impl->as.impl_decl.type_name;
+                bool inherent = impl->as.impl_decl.trait_name.str == NULL;
+
+                Node *tn = node_new(tc->arena, NODE_TYPE_IDENT, impl->loc);
+                tn->as.type_ident.name = tname;
+                Type *recv = resolve_type_node(tc, tn);
+                if (type_is_error(recv)) break;
+                if (recv->kind != TYPE_STRUCT && recv->kind != TYPE_ENUM) {
+                    tc_error(tc, impl->loc,
+                             "impl requires a struct or enum type, got %s",
+                             type_kind_name(recv->kind));
+                    break;
+                }
+
+                for (size_t j = 0; j < impl->as.impl_decl.items.len; j++) {
+                    Node *fn = impl->as.impl_decl.items.data[j];
+                    if (fn->kind != NODE_FN_DECL ||
+                        fn->as.fn_decl.params.len == 0 ||
+                        !fn->as.fn_decl.has_self) {
+                        continue; /* the parser already reported it */
+                    }
+
+                    /* Receiver: typeless `self` borrows the impl's type; a
+                     * typed receiver must name exactly that type. */
+                    if (fn->as.fn_decl.param_types.data[0]) {
+                        Type *ann = resolve_type_node(tc,
+                            fn->as.fn_decl.param_types.data[0]);
+                        if (!type_is_error(ann) && !type_eq(ann, recv)) {
+                            tc_error(tc, fn->loc, "type of 'self' must be '%.*s'",
+                                     (int)tname.len, tname.str);
+                        }
+                    } else {
+                        Node *syn = node_new(tc->arena, NODE_TYPE_IDENT, fn->loc);
+                        syn->as.type_ident.name = tname;
+                        fn->as.fn_decl.param_types.data[0] = syn;
+                    }
+
+                    InternedString mname = fn->as.fn_decl.name;
+                    /* The symbol table and the emitter both key the method by
+                     * its mangled global; `mname` stays the lookup key. */
+                    fn->as.fn_decl.name =
+                        checker_method_global(tc, tname,
+                                              impl->as.impl_decl.trait_name,
+                                              mname);
+
+                    size_t pc = fn->as.fn_decl.params.len;
+                    Type **pts = arena_new_array(tc->arena, Type *, pc);
+                    bool bad = false;
+                    for (size_t k = 0; k < pc; k++) {
+                        /* Receiver: resolve straight to the impl type — the
+                         * annotation check above already reported any typo. */
+                        pts[k] = k == 0
+                            ? recv
+                            : resolve_type_node(tc, fn->as.fn_decl.param_types.data[k]);
+                        if (type_is_error(pts[k])) { bad = true; break; }
+                    }
+                    Type *ret = NULL;
+                    if (!bad && fn->as.fn_decl.return_type) {
+                        ret = resolve_type_node(tc, fn->as.fn_decl.return_type);
+                        if (type_is_error(ret)) bad = true;
+                    }
+                    if (bad) continue;
+                    checker_add_method(tc, tname, mname,
+                                       impl->as.impl_decl.trait_name, inherent,
+                                       type_new_fn(tc->arena, pts, pc, ret),
+                                       fn->loc);
+                }
+            }
+            break;
         default:
             break;
         }
@@ -1787,6 +2050,22 @@ static void typecheck_module_body(TypeChecker *tc, Node *module) {
             break;
         case NODE_CONST_DECL:
             typecheck_const_decl(tc, item);
+            break;
+        case NODE_IMPL:
+            /* Bodies of the methods pass 1 registered. Their names are the
+             * mangled `Type.method` globals by now, so typecheck_fn_decl
+             * inserts/updates the right symbol and `self` resolves through
+             * the type node pass 1 synthesized. */
+            {
+                Node *impl = item;
+                for (size_t j = 0; j < impl->as.impl_decl.items.len; j++) {
+                    Node *fn = impl->as.impl_decl.items.data[j];
+                    if (fn->kind == NODE_FN_DECL && fn->as.fn_decl.has_self &&
+                        fn->as.fn_decl.body) {
+                        typecheck_fn_decl(tc, fn);
+                    }
+                }
+            }
             break;
         default:
             typecheck_node(tc, item);
@@ -1968,10 +2247,11 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
     case NODE_FROM:
     case NODE_IMPORT_ITEM:  return type_new(tc->arena, TYPE_VOID);
 
-    /* Phase 2.3 step 1-2: `trait`/`impl` parse into nodes but the checks
-     * (method table, `self` binding, trait conformance) are not wired yet,
-     * so the blocks are inert: their items are not walked. Until then a
-     * program may declare them, but nothing may call a method. */
+    /* Phase 2.3: a top-level `impl` is handled by the module passes (method
+     * table + bodies, step 3-4). Reaching this dispatch means the node is
+     * somewhere else — a nested `impl`/`trait` inside a function body — and
+     * stays inert there; `trait` declarations are walked for conformance in
+     * step 5. */
     case NODE_TRAIT:
     case NODE_IMPL:        return type_new(tc->arena, TYPE_VOID);
 

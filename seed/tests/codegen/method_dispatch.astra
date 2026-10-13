@@ -1,0 +1,50 @@
+// Inherent and trait impls of the same method must compile to distinct
+// globals (`Point.show` vs `Point.Show.show`): sharing one name made the C
+// backend bind every call to the first-registered function while the VM's
+// last-write-wins masked it, so the override printed "trait" under --emit-c
+// and "inherent" under the VM. A type with only a trait impl dispatches to
+// its `Type.Trait.method` global.
+// EXPECT: inherent
+// EXPECT: other
+// EXPECT: 5
+
+struct Point {
+    x: i32
+}
+
+struct Other {
+    y: i32
+}
+
+trait Show {
+    fn show(self) -> string
+}
+
+impl Show for Point {
+    fn show(self) -> string {
+        return "trait"
+    }
+}
+
+impl Show for Other {
+    fn show(self) -> string {
+        return "other"
+    }
+}
+
+impl Point {
+    fn show(self) -> string {
+        return "inherent"
+    }
+    fn add(self, n: i32) -> i32 {
+        self.x + n
+    }
+}
+
+fn main() {
+    let p = Point { x: 2 }
+    let o = Other { y: 9 }
+    print(p.show())
+    print(o.show())
+    print(p.add(3))
+}

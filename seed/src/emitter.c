@@ -1121,6 +1121,24 @@ static void emit_expr(Emitter *e, Node *node) {
          * (`Paso(x)`); the checker already decided, so mirror its rule here:
          * variant first, function call otherwise. */
         Node *callee = node->as.call.callee;
+        /* Static method dispatch (Phase 2.3 step 4): the checker annotated
+         * the callee with its mangled global, so push that function, then the
+         * receiver (argument 0), then the source arguments. */
+        if (callee->kind == NODE_FIELD_ACCESS &&
+            callee->as.field_access.method.str) {
+            uint32_t line = node->loc.line;
+            uint32_t name_idx = add_constant(e,
+                value_string(callee->as.field_access.method.str));
+            emit_inst_index(e, OPCODE_GET_GLOBAL, name_idx, line);
+            emit_expr(e, callee->as.field_access.object);
+            for (size_t i = 0; i < node->as.call.args.len; i++) {
+                emit_expr(e, node->as.call.args.data[i]);
+            }
+            emit_inst(e, OPCODE_CALL, line);
+            sp_set_argcount(e, e->code_len - 1,
+                            (uint8_t)(node->as.call.args.len + 1));
+            break;
+        }
         if (callee->kind == NODE_IDENT && !is_known_fn(e, callee->as.ident.name)) {
             EnumInfo *ei = find_enum_by_variant(e, callee->as.ident.name);
             if (ei) {
@@ -2112,8 +2130,16 @@ static void emit_stmt(Emitter *e, Node *node) {
     case NODE_FROM:
     case NODE_IMPORT_ITEM:
     case NODE_TRAIT:
-    case NODE_IMPL:
         break;
+
+    /* Methods compile as ordinary top-level function globals under their
+     * mangled `Type.method` names (the checker rewrote fn_decl.name), so an
+     * impl emits its items through the normal statement path. */
+    case NODE_IMPL: {
+        for (size_t i = 0; i < node->as.impl_decl.items.len; i++) {
+            emit_stmt(e, node->as.impl_decl.items.data[i]);
+        }
+    } break;
 
     case NODE_MODULE: {
         /* Module items are statements, so they go through emit_stmt — the one

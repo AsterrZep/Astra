@@ -67,6 +67,21 @@ pub const ImportBinding = struct {
 
 const Variant = struct { name: []const u8, enum_type: *Type };
 
+/// One method declared in an `impl` block (research/010 §12), keyed by the
+/// receiver's nominal type name plus the method name — static dispatch, no
+/// vtable (Phase 2.3 step 3-4). `fn_type` keeps the receiver at parameter 0,
+/// so a call site checks its arguments against `params[1..]`. `trait_name` is
+/// empty for an inherent impl and joins the duplicate key, letting an
+/// inherent method shadow a trait method of the same name (inherent first).
+const Method = struct {
+    type_name: []const u8,
+    method_name: []const u8,
+    trait_name: []const u8,
+    global: []const u8, // mangled runtime global `Type.method`
+    inherent: bool,
+    fn_type: *Type,
+};
+
 fn isNumeric(t: *const Type) bool {
     return isInteger(t) or t.kind == .float;
 }
@@ -86,6 +101,7 @@ pub const TypeChecker = struct {
     symbols: std.ArrayListUnmanaged(Symbol) = .empty,
     scopes: std.ArrayListUnmanaged(usize) = .empty,
     variants: std.ArrayListUnmanaged(Variant) = .empty,
+    methods: std.ArrayListUnmanaged(Method) = .empty,
     current_fn_return: ?*Type = null,
     // Location of the function currently being checked, used for body-level
     // diagnostics (`checkFnDecl` sets it before `checkFnBody`).
@@ -167,6 +183,62 @@ pub const TypeChecker = struct {
             if (std.mem.eql(u8, v.name, name)) return v.enum_type;
         }
         return null;
+    }
+
+    // ── Method registry (static dispatch) ─────────────────────────
+
+    /// The runtime global a method compiles to: `Type.method` for an inherent
+    /// impl, `Type.Trait.method` for a trait impl. The trait segment keeps two
+    /// impls of the same method name from sharing one runtime slot (the VM
+    /// would mask it as last-write-wins; the C backend maps a name to one
+    /// function). No module prefix — the emitter applies `globalName` at both
+    /// ends.
+    fn methodGlobal(self: *TypeChecker, type_name: []const u8, trait_name: []const u8,
+        method_name: []const u8) []const u8 {
+        if (trait_name.len > 0) {
+            return std.fmt.allocPrint(self.a, "{s}.{s}.{s}", .{ type_name, trait_name, method_name }) catch @panic("OOM");
+        }
+        return std.fmt.allocPrint(self.a, "{s}.{s}", .{ type_name, method_name }) catch @panic("OOM");
+    }
+
+    fn addMethod(self: *TypeChecker, type_name: []const u8, method_name: []const u8,
+        trait_name: []const u8, inherent: bool, fn_type: *Type, loc: lexer.Loc) void {
+        for (self.methods.items) |m| {
+            if (std.mem.eql(u8, m.type_name, type_name) and
+                std.mem.eql(u8, m.method_name, method_name) and
+                std.mem.eql(u8, m.trait_name, trait_name))
+            {
+                self.errFmt(loc, "method '{s}' is already defined for type '{s}'", .{ method_name, type_name });
+                return;
+            }
+        }
+        self.methods.append(self.a, .{
+            .type_name = type_name,
+            .method_name = method_name,
+            .trait_name = trait_name,
+            .global = self.methodGlobal(type_name, trait_name, method_name),
+            .inherent = inherent,
+            .fn_type = fn_type,
+        }) catch @panic("OOM");
+    }
+
+    /// Static-dispatch lookup for `recv.name()`. Inherent impls beat trait
+    /// impls regardless of declaration order; between trait impls the first
+    /// declared wins (cross-trait ambiguity is a documented Phase 2.4
+    /// limitation). Only struct and enum receivers have a nominal name.
+    fn findMethod(self: *TypeChecker, recv: *Type, name: []const u8) ?Method {
+        if (recv.kind != .struct_ and recv.kind != .enum_) return null;
+        var trait_fallback: ?Method = null;
+        for (self.methods.items) |m| {
+            if (!std.mem.eql(u8, m.method_name, name) or
+                !std.mem.eql(u8, m.type_name, recv.name))
+            {
+                continue;
+            }
+            if (m.inherent) return m;
+            if (trait_fallback == null) trait_fallback = m;
+        }
+        return trait_fallback;
     }
 
     fn enumVariantIndex(en: *const Type, variant: []const u8) ?usize {
@@ -372,6 +444,45 @@ pub const TypeChecker = struct {
             }
         }
 
+        // `x.m(args)` is a static method call when `m` resolves in the
+        // receiver's method table (Phase 2.3 step 3-4): annotate the callee
+        // with the mangled global and check the arguments against the
+        // signature with the receiver removed. Module-namespace callees keep
+        // their export path — `m.helper()` is an imported function, not a
+        // method — so the export layer is consulted first.
+        if (std.meta.activeTag(self.tree.node(callee_idx)) == .field_access) {
+            const fa = self.tree.node(callee_idx).field_access;
+            var is_module_callee = false;
+            if (std.meta.activeTag(self.tree.node(fa.object)) == .identifier) {
+                if (self.lookup(self.tree.node(fa.object).identifier)) |sym| {
+                    is_module_callee = sym.module_exports != null;
+                }
+            }
+            if (!is_module_callee) {
+                const obj = self.checkNode(fa.object);
+                if (isErrorType(obj)) return obj;
+                if (self.findMethod(obj, fa.field)) |m| {
+                    self.tree.nodes.items[callee_idx].field_access.method = m.global;
+                    const want = m.fn_type.params.len - 1;
+                    if (arg_slice.len != want) {
+                        return self.errorType(loc, "expected {d} arguments, got {d}", .{ want, arg_slice.len });
+                    }
+                    for (arg_slice, 0..) |arg, i| {
+                        const at = self.checkNode(arg);
+                        if (isErrorType(at)) return at;
+                        const expected = m.fn_type.params[i + 1];
+                        if (!typeEq(at, expected)) {
+                            return self.errorType(loc, "argument {d}: expected {s}, got {s}", .{ i + 1, expected.kind.name(), at.kind.name() });
+                        }
+                    }
+                    return m.fn_type.ret orelse self.newType(.void);
+                }
+                // No method: fall through — the object re-typechecks below,
+                // but it was clean (an error type returned above), so no
+                // message repeats.
+            }
+        }
+
         const callee = self.checkNode(callee_idx);
         if (isErrorType(callee)) return callee;
         if (callee.kind != .fn_type) {
@@ -479,6 +590,9 @@ pub const TypeChecker = struct {
 
         if (object.kind == .enum_) {
             if (enumVariantIndex(object, field) == null) {
+                if (self.findMethod(object, field) != null) {
+                    return self.errorType(loc, "method '{s}' of '{s}' must be called", .{ field, object.name });
+                }
                 return self.errorType(loc, "enum '{s}' has no variant '{s}'", .{ object.name, field });
             }
             return object;
@@ -488,6 +602,9 @@ pub const TypeChecker = struct {
         }
         for (object.fields) |f| {
             if (std.mem.eql(u8, f.name, field)) return f.type_;
+        }
+        if (self.findMethod(object, field) != null) {
+            return self.errorType(loc, "method '{s}' of '{s}' must be called", .{ field, object.name });
         }
         return self.errorType(loc, "struct '{s}' has no field '{s}'", .{ object.name, field });
     }
@@ -1111,6 +1228,78 @@ pub const TypeChecker = struct {
         return list.toOwnedSlice(self.a) catch @panic("OOM");
     }
 
+    /// Phase 2.3 step 3 (pass 1): register every `impl` item as a method of
+    /// the receiver's nominal type. The receiver resolves through the same
+    /// path a type annotation uses (builtins resolve, unknown names report),
+    /// so `impl Point` only works once `Point` is bound — pass 0 guarantees
+    /// that for struct/enum. The method's parameter-0 type node and its name
+    /// are rewritten in the tree: the parameter becomes the receiver type and
+    /// the name becomes the mangled runtime global `Type.method`, which the
+    /// signature pass, the body pass and the emitter all read afterwards.
+    fn registerImpl(self: *TypeChecker, impl_idx: u32) void {
+        const im = self.tree.node(impl_idx).impl_decl;
+        const recv_node = self.tree.addNode(.{ .type_ident = im.type_name }, self.tree.loc(impl_idx)) catch @panic("OOM");
+        const recv = self.resolveTypeNode(recv_node);
+        if (isErrorType(recv)) return;
+        if (recv.kind != .struct_ and recv.kind != .enum_) {
+            self.errFmt(self.tree.loc(impl_idx), "impl requires a struct or enum type, got {s}", .{recv.kind.name()});
+            return;
+        }
+        const inherent = im.trait_name == null;
+        const trait_name = im.trait_name orelse "";
+        for (self.tree.extraSlice(im.items)) |fidx| {
+            if (std.meta.activeTag(self.tree.node(fidx)) != .fn_decl) continue;
+            const floc = self.tree.loc(fidx);
+            const f = self.tree.node(fidx).fn_decl;
+            const params = self.tree.extraSlice(f.params);
+            if (params.len == 0 or !std.mem.eql(u8, self.tree.node(params[0]).param.name, "self")) continue;
+            // A typed receiver must name the impl's type; the typeless `self`
+            // gets the receiver type written into its parameter node.
+            if (self.tree.node(params[0]).param.type_node) |atn| {
+                const ann = self.resolveTypeNode(atn);
+                if (!isErrorType(ann) and !typeEq(ann, recv)) {
+                    self.errFmt(floc, "type of 'self' must be '{s}'", .{im.type_name});
+                }
+            } else {
+                const syn = self.tree.addNode(.{ .type_ident = im.type_name }, floc) catch @panic("OOM");
+                self.tree.nodes.items[params[0]].param.type_node = syn;
+            }
+            // Signature with the receiver removed from the call-site arity
+            // (it stays at parameter 0 for the callee).
+            var param_types = self.a.alloc(*Type, params.len) catch @panic("OOM");
+            param_types[0] = recv;
+            var bad = false;
+            for (params[1..], 1..) |p, k| {
+                param_types[k] = self.resolveTypeNode(self.tree.node(p).param.type_node);
+                if (isErrorType(param_types[k])) { bad = true; break; }
+            }
+            var ret: ?*Type = null;
+            if (f.ret) |r| {
+                ret = self.resolveTypeNode(r);
+                if (isErrorType(ret.?)) bad = true;
+            }
+            if (bad) continue;
+            const mangled = self.methodGlobal(im.type_name, trait_name, f.name);
+            self.tree.nodes.items[fidx].fn_decl.name = mangled;
+            self.addMethod(im.type_name, f.name, trait_name, inherent, self.newFn(param_types, ret), floc);
+        }
+    }
+
+    /// Phase 2.3 step 4 (pass 2): type-check the bodies of `impl` methods,
+    /// now that every method table in the module is complete — bodies may
+    /// call methods declared later.
+    fn checkImplBodies(self: *TypeChecker, impl_idx: u32) void {
+        const im = self.tree.node(impl_idx).impl_decl;
+        for (self.tree.extraSlice(im.items)) |fidx| {
+            if (std.meta.activeTag(self.tree.node(fidx)) != .fn_decl) continue;
+            const f = self.tree.node(fidx).fn_decl;
+            const params = self.tree.extraSlice(f.params);
+            if (params.len == 0 or !std.mem.eql(u8, self.tree.node(params[0]).param.name, "self")) continue;
+            self.pending_fn_loc = self.tree.loc(fidx);
+            self.checkFnDecl(fidx);
+        }
+    }
+
     fn checkModule(self: *TypeChecker, items: []const u32) void {
         // Pass 0: bind every top-level struct/enum name to an empty type
         // before any signature or field type is resolved, so declarations may
@@ -1144,6 +1333,7 @@ pub const TypeChecker = struct {
                 },
                 .struct_decl => self.checkStructDecl(it),
                 .enum_decl => self.checkEnumDecl(it),
+                .impl_decl => self.registerImpl(it),
                 else => {},
             }
         }
@@ -1156,6 +1346,7 @@ pub const TypeChecker = struct {
                 },
                 .var_decl => |v| self.checkVarDecl(v, self.tree.loc(it), false),
                 .const_decl => |v| self.checkVarDecl(v, self.tree.loc(it), true),
+                .impl_decl => self.checkImplBodies(it),
                 else => _ = self.checkNode(it),
             }
         }

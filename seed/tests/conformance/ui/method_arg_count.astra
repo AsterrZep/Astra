@@ -1,0 +1,17 @@
+// The receiver is not a source-level argument: `p.add()` misses exactly the
+// one declared parameter after `self`.
+// EXPECT-ERROR: expected 1 arguments, got 0
+struct Point {
+    x: i32
+}
+
+impl Point {
+    fn add(self, n: i32) -> i32 {
+        self.x + n
+    }
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    print(p.add())
+}

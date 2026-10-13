@@ -1,0 +1,13 @@
+// Methods dispatch by nominal receiver name, and primitive types have no
+// nominal method table (generics for `impl<T> Trait for T` are Phase 2.4), so
+// an impl for i32 is rejected instead of registering an unreachable method.
+// EXPECT-ERROR: impl requires a struct or enum type
+impl Show for i32 {
+    fn show(self) -> string {
+        "number"
+    }
+}
+
+fn main() {
+    print(1)
+}

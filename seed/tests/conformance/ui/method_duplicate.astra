@@ -1,0 +1,21 @@
+// The method table is keyed by (receiver type, method name, trait): two
+// inherent definitions of the same method are a compile error, not a silent
+// last-wins.
+// EXPECT-ERROR: already defined
+struct Point {
+    x: i32
+}
+
+impl Point {
+    fn get(self) -> i32 {
+        self.x
+    }
+    fn get(self) -> i32 {
+        0
+    }
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    print(p.get())
+}

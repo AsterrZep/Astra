@@ -1,0 +1,19 @@
+// A method read without a call is not a value (Phase 2.3 has no first-class
+// method references): the checker says so instead of leaving `f` bound to a
+// function the runtime could never receive.
+// EXPECT-ERROR: must be called
+struct Point {
+    x: i32
+}
+
+impl Point {
+    fn get(self) -> i32 {
+        self.x
+    }
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    let f = p.get
+    print(f)
+}

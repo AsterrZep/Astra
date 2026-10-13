@@ -1,0 +1,11 @@
+// A call to a name that is neither a field nor a method of the receiver
+// reports the struct's field list, exactly as an unknown field read does.
+// EXPECT-ERROR: has no field
+struct Point {
+    x: i32
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    print(p.nope())
+}
