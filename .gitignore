@@ -83,3 +83,6 @@ graphify-out/
 # Zig
 zig/.zig-cache/
 zig/zig-out/
+
+# Stray --emit-c output next to tests (run_tests.sh removes its own)
+seed/tests/**/*.c
