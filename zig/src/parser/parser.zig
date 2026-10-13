@@ -492,7 +492,15 @@ pub const Parser = struct {
         var params: std.ArrayListUnmanaged(u32) = .empty;
         defer params.deinit(self.allocator);
         if (!self.match(.lt)) return self.tree.addExtra(@as([]const u32, &.{}));
+        var count: usize = 0;
         while (true) {
+            // Matches the typechecker's generic-stack cap: the check side
+            // keeps at most 32 bindings, so a longer list would be silently
+            // dropped there and its parameters left unresolvable.
+            if (count >= 32) {
+                self.report("too many type parameters (max 32)");
+                break;
+            }
             try self.expect(.identifier);
             const name = self.previous.text;
             var bounds: std.ArrayListUnmanaged(u32) = .empty;
@@ -507,6 +515,7 @@ pub const Parser = struct {
             }
             const blist = try self.tree.addExtra(bounds.items);
             try params.append(self.allocator, try self.add(.{ .type_param = .{ .name = name, .bounds = blist } }, self.previous.loc));
+            count += 1;
             if (!self.match(.comma)) break;
         }
         try self.expect(.gt);

@@ -961,7 +961,15 @@ static void parse_generic_params(Parser *p, NodeList *out) {
     out->len  = 0;
     out->cap  = 0;
     if (!match(p, TOKEN_LT)) return;
+    size_t count = 0;
     do {
+        /* Matches the typechecker's generic-stack cap: the check side keeps
+         * at most 32 bindings, so a longer list would be silently dropped
+         * there and its parameters left unresolvable. */
+        if (count >= 32) {
+            parser_error(p, "too many type parameters (max 32)");
+            break;
+        }
         expect(p, TOKEN_IDENT, "type parameter name");
         SrcLoc ploc = p->previous.loc;
         Node *tp = node_new(p->arena, NODE_TYPE_PARAM, ploc);
@@ -998,6 +1006,7 @@ static void parse_generic_params(Parser *p, NodeList *out) {
             out->cap  = new_cap;
         }
         out->data[out->len++] = tp;
+        count++;
     } while (match(p, TOKEN_COMMA));
     expect(p, TOKEN_GT, "'>'");
 }

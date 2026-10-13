@@ -677,7 +677,7 @@ static size_t push_generic_scope(TypeChecker *tc, Node *fn) {
         Type *pt = type_new(tc->arena, TYPE_PARAM);
         pt->as.type_param.name  = tp->as.type_param.name;
         pt->as.type_param.owner = fn;
-        if (tc->generic_len >= 32) break; /* a sane cap; the parser allows fewer */
+        if (tc->generic_len >= 32) break; /* the parser caps the list at 32 */
         if (!tc->generic_stack) {
             tc->generic_stack = arena_new_array(tc->arena, GenericBinding, 32);
         }
@@ -1166,6 +1166,14 @@ static GenericInstance *ensure_instance(TypeChecker *tc, Node *fn,
     for (size_t i = 0; i < tc->inst_count; i++) {
         if (string_eq(tc->instances[i].wrapper->as.fn_decl.name, mangled))
             return &tc->instances[i];
+    }
+
+    /* Hard cap: a recursive generic that grows its binding every step
+     * (`f([x])` instantiating f<[i32]>, f<[[i32]]>, ...) would otherwise
+     * chain until the global limit with a misleading message. */
+    if (tc->inst_count >= 256) {
+        tc_error(tc, fn->loc, "too many generic instances (max 256)");
+        return NULL;
     }
 
     Node *w = node_new(tc->arena, NODE_FN_DECL, fn->loc);

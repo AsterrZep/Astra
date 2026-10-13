@@ -1,0 +1,10 @@
+// A recursive generic that grows its binding at every step — f(some(x))
+// instantiates f<?i32>, f<??i32>, ... — hits the instance cap instead of
+// chaining until the global limit with a misleading message (Phase 2.4
+// audit). Optionals grow the mangle by one char per step, so the 512-byte
+// name buffer cannot fire before the 256-instance cap.
+// EXPECT-ERROR: too many generic instances (max 256)
+fn f<T>(x: T) {
+    f(some(x))
+}
+f(5)

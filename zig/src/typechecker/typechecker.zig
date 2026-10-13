@@ -666,6 +666,14 @@ pub const TypeChecker = struct {
                 return inst.wrapper;
         }
 
+        // Hard cap: a recursive generic that grows its binding every step
+        // (`f([x])` instantiating f<[i32]>, f<[[i32]]>, ...) would otherwise
+        // chain until the global limit with a misleading message.
+        if (self.instances.items.len >= 256) {
+            _ = self.errorType(self.tree.loc(fn_idx), "too many generic instances (max 256)", .{});
+            return null;
+        }
+
         var n = self.tree.node(fn_idx);
         n.fn_decl.name = mangled;
         n.fn_decl.generics = .{ .start = 0, .len = 0 };
@@ -718,9 +726,15 @@ pub const TypeChecker = struct {
             const at = self.checkNode(arg);
             if (isErrorType(at)) return at;
             if (self.unifyBind(fn_type.params[i], at, fn_idx, env)) |fail| {
-                var prev: *Type = undefined;
+                // `fail.name` is always one of env's bindings (the conflict
+                // came from a non-null binding); the fallback keeps the
+                // diagnostic well-formed even if that ever stops holding.
+                var prev: *Type = fail.got;
                 for (env) |b| {
-                    if (std.mem.eql(u8, b.name, fail.name)) prev = b.type_ orelse unreachable;
+                    if (std.mem.eql(u8, b.name, fail.name)) {
+                        prev = b.type_ orelse fail.got;
+                        break;
+                    }
                 }
                 return self.errorType(loc, "type parameter '{s}' of '{s}' cannot be both {s} and {s}", .{
                     fail.name, fname, prev.kind.name(), fail.got.kind.name(),
