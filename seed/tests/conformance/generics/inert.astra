@@ -1,0 +1,47 @@
+// Phase 2.4 step 1 (both compilers): GenericParams parse on fn/struct/enum/
+// trait/impl declarations into TypeParam nodes. The checker and the emitter
+// skip any declaration that carries one, so this program only declares them —
+// inference and monomorphization land with steps 2-4.
+// EXPECT: inert
+// EXPECT: 42
+struct Pair<T> {
+    a: T
+    b: T
+}
+
+struct Holder {
+    v: i32
+}
+
+enum Wrap<T> { Some(T) None }
+
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn bounded<T: Show + Debug>(x: T) -> T {
+    x
+}
+
+trait Show {
+    fn show(self);
+}
+
+trait Debug {
+    fn fmt(self);
+}
+
+trait Named<T> {
+    fn name(self);
+}
+
+impl<T> Holder {
+    fn ping(self) -> i32 {
+        1
+    }
+}
+
+fn main() {
+    print("inert")
+    print(42)
+}

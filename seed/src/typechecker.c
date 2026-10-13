@@ -1838,6 +1838,11 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
 static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.struct_decl.name;
 
+    /* Phase 2.4 step 1: a declaration with `<...>` never binds its name or
+     * its fields — instantiation lands with step 4. Reached from both the
+     * module pass and the body pass' default path. */
+    if (node->as.struct_decl.generics.len > 0) return;
+
     /* The module pass pre-registers top-level struct names (declare_type_decls)
      * so field types may reference structs declared later in the file. Fill
      * that type in place; a name not bound to a struct — a nested declaration
@@ -1886,6 +1891,9 @@ static int enum_variant_index(Type *en, InternedString variant) {
 
 static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.enum_decl.name;
+
+    /* Phase 2.4 step 1: same contract as structs (see typecheck_struct_decl). */
+    if (node->as.enum_decl.generics.len > 0) return;
 
     /* Same forward-reference contract as structs: the module pass binds the
      * name, this fills variants and payload layouts into that type. */
@@ -1952,6 +1960,9 @@ static void declare_type_decls(TypeChecker *tc, Node *module) {
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
         if (item->kind == NODE_STRUCT_DECL) {
+            /* Phase 2.4 step 1: a declaration with `<...>` stays inert until
+             * instantiation lands. */
+            if (item->as.struct_decl.generics.len > 0) continue;
             Type *st = type_new(tc->arena, TYPE_STRUCT);
             st->as.struc.name = item->as.struct_decl.name;
             st->as.struc.fields = NULL;
@@ -1965,6 +1976,7 @@ static void declare_type_decls(TypeChecker *tc, Node *module) {
             };
             symbol_table_insert(tc->symbols, sym);
         } else if (item->kind == NODE_ENUM_DECL) {
+            if (item->as.enum_decl.generics.len > 0) continue;
             Type *en = type_new(tc->arena, TYPE_ENUM);
             en->as.enumeration.name = item->as.enum_decl.name;
             en->as.enumeration.variant_count = 0;
@@ -1993,12 +2005,14 @@ static void collect_trait_decls(TypeChecker *tc, Node *module) {
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
         if (item->kind != NODE_TRAIT) continue;
+        if (item->as.trait_decl.generics.len > 0) continue; /* Phase 2.4 step 1 */
         Node *tr = item;
         TraitMethod *methods = NULL;
         size_t count = 0, cap = 0;
         for (size_t j = 0; j < tr->as.trait_decl.items.len; j++) {
             Node *fn = tr->as.trait_decl.items.data[j];
             if (fn->kind != NODE_FN_DECL) continue; /* the parser already reported it */
+            if (fn->as.fn_decl.generics.len > 0) continue; /* Phase 2.4 step 1 */
             Node *body = fn->as.fn_decl.body;
             if (body && (body->as.block.stmts.len > 0 ||
                          body->as.block.last_expr)) {
@@ -2040,7 +2054,9 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
         Node *item = module->as.module.items.data[i];
         switch (item->kind) {
         case NODE_FN_DECL:
-            /* First pass: register function signature only */
+            /* First pass: register function signature only. A generic
+             * declaration is inert until Phase 2.4 step 2. */
+            if (item->as.fn_decl.generics.len > 0) break;
             {
                 size_t param_count = item->as.fn_decl.params.len;
                 Type **param_types = arena_new_array(tc->arena, Type *, param_count);
@@ -2069,6 +2085,8 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
             typecheck_enum_decl(tc, item);
             break;
         case NODE_IMPL:
+            /* Phase 2.4 step 1: a block with `<...>` stays inert. */
+            if (item->as.impl_decl.generics.len > 0) break;
             /* Phase 2.3 step 3-4: register every method in the static-dispatch
              * table and rewrite the fn's name to the mangled global
              * `Type.method` it is emitted as (--dump-ast runs before checking,
@@ -2095,6 +2113,7 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
                 for (size_t j = 0; j < impl->as.impl_decl.items.len; j++) {
                     Node *fn = impl->as.impl_decl.items.data[j];
                     if (fn->kind != NODE_FN_DECL ||
+                        fn->as.fn_decl.generics.len > 0 ||
                         fn->as.fn_decl.params.len == 0 ||
                         !fn->as.fn_decl.has_self) {
                         continue; /* the parser already reported it */
@@ -2210,7 +2229,9 @@ static void typecheck_module_body(TypeChecker *tc, Node *module) {
         Node *item = module->as.module.items.data[i];
         switch (item->kind) {
         case NODE_FN_DECL:
-            /* Skip pure declarations, only type-check bodies */
+            /* Skip pure declarations, only type-check bodies. A generic
+             * declaration is inert until Phase 2.4 step 2. */
+            if (item->as.fn_decl.generics.len > 0) break;
             if (item->as.fn_decl.body) {
                 typecheck_fn_decl(tc, item);
             }
@@ -2225,12 +2246,15 @@ static void typecheck_module_body(TypeChecker *tc, Node *module) {
             /* Bodies of the methods pass 1 registered. Their names are the
              * mangled `Type.method` globals by now, so typecheck_fn_decl
              * inserts/updates the right symbol and `self` resolves through
-             * the type node pass 1 synthesized. */
+             * the type node pass 1 synthesized. A block (or method) with
+             * `<...>` was skipped by pass 1 and stays inert (Phase 2.4). */
+            if (item->as.impl_decl.generics.len > 0) break;
             {
                 Node *impl = item;
                 for (size_t j = 0; j < impl->as.impl_decl.items.len; j++) {
                     Node *fn = impl->as.impl_decl.items.data[j];
                     if (fn->kind == NODE_FN_DECL && fn->as.fn_decl.has_self &&
+                        fn->as.fn_decl.generics.len == 0 &&
                         fn->as.fn_decl.body) {
                         typecheck_fn_decl(tc, fn);
                     }

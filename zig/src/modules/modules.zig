@@ -272,9 +272,11 @@ pub fn collect(
 
     for (items) |item| {
         switch (tree.node(item)) {
-            .fn_decl => |f| if (f.is_pub) try exports.append(allocator, f.name),
-            .struct_decl => |s| if (s.is_pub) try exports.append(allocator, s.name),
-            .enum_decl => |e| if (e.is_pub) try exports.append(allocator, e.name),
+            // A generic declaration is inert (Phase 2.4 step 1): it never
+            // binds a name, so it cannot be imported either.
+            .fn_decl => |f| if (f.is_pub and f.generics.len == 0) try exports.append(allocator, f.name),
+            .struct_decl => |s| if (s.is_pub and s.generics.len == 0) try exports.append(allocator, s.name),
+            .enum_decl => |e| if (e.is_pub and e.generics.len == 0) try exports.append(allocator, e.name),
             .const_decl => |c| if (c.is_pub) try exports.append(allocator, c.name),
             else => {},
         }

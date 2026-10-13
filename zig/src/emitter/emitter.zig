@@ -193,14 +193,19 @@ pub const Emitter = struct {
         };
         for (items) |item| {
             switch (self.tree.node(item)) {
-                .fn_decl => |f| self.module_globals.append(self.a, f.name) catch @panic("OOM"),
+                // A generic declaration is inert (Phase 2.4 step 1): it never
+                // binds a runtime global, so nothing prefixes its name.
+                .fn_decl => |f| if (f.generics.len == 0) self.module_globals.append(self.a, f.name) catch @panic("OOM"),
                 .var_decl => |v| self.module_globals.append(self.a, v.name) catch @panic("OOM"),
                 .const_decl => |v| self.module_globals.append(self.a, v.name) catch @panic("OOM"),
                 // Method names are already mangled (`Type.method`) — the
                 // checker rewrote them — and must prefix like any global.
                 .impl_decl => |im| {
+                    if (im.generics.len > 0) continue; // inert (Phase 2.4 step 1)
                     for (self.tree.extraSlice(im.items)) |fidx| {
-                        if (std.meta.activeTag(self.tree.node(fidx)) == .fn_decl) {
+                        if (std.meta.activeTag(self.tree.node(fidx)) == .fn_decl and
+                            self.tree.node(fidx).fn_decl.generics.len == 0)
+                        {
                             self.module_globals.append(self.a, self.tree.node(fidx).fn_decl.name) catch @panic("OOM");
                         }
                     }
@@ -625,6 +630,9 @@ pub const Emitter = struct {
         for (self.tree.extraSlice(self.tree.node(module).source_file)) |item| {
             switch (self.tree.node(item)) {
                 .fn_decl => |f| {
+                    // Inert (Phase 2.4 step 1): the checker skipped it, so
+                    // nothing can call it and no global binds its name.
+                    if (f.generics.len > 0) continue;
                     if (self.fns.items.len >= MAX_FNS) {
                         self.err(self.line(item), "too many functions (max {d})", .{MAX_FNS});
                         continue;
@@ -632,6 +640,7 @@ pub const Emitter = struct {
                     self.fns.append(self.a, .{ .name = f.name }) catch @panic("OOM");
                 },
                 .enum_decl => |e| {
+                    if (e.generics.len > 0) continue; // inert (Phase 2.4 step 1)
                     if (self.enums.items.len >= MAX_ENUMS) {
                         self.err(self.line(item), "too many enum declarations (max {d})", .{MAX_ENUMS});
                         continue;
@@ -673,6 +682,7 @@ pub const Emitter = struct {
                     }
                 },
                 .struct_decl => |s| {
+                    if (s.generics.len > 0) continue; // inert (Phase 2.4 step 1)
                     if (self.structs.items.len >= MAX_STRUCTS) {
                         self.err(self.line(item), "too many struct declarations (max {d})", .{MAX_STRUCTS});
                         continue;
@@ -1796,6 +1806,9 @@ pub const Emitter = struct {
 
         switch (self.tree.node(idx)) {
             .fn_decl => |f| {
+                // A generic declaration never reaches codegen: the checker
+                // skipped it (Phase 2.4 step 1).
+                if (f.generics.len > 0) return;
                 // Named functions do not capture: their bodies keep resolving
                 // free names as globals (the callee has no env).
                 const fn_obj = self.emitFunctionBody(f.params, f.body, ln, &.{});
@@ -1842,6 +1855,7 @@ pub const Emitter = struct {
             // An impl block is pure declaration: emit its methods (Phase 2.3
             // step 4), which are fn_decls at scope 0 with mangled names.
             .impl_decl => |im| {
+                if (im.generics.len > 0) return; // inert (Phase 2.4 step 1)
                 for (self.tree.extraSlice(im.items)) |item| self.emitStmt(item);
             },
             .struct_decl, .enum_decl, .trait_decl, .use_decl, .import_decl, .from_decl, .import_item => {},
@@ -1902,7 +1916,10 @@ pub const Emitter = struct {
         // globals table, so a name lookup is enough.
         for (self.tree.extraSlice(self.tree.node(module).source_file)) |item| {
             const it = self.tree.node(item);
-            if (std.meta.activeTag(it) == .fn_decl and std.mem.eql(u8, it.fn_decl.name, "main")) {
+            if (std.meta.activeTag(it) == .fn_decl and
+                it.fn_decl.generics.len == 0 and
+                std.mem.eql(u8, it.fn_decl.name, "main"))
+            {
                 const name_idx = self.addConstant(bc.vString(self.globalName("main")));
                 self.emitInstIndex(.get_global, name_idx, self.tree.loc(item).line);
                 self.emitInst(.call, self.tree.loc(item).line);

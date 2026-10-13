@@ -71,6 +71,7 @@ extern const ConstructSpec construct_field_access;
 /* --- specified by the full grammar, outside Astra-0 ---------- */
 extern const ConstructSpec construct_trait;
 extern const ConstructSpec construct_impl;
+extern const ConstructSpec construct_generic_params;
 extern const ConstructSpec construct_type_alias;
 extern const ConstructSpec construct_comptime;
 extern const ConstructSpec construct_lambda;
@@ -130,6 +131,7 @@ const ConstructSpec *const astra_constructs[] = {
     /* outside Astra-0 */
     &construct_trait,
     &construct_impl,
+    &construct_generic_params,
     &construct_type_alias,
     &construct_comptime,
     &construct_lambda,

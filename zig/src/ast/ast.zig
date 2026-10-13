@@ -85,19 +85,21 @@ pub const Tag = enum {
     type_optional,
     type_array,
     type_fn,
+    type_param,
 };
 
-pub const FnDecl = struct { name: []const u8, params: List, ret: ?u32, body: u32, is_pub: bool = false };
+pub const FnDecl = struct { name: []const u8, params: List, ret: ?u32, body: u32, is_pub: bool = false, generics: List = .{ .start = 0, .len = 0 } };
 pub const Lambda = struct { params: List, ret: ?u32, body: u32 };
-pub const StructDecl = struct { name: []const u8, fields: List, is_pub: bool = false };
-pub const EnumDecl = struct { name: []const u8, variants: List, is_pub: bool = false };
+pub const StructDecl = struct { name: []const u8, fields: List, is_pub: bool = false, generics: List = .{ .start = 0, .len = 0 } };
+pub const EnumDecl = struct { name: []const u8, variants: List, is_pub: bool = false, generics: List = .{ .start = 0, .len = 0 } };
 /// `trait Name { fn ... }` (research/010 §12.1 TraitDef). A signature-only
 /// method carries an empty body block, so every consumer sees a well-formed
 /// `fn_decl`.
-pub const TraitDecl = struct { name: []const u8, items: List, is_pub: bool = false };
+pub const TraitDecl = struct { name: []const u8, items: List, is_pub: bool = false, generics: List = .{ .start = 0, .len = 0 } };
 /// `impl [TraitName for] Type { fn methods }` (research/010 §12.1 ImplBlock).
-/// `trait_name` is null for an inherent impl; generics/where are Phase 2.4.
-pub const ImplDecl = struct { trait_name: ?[]const u8, type_name: []const u8, items: List };
+/// `trait_name` is null for an inherent impl; a `<...>` list (step 1, inert
+/// until Phase 2.4 step 2) sits between `impl` and the names.
+pub const ImplDecl = struct { trait_name: ?[]const u8, type_name: []const u8, items: List, generics: List = .{ .start = 0, .len = 0 } };
 pub const VarDecl = struct { name: []const u8, type_node: ?u32, value: ?u32, is_mut: bool, is_pub: bool = false };
 /// `import ImportPath ("as" Identifier)?` (research/010 §12.1). `path` is the
 /// source text of the whole path (`a.b.c`).
@@ -137,6 +139,9 @@ pub const VariantBind = struct { variant: u32, bindings: List };
 pub const BuiltinVariant = struct { kind: BuiltinKind, payload: ?u32 };
 pub const TypeArray = struct { elem: u32, size: ?u32 };
 pub const TypeFn = struct { params: List, ret: ?u32 };
+/// One `<T: Bound + Bound>` parameter. Phase 2.4 step 1: parsed inert on
+/// fn/struct/enum/trait/impl declarations; inference lands with step 2.
+pub const TypeParam = struct { name: []const u8, bounds: List };
 
 pub const BuiltinKind = enum { ok, err, some, none };
 
@@ -199,6 +204,7 @@ pub const Node = union(Tag) {
     type_optional: u32,
     type_array: TypeArray,
     type_fn: TypeFn,
+    type_param: TypeParam,
 };
 
 pub const Tree = struct {
@@ -263,6 +269,22 @@ pub const Tree = struct {
         while (i < depth) : (i += 1) try writer.writeAll("  ");
     }
 
+    /// One `TypeParam(name: Bound + Bound)` line per generic parameter, at
+    /// indent+1 under the declaration header (seed `dump_generics` mirrors
+    /// this format byte-for-byte).
+    fn dumpGenerics(self: *const Tree, writer: anytype, generics: List, depth: usize) !void {
+        for (self.extraSlice(generics)) |g| {
+            const tp = self.nodes.items[g].type_param;
+            try indent(writer, depth + 1);
+            try writer.print("TypeParam({s}", .{tp.name});
+            for (self.extraSlice(tp.bounds), 0..) |b, bi| {
+                if (bi == 0) try writer.print(": {s}", .{self.nodes.items[b].type_ident})
+                else try writer.print(" + {s}", .{self.nodes.items[b].type_ident});
+            }
+            try writer.writeAll(")\n");
+        }
+    }
+
     fn dumpNode(self: *const Tree, writer: anytype, idx: u32, depth: usize) anyerror!void {
         const n = self.nodes.items[idx];
         try indent(writer, depth);
@@ -273,6 +295,7 @@ pub const Tree = struct {
             },
             .fn_decl => |f| {
                 try writer.print("{s}FnDecl({s})\n", .{ if (f.is_pub) "Pub" else "", f.name });
+                try self.dumpGenerics(writer, f.generics, depth);
                 for (self.extraSlice(f.params)) |p| {
                     const par = self.nodes.items[p].param;
                     try indent(writer, depth + 1);
@@ -298,20 +321,24 @@ pub const Tree = struct {
             },
             .struct_decl => |s| {
                 try writer.print("{s}StructDecl({s})\n", .{ if (s.is_pub) "Pub" else "", s.name });
+                try self.dumpGenerics(writer, s.generics, depth);
                 for (self.extraSlice(s.fields)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .enum_decl => |e| {
                 try writer.print("{s}EnumDecl({s})\n", .{ if (e.is_pub) "Pub" else "", e.name });
+                try self.dumpGenerics(writer, e.generics, depth);
                 for (self.extraSlice(e.variants)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .trait_decl => |t| {
                 try writer.print("{s}Trait({s})\n", .{ if (t.is_pub) "Pub" else "", t.name });
+                try self.dumpGenerics(writer, t.generics, depth);
                 for (self.extraSlice(t.items)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .impl_decl => |im| {
                 try writer.writeAll("Impl(");
                 if (im.trait_name) |tn| try writer.print("{s} for ", .{tn});
                 try writer.print("{s})\n", .{im.type_name});
+                try self.dumpGenerics(writer, im.generics, depth);
                 for (self.extraSlice(im.items)) |c| try self.dumpNode(writer, c, depth + 1);
             },
             .var_decl => |v| {
@@ -532,6 +559,16 @@ pub const Tree = struct {
                 try writer.writeAll("TypeFn\n");
                 for (self.extraSlice(f.params)) |p| try self.dumpNode(writer, p, depth + 1);
                 if (f.ret) |r| try self.dumpNode(writer, r, depth + 1);
+            },
+            // Standalone fallback; a declaration prints these inline via
+            // dumpGenerics (seed label style, bounds in the parens).
+            .type_param => |tp| {
+                try writer.print("TypeParam({s}", .{tp.name});
+                for (self.extraSlice(tp.bounds), 0..) |b, bi| {
+                    if (bi == 0) try writer.print(": {s}", .{self.nodes.items[b].type_ident})
+                    else try writer.print(" + {s}", .{self.nodes.items[b].type_ident});
+                }
+                try writer.writeAll(")\n");
             },
         }
     }

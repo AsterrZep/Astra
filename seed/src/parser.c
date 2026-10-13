@@ -949,6 +949,59 @@ static void fn_add_param(Parser *p, Node *fn, InternedString name, Node *type) {
     f->param_types.len++;
 }
 
+/* Generic parameter list: `<T, U: Show + Debug>` (research/010 §12.1
+ * GenericParams/GenericParam/TraitBounds). A declaration without `<` is the
+ * overwhelming majority — the helper consumes nothing then. The list is
+ * stored as NODE_TYPE_PARAM nodes in the declaration's `generics`; bounds
+ * are NODE_TYPE_IDENT nodes. Phase 2.4 step 1 parses it inert (the checker
+ * and the emitter skip declarations that carry one). No newlines are
+ * skipped inside `<...>`, mirroring the parameter list's strictness. */
+static void parse_generic_params(Parser *p, DYNARRAY(Node *) *out) {
+    out->data = NULL;
+    out->len  = 0;
+    out->cap  = 0;
+    if (!match(p, TOKEN_LT)) return;
+    do {
+        expect(p, TOKEN_IDENT, "type parameter name");
+        SrcLoc ploc = p->previous.loc;
+        Node *tp = node_new(p->arena, NODE_TYPE_PARAM, ploc);
+        tp->as.type_param.name = p->previous.text;
+        tp->as.type_param.bounds.data = NULL;
+        tp->as.type_param.bounds.len  = 0;
+        tp->as.type_param.bounds.cap  = 0;
+        if (match(p, TOKEN_COLON)) {
+            do {
+                expect(p, TOKEN_IDENT, "trait name");
+                Node *b = node_new(p->arena, NODE_TYPE_IDENT, p->previous.loc);
+                b->as.type_ident.name = p->previous.text;
+                if (tp->as.type_param.bounds.len >= tp->as.type_param.bounds.cap) {
+                    size_t new_cap = tp->as.type_param.bounds.cap == 0 ? 4
+                                                      : tp->as.type_param.bounds.cap * 2;
+                    Node **nd = arena_new_array(p->arena, Node *, new_cap);
+                    if (tp->as.type_param.bounds.data) {
+                        memcpy(nd, tp->as.type_param.bounds.data,
+                               sizeof(Node *) * tp->as.type_param.bounds.len);
+                    }
+                    tp->as.type_param.bounds.data = nd;
+                    tp->as.type_param.bounds.cap  = new_cap;
+                }
+                tp->as.type_param.bounds.data[tp->as.type_param.bounds.len++] = b;
+            } while (match(p, TOKEN_PLUS));
+        }
+        if (out->len >= out->cap) {
+            size_t new_cap = out->cap == 0 ? 4 : out->cap * 2;
+            Node **nd = arena_new_array(p->arena, Node *, new_cap);
+            if (out->data) {
+                memcpy(nd, out->data, sizeof(Node *) * out->len);
+            }
+            out->data = nd;
+            out->cap  = new_cap;
+        }
+        out->data[out->len++] = tp;
+    } while (match(p, TOKEN_COMMA));
+    expect(p, TOKEN_GT, "'>'");
+}
+
 static Node *parse_fn_decl(Parser *p, bool is_pub) {
     SrcLoc loc = p->previous.loc;
     expect(p, TOKEN_IDENT, "function name");
@@ -963,6 +1016,7 @@ static Node *parse_fn_decl(Parser *p, bool is_pub) {
     n->as.fn_decl.param_types.len  = 0;
     n->as.fn_decl.param_types.cap  = 0;
     n->as.fn_decl.return_type = NULL;
+    parse_generic_params(p, &n->as.fn_decl.generics);
 
     /* Parameters */
     expect(p, TOKEN_LPAREN, "'('");
@@ -1044,6 +1098,7 @@ static Node *parse_struct_decl(Parser *p, bool is_pub) {
     n->as.struct_decl.field_types.data = NULL;
     n->as.struct_decl.field_types.len  = 0;
     n->as.struct_decl.field_types.cap  = 0;
+    parse_generic_params(p, &n->as.struct_decl.generics);
 
     expect(p, TOKEN_LBRACE, "'{'");
     skip_newlines(p);
@@ -1109,6 +1164,7 @@ static Node *parse_enum_decl(Parser *p, bool is_pub) {
     n->as.enum_decl.variants.data = NULL;
     n->as.enum_decl.variants.len  = 0;
     n->as.enum_decl.variants.cap  = 0;
+    parse_generic_params(p, &n->as.enum_decl.generics);
 
     expect(p, TOKEN_LBRACE, "'{'");
     skip_newlines(p);
@@ -1232,6 +1288,7 @@ static Node *parse_trait_decl(Parser *p, bool is_pub) {
     n->as.trait_decl.items.data = NULL;
     n->as.trait_decl.items.len  = 0;
     n->as.trait_decl.items.cap  = 0;
+    parse_generic_params(p, &n->as.trait_decl.generics);
 
     expect(p, TOKEN_LBRACE, "'{'");
     bool saved_self = p->allow_self;
@@ -1283,14 +1340,18 @@ static Node *parse_trait_decl(Parser *p, bool is_pub) {
 
 static Node *parse_impl_block(Parser *p) {
     SrcLoc loc = p->previous.loc; /* the `impl` keyword */
-    expect(p, TOKEN_IDENT, "type name");
-    InternedString first = p->previous.text;
     Node *n = node_new(p->arena, NODE_IMPL, loc);
     n->as.impl_decl.trait_name = (InternedString){0}; /* NULL when inherent */
     n->as.impl_decl.type_name  = (InternedString){0};
     n->as.impl_decl.items.data = NULL;
     n->as.impl_decl.items.len  = 0;
     n->as.impl_decl.items.cap  = 0;
+    /* The type parameter list comes before the receiver type in the grammar
+     * (`impl<T> Show for Pair<T>`), so it is parsed before the first name. */
+    parse_generic_params(p, &n->as.impl_decl.generics);
+
+    expect(p, TOKEN_IDENT, "type name");
+    InternedString first = p->previous.text;
 
     if (match(p, TOKEN_FOR)) {
         n->as.impl_decl.trait_name = first;

@@ -1,0 +1,13 @@
+// Parse-only probe: generic parameter lists on every declaration site, plus
+// type-position arguments (still discarded by parse_type until step 4).
+// Not run by the conformance suite — dump_parity.sh sweeps this file.
+pub fn pub_id<T>(x: T) -> T { x }
+fn two<A, B>(a: A, b: B) -> A { a }
+fn bounded<T: Show>(x: T) -> T { x }
+struct Box<T> { v: T }
+enum Wrap<T> { Some(T) None }
+trait Show { fn show(self); }
+trait Named<T> { fn name(self); }
+impl<T> Holder { fn ping(self) -> i32 { 1 } }
+fn annotated(x: Box<i32>) -> i32 { 0 }
+fn main() { print(1) }

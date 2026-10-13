@@ -288,6 +288,10 @@ typedef enum {
 
     /* Import item (sub-production of ImportStmt) */
     NODE_IMPORT_ITEM,
+
+    /* Generic parameter (`<T: Show>`, research/010 §12.1 GenericParam) —
+     * one node per parameter, carried as `generics` on the declaration */
+    NODE_TYPE_PARAM,
 } NodeKind;
 
 /* Forward declaration */
@@ -470,10 +474,11 @@ typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) params; /* param names; params[0] == "self" when has_self */
     DYNARRAY(Node *)      param_types; /* NULL entry for a typeless `self` receiver */
+    DYNARRAY(Node *)      generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
     Node                 *return_type; /* may be NULL */
     Node                 *body;        /* BlockExpr */
     bool                 is_pub;       /* `pub fn` — exported (ARCHITECTURE §10.2) */
-    bool                 has_self;     /* receiver method (params[0] is the receiver) */
+    bool                 has_self;      /* receiver method (params[0] is the receiver) */
 } FnDecl;
 
 typedef struct {
@@ -487,6 +492,7 @@ typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) field_names;
     DYNARRAY(Node *)      field_types;
+    DYNARRAY(Node *)      generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
     bool                  is_pub; /* `pub struct` — exported */
 } StructDecl;
 
@@ -494,6 +500,7 @@ typedef struct {
     InternedString        name;
     DYNARRAY(InternedString) variants;       /* unit variant names */
     DYNARRAY(Node *)      variant_payloads;  /* NODE_PAYLOAD, parallel to variants */
+    DYNARRAY(Node *)      generics;          /* NODE_TYPE_PARAM, empty when no `<...>` */
     bool                  is_pub;            /* `pub enum` — exported */
 } EnumDecl;
 
@@ -503,16 +510,18 @@ typedef struct {
 typedef struct {
     InternedString   name;
     DYNARRAY(Node *) items;
+    DYNARRAY(Node *) generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
     bool             is_pub; /* `pub trait` — exported (ARCHITECTURE §10.2) */
 } TraitDecl;
 
 /* Impl block: `impl [TraitName for] Type { fn methods }` (research/010 §12.1
  * ImplBlock). `trait_name` is NULL for an inherent impl. Items are NODE_FN_DECL
- * with has_self; generics and where-clauses are Phase 2.4 territory. */
+ * with has_self; where-clauses are still deferred. */
 typedef struct {
     InternedString   trait_name; /* NULL when inherent */
     InternedString   type_name;
     DYNARRAY(Node *) items;
+    DYNARRAY(Node *) generics;  /* NODE_TYPE_PARAM, empty when no `<...>` */
 } ImplDecl;
 
 /* Payload of a data-carrying enum variant:
@@ -579,8 +588,16 @@ typedef struct {
 
 typedef struct {
     InternedString name;
-    InternedString alias;         /* NULL when no "as" */
+    InternedString alias;         /* NULL when no `as` */
 } ImportItem;
+
+/* One generic parameter: `T` or `T: Show + Debug` (research/010 §12.1
+ * GenericParam / TraitBounds). Bounds are NODE_TYPE_IDENT nodes, empty when
+ * the parameter carries no bound. Owned by constructs/generic_params.c. */
+typedef struct {
+    InternedString   name;
+    DYNARRAY(Node *) bounds; /* NODE_TYPE_IDENT, empty when unbounded */
+} TypeParam;
 
 /* -----------------------------------------------------------
  * §9: AST Node (union)
@@ -635,6 +652,7 @@ struct Node {
         ImportDecl       import;
         FromDecl         from;
         ImportItem       import_item;
+        TypeParam        type_param;
     } as;
 };
 

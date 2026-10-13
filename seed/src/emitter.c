@@ -564,6 +564,7 @@ static void register_types(Emitter *e, Node *module) {
         Node *item = module->as.module.items.data[i];
 
         if (item->kind == NODE_FN_DECL) {
+            if (item->as.fn_decl.generics.len > 0) continue; /* inert (Phase 2.4 step 1) */
             if (e->fn_count >= EMITTER_MAX_FNS) {
                 fprintf(stderr, "error: too many functions (max %d)\n",
                         EMITTER_MAX_FNS);
@@ -575,6 +576,7 @@ static void register_types(Emitter *e, Node *module) {
         }
 
         if (item->kind == NODE_ENUM_DECL) {
+            if (item->as.enum_decl.generics.len > 0) continue; /* inert (Phase 2.4 step 1) */
             if (e->enum_count >= EMITTER_MAX_ENUMS) {
                 fprintf(stderr, "error: too many enum declarations (max %d)\n",
                         EMITTER_MAX_ENUMS);
@@ -618,6 +620,7 @@ static void register_types(Emitter *e, Node *module) {
         }
 
         if (item->kind != NODE_STRUCT_DECL) continue;
+        if (item->as.struct_decl.generics.len > 0) continue; /* inert (Phase 2.4 step 1) */
 
         if (e->struct_count >= EMITTER_MAX_STRUCTS) {
             fprintf(stderr, "error: too many struct declarations (max %d)\n",
@@ -926,6 +929,7 @@ static const char *node_kind_name(NodeKind kind) {
     case NODE_IMPORT:            return "Import";
     case NODE_FROM:              return "From";
     case NODE_IMPORT_ITEM:       return "ImportItem";
+    case NODE_TYPE_PARAM:        return "TypeParam";
     case NODE_TRAIT:             return "Trait";
     case NODE_IMPL:              return "Impl";
     }
@@ -952,6 +956,7 @@ static int node_value_effect(Node *node) {
     case NODE_IMPORT:
     case NODE_FROM:
     case NODE_IMPORT_ITEM:
+    case NODE_TYPE_PARAM:
     case NODE_TRAIT:
     case NODE_IMPL:
     case NODE_MODULE:
@@ -1968,6 +1973,9 @@ static void emit_stmt(Emitter *e, Node *node) {
 
     switch (node->kind) {
     case NODE_FN_DECL: {
+        /* A generic declaration never reaches codegen: the checker skipped
+         * it, so nothing can call it (Phase 2.4 step 1). */
+        if (node->as.fn_decl.generics.len > 0) break;
         uint32_t line = node->loc.line;
         FnObj *fn = arena_alloc_zero(e->arena, sizeof(FnObj), _Alignof(FnObj));
         if (!fn) return;
@@ -2136,6 +2144,7 @@ static void emit_stmt(Emitter *e, Node *node) {
      * mangled `Type.method` names (the checker rewrote fn_decl.name), so an
      * impl emits its items through the normal statement path. */
     case NODE_IMPL: {
+        if (node->as.impl_decl.generics.len > 0) break; /* inert (Phase 2.4 step 1) */
         for (size_t i = 0; i < node->as.impl_decl.items.len; i++) {
             emit_stmt(e, node->as.impl_decl.items.data[i]);
         }
@@ -2208,7 +2217,8 @@ void emitter_emit(Emitter *e, Node *module) {
     InternedString main_name = string_intern_cstr(e->strings, "main");
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
-        if (item->kind == NODE_FN_DECL && string_eq(item->as.fn_decl.name, main_name)) {
+        if (item->kind == NODE_FN_DECL && item->as.fn_decl.generics.len == 0 &&
+            string_eq(item->as.fn_decl.name, main_name)) {
             uint32_t name_idx = add_constant(e, value_string(main_name.str));
             emit_inst_index(e, OPCODE_GET_GLOBAL, name_idx, item->loc.line);
             emit_inst(e, OPCODE_CALL, item->loc.line);

@@ -12,7 +12,7 @@
 
 #include "constructs/construct.h"
 
-static const char *const deps[] = { "enum_variant", "variant_path", NULL };
+static const char *const deps[] = { "enum_variant", "variant_path", "generic_params", NULL };
 
 const ConstructSpec construct_enum = {
     .name       = "enum",
@@ -31,8 +31,10 @@ const ConstructSpec construct_enum = {
                   "(exhaustiveness); research/010 §12.1",
     .note      = "Unit variants only. A variant is a (enum name, variant index) pair; "
                   "the runtime value prints as `Enum.Variant` and compares structurally. "
-                  "No layout is allocated yet, so the tag-width/niche questions of "
-                  "research/04 §6.2-6.4 are still open. Empty enums (research/04 §8.4) "
-                  "parse but are not meaningfully handled.",
+                  "Generic parameters parse inert since Phase 2.4 step 1 (the checker "
+                  "skips the declaration). No layout is allocated yet, so the "
+                  "tag-width/niche questions of research/04 §6.2-6.4 are still open. "
+                  "Empty enums (research/04 §8.4) parse but are not meaningfully "
+                  "handled.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

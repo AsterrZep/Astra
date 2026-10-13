@@ -484,10 +484,40 @@ pub const Parser = struct {
 
     // ── Declarations ──────────────────────────────────────────────
 
+    /// `<T, U: Show + Debug>` (research/010 §7.3). Phase 2.4 step 1: parsed
+    /// on every declaration site into `TypeParam` nodes and left inert; the
+    /// common case has no `<` and yields an empty list. Strict inside the
+    /// brackets (no newline skipping), no trailing comma.
+    fn parseGenericParams(self: *Parser) anyerror!ast.List {
+        var params: std.ArrayListUnmanaged(u32) = .empty;
+        defer params.deinit(self.allocator);
+        if (!self.match(.lt)) return self.tree.addExtra(@as([]const u32, &.{}));
+        while (true) {
+            try self.expect(.identifier);
+            const name = self.previous.text;
+            var bounds: std.ArrayListUnmanaged(u32) = .empty;
+            defer bounds.deinit(self.allocator);
+            if (self.match(.colon)) {
+                while (true) {
+                    try self.expect(.identifier);
+                    const b = self.previous.text;
+                    try bounds.append(self.allocator, try self.add(.{ .type_ident = b }, self.previous.loc));
+                    if (!self.match(.plus)) break;
+                }
+            }
+            const blist = try self.tree.addExtra(bounds.items);
+            try params.append(self.allocator, try self.add(.{ .type_param = .{ .name = name, .bounds = blist } }, self.previous.loc));
+            if (!self.match(.comma)) break;
+        }
+        try self.expect(.gt);
+        return self.tree.addExtra(params.items);
+    }
+
     fn parseFnDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         try self.expect(.identifier);
         const name = self.previous.text;
+        const generics = try self.parseGenericParams();
 
         var params: std.ArrayListUnmanaged(u32) = .empty;
         defer params.deinit(self.allocator);
@@ -541,13 +571,14 @@ pub const Parser = struct {
             break :blk try self.parseBlock();
         };
         const list = try self.tree.addExtra(params.items);
-        return self.add(.{ .fn_decl = .{ .name = name, .params = list, .ret = ret, .body = body, .is_pub = is_pub } }, loc);
+        return self.add(.{ .fn_decl = .{ .name = name, .params = list, .ret = ret, .body = body, .is_pub = is_pub, .generics = generics } }, loc);
     }
 
     fn parseStructDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         try self.expect(.identifier);
         const name = self.previous.text;
+        const generics = try self.parseGenericParams();
 
         try self.expect(.lbrace);
         self.skipNewlines();
@@ -564,13 +595,14 @@ pub const Parser = struct {
         }
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(fields.items);
-        return self.add(.{ .struct_decl = .{ .name = name, .fields = list, .is_pub = is_pub } }, loc);
+        return self.add(.{ .struct_decl = .{ .name = name, .fields = list, .is_pub = is_pub, .generics = generics } }, loc);
     }
 
     fn parseEnumDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         try self.expect(.identifier);
         const name = self.previous.text;
+        const generics = try self.parseGenericParams();
 
         try self.expect(.lbrace);
         self.skipNewlines();
@@ -618,16 +650,17 @@ pub const Parser = struct {
         }
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(variants.items);
-        return self.add(.{ .enum_decl = .{ .name = name, .variants = list, .is_pub = is_pub } }, loc);
+        return self.add(.{ .enum_decl = .{ .name = name, .variants = list, .is_pub = is_pub, .generics = generics } }, loc);
     }
 
     /// `trait Name { fn ... }` (research/010 §12.1 TraitDef). Items are `fn`
-    /// only and a method may be a signature without a body; generics and
-    /// where-clauses are Phase 2.4 territory.
+    /// only and a method may be a signature without a body; a `<...>` list
+    /// (step 1, inert until Phase 2.4 step 2) follows the name.
     fn parseTraitDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
         try self.expect(.identifier);
         const name = self.previous.text;
+        const generics = try self.parseGenericParams();
 
         var items: std.ArrayListUnmanaged(u32) = .empty;
         defer items.deinit(self.allocator);
@@ -657,14 +690,16 @@ pub const Parser = struct {
         while (!self.check(.rbrace) and !self.check(.eof)) self.advance();
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(items.items);
-        return self.add(.{ .trait_decl = .{ .name = name, .items = list, .is_pub = is_pub } }, loc);
+        return self.add(.{ .trait_decl = .{ .name = name, .items = list, .is_pub = is_pub, .generics = generics } }, loc);
     }
 
     /// `impl [TraitName for] Type { fn methods }` (research/010 §12.1
     /// ImplBlock). An inherent impl omits `for`; every item is a method taking
-    /// a typeless `self` as its first parameter.
+    /// a typeless `self` as its first parameter. A `<...>` list (step 1,
+    /// inert until Phase 2.4 step 2) sits between `impl` and the names.
     fn parseImplBlock(self: *Parser) anyerror!u32 {
         const loc = self.previous.loc;
+        const generics = try self.parseGenericParams();
         try self.expect(.identifier);
         const first = self.previous.text;
 
@@ -704,7 +739,7 @@ pub const Parser = struct {
         while (!self.check(.rbrace) and !self.check(.eof)) self.advance();
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(items.items);
-        return self.add(.{ .impl_decl = .{ .trait_name = trait_name, .type_name = type_name, .items = list } }, loc);
+        return self.add(.{ .impl_decl = .{ .trait_name = trait_name, .type_name = type_name, .items = list, .generics = generics } }, loc);
     }
 
     fn parseVarDecl(self: *Parser, is_const: bool, is_pub: bool) anyerror!u32 {

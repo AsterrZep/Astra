@@ -129,6 +129,27 @@ static void dump_block(BlockExpr *b, int indent) {
     }
 }
 
+/* One `TypeParam(name: Bound + Bound)` line per generic parameter, at
+ * indent+1 under the declaration header (zig's dump mirrors this format). */
+static void dump_generics(DYNARRAY(Node *) *gens, int indent) {
+    for (size_t i = 0; i < gens->len; i++) {
+        Node *tp = gens->data[i];
+        if (!tp || tp->kind != NODE_TYPE_PARAM) continue;
+        indent_print(indent + 1);
+        printf("TypeParam(%.*s",
+               (int)tp->as.type_param.name.len,
+               tp->as.type_param.name.str);
+        for (size_t j = 0; j < tp->as.type_param.bounds.len; j++) {
+            Node *b = tp->as.type_param.bounds.data[j];
+            if (!b || b->kind != NODE_TYPE_IDENT) continue;
+            printf(j == 0 ? ": %.*s" : " + %.*s",
+                   (int)b->as.type_ident.name.len,
+                   b->as.type_ident.name.str);
+        }
+        printf(")\n");
+    }
+}
+
 void ast_dump(Node *node, int indent) {
     dump_node(node, indent);
 }
@@ -333,6 +354,7 @@ static void dump_node(Node *node, int indent) {
         printf("%sFnDecl(%.*s)\n", node->as.fn_decl.is_pub ? "Pub" : "",
                (int)node->as.fn_decl.name.len,
                node->as.fn_decl.name.str);
+        dump_generics(&node->as.fn_decl.generics, indent);
         for (size_t i = 0; i < node->as.fn_decl.params.len; i++) {
             indent_print(indent + 1);
             printf("Param(%.*s)\n",
@@ -354,6 +376,7 @@ static void dump_node(Node *node, int indent) {
         printf("%sStructDecl(%.*s)\n", node->as.struct_decl.is_pub ? "Pub" : "",
                (int)node->as.struct_decl.name.len,
                node->as.struct_decl.name.str);
+        dump_generics(&node->as.struct_decl.generics, indent);
         for (size_t i = 0; i < node->as.struct_decl.field_names.len; i++) {
             indent_print(indent + 1);
             printf("Field(%.*s)\n",
@@ -366,6 +389,7 @@ static void dump_node(Node *node, int indent) {
         printf("%sEnumDecl(%.*s)\n", node->as.enum_decl.is_pub ? "Pub" : "",
                (int)node->as.enum_decl.name.len,
                node->as.enum_decl.name.str);
+        dump_generics(&node->as.enum_decl.generics, indent);
         for (size_t i = 0; i < node->as.enum_decl.variants.len; i++) {
             indent_print(indent + 1);
             printf("Variant(%.*s)\n",
@@ -460,6 +484,7 @@ static void dump_node(Node *node, int indent) {
         printf("%sTrait(%.*s)\n", node->as.trait_decl.is_pub ? "Pub" : "",
                (int)node->as.trait_decl.name.len,
                node->as.trait_decl.name.str);
+        dump_generics(&node->as.trait_decl.generics, indent);
         for (size_t i = 0; i < node->as.trait_decl.items.len; i++)
             dump_node(node->as.trait_decl.items.data[i], indent + 1);
         break;
@@ -473,6 +498,7 @@ static void dump_node(Node *node, int indent) {
         printf("%.*s)\n",
                (int)node->as.impl_decl.type_name.len,
                node->as.impl_decl.type_name.str);
+        dump_generics(&node->as.impl_decl.generics, indent);
         for (size_t i = 0; i < node->as.impl_decl.items.len; i++)
             dump_node(node->as.impl_decl.items.data[i], indent + 1);
         break;

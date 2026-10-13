@@ -1064,6 +1064,10 @@ pub const TypeChecker = struct {
 
     fn checkStructDecl(self: *TypeChecker, idx: u32) void {
         const s = self.tree.node(idx).struct_decl;
+        // Phase 2.4 step 1: a declaration with `<...>` never binds its name
+        // or its fields — instantiation lands with step 4. Reached from both
+        // the module pass and checkNode's default path.
+        if (s.generics.len > 0) return;
         // Keyed by name: a re-declaration aliases this entry and overwrites
         // the layout below (see types.zig header; the seed has no
         // duplicate-name error either).
@@ -1092,6 +1096,8 @@ pub const TypeChecker = struct {
 
     fn checkEnumDecl(self: *TypeChecker, idx: u32) void {
         const e = self.tree.node(idx).enum_decl;
+        // Phase 2.4 step 1: same contract as structs (checkStructDecl).
+        if (e.generics.len > 0) return;
         const en = self.pool.enumType(e.name) catch @panic("OOM");
         const variants = self.tree.extraSlice(e.variants);
         var vs = self.a.alloc([]const u8, variants.len) catch @panic("OOM");
@@ -1190,7 +1196,9 @@ pub const TypeChecker = struct {
                 _ = ident;
                 break :blk self.checkAssign(a.target, bin, loc);
             },
-            .fn_decl => blk: {
+            .fn_decl => |f| blk: {
+                // Inert until Phase 2.4 step 2 (the seed's checkNode case).
+                if (f.generics.len > 0) break :blk self.newType(.void);
                 self.pending_fn_loc = loc;
                 self.checkFnDecl(idx);
                 break :blk self.newType(.void);
@@ -1259,9 +1267,9 @@ pub const TypeChecker = struct {
         var list: std.ArrayListUnmanaged(Export) = .empty;
         for (items) |it| {
             const name: ?[]const u8 = switch (self.tree.node(it)) {
-                .fn_decl => |f| if (f.is_pub) f.name else null,
-                .struct_decl => |s| if (s.is_pub) s.name else null,
-                .enum_decl => |e| if (e.is_pub) e.name else null,
+                .fn_decl => |f| if (f.is_pub and f.generics.len == 0) f.name else null,
+                .struct_decl => |s| if (s.is_pub and s.generics.len == 0) s.name else null,
+                .enum_decl => |e| if (e.is_pub and e.generics.len == 0) e.name else null,
                 .const_decl => |c| if (c.is_pub) c.name else null,
                 else => null,
             };
@@ -1285,10 +1293,12 @@ pub const TypeChecker = struct {
         for (items) |it| {
             if (std.meta.activeTag(self.tree.node(it)) != .trait_decl) continue;
             const tr = self.tree.node(it).trait_decl;
+            if (tr.generics.len > 0) continue; // inert (Phase 2.4 step 1)
             var methods: std.ArrayListUnmanaged(TraitMethod) = .empty;
             for (self.tree.extraSlice(tr.items)) |fidx| {
                 if (std.meta.activeTag(self.tree.node(fidx)) != .fn_decl) continue;
                 const f = self.tree.node(fidx).fn_decl;
+                if (f.generics.len > 0) continue; // inert (Phase 2.4 step 1)
                 const body = self.tree.node(f.body);
                 const has_content = switch (body) {
                     .block => |b| self.tree.extraSlice(b.stmts).len > 0 or b.tail != null,
@@ -1324,6 +1334,8 @@ pub const TypeChecker = struct {
     /// signature pass, the body pass and the emitter all read afterwards.
     fn registerImpl(self: *TypeChecker, impl_idx: u32) void {
         const im = self.tree.node(impl_idx).impl_decl;
+        // Phase 2.4 step 1: a block with `<...>` stays inert.
+        if (im.generics.len > 0) return;
         const recv_node = self.tree.addNode(.{ .type_ident = im.type_name }, self.tree.loc(impl_idx)) catch @panic("OOM");
         const recv = self.resolveTypeNode(recv_node);
         if (isErrorType(recv)) return;
@@ -1337,6 +1349,7 @@ pub const TypeChecker = struct {
             if (std.meta.activeTag(self.tree.node(fidx)) != .fn_decl) continue;
             const floc = self.tree.loc(fidx);
             const f = self.tree.node(fidx).fn_decl;
+            if (f.generics.len > 0) continue; // inert (Phase 2.4 step 1)
             const params = self.tree.extraSlice(f.params);
             if (params.len == 0 or !std.mem.eql(u8, self.tree.node(params[0]).param.name, "self")) continue;
             // A typed receiver must name the impl's type; the typeless `self`
@@ -1411,11 +1424,13 @@ pub const TypeChecker = struct {
     /// call methods declared later.
     fn checkImplBodies(self: *TypeChecker, impl_idx: u32) void {
         const im = self.tree.node(impl_idx).impl_decl;
+        if (im.generics.len > 0) return; // inert (Phase 2.4 step 1)
         for (self.tree.extraSlice(im.items)) |fidx| {
             if (std.meta.activeTag(self.tree.node(fidx)) != .fn_decl) continue;
             const f = self.tree.node(fidx).fn_decl;
             const params = self.tree.extraSlice(f.params);
             if (params.len == 0 or !std.mem.eql(u8, self.tree.node(params[0]).param.name, "self")) continue;
+            if (f.generics.len > 0) continue; // inert (Phase 2.4 step 1)
             self.pending_fn_loc = self.tree.loc(fidx);
             self.checkFnDecl(fidx);
         }
@@ -1430,10 +1445,13 @@ pub const TypeChecker = struct {
         for (items) |it| {
             switch (self.tree.node(it)) {
                 .struct_decl => |s| {
+                    // Inert until Phase 2.4 step 4 (same rule as the seed).
+                    if (s.generics.len > 0) continue;
                     const st = self.pool.structType(s.name) catch @panic("OOM");
                     self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
                 },
                 .enum_decl => |e| {
+                    if (e.generics.len > 0) continue;
                     const en = self.pool.enumType(e.name) catch @panic("OOM");
                     self.insert(.{ .name = e.name, .type_ = en, .is_mut = false, .is_fn = false });
                 },
@@ -1445,6 +1463,8 @@ pub const TypeChecker = struct {
         for (items) |it| {
             switch (self.tree.node(it)) {
                 .fn_decl => |f| {
+                    // A generic declaration is inert until Phase 2.4 step 2.
+                    if (f.generics.len > 0) continue;
                     const params = self.tree.extraSlice(f.params);
                     var param_types = self.a.alloc(*Type, params.len) catch @panic("OOM");
                     for (params, 0..) |p, j| {
@@ -1462,7 +1482,8 @@ pub const TypeChecker = struct {
         // Second pass: bodies and values.
         for (items) |it| {
             switch (self.tree.node(it)) {
-                .fn_decl => {
+                .fn_decl => |f| {
+                    if (f.generics.len > 0) continue; // inert (Phase 2.4 step 1)
                     self.pending_fn_loc = self.tree.loc(it);
                     self.checkFnDecl(it);
                 },

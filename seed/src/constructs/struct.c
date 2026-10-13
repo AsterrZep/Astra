@@ -13,7 +13,7 @@
 
 #include "constructs/construct.h"
 
-static const char *const deps[] = { "type_annotation", "struct_lit", NULL };
+static const char *const deps[] = { "type_annotation", "struct_lit", "generic_params", NULL };
 
 const ConstructSpec construct_struct = {
     .name       = "struct",
@@ -31,9 +31,10 @@ const ConstructSpec construct_struct = {
                   "StructFields ::= StructField (\",\" StructField)* \",\"?",
     .research  = "research/04 §9.3 (product types), §6.1-6.4 (layouts); research/010 §12.1",
     .note      = "Fields are layout-ordered by declaration; the emitter resolves field "
-                  "access by name against the StructInfo table. Generics, qualifiers and "
-                  "tuple structs (`struct Pair(i32, i32)`, research/04 §9.3) are not "
-                  "implemented. Struct layouts are duplicated into each function's "
-                  "constant pool, because every VM function owns its own pool.",
+                  "access by name against the StructInfo table. Generic parameters parse "
+                  "inert since Phase 2.4 step 1 (the checker skips the declaration); "
+                  "qualifiers and tuple structs (`struct Pair(i32, i32)`, research/04 "
+                  "§9.3) are not implemented. Struct layouts are duplicated into each "
+                  "function's constant pool, because every VM function owns its own pool.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

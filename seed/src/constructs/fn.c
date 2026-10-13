@@ -13,7 +13,7 @@
 
 #include "constructs/construct.h"
 
-static const char *const deps[] = { "block", "type_annotation", NULL };
+static const char *const deps[] = { "block", "type_annotation", "generic_params", NULL };
 
 const ConstructSpec construct_fn = {
     .name       = "fn",
@@ -36,8 +36,9 @@ const ConstructSpec construct_fn = {
     .note      = "TOP-LEVEL ONLY, and top-level functions are emitted as VM globals — a "
                   "function calling another function needs that, and storing them as "
                   "module locals made cross-function calls impossible. Methods (`self`), "
-                  "generic parameters, where-clauses, qualifiers and the `= Expression` "
-                  "shorthand are specified but not implemented. Parameters live in "
-                  "frame slots 1..n (slot 0 is the callee).",
+                  "generic parameters (parsed inert since Phase 2.4 step 1), where-clauses, "
+                  "qualifiers and the `= Expression` shorthand are otherwise specified but "
+                  "not implemented. Parameters live in frame slots 1..n (slot 0 is the "
+                  "callee).",
     .parse = NULL, .check = NULL, .emit = NULL,
 };
