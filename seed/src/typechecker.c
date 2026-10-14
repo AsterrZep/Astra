@@ -2209,9 +2209,18 @@ static void check_pattern(TypeChecker *tc, Node *pat, Type *target,
             /* none matches nil (no payload to bind) */
             return;
         }
-        /* ok/err/some: bind payload pattern to target type */
+        /* ok/err/some: bind the payload pattern against the payload type.
+         * The constructors return TYPE_OPTIONAL wrapping the payload, so
+         * handing `target` down typed every binding as `optional` while the
+         * VM extracted the payload value — `w + 1` was rejected as
+         * "requires numeric type, got optional" even though it runs fine,
+         * and literal payloads like `some(1)` were rejected outright
+         * (audit §3.3). */
         if (payload) {
-            check_pattern(tc, payload, target, has_wildcard, covered, covered_n);
+            Type *pt = target;
+            if (target->kind == TYPE_OPTIONAL && target->as.optional.inner)
+                pt = target->as.optional.inner;
+            check_pattern(tc, payload, pt, has_wildcard, covered, covered_n);
         }
         return;
     }

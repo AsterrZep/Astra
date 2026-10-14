@@ -1,0 +1,31 @@
+// Payload bindings take the payload type: some(v)/ok(v)/err(v) bind the
+// payload (i32 here), not the whole optional. The VM always extracted the
+// value, but the type checker typed the name `optional` and rejected
+// arithmetic on it (audit §3.3); literal payloads (`some(1)`) rode the
+// same broken path.
+// EXPECT: 43
+// EXPECT: 84
+// EXPECT: 43
+// EXPECT: 111
+fn main() {
+    let x = some(42);
+    match x {
+        some(v) => print(v + 1),
+        none => print(0)
+    }
+    let r = ok(42);
+    match r {
+        ok(a) => print(a * 2),
+        err(e) => print(e + 1)
+    }
+    let o: i32? = some(42);
+    match o {
+        some(w) => print(w + 1),
+        none => print(0)
+    }
+    let one = some(1);
+    match one {
+        some(1) => print(111),
+        _ => print(222)
+    }
+}

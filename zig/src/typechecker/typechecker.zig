@@ -1359,7 +1359,17 @@ pub const TypeChecker = struct {
             },
             .pattern_builtin_variant => |bv| {
                 if (bv.kind == .none) return;
-                if (bv.payload) |p| self.checkPattern(p, target, has_wildcard, covered);
+                // ok/err/some bind against the payload type: the
+                // constructors return optional(inner), so passing `target`
+                // down typed the binding `optional` and rejected literal
+                // payloads like `some(1)` (audit §3.3, mirror of the seed).
+                if (bv.payload) |p| {
+                    const pt: *Type = if (target.kind == .optional and target.inner != null)
+                        target.inner.?
+                    else
+                        target;
+                    self.checkPattern(p, pt, has_wildcard, covered);
+                }
             },
             else => self.errFmt(self.tree.loc(pat_idx), "unsupported pattern in match arm", .{}),
         }
