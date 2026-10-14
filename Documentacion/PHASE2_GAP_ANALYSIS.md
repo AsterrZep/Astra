@@ -576,14 +576,33 @@ across module boundaries (the Zig exporter filters `generics.len == 0`
 and `Export` carries no `is_generic`/`type_ast`), where-clauses, turbofish
 `f<i32>()`, blanket impls, generic `type_alias`.
 
-### Phase 2.5 — Error Propagation
+### Phase 2.5 — Error Propagation ✅ (2026-10-14)
 
-1. **Parser:** `?` operator on any expression (not just Result)
-2. **Type checker:** Infer error types, check `try` usage
-3. **Emitter:** Implicit error propagation through call stack
-4. **Runtime:** Error unwinding
+1. **Parser:** `?` operator on any expression (not just Result) ✅ — was
+   already in both compilers (postfix Pratt loop; this list predated the
+   check work and read as unstarted)
+2. **Type checker:** Infer error types, check `try` usage 🟡 — usage is
+   checked now: `?` requires a tagged inner type (optional; type params
+   defer to their instantiations, the bare `none` literal is rejected)
+   and an optional declared return for the enclosing frame, with
+   byte-identical messages in both compilers. There is no `try`
+   keyword (research/010 has no production); a distinct static
+   `Result<T, E>` stays Tier 2 (research/011 §5.2)
+3. **Emitter:** Implicit error propagation through call stack ✅ —
+   `OPCODE_TRY_UNWRAP` unwinds one frame; the C backend now saves and
+   restores the global try context around every call so nested frames
+   chain like the VM instead of longjmp'ing into popped stack
+4. **Runtime:** Error unwinding ✅ — both VMs (frame pop + resume) and
+   the C `setjmp`/`longjmp` path
 
-**Exit criteria:** `?` propagates errors automatically through function calls.
+**Exit criteria:** `?` propagates errors automatically through function
+calls — ✅ (`seed/tests/conformance/enums/try_operator.astra`; the
+nested-frame C case is `seed/tests/codegen/try_nested_frames.astra`).
+
+**Remaining:** distinct static `Result<T, E>` and the never type `!`
+(Tier 2, ARCHITECTURE §5.3/§7.2), `??` coalescing, per-instantiation
+re-check of `?` inside generic bodies (details in `PHASE2_PROGRESS.md`
+§10.4).
 
 ### Phase 2.6 — Native Backend
 

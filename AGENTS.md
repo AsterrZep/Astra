@@ -199,9 +199,10 @@ The C codegen generates executable C from Astra bytecode. The pipeline is:
 
 ### What works (verified against VM)
 
-All 57 non-UI conformance cases are compiled through `--emit-c`, run, and
-compared against the VM's output by `make test` (identical output, no leaks under
-LSan). That covers:
+The conformance suite itself runs on the VM; the C round-trip is its own
+gate: every case in `tests/codegen/` is compiled through `--emit-c`, run
+with gcc and compared against its `EXPECT:` comments by `make test` (19
+cases; check new ones by hand with `-Wall -Wextra`). That covers:
 
 - Arithmetic, comparisons, booleans, strings, nil, **bitwise operators**
 - `let` variables (local and global), **module-level statements**
@@ -236,6 +237,12 @@ LSan). That covers:
 8. **Every opcode the VM knows must have a handler**, or codegen fails: a
    placeholder comment silently drops the instruction and yields a program that
    computes the wrong answer. Both switches end in a hard error for this reason.
+9. **The `?` context is a global pair** (`astra_error_jmp` +
+   `astra_error_active`, `codegen_runtime.h`): every `OPCODE_CALL` saves and
+   restores it around the callee. Dropping the save/restore lets a
+   `?`-installing callee leave its popped frame behind, and the caller's next
+   `?` longjmps into dead stack (pinned by
+   `tests/codegen/try_nested_frames.astra`, Fase 2.5).
 
 ### What remains for Phase 1 completion
 
@@ -244,7 +251,7 @@ LSan). That covers:
 | Module-level runtime errors | `astra_runtime_error` outside a setjmp context in generated module code — **verified 2026-10-12**: module main installs `ASTRA_TRY_CONTEXT` unconditionally; `tests/codegen/toplevel_oob.astra` and `error_line_in_fn.astra` exercise the longjmp path with `file:line:` positions | Done |
 
 Everything else that was on this list (lambdas, match, Option/Result, `?`,
-data-carrying enums, the full suite through the C backend) is implemented and now
+data-carrying enums, the `tests/codegen/` round-trip) is implemented and now
 verified by `make test` on both backends.
 
 ## Sub-agent workstreams

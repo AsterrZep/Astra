@@ -38,15 +38,16 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **62/62** ficheros `ui/` son rechazados. El emitter cierra
+- **65/65** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop` y la asignación a una variable capturada
   (`capture_assign`), que el type checker deja pasar a propósito; ambos
-  parsers cierran `break` con valor (`break_value`).
+  parsers cierran `break` con valor (`break_value`); los tres `ui/try_*`
+  fijan los mensajes estáticos de `?` (§10).
 - **73 pruebas** (lexer, AST, parser, type checker, types, emitter,
   bytecode, VM, módulos, depurador, link multi-módulo, diagnósticos y
   conformance) en `zig build test`.
-- Gates de CI: suite seed **148/148** (129 conformance + 18 codegen +
-  `--check-constructs`), paridad de dumps **91/91 ficheros, 0
+- Gates de CI: suite seed **152/152** (132 conformance + 19 codegen +
+  `--check-constructs`), paridad de dumps **92/92 ficheros, 0
   divergentes**.
 
 ---
@@ -143,6 +144,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 11 | **Colección de declaraciones** (forward-refs de tipo) | ✅ | Pase 0 en ambos compiladores (`typecheck_module_pass`/`checkModule`): registra nombres de struct/enum con layout vacío antes de resolver firmas y fields, así las declaraciones se referencian en cualquier orden (incl. recursión mutua). Caso nuevo `types/forward_type_refs.astra`; suite 96/96 seed, 53/53 zig. Los structs anidados en cuerpos de función siguen sin funcionar (paridad — ya fallaban igual antes) |
 | 12 | **Traits y métodos (Fase 2.3) — pasos 1–5** | ✅ | `trait`/`impl` parsean en nodos, el type checker registra la tabla de métodos por tipo nominal y baja los cuerpos, `x.m()` hace dispatch estático al global `Type.method`/`Type.Trait.method`, y un `impl T for X` se valida contra las firmas del trait (sin defaults). Semántica y límites en §8; suites 123/123 seed, 73/73 zig, paridad 83/83 |
 | 13 | **Genéricos (Fase 2.4) — pasos 1–4** | ✅ | `GenericParams` con bounds parsea en fn/struct/enum/trait/impl; fns genéricas chequeadas simbólicamente con `TYPE_PARAM`; inferencia en call-site con instancias monomórficas (y pendientes por instancia); `Name<args...>` en tipos con fix del `>>`; structs genéricos end-to-end (plantilla, inferencia en literales, instancias internadas); bounds verificados contra registros `impl T for X`. Semántica y límites en §9; suites 148/148 seed, 73/73 zig, paridad 91/91 |
+| 14 | **Propagación de errores (Fase 2.5)** | ✅ | El `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`, unwind de frame, setjmp del C backend); la fase cerró los agujeros estáticos — `?` exige valor con tag y retorno `T?` del frame — y el bug del contexto try global en llamadas anidadas del C backend. Detalle en §10; suites 152/152 seed, 73/73 zig, paridad 92/92 |
 
 ---
 
@@ -699,3 +701,78 @@ regresión `ui/fuzz_field_access_null_type`).
   `bound_{not_satisfied,not_satisfied_struct,unknown_trait}`.
 - Gates: suite seed **148/148**, `zig build test` **73/73**, paridad de
   dumps **91/91**, `--check-constructs` OK.
+
+---
+
+## 10. Propagación de errores (Fase 2.5) — completada 2026-10-14
+
+El `?` ya funcionaba de punta a punta en ambos compiladores (postfix en
+el bucle Pratt, `OPCODE_TRY_UNWRAP`, unwind de frame en las dos VMs,
+setjmp/longjmp en el C backend): el criterio de salida del GAP —
+"`?` propaga errores automáticamente a través de llamadas" — lo cumplía
+`enums/try_operator.astra` antes de empezar. Los ítems 1/3/4 de
+`GAP §11` describían trabajo sin empezar que en realidad estaba hecho;
+lo que faltaba de verdad eran los agujeros estáticos y un bug del
+backend C.
+
+### 10.1 Chequeo estático del `?` (ambos compiladores, `1cc6ca4`)
+
+`NODE_TRY_EXPR`/`.try_expr` rechaza dos cosas antes de que la VM pueda:
+
+- **(a) valor sin tag**: `?` sobre un tipo conocido no-optional →
+  `? operator requires Result or Option, got i32` (la misma redacción que
+  la VM usa en runtime). El literal `none` se tipea como nil crudo, no
+  como `T?`, así que `none?` también se rechaza: la ausencia se
+  propaga por un optional tipado (`let v: i32? = none; v?`) o con
+  `return none`. Los tipos parámetro pasan: los cuerpos genéricos se
+  chequean una vez simbólicos y el guard runtime de ambas VMs cubre sus
+  instanciaciones.
+- **(b) retorno del frame no-optional**: el unwind entrega nil/err al
+  caller, así que el retorno declarado de la función envolvente debe ser
+  `T?`: un `?` en una fn `-> i32`, sin retorno declarado, dentro de una
+  lambda sin anotar o a nivel de módulo →
+  `? operator requires the enclosing function to return an optional type`.
+  Se lee `current_fn_return` (guardado/restaurado alrededor de cuerpos
+  de fn y lambda); los métodos de `impl` pasan por el camino normal.
+
+Los mensajes son byte-idénticos seed↔zig (verificados fichero a fichero
+con ambos binarios; seed solo añade su resumen `type check failed with
+N error(s)`). Fijados por `ui/try_{non_optional,bad_return,toplevel}`.
+
+### 10.2 C backend: contexto try por llamada (`da3ddb1`)
+
+`astra_error_jmp`/`astra_error_active` son un par de globales único: un
+callee con `?` instalaba su setjmp encima del del caller y, al volver
+normalmente, lo dejaba apuntando a su frame ya desmontado — el
+siguiente `?` del caller hacía longjmp a stack muerto (repro: un falso
+`? operator requires Result or Option, got nil` mientras VM y zig
+imprimían `nil`). `OPCODE_CALL` guarda y restaura `jmp_buf`, `active` y
+`error_value` alrededor de cada llamada, así cada unwind aterriza en su
+propio setjmp vivo, encadenado frame a frame como en la VM. Fijado por
+`tests/codegen/try_nested_frames.astra` (VM, C y zig dan `nil`).
+
+### 10.3 Registry al día (`82908b1`)
+
+`operator_table.c` declaraba `?` con `binding_power=0`, que
+`--check-constructs` interpreta como "sin implementar" y salta: la
+comparación de precedencia de la invariante 6 nunca corría para él (ahora
+`BP_POSTFIX`; `--dump-operators` lo saca de la lista de pendientes con
+el parser en 14). Dos notas de constructs que mentían sobre `?`
+(`type_annotation`: "`T?` nunca se consume, `T<U>` falta";
+`field_access`: "no hay encadenado `?`") corregidas.
+
+### 10.4 Diferido
+
+`Result<T,E>` estático distinto y el tipo never `!` (Tier 2 de
+research/011 §5.2; desviaciones de ARCHITECTURE §5.3/§7.2), `??`
+coalescing, re-chequeo del `?` por instanciación genérica, y las fugas
+del modelo de memoria del C backend (las celdas envueltas de `some(...)`
+nunca se libera — preexistente; la suite no corre conformance con LSan).
+
+### 10.5 Tests
+
+`ui/try_{non_optional,bad_return,toplevel}` (3) y
+`codegen/try_nested_frames` (1). Gates: suite seed **152/152**,
+`zig build test` **73/73**, paridad **92/92**, `--check-constructs` OK;
+casos positivos (fn, método, lambda anotada) verificados en VM seed,
+C backend y zig.

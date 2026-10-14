@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
+  el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,
+  unwind de frame, setjmp del C backend); ahora el typechecker de ambos
+  compiladores cierra los agujeros que dejaba: (a) `?` sobre un valor sin
+  tag → `? operator requires Result or Option, got i32` (mismo texto que
+  el runtime; `none` se tipea como nil crudo, así que `none?` también se
+  rechaza y la ausencia va por un optional tipado o `return none`, y los
+  tipos parámetro quedan a cargo del guard runtime de sus
+  instanciaciones), y (b) el retorno declarado del frame debe ser `T?` —
+  el unwind entrega nil/err al caller, así que `?` en una fn `-> i32`, sin
+  retorno declarado, en lambda sin anotar o a nivel de módulo →
+  `? operator requires the enclosing function to return an optional type`.
+  Mensajes byte-idénticos verificados fichero a fichero; fijados por
+  `ui/try_{non_optional,bad_return,toplevel}`. La registry de operadores
+  declara `?` con `BP_POSTFIX` (el check de precedencia de la invariante 6
+  lo saltaba con `binding_power=0`) y dos notas de constructs que mentían
+  sobre `?` se corrigieron. Diferido: `Result<T,E>` estático y `!` (Tier
+  2), `??`, re-chequeo por instanciación genérica — `PHASE2_PROGRESS.md`
+  §10.4. Gates: suite seed 152/152, zig 73/73, paridad 92/92, CI verde.
 - **Genéricos (seed + Zig, Fase 2.4, pasos 1–4)**: `GenericParams` con
   bounds (`T: Show + Debug`) parsea en fn/struct/enum/trait/impl y el `>>`
   de `Vec<Vec<T>>` se reparte en dos `>` (`af0e692`); las fns genéricas
@@ -243,6 +262,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dentro de una función
 
 ### Fixed
+- **C backend: el contexto `?` ya no sobrevive a las llamadas**:
+  `astra_error_jmp`/`astra_error_active` son un par de globales y cada
+  callee con `?` instalaba su setjmp encima del del caller dejándolo
+  apuntando a su frame desmontado — el siguiente `?` del caller hacía
+  longjmp a stack muerto (repro: falso `? operator requires Result or
+  Option, got nil` con salida que divergía de las dos VMs). `OPCODE_CALL`
+  guarda y restaura `jmp_buf`, `active` y `error_value` alrededor de cada
+  llamada. Fijado por `tests/codegen/try_nested_frames.astra` (VM seed,
+  C y zig dan `nil`).
 - **Payload fields con nombre de enum se perdían en el dump del seed**:
   `match(p, TOKEN_COLON)` movía `previous` al `:` y `--dump-ast` imprimía
   `Field(::)` para todo campo `x: i32` de una variante con payload (el
