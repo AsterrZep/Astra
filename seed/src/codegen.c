@@ -953,8 +953,16 @@ static void emit_instructions(Codegen *cg,
                      "_fnv.as.fn_val->fun(frame + _fn_slot + 1, %u);\n", argc);
             cg_writef(cg, "            sp = _fn_slot + 1;\n");
             cg_writef(cg, "        } else if (_fnv.tag == AST_FN && _fnv.as.fn_val) {\n");
+            /* Mirror vm_push_frame: a user call that would exceed the shared
+             * frame bound fails with the VM's own message at the call-site
+             * line astra_line already carries, instead of running on until
+             * the operand stack gave out (audit §1.1, PRE_LLVM_AUDIT.md). */
+            cg_writef(cg, "            if (astra_depth >= ASTRA_CALL_DEPTH)\n");
+            cg_writef(cg, "                astra_runtime_error(\"call depth exceeded\");\n");
+            cg_writef(cg, "            astra_depth++;\n");
             cg_writef(cg, "            frame[_fn_slot] = "
                      "_fnv.as.fn_val->fun(frame + _fn_slot, %u);\n", argc);
+            cg_writef(cg, "            astra_depth--;\n");
             cg_writef(cg, "            sp = _fn_slot + 1;\n");
             cg_writef(cg, "        } else {\n");
             cg_writef(cg, "            astra_runtime_error(\"cannot call non-function value\");\n");

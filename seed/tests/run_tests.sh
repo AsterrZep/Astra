@@ -9,11 +9,13 @@
 #                                 error message must contain <text>
 #   // EXPECT-RUNTIME-ERROR: <text> the program must compile, then fail while
 #                                 running. On the VM the message must contain
-#                                 <text>; for --emit-c only a clean exit 1 with
-#                                 a "runtime error" line is required, because
-#                                 the two backends word their limits
-#                                 differently on purpose (see the S8/S9 notes
-#                                 in PHASE1_PROGRESS.md §6).
+#                                 <text>; for --emit-c a clean exit 1 with a
+#                                 "runtime error" line is required, and when
+#                                 <text> is non-empty it must match there too.
+#                                 Both backends word their runtime limits
+#                                 alike since audit §1.1 (PRE_LLVM_AUDIT.md);
+#                                 the exit-1 check stays because a crash also
+#                                 exits non-zero.
 #
 # Usage: ./tests/run_tests.sh   (or: make test)
 # ============================================================

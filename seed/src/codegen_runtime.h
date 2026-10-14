@@ -24,6 +24,17 @@
  * base truncation fixed alongside it. */
 #define ASTRA_FRAME_SIZE 1024
 
+/* ---------- Call depth ----------
+ *
+ * Nesting of user-function calls. It mirrors the VM's VM_CALL_DEPTH (see
+ * src/priv.h): both backends must accept and reject the same recursion, so
+ * runaway recursion stops with the same diagnostic at the same call site.
+ * Before this guard existed the C backend had no frame-count limit at all —
+ * `countdown(300)` printed 300 on the compiled side while the VM stopped
+ * with "call depth exceeded" (audit §1.1, PRE_LLVM_AUDIT.md). Builtins push
+ * no frame on either side and do not count. Keep in sync with priv.h. */
+#define ASTRA_CALL_DEPTH 256
+
 /* ---------- Tag enum ---------- */
 typedef enum {
     AST_NIL = 0,
@@ -752,7 +763,7 @@ static inline void astra_array_set(AstraArray *a, int64_t idx, AstraValue val) {
  * frame_base + sp to run off the end. */
 #define ASTRA_PUSH(frame, sp, val) do {                                          \
         if ((size_t)((frame) - astra_frame) + (size_t)(sp) >= ASTRA_FRAME_SIZE) { \
-            astra_runtime_error("frame stack overflow (recursion too deep)");     \
+            astra_runtime_error("stack overflow");                               \
         }                                                                        \
         (frame)[(sp)] = (val);                                                   \
         (sp)++;                                                                  \
@@ -775,6 +786,12 @@ AstraValue astra_error_value;
 
 const char *astra_file = "<generated>";
 unsigned    astra_line = 0;
+
+/* User-function frames currently live, for the ASTRA_CALL_DEPTH guard. BSS
+ * starts it at zero and the generated code bumps it around each user call
+ * (codegen.c OPCODE_CALL); a runtime error longjmps out and the process
+ * exits, so the counter never needs to unwind on the error path. */
+int         astra_depth = 0;
 
 /* ---------- Module init/cleanup ---------- */
 static inline void astra_runtime_init(void) {
