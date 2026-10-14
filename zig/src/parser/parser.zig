@@ -164,6 +164,20 @@ pub const Parser = struct {
     /// function — the report-and-continue shape the seed's `parser_error`
     /// has (trait/impl bodies swallow the rest of the block after one).
     fn report(self: *Parser, msg: []const u8) void {
+        // Mirror of seed `parser_error` (parser.c): a lex_err token carries
+        // the lexer's own diagnostic in its text (out-of-range literal,
+        // unterminated string…) and that text wins over the parser's generic
+        // message — the single place every lexer error reaches the user. The
+        // seed never appends a "found …" tail either: both sides print
+        // `LOC: error: msg` (audit §1.3).
+        if (self.current.tag == .lex_err) {
+            self.reportExact(self.current.text);
+            return;
+        }
+        self.reportExact(msg);
+    }
+
+    fn reportExact(self: *Parser, msg: []const u8) void {
         // Remember the first error for callers.
         if (!self.had_error) {
             self.err_msg = msg;
@@ -171,10 +185,7 @@ pub const Parser = struct {
         }
         self.had_error = true;
         self.error_count += 1;
-        diagnostics_mod.emit(self.diag, self.filename, self.current.loc, "{s} (found {s})", .{
-            msg,
-            self.current.tag.name(),
-        });
+        diagnostics_mod.emit(self.diag, self.filename, self.current.loc, "{s}", .{msg});
     }
 
     /// Is this token a point where a fresh statement may start? Mirrors the
@@ -197,8 +208,22 @@ pub const Parser = struct {
     }
 
     fn expect(self: *Parser, tag: lexer.Tag) anyerror!void {
+        return self.expectMsg(tag, tag.seedName());
+    }
+
+    /// Seed-shaped `expect(p, kind, msg)`: prints
+    /// `expected %s, got %s` with the seed's own spellings for the token
+    /// actually found (`token_kind_name`, driver.c = `Tag.seedName`) and the
+    /// caller's description of what was expected (audit §1.3).
+    fn expectMsg(self: *Parser, tag: lexer.Tag, msg: []const u8) anyerror!void {
         if (!self.check(tag)) {
-            return self.failFmt("expected {s}", .{tag.name()});
+            var buf: [256]u8 = undefined;
+            const m = std.fmt.bufPrint(&buf, "expected {s}, got {s}", .{
+                msg,
+                self.current.tag.seedName(),
+            }) catch "parse error";
+            self.reportExact(m);
+            return error.ParseError;
         }
         self.advance();
         // A `>` closed a `<...>` list: drop out of generic mode so a later
@@ -602,7 +627,7 @@ pub const Parser = struct {
         var fields: std.ArrayListUnmanaged(u32) = .empty;
         defer fields.deinit(self.allocator);
         while (!self.check(.rbrace) and !self.check(.eof) and !self.aborted) {
-            try self.expect(.identifier);
+            try self.expectMsg(.identifier, "field name");
             const fname = self.previous.text;
             try self.expect(.colon);
             const ftype = try self.parseType();
@@ -626,7 +651,7 @@ pub const Parser = struct {
         var variants: std.ArrayListUnmanaged(u32) = .empty;
         defer variants.deinit(self.allocator);
         while (!self.check(.rbrace) and !self.check(.eof) and !self.aborted) {
-            try self.expect(.identifier);
+            try self.expectMsg(.identifier, "variant name");
             const vname = self.previous.text;
 
             var payload: ?u32 = null;
@@ -796,12 +821,12 @@ pub const Parser = struct {
     fn parseImportPath(self: *Parser) anyerror![]const u8 {
         const start = self.current.loc.start;
         if (self.match(.at)) {
-            try self.expect(.slash);
+            try self.expectMsg(.slash, "/ after @");
         }
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "module path");
         while (self.check(.dot) or self.check(.slash)) {
             self.advance();
-            try self.expect(.identifier);
+            try self.expectMsg(.identifier, "module path segment");
         }
         return self.tree.source[start..self.previous.loc.end];
     }
@@ -838,8 +863,11 @@ pub const Parser = struct {
 
         var items: std.ArrayListUnmanaged(u32) = .empty;
         defer items.deinit(self.allocator);
-        while (true) {
-            try self.expect(.identifier);
+        // Seed loop shape (parse_from): the EOF check keeps `from x import`
+        // with nothing after it out of the loop, so the "at least one item"
+        // rule below sees an empty list instead of failing on expect.
+        while (!self.check(.eof) and !self.aborted) {
+            try self.expectMsg(.identifier, "import item");
             const name = self.previous.text;
             const item_loc = self.previous.loc;
             var alias: ?[]const u8 = null;
@@ -851,6 +879,12 @@ pub const Parser = struct {
             self.skipNewlines();
             if (!self.match(.comma)) break;
             self.skipNewlines();
+        }
+        // The production requires at least one item: `from a.b import` alone
+        // would otherwise parse as an empty list that silently imports
+        // nothing (seed parser.c parse_from, same wording).
+        if (items.items.len == 0 and !self.had_error) {
+            self.report("expected at least one import item");
         }
         self.optionalSemi();
         const list = try self.tree.addExtra(items.items);
@@ -1138,7 +1172,7 @@ pub const Parser = struct {
     }
 
     fn parseFieldAccess(self: *Parser, object: u32) anyerror!u32 {
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "field name");
         const field = self.previous.text;
         const loc = self.tree.loc(object);
         return self.add(.{ .field_access = .{ .object = object, .field = field } }, loc);
@@ -1179,7 +1213,7 @@ pub const Parser = struct {
         var fields: std.ArrayListUnmanaged(u32) = .empty;
         defer fields.deinit(self.allocator);
         while (!self.check(.rbrace) and !self.check(.eof)) {
-            try self.expect(.identifier);
+            try self.expectMsg(.identifier, "field name");
             const fname = self.previous.text;
             try self.expect(.colon);
             const saved = self.no_struct_lit;
