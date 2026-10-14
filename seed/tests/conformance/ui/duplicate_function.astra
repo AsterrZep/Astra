@@ -1,0 +1,7 @@
+// A duplicate top-level fn used to be accepted: the VM kept the LAST
+// definition while the C backend emitted the FIRST (its fn_map is
+// first-wins), so the same file printed `2` on the VM and `1 on the C
+// backend (audit §3.10).
+// EXPECT-ERROR: duplicate function 'main'
+fn main() { print(1) }
+fn main() { print(2) }

@@ -1,0 +1,8 @@
+// An exponent marker with no digits (`1e`) used to fold through strtod
+// to 1.0 in the seed and through parseFloat's catch to 0.0 in zig —
+// two different answers from the same source (audit §2.10). Both lexers
+// now reject it with the same message.
+// EXPECT-ERROR: exponent has no digits
+fn main() {
+    print(1e);
+}

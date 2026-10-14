@@ -356,16 +356,27 @@ pub const Tokenizer = struct {
                     if (self.peekCharNext() == '/') {
                         while (!self.atEnd() and self.peekChar() != '\n') _ = self.advance();
                     } else if (self.peekCharNext() == '*') {
-                        // Block comment (seed/src/lexer.c). Consume until `*/` or EOF.
+                        // Block comment (seed/src/lexer.c). Nestable: the
+                        // seed has kept a depth counter since the initial
+                        // commit, so an inner `/*` needs its own `*/` —
+                        // stopping at the first `*/` silently deleted the
+                        // rest of the file after a nested comment
+                        // (audit §2.9).
                         _ = self.advance();
                         _ = self.advance();
-                        while (!self.atEnd()) {
-                            if (self.peekChar() == '*' and self.peekCharNext() == '/') {
+                        var depth: usize = 1;
+                        while (!self.atEnd() and depth > 0) {
+                            if (self.peekChar() == '/' and self.peekCharNext() == '*') {
                                 _ = self.advance();
                                 _ = self.advance();
-                                break;
+                                depth += 1;
+                            } else if (self.peekChar() == '*' and self.peekCharNext() == '/') {
+                                _ = self.advance();
+                                _ = self.advance();
+                                depth -= 1;
+                            } else {
+                                _ = self.advance();
                             }
-                            _ = self.advance();
                         }
                     } else return;
                 },
@@ -425,6 +436,11 @@ pub const Tokenizer = struct {
             is_float = true;
             _ = self.advance();
             if (self.peekChar() == '+' or self.peekChar() == '-') _ = self.advance();
+            // `1e` used to fold to 1.0 via the seed's strtod and to 0.0
+            // via parseFloat's catch (audit §2.10): require at least one
+            // digit after the marker, in both lexers.
+            if (!isDigit(self.peekChar()))
+                return makeErr(self, line, col, start_off, "exponent has no digits");
             while (!self.atEnd() and isDigit(self.peekChar())) _ = self.advance();
         }
 

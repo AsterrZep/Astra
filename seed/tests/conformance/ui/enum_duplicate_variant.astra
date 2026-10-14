@@ -1,0 +1,7 @@
+// Duplicate variant names made the enum ambiguous: covered[] has one
+// slot per spelling, so a correct match then reported an impossible
+// "non-exhaustive missing variant 'E.A'" (audit §3.7, the enum
+// analogue of the struct-field check).
+// EXPECT-ERROR: duplicate variant 'A' in enum 'E'
+enum E { A A }
+fn main() { print(1) }

@@ -2840,6 +2840,21 @@ static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
     en_type->as.enumeration.variants =
         nv > 0 ? arena_new_array(tc->arena, InternedString, nv) : NULL;
     for (size_t i = 0; i < nv; i++) {
+        /* Duplicate variant names made the enum ambiguous: covered[] has
+         * one slot per spelling, so a correct match then reported an
+         * impossible "non-exhaustive missing variant 'E.A'" (audit §3.7,
+         * the enum analogue of the struct-field check). */
+        for (size_t j = 0; j < i; j++) {
+            if (string_eq(node->as.enum_decl.variants.data[j],
+                          node->as.enum_decl.variants.data[i])) {
+                tc_error(tc, node->loc,
+                         "duplicate variant '%.*s' in enum '%.*s'",
+                         (int)node->as.enum_decl.variants.data[i].len,
+                         node->as.enum_decl.variants.data[i].str,
+                         (int)name.len, name.str);
+                break;
+            }
+        }
         en_type->as.enumeration.variants[i] = node->as.enum_decl.variants.data[i];
         checker_add_variant(tc, node->as.enum_decl.variants.data[i], en_type);
     }
@@ -2998,6 +3013,17 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
                     ret_type = resolve_type_node(tc, item->as.fn_decl.return_type);
                 }
                 Type *fn_type = type_new_fn(tc->arena, param_types, param_count, ret_type);
+                /* A duplicate top-level fn used to be accepted: the VM kept
+                 * the LAST definition while the C backend emitted the FIRST
+                 * (its fn_map is first-wins), so the same file printed
+                 * different answers on the two backends (audit §3.10). */
+                Symbol *prev = symbol_table_lookup(tc->symbols, item->as.fn_decl.name);
+                if (prev && prev->is_fn) {
+                    tc_error(tc, item->loc,
+                             "duplicate function '%.*s'",
+                             (int)item->as.fn_decl.name.len,
+                             item->as.fn_decl.name.str);
+                }
                 Symbol sym = {
                     .name    = item->as.fn_decl.name,
                     .type    = fn_type,

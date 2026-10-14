@@ -965,7 +965,11 @@ static Node *parse_return(Parser *p) {
     SrcLoc loc = p->previous.loc;
     Node *n = node_new(p->arena, NODE_RETURN, loc);
     n->as.return_expr.value = NULL;
-    if (!check(p, TOKEN_SEMICOLON) && !check(p, TOKEN_NEWLINE) && !check(p, TOKEN_RBRACE)) {
+    /* EOF counts as "no value": `return` as the last six bytes of a file
+     * (no trailing newline) used to error in the seed while zig accepted
+     * it (audit §2.x, sibling of the break guard below). */
+    if (!check(p, TOKEN_SEMICOLON) && !check(p, TOKEN_NEWLINE) &&
+        !check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
         n->as.return_expr.value = parse_expression(p);
     }
     optional_semi(p);

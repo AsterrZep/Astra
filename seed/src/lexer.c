@@ -344,6 +344,11 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
         is_float = true;
         advance(l);
         if (peek_char(l) == '+' || peek_char(l) == '-') advance(l);
+        /* `1e` used to fold through strtod to 1.0 in the seed and 0.0 in
+         * zig (audit §2.10): require at least one digit after the marker. */
+        if (!(peek_char(l) >= '0' && peek_char(l) <= '9'))
+            return make_error(l, "exponent has no digits", start_line,
+                              start_col, start_offset);
         while (l->pos < l->source_len) {
             char c = peek_char(l);
             if (c >= '0' && c <= '9') advance(l);

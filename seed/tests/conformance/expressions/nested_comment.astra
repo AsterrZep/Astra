@@ -1,0 +1,8 @@
+// Block comments nest in both lexers: the seed has kept a depth counter
+// since the initial commit, and zig used to stop at the first `*/`,
+// which silently deleted everything after a nested comment (audit §2.9).
+// EXPECT: 2
+let a = 1;
+/* outer /* inner */ still comment */
+let b = 2;
+print(b);

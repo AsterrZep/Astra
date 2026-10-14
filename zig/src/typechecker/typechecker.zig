@@ -1755,6 +1755,17 @@ pub const TypeChecker = struct {
         var vs = self.a.alloc([]const u8, variants.len) catch @panic("OOM");
         for (variants, 0..) |vi, i| {
             const v = self.tree.node(vi).enum_variant;
+            // Duplicate variant names made the enum ambiguous: covered[]
+            // has one slot per spelling, so a correct match then reported
+            // an impossible "non-exhaustive missing variant 'E.A'"
+            // (audit §3.7, the enum analogue of the struct-field check,
+            // mirror of the seed).
+            for (variants[0..i]) |pi| {
+                if (std.mem.eql(u8, self.tree.node(pi).enum_variant.name, v.name)) {
+                    self.errFmt(self.tree.loc(idx), "duplicate variant '{s}' in enum '{s}'", .{ v.name, e.name });
+                    break;
+                }
+            }
             vs[i] = v.name;
             self.addVariant(v.name, en);
         }
@@ -2146,6 +2157,14 @@ pub const TypeChecker = struct {
                         param_types[j] = self.resolveTypeNode(self.tree.node(p).param.type_node);
                     }
                     const ret_type: ?*Type = if (f.ret) |r| self.resolveTypeNode(r) else null;
+                    // A duplicate top-level fn used to be accepted: the VM
+                    // kept the LAST definition while the C backend emitted
+                    // the FIRST, so the same file printed different answers
+                    // on the two backends (audit §3.10, mirror of the seed).
+                    if (self.lookup(f.name)) |prev| {
+                        if (prev.is_fn)
+                            self.errFmt(self.tree.loc(it), "duplicate function '{s}'", .{f.name});
+                    }
                     self.insert(.{ .name = f.name, .type_ = self.newFn(param_types, ret_type), .is_mut = false, .is_fn = true, .is_generic = f.generics.len > 0, .fn_ast = it });
                     self.current_generic_fn = saved_gfn;
                     self.popGenericScope(gmark);
