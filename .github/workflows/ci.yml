@@ -40,6 +40,10 @@ jobs:
           make fuzz
           mkdir -p build/fuzz/corpus build/fuzz/work
           find tests -name '*.astra' -exec cp -f {} build/fuzz/corpus/ \;
+          # Triage-fixed memory findings live in fuzz/regressions/ byte-exact
+          # (AGENTS.md): replay them too — they are not valid programs, so
+          # they cannot ride along under tests/.
+          find fuzz/regressions -type f -exec cp -f {} build/fuzz/corpus/ \;
           ./build/fuzz/astra-fuzz build/fuzz/work build/fuzz/corpus -runs=0
         working-directory: seed
 

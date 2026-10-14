@@ -52,10 +52,18 @@ void *arena_alloc(Arena *a, size_t size, size_t align) {
     size_t offset = align_up(b->used, align);
 
     if (offset + size > b->capacity) {
-        size_t min_size = align_up(size, align) + align;
+        /* A fresh block starts at data_offset() (the Block header precedes
+         * the payload), so the grown capacity must cover header + aligned
+         * payload + the alignment slack of offset itself. Counting only
+         * align_up(size, align) + align left a window where
+         * capacity - data_offset() < size <= capacity and the memset in
+         * arena_alloc_zero wrote past the block (ASan heap-buffer-overflow
+         * via string_table_grow; audit §2.12). */
+        size_t min_size = data_offset() + align_up(size, align) + align;
         b = arena_grow(a, min_size);
         if (!b) return NULL;
         offset = align_up(data_offset(), align);
+        if (offset + size > b->capacity) return NULL;
     }
 
     void *ptr = b->data + offset;
