@@ -23,6 +23,12 @@ struct Parser {
     Token         current;
     Token         previous;
     bool          had_error;
+    /* Per-declaration error accounting: had_error is a sticky file-wide bit
+     * (cleared only at creation), so after the first error it cannot tell
+     * whether the CURRENT declaration failed. parse_declaration counts the
+     * errors each statement produces and always synchronizes on a new one
+     * (audit §2.11). */
+    size_t        error_count;
     /* Current recursion depth (see PARSER_MAX_DEPTH). Zeroed by arena_new. */
     int           depth;
     /* Set once the depth limit is breached. Unlike an ordinary syntax error,
@@ -66,11 +72,13 @@ static void parser_error(Parser *p, const char *msg) {
         srcloc_print(p->current.loc);
         fprintf(stderr, ": error: %.*s\n", (int)p->current.text.len, p->current.text.str);
         p->had_error = true;
+        p->error_count++;
         return;
     }
     srcloc_print(p->current.loc);
     fprintf(stderr, ": error: %s\n", msg);
     p->had_error = true;
+    p->error_count++;
 }
 
 /* Enter one level of recursion, or refuse and report once. Reporting only the
@@ -112,7 +120,7 @@ static bool match(Parser *p, TokenKind kind) {
     return false;
 }
 
-static void expect(Parser *p, TokenKind kind, const char *msg) {
+static bool expect(Parser *p, TokenKind kind, const char *msg) {
     if (check(p, kind)) {
         advance(p);
         /* A `>` closed a `<...>` list: drop out of generic mode so a later
@@ -121,11 +129,14 @@ static void expect(Parser *p, TokenKind kind, const char *msg) {
         if (kind == TOKEN_GT && p->lexer->gt_depth > 0)
             p->lexer->gt_depth--;
     } else {
-        if (p->aborted) return; /* the breach report already ended the diagnostics */
+        if (p->aborted) return false; /* the breach report already ended the diagnostics */
         srcloc_print(p->current.loc);
         fprintf(stderr, ": error: expected %s, got %s\n", msg, token_kind_name(p->current.kind));
         p->had_error = true;
+        p->error_count++;
+        return false;
     }
+    return true;
 }
 
 /* Skip newlines */
@@ -637,7 +648,15 @@ static Node *parse_if(Parser *p) {
     n->as.if_expr.cond = parse_expression(p);
     p->no_struct_lit = saved_nsl;
     skip_newlines(p);
-    expect(p, TOKEN_LBRACE, "'{' for if body");
+    /* A failed expect must not fabricate a brace-less block that then
+     * swallows the following declarations as its "body" (audit §2.13):
+     * stop at the fault and let parse_declaration synchronize. */
+    if (!expect(p, TOKEN_LBRACE, "'{' for if body")) {
+        n->as.if_expr.then_block = NULL;
+        n->as.if_expr.else_block = NULL;
+        parser_leave(p);
+        return n;
+    }
     n->as.if_expr.then_block = parse_block(p);
     n->as.if_expr.else_block = NULL;
     if (match(p, TOKEN_ELSE)) {
@@ -659,8 +678,11 @@ static Node *parse_if(Parser *p) {
             /* elif == NULL: depth breached and the parser is aborted; the
              * else branch stays unset, which the driver never typechecks
              * because the parse already failed. */
+        } else if (!expect(p, TOKEN_LBRACE, "'{' for else body")) {
+            n->as.if_expr.else_block = NULL;
+            parser_leave(p);
+            return n;
         } else {
-            expect(p, TOKEN_LBRACE, "'{' for else body");
             n->as.if_expr.else_block = parse_block(p);
         }
     }
@@ -681,7 +703,10 @@ static Node *parse_while(Parser *p) {
     n->as.while_expr.cond = parse_expression(p);
     p->no_struct_lit = saved_nsl;
     skip_newlines(p);
-    expect(p, TOKEN_LBRACE, "'{' for while body");
+    if (!expect(p, TOKEN_LBRACE, "'{' for while body")) {
+        n->as.while_expr.body = NULL;
+        return n;
+    }
     n->as.while_expr.body = parse_block(p);
     return n;
 }
@@ -704,7 +729,10 @@ static Node *parse_for(Parser *p) {
     n->as.for_expr.iter = parse_expression(p);
     p->no_struct_lit = saved_nsl;
     skip_newlines(p);
-    expect(p, TOKEN_LBRACE, "'{' for for body");
+    if (!expect(p, TOKEN_LBRACE, "'{' for for body")) {
+        n->as.for_expr.body = NULL;
+        return n;
+    }
     n->as.for_expr.body = parse_block(p);
     return n;
 }
@@ -892,7 +920,10 @@ static Node *parse_match(Parser *p) {
         if (match(p, TOKEN_IF)) {
             guard = parse_expression(p);
         }
-        expect(p, TOKEN_FAT_ARROW, "'=>'");
+        /* A missing `=>` must not fabricate an arm (audit §2.13): stop at
+         * the fault and let parse_declaration synchronize. */
+        if (!expect(p, TOKEN_FAT_ARROW, "'=>'"))
+            return n;
         skip_newlines(p);
 
         Node *body;
@@ -1113,7 +1144,10 @@ static Node *parse_fn_decl(Parser *p, bool is_pub) {
         n->as.fn_decl.body->as.block.stmts.cap  = 0;
         n->as.fn_decl.body->as.block.last_expr  = NULL;
     } else {
-        expect(p, TOKEN_LBRACE, "'{' for function body");
+        if (!expect(p, TOKEN_LBRACE, "'{' for function body")) {
+            n->as.fn_decl.body = NULL;
+            return n;
+        }
         n->as.fn_decl.body = parse_block(p);
     }
     return n;
@@ -1964,7 +1998,11 @@ static Node *parse_expression_impl(Parser *p, Precedence min_prec) {
 
             /* Parse body: must be a block */
             skip_newlines(p);
-            expect(p, TOKEN_LBRACE, "'{' for lambda body");
+            if (!expect(p, TOKEN_LBRACE, "'{' for lambda body")) {
+                n->as.lambda.body = NULL;
+                left = n;
+                return left;
+            }
             n->as.lambda.body = parse_block(p);
             left = n;
         } break;
@@ -2036,9 +2074,15 @@ static Node *parse_expression(Parser *p) {
 static Node *parse_declaration(Parser *p) {
     skip_newlines(p);
     if (check(p, TOKEN_EOF)) return NULL;
-    size_t err_before = p->had_error;
+    /* had_error is sticky for the whole file, so `!err_before` made the
+     * synchronize+drop recovery run at most ONCE per file: every later
+     * broken declaration returned its partial node into the module item
+     * list (audit §2.11). Count the errors this statement produced and
+     * always synchronize on a new one — mirror of zig's per-declaration
+     * catch. */
+    size_t errs_before = p->error_count;
     Node *decl = parse_statement(p);
-    if (p->had_error && !err_before) {
+    if (p->error_count != errs_before) {
         synchronize(p);
         return NULL;
     }
@@ -2055,6 +2099,7 @@ Parser *parser_create(Lexer *lexer, Arena *arena, StringTable *strings) {
     p->arena   = arena;
     p->strings = strings;
     p->had_error = false;
+    p->error_count = 0;
     p->no_struct_lit = false;
     p->allow_self = false;
     p->allow_sig_only = false;

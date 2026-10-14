@@ -1,0 +1,11 @@
+// After the first parse error, had_error is a sticky file-wide bit, so
+// the old `!err_before` guard synchronized at most once per file: every
+// later broken declaration returned its partial node into the module
+// item list and the recovery degraded to one error per garbage token
+// (audit §2.11). The parser now counts per-declaration errors and
+// always synchronizes; both compilers print the same two lines.
+// EXPECT-ERROR: unexpected token in expression
+let a =
+let b =
+) ) )
+let c = 5
