@@ -781,6 +781,11 @@ struct Symbol {
      * needs the AST to read the `<...>` list and clone an instance wrapper
      * (Phase 2.4 step 2b). NULL for non-function symbols. */
     Node          *fn_ast;
+    /* The NODE_STRUCT_DECL (later NODE_ENUM_DECL) this symbol was registered
+     * from; instantiating `Box<i32>` re-resolves the declaration's field
+     * types with the parameters bound to the arguments (Phase 2.4 step 3b).
+     * NULL for non-type symbols. */
+    Node          *type_ast;
     SrcLoc         def_loc;
     uint32_t       seq;  /* monotonic insertion order (for scoped removal) */
     Symbol        *next; /* for hash chain */

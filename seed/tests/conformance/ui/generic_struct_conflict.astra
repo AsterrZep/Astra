@@ -1,0 +1,9 @@
+// One type parameter cannot unify two different field value types
+// (Phase 2.4 step 3b).
+// EXPECT-ERROR: type parameter 'T' of 'Same' cannot be both i32 and string
+struct Same<T> {
+    a: T
+    b: T
+}
+
+let p = Same { a: 1, b: "x" }

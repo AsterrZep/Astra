@@ -1,0 +1,8 @@
+// A parameter that appears in no field position cannot be inferred from
+// the literal (Phase 2.4 step 3b) — the struct twin of the call-site rule.
+// EXPECT-ERROR: cannot infer type parameter 'T' of 'Weird'
+struct Weird<T> {
+    x: i32
+}
+
+let w = Weird { x: 1 }

@@ -1,0 +1,11 @@
+// Type arguments on a declaration that has none are rejected instead of
+// silently dropped (Phase 2.4 step 3b).
+// EXPECT-ERROR: type 'Point' does not take type arguments
+struct Point {
+    x: i32
+}
+
+fn f(p: Point<i32>) -> i32 {
+    p.x
+}
+f(Point { x: 1 })

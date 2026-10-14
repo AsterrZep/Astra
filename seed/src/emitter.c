@@ -620,7 +620,10 @@ static void register_types(Emitter *e, Node *module) {
         }
 
         if (item->kind != NODE_STRUCT_DECL) continue;
-        if (item->as.struct_decl.generics.len > 0) continue; /* inert (Phase 2.4 step 1) */
+        /* Generic declarations ARE emitted: every instance (`Box<i32>`,
+         * `Box<string>`) shares the source declaration's runtime def — same
+         * field names, same layout — so one def per declaration covers all
+         * of them (Phase 2.4 step 3b). */
 
         if (e->struct_count >= EMITTER_MAX_STRUCTS) {
             fprintf(stderr, "error: too many struct declarations (max %d)\n",

@@ -1,0 +1,11 @@
+// The argument count must match the declaration's parameter list
+// (Phase 2.4 step 3b).
+// EXPECT-ERROR: wrong number of type arguments for 'Box' (expected 1, got 2)
+struct Box<T> {
+    v: T
+}
+
+fn f(x: Box<i32, string>) -> i32 {
+    x.v
+}
+f(Box { v: 1 })

@@ -1,0 +1,11 @@
+// A generic struct declaration with its `<...>` list omitted cannot be
+// instantiated (Phase 2.4 step 3b).
+// EXPECT-ERROR: type 'Box' requires type arguments
+struct Box<T> {
+    v: T
+}
+
+fn f(x: Box) -> i32 {
+    x.v
+}
+f(Box { v: 1 })

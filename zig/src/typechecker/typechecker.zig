@@ -48,6 +48,12 @@ const Symbol = struct {
     /// 2b): call-site inference reads the `<...>` list and clones an
     /// instance wrapper from it. Null for non-function symbols.
     fn_ast: ?u32 = null,
+    /// The `struct_decl` node this symbol was registered from (Phase 2.4
+    /// step 3b): instantiating `Box<i32>` re-resolves the declaration's
+    /// field types with the parameters bound to the arguments, and struct
+    /// literal inference reads the `<...>` list off it. Null for
+    /// non-type symbols.
+    type_ast: ?u32 = null,
     /// Non-null when the name is a module binding (`import a.b as m`, or a
     /// bare `import a.b` which binds `b`): member access goes through this
     /// export list instead of the type system (`ARCHITECTURE.md` §10.1, §10.5).
@@ -409,10 +415,17 @@ pub const TypeChecker = struct {
     /// check. The owner node makes `T` of two different fns distinct even
     /// when they share a name. Save/restore the mark like `current_fn_return`.
     fn pushGenericScope(self: *TypeChecker, fn_idx: u32) usize {
+        return self.pushGenericBindings(self.tree.node(fn_idx).fn_decl.generics, fn_idx);
+    }
+
+    /// Step 3b: a generic struct declaration binds its own `<...>` the same
+    /// way; `owner` is the declaration node the parameters belong to. The
+    /// same helper seeds an instance check with the concrete bindings.
+    fn pushGenericBindings(self: *TypeChecker, gens: ast.List, owner: u32) usize {
         const mark = self.generic_stack.items.len;
-        for (self.tree.extraSlice(self.tree.node(fn_idx).fn_decl.generics)) |g| {
+        for (self.tree.extraSlice(gens)) |g| {
             const tp = self.tree.node(g).type_param;
-            const pt = self.pool.paramType(tp.name, fn_idx) catch @panic("OOM");
+            const pt = self.pool.paramType(tp.name, owner) catch @panic("OOM");
             self.generic_stack.append(self.a, .{ .name = tp.name, .type_ = pt }) catch @panic("OOM");
         }
         return mark;
@@ -427,8 +440,6 @@ pub const TypeChecker = struct {
         const loc = self.tree.loc(i);
         return switch (self.tree.node(i)) {
             .type_ident => |t| blk: {
-                // Type arguments ride along in `t.generics` but only the base
-                // name resolves until Phase 2.4 step 3b.
                 const name = t.name;
                 if (std.mem.eql(u8, name, "void")) break :blk self.newType(.void);
                 if (std.mem.eql(u8, name, "bool")) break :blk self.newType(.bool_);
@@ -438,6 +449,9 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, name, "u64")) break :blk self.newType(.uint64);
                 if (std.mem.eql(u8, name, "f64")) break :blk self.newType(.float);
                 if (std.mem.eql(u8, name, "string")) break :blk self.newType(.string);
+                // `Name<args...>` in type position (Phase 2.4 step 3b):
+                // resolve the arguments and materialize the instance.
+                if (t.generics.len > 0) break :blk self.resolveTypeWithArgs(i, loc, name);
                 // A generic parameter of the fn being checked shadows every
                 // other binding (Phase 2.4 step 2a).
                 var g: usize = self.generic_stack.items.len;
@@ -446,7 +460,12 @@ pub const TypeChecker = struct {
                     if (std.mem.eql(u8, self.generic_stack.items[g].name, name))
                         break :blk self.generic_stack.items[g].type_;
                 }
-                if (self.lookup(name)) |sym| break :blk sym.type_;
+                if (self.lookup(name)) |sym| {
+                    // A bare generic struct name is not a type (step 3b).
+                    if (sym.is_generic and sym.type_.kind == .struct_ and sym.type_ast != null)
+                        break :blk self.errorType(loc, "type '{s}' requires type arguments", .{name});
+                    break :blk sym.type_;
+                }
                 break :blk self.errorType(loc, "unknown type '{s}'", .{name});
             },
             .type_optional => |inner| blk: {
@@ -564,9 +583,15 @@ pub const TypeChecker = struct {
     /// overflow: a truncated name would collide with another truncated
     /// name and silently merge two different instances.
     fn mangleInstance(self: *TypeChecker, fn_idx: u32, env: []Binding) ?[]const u8 {
+        return self.mangleNamed(self.tree.node(fn_idx).fn_decl.name, env);
+    }
+
+    /// Shared mangling for function and struct instances (Phase 2.4 step
+    /// 3b): `Base<T1,T2>`, unique per argument spelling via the pool.
+    fn mangleNamed(self: *TypeChecker, base: []const u8, env: []Binding) ?[]const u8 {
         var buf: [512]u8 = undefined;
         var pos: usize = 0;
-        if (!bufPut(buf[0..], &pos, self.tree.node(fn_idx).fn_decl.name)) return null;
+        if (!bufPut(buf[0..], &pos, base)) return null;
         if (!bufPut(buf[0..], &pos, "<")) return null;
         for (env, 0..) |b, i| {
             if (i > 0 and !bufPut(buf[0..], &pos, ",")) return null;
@@ -574,6 +599,67 @@ pub const TypeChecker = struct {
         }
         if (!bufPut(buf[0..], &pos, ">")) return null;
         return self.a.dupe(u8, buf[0..pos]) catch @panic("OOM");
+    }
+
+    /// `Name<args...>` in a type position (Phase 2.4 step 3b): resolve the
+    /// arguments, check the arity against the declaration and materialize
+    /// the cached struct instance under the mangled name.
+    fn resolveTypeWithArgs(self: *TypeChecker, idx: u32, loc: lexer.Loc, name: []const u8) *Type {
+        const sym = self.lookup(name) orelse
+            return self.errorType(loc, "unknown type '{s}'", .{name});
+        if (sym.type_.kind != .struct_ or !sym.is_generic or sym.type_ast == null)
+            return self.errorType(loc, "type '{s}' does not take type arguments", .{name});
+        const decl = sym.type_ast.?;
+        const s = self.tree.node(decl).struct_decl;
+        const gargs = self.tree.extraSlice(self.tree.node(idx).type_ident.generics);
+        const params = self.tree.extraSlice(s.generics);
+        if (gargs.len != params.len)
+            return self.errorType(loc, "wrong number of type arguments for '{s}' (expected {d}, got {d})",
+                .{ name, params.len, gargs.len });
+        var env = self.a.alloc(Binding, params.len) catch @panic("OOM");
+        for (params, 0..) |g, k| {
+            const tp = self.tree.node(g).type_param;
+            env[k] = .{ .name = tp.name, .type_ = self.resolveTypeNode(gargs[k]) };
+            if (isErrorType(env[k].type_.?)) return env[k].type_.?;
+        }
+        return self.ensureStructInstance(decl, env, loc);
+    }
+
+    /// Materialize (or find) the instance of the generic struct declared at
+    /// `decl` under `env`. The symbol is inserted *before* the field types
+    /// are resolved, so a field mentioning the instance itself (linked
+    /// lists, trees) finds the type being built instead of recursing. The
+    /// instance type is interned by its mangled name in the pool, so every
+    /// scope that spells `Box<i32>` gets the same `*Type`.
+    fn ensureStructInstance(self: *TypeChecker, decl: u32, env: []Binding, loc: lexer.Loc) *Type {
+        const mangled = self.mangleNamed(self.tree.node(decl).struct_decl.name, env) orelse {
+            return self.errorType(loc, "generic instance name for '{s}' is too long",
+                .{self.tree.node(decl).struct_decl.name});
+        };
+        if (self.lookup(mangled)) |isym| return isym.type_;
+        const st = self.pool.structType(mangled) catch @panic("OOM");
+        self.insert(.{ .name = mangled, .type_ = st, .is_mut = false, .is_fn = false, .type_ast = decl });
+        // Re-resolve the declaration's fields with the parameters bound to
+        // the concrete arguments: the template's own types stay abstract
+        // (Approach A), so declarations and scope order do not interfere.
+        const s = self.tree.node(decl).struct_decl;
+        const mark = self.generic_stack.items.len;
+        for (env) |b| {
+            self.generic_stack.append(self.a, .{ .name = b.name, .type_ = b.type_ orelse unreachable })
+                catch @panic("OOM");
+        }
+        defer self.popGenericScope(mark);
+        const fields = self.tree.extraSlice(s.fields);
+        if (fields.len == 0) return st;
+        const buf = self.a.alloc(Field, fields.len) catch @panic("OOM");
+        for (fields, 0..) |fidx, i| {
+            const fd = self.tree.node(fidx).field_decl;
+            const ft = self.resolveTypeNode(fd.type_node);
+            if (isErrorType(ft)) return ft;
+            buf[i] = .{ .name = fd.name, .type_ = ft };
+        }
+        st.fields = buf;
+        return st;
     }
 
     /// Replace the type parameters of `fn_idx` inside `t` with their binding
@@ -925,9 +1011,10 @@ pub const TypeChecker = struct {
     fn checkStructLit(self: *TypeChecker, name: []const u8, fields: ast.List, loc: lexer.Loc) *Type {
         const sym = self.lookup(name) orelse return self.errorType(loc, "unknown struct '{s}'", .{name});
         if (sym.type_.kind != .struct_) return self.errorType(loc, "unknown struct '{s}'", .{name});
-        const st = sym.type_;
+        var st = sym.type_;
 
-        // Unknown fields first.
+        // Unknown fields first (against the template: instance fields keep
+        // the declaration's names).
         for (self.tree.extraSlice(fields)) |fidx| {
             const fname = self.tree.node(fidx).struct_init_field.name;
             var found = false;
@@ -938,6 +1025,63 @@ pub const TypeChecker = struct {
                 }
             }
             if (!found) return self.errorType(loc, "struct '{s}' has no field '{s}'", .{ name, fname });
+        }
+
+        // `Box { v: 1 }` (Phase 2.4 step 3b): a generic declaration has no
+        // usable literal type, so the argument types are inferred from the
+        // values and the instance is materialised before the field loop
+        // checks against its concrete types. The values are type-checked
+        // once here and reused below.
+        var vts: ?[]*Type = null;
+        if (sym.is_generic and sym.type_ast != null and
+            self.tree.node(sym.type_ast.?).struct_decl.generics.len > 0)
+        {
+            const decl = sym.type_ast.?;
+            const params = self.tree.extraSlice(self.tree.node(decl).struct_decl.generics);
+            const fslice = self.tree.extraSlice(fields);
+            var env = self.a.alloc(Binding, params.len) catch @panic("OOM");
+            for (params, 0..) |g, i| {
+                const tp = self.tree.node(g).type_param;
+                env[i] = .{ .name = tp.name, .type_ = null };
+            }
+            const vtbuf = self.a.alloc(*Type, fslice.len) catch @panic("OOM");
+            for (fslice, 0..) |fidx, j| {
+                vtbuf[j] = self.checkNode(self.tree.node(fidx).struct_init_field.value);
+                if (isErrorType(vtbuf[j])) return vtbuf[j];
+            }
+            vts = vtbuf;
+            for (fslice, 0..) |fidx, j| {
+                const fname = self.tree.node(fidx).struct_init_field.name;
+                var tf: ?*Type = null;
+                for (st.fields) |f| {
+                    if (std.mem.eql(u8, f.name, fname)) {
+                        tf = f.type_;
+                        break;
+                    }
+                }
+                if (tf) |tfv| {
+                    if (self.unifyBind(tfv, vtbuf[j], decl, env)) |fail| {
+                        var prev = self.newType(.unknown);
+                        for (env) |b| {
+                            if (std.mem.eql(u8, b.name, fail.name)) {
+                                if (b.type_) |p| prev = p;
+                                break;
+                            }
+                        }
+                        return self.errorType(loc, "type parameter '{s}' of '{s}' cannot be both {s} and {s}",
+                            .{ fail.name, name, prev.kind.name(), fail.got.kind.name() });
+                    }
+                }
+            }
+            for (env) |b| {
+                if (b.type_ == null)
+                    return self.errorType(loc, "cannot infer type parameter '{s}' of '{s}'", .{ b.name, name });
+            }
+            // NOTE: `sym` must not be used after this point — inserting the
+            // instance may grow the symbol array and invalidate the pointer.
+            const inst = self.ensureStructInstance(decl, env, loc);
+            if (isErrorType(inst)) return inst;
+            st = inst;
         }
 
         // Every declared field initialised exactly once, with a compatible type.
@@ -952,7 +1096,7 @@ pub const TypeChecker = struct {
             const j = vi orelse return self.errorType(loc, "missing field '{s}' in '{s}' literal", .{ f.name, name });
             const val_idx = self.tree.extraSlice(fields)[j];
             const val = self.tree.node(val_idx).struct_init_field.value;
-            const vt = self.checkNode(val);
+            const vt = if (vts) |v| v[j] else self.checkNode(val);
             if (isErrorType(vt)) return vt;
             if (!typeEq(f.type_, vt)) {
                 return self.errorType(self.tree.loc(val), "field '{s}' expects {s}, got {s}", .{ f.name, f.type_.kind.name(), vt.kind.name() });
@@ -1431,10 +1575,7 @@ pub const TypeChecker = struct {
 
     fn checkStructDecl(self: *TypeChecker, idx: u32) void {
         const s = self.tree.node(idx).struct_decl;
-        // Phase 2.4 step 1: a declaration with `<...>` never binds its name
-        // or its fields — instantiation lands with step 4. Reached from both
-        // the module pass and checkNode's default path.
-        if (s.generics.len > 0) return;
+        const generic = s.generics.len > 0;
         // Keyed by name: a re-declaration aliases this entry and overwrites
         // the layout below (see types.zig header; the seed has no
         // duplicate-name error either).
@@ -1443,21 +1584,29 @@ pub const TypeChecker = struct {
         var flds: []const Field = &.{};
         if (fields.len > 0) {
             const buf = self.a.alloc(Field, fields.len) catch @panic("OOM");
+            // A generic declaration resolves its fields with the `<T>`
+            // parameters bound (Phase 2.4 step 3b): the template keeps them
+            // abstract; concrete instances re-resolve from `type_ast`.
+            const mark = self.pushGenericBindings(s.generics, idx);
             for (fields, 0..) |fidx, i| {
                 const fd = self.tree.node(fidx).field_decl;
                 const ft = self.resolveTypeNode(fd.type_node);
-                if (isErrorType(ft)) return;
+                if (isErrorType(ft)) {
+                    self.popGenericScope(mark);
+                    return;
+                }
                 buf[i] = .{ .name = fd.name, .type_ = ft };
             }
+            self.popGenericScope(mark);
             flds = buf;
         }
         st.fields = flds;
         // Pass 0 already bound the module-level name to this canonical type;
         // an unrelated binding (a shadowing local) gets a fresh symbol.
         if (self.lookup(s.name)) |existing| {
-            if (existing.type_ != st) self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
+            if (existing.type_ != st) self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false, .is_generic = generic, .type_ast = idx });
         } else {
-            self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
+            self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false, .is_generic = generic, .type_ast = idx });
         }
     }
 
@@ -1811,10 +1960,12 @@ pub const TypeChecker = struct {
         for (items) |it| {
             switch (self.tree.node(it)) {
                 .struct_decl => |s| {
-                    // Inert until Phase 2.4 step 4 (same rule as the seed).
-                    if (s.generics.len > 0) continue;
+                    // Generic structs register too (Phase 2.4 step 3b):
+                    // their name needs a template to instantiate and
+                    // `resolveTypeNode` rejects the bare name afterwards.
                     const st = self.pool.structType(s.name) catch @panic("OOM");
-                    self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false });
+                    self.insert(.{ .name = s.name, .type_ = st, .is_mut = false, .is_fn = false,
+                        .is_generic = s.generics.len > 0, .type_ast = it });
                 },
                 .enum_decl => |e| {
                     if (e.generics.len > 0) continue;

@@ -1,0 +1,32 @@
+// Generic structs end to end (Phase 2.4 step 3b): the declaration binds its
+// name as a template, `Box<i32>` materializes a cached instance, a bare
+// literal infers its arguments from the field values, and every instance
+// shares the source declaration's runtime def.
+struct Box<T> {
+    value: T
+}
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+struct Nest {
+    inner: Box<string>
+}
+
+fn unbox(b: Box<i32>) -> i32 {
+    b.value
+}
+
+let annotated: Box<i32> = Box { value: 42 }
+print(annotated.value)
+// EXPECT: 42
+print(unbox(Box { value: 7 }))
+// EXPECT: 7
+print(Pair { first: 1, second: "hola" }.second)
+// EXPECT: hola
+print(Nest { inner: Box { value: "deep" } }.inner.value)
+// EXPECT: deep
+print(10 >> 1)
+// EXPECT: 5

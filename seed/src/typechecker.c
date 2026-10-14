@@ -651,6 +651,10 @@ static Type *tc_error_type(TypeChecker *tc, SrcLoc loc, const char *fmt, ...) {
 /* --- Type Node Resolution --- */
 
 static Type *resolve_type_node(TypeChecker *tc, Node *node);
+static Type *resolve_type_with_args(TypeChecker *tc, Node *node, InternedString name);
+static Type *ensure_struct_instance(TypeChecker *tc, Node *decl,
+                                    GenericBinding *env, size_t env_n,
+                                    SrcLoc loc);
 
 /* --- Forward Declarations --- */
 
@@ -666,17 +670,18 @@ static int   enum_variant_index(Type *en, InternedString variant);
  * placeholders for the duration of the signature and body check. The owner
  * pointer makes `T` of two different fns distinct even when they share a
  * name. Save/restore the mark like `current_fn_return` — a nested generic
- * fn (an impl method) may push its own. */
-static size_t push_generic_scope(TypeChecker *tc, Node *fn) {
+ * fn (an impl method) may push its own. Step 3b: struct declarations reuse
+ * this with their own `<...>` list, owning the parameters for field
+ * resolution and literal unification. */
+static size_t push_generic_bindings(TypeChecker *tc, NodeList *gens, Node *owner) {
     size_t mark = tc->generic_len;
-    size_t n = fn->as.fn_decl.generics.len;
-    if (n == 0) return mark;
+    size_t n = gens->len;
     for (size_t i = 0; i < n; i++) {
-        Node *tp = fn->as.fn_decl.generics.data[i];
+        Node *tp = gens->data[i];
         if (!tp || tp->kind != NODE_TYPE_PARAM) continue;
         Type *pt = type_new(tc->arena, TYPE_PARAM);
         pt->as.type_param.name  = tp->as.type_param.name;
-        pt->as.type_param.owner = fn;
+        pt->as.type_param.owner = owner;
         if (tc->generic_len >= 32) break; /* the parser caps the list at 32 */
         if (!tc->generic_stack) {
             tc->generic_stack = arena_new_array(tc->arena, GenericBinding, 32);
@@ -686,6 +691,10 @@ static size_t push_generic_scope(TypeChecker *tc, Node *fn) {
         tc->generic_len++;
     }
     return mark;
+}
+
+static size_t push_generic_scope(TypeChecker *tc, Node *fn) {
+    return push_generic_bindings(tc, &fn->as.fn_decl.generics, fn);
 }
 
 static void pop_generic_scope(TypeChecker *tc, size_t mark) {
@@ -707,6 +716,13 @@ static Type *resolve_type_node(TypeChecker *tc, Node *node) {
         if (name.len == 3 && memcmp(name.str, "f64", 3) == 0) return type_new(tc->arena, TYPE_FLOAT);
         if (name.len == 6 && memcmp(name.str, "string", 6) == 0) return type_new(tc->arena, TYPE_STRING);
 
+        /* Type arguments (Phase 2.4 step 3b): `Box<i32>` materializes a
+         * cached instance of the generic declaration. Primitives above never
+         * take arguments, and a bare unknown base keeps the plain message
+         * so `Vec<Vec<i32>>` still reports the missing name first. */
+        if (node->as.type_ident.generics.len > 0)
+            return resolve_type_with_args(tc, node, name);
+
         /* A generic parameter of the fn being checked shadows every other
          * binding (Phase 2.4 step 2a). */
         for (size_t i = tc->generic_len; i > 0; i--) {
@@ -716,7 +732,14 @@ static Type *resolve_type_node(TypeChecker *tc, Node *node) {
 
         /* Check for struct/enum types in symbol table */
         Symbol *sym = symbol_table_lookup(tc->symbols, name);
-        if (sym && sym->type) return sym->type;
+        if (sym && sym->type) {
+            /* The declaration exists but its `<...>` list was omitted. */
+            if (sym->is_generic && sym->type->kind == TYPE_STRUCT)
+                return tc_error_type(tc, node->loc,
+                                     "type '%.*s' requires type arguments",
+                                     (int)name.len, name.str);
+            return sym->type;
+        }
 
         return tc_error_type(tc, node->loc, "unknown type '%.*s'", (int)name.len, name.str);
     }
@@ -1270,6 +1293,111 @@ static bool unify_bind(TypeChecker *tc, Type *template, Type *arg, Node *fn,
     return true;
 }
 
+/* Materialize (or find) the instance of a generic struct under `env`: the
+ * declaration's field types are re-resolved in a scope where each parameter
+ * binds to its argument, so nested arguments (`Box<T>` inside another
+ * template, or `Vec<Vec<i32>>` at a use site) instantiate naturally. The
+ * symbol is registered before its own fields resolve so a recursive field
+ * finds the cached type instead of looping forever. Registered in whatever
+ * scope is active; `type_eq` on struct names keeps a re-created instance
+ * from a popped scope equal to the original. */
+static Type *ensure_struct_instance(TypeChecker *tc, Node *decl,
+                                    GenericBinding *env, size_t env_n,
+                                    SrcLoc loc) {
+    InternedString mangled = mangle_instance(tc, decl->as.struct_decl.name,
+                                             env, env_n);
+    if (!mangled.str) {
+        tc_error(tc, loc, "generic instance name for '%.*s' is too long",
+                 (int)decl->as.struct_decl.name.len,
+                 decl->as.struct_decl.name.str);
+        return type_new(tc->arena, TYPE_ERROR);
+    }
+    Symbol *cached = symbol_table_lookup(tc->symbols, mangled);
+    if (cached && cached->type) return cached->type;
+
+    Type *st = type_new(tc->arena, TYPE_STRUCT);
+    st->as.struc.name = mangled;
+    st->as.struc.fields = NULL;
+    st->as.struc.field_count = 0;
+    Symbol sym = {
+        .name      = mangled,
+        .type      = st,
+        .is_mut    = false,
+        .is_fn     = false,
+        .is_generic = false,
+        .fn_ast    = NULL,
+        .type_ast  = decl,
+        .def_loc   = loc,
+    };
+    symbol_table_insert(tc->symbols, sym);
+
+    size_t mark = tc->generic_len;
+    for (size_t i = 0; i < env_n && tc->generic_len < 32; i++) {
+        if (!tc->generic_stack)
+            tc->generic_stack = arena_new_array(tc->arena, GenericBinding, 32);
+        tc->generic_stack[tc->generic_len].name = env[i].name;
+        tc->generic_stack[tc->generic_len].type = env[i].type;
+        tc->generic_len++;
+    }
+
+    size_t fc = decl->as.struct_decl.field_names.len;
+    if (fc > 0) {
+        st->as.struc.fields = arena_new_array(tc->arena, StructField, fc);
+        st->as.struc.field_count = fc;
+        for (size_t i = 0; i < fc; i++) {
+            Type *ft = resolve_type_node(tc, decl->as.struct_decl.field_types.data[i]);
+            if (type_is_error(ft)) {
+                pop_generic_scope(tc, mark);
+                return ft;
+            }
+            st->as.struc.fields[i].name = decl->as.struct_decl.field_names.data[i];
+            st->as.struc.fields[i].type = ft;
+        }
+    }
+    pop_generic_scope(tc, mark);
+    return st;
+}
+
+/* `Name<args...>` in a type position (Phase 2.4 step 3b): resolve the
+ * arguments, mangle them into the instance key and materialize the cached
+ * struct type. The base must be a generic struct declaration; anything else
+ * that exists rejects the arguments instead of silently dropping them, and
+ * an unknown base keeps the ordinary "unknown type" message (the UI test
+ * for nested arguments depends on it). */
+static Type *resolve_type_with_args(TypeChecker *tc, Node *node,
+                                    InternedString name) {
+    Symbol *bsym = symbol_table_lookup(tc->symbols, name);
+    if (!bsym || !bsym->type) {
+        return tc_error_type(tc, node->loc, "unknown type '%.*s'",
+                             (int)name.len, name.str);
+    }
+    if (bsym->type->kind != TYPE_STRUCT || !bsym->is_generic || !bsym->type_ast) {
+        return tc_error_type(tc, node->loc,
+                             "type '%.*s' does not take type arguments",
+                             (int)name.len, name.str);
+    }
+
+    Node *decl = bsym->type_ast;
+    NodeList *gargs = &node->as.type_ident.generics;
+    size_t n = decl->as.struct_decl.generics.len;
+    if (gargs->len != n) {
+        return tc_error_type(tc, node->loc,
+                             "wrong number of type arguments for '%.*s' "
+                             "(expected %zu, got %zu)",
+                             (int)name.len, name.str, n, gargs->len);
+    }
+
+    GenericBinding *env = arena_new_array(tc->arena, GenericBinding, n ? n : 1);
+    for (size_t i = 0; i < n; i++) {
+        Node *tp = decl->as.struct_decl.generics.data[i];
+        env[i].name = tp && tp->kind == NODE_TYPE_PARAM
+                          ? tp->as.type_param.name : (InternedString){0};
+        env[i].type = resolve_type_node(tc, gargs->data[i]);
+        if (type_is_error(env[i].type)) return env[i].type;
+    }
+    return ensure_struct_instance(tc, decl, env, n, node->loc);
+}
+
 /* Call-site of a generic function: infer the bindings from the arguments,
  * instantiate the concrete ones and record the abstract ones (a call inside
  * another generic body) for per-instance resolution. The call type is the
@@ -1538,6 +1666,69 @@ static Type *typecheck_struct_lit(TypeChecker *tc, Node *node) {
         }
     }
 
+    /* A generic literal infers its arguments from the field values
+     * (Phase 2.4 step 3b): unify each value against the template field and
+     * materialize `Box<i32>` — the same unification a generic call does,
+     * owned by the struct declaration instead of a function. Each value is
+     * typechecked exactly once here and the results feed the normal field
+     * checks below. */
+    Type **vts = NULL;
+    if (sym->is_generic && sym->type_ast &&
+        sym->type_ast->as.struct_decl.generics.len > 0) {
+        Node *decl = sym->type_ast;
+        size_t n = decl->as.struct_decl.generics.len;
+        size_t lit_n = node->as.struct_lit.field_names.len;
+        GenericBinding *env = arena_new_array(tc->arena, GenericBinding, n ? n : 1);
+        for (size_t i = 0; i < n; i++) {
+            Node *tp = decl->as.struct_decl.generics.data[i];
+            env[i].name = tp && tp->kind == NODE_TYPE_PARAM
+                              ? tp->as.type_param.name : (InternedString){0};
+            env[i].type = NULL;
+        }
+
+        vts = arena_new_array(tc->arena, Type *, lit_n ? lit_n : 1);
+        for (size_t j = 0; j < lit_n; j++) {
+            vts[j] = typecheck_node(tc, node->as.struct_lit.field_values.data[j]);
+            if (type_is_error(vts[j])) return vts[j];
+        }
+
+        for (size_t j = 0; j < lit_n; j++) {
+            InternedString fname = node->as.struct_lit.field_names.data[j];
+            Type *tf = NULL;
+            for (size_t k = 0; k < declared; k++) {
+                if (string_eq(st->as.struc.fields[k].name, fname)) {
+                    tf = st->as.struc.fields[k].type;
+                    break;
+                }
+            }
+            InternedString cname = {0};
+            Type *conflict = NULL;
+            if (tf && !unify_bind(tc, tf, vts[j], decl, env, n, &cname, &conflict)) {
+                Type *prev = NULL;
+                for (size_t i = 0; i < n; i++)
+                    if (string_eq(env[i].name, cname)) prev = env[i].type;
+                return tc_error_type(tc, node->loc,
+                                     "type parameter '%.*s' of '%.*s' cannot be both %s and %s",
+                                     (int)cname.len, cname.str,
+                                     (int)name.len, name.str,
+                                     type_kind_name(prev ? prev->kind : TYPE_UNKNOWN),
+                                     type_kind_name(conflict->kind));
+            }
+        }
+        for (size_t i = 0; i < n; i++) {
+            if (env[i].type == NULL) {
+                return tc_error_type(tc, node->loc,
+                                     "cannot infer type parameter '%.*s' of '%.*s'",
+                                     (int)env[i].name.len, env[i].name.str,
+                                     (int)name.len, name.str);
+            }
+        }
+        Type *inst = ensure_struct_instance(tc, decl, env, n, node->loc);
+        if (type_is_error(inst)) return inst;
+        st = inst;
+        declared = st->as.struc.field_count;
+    }
+
     /* Every declared field must be initialised exactly once, with a
      * compatible type. */
     for (size_t i = 0; i < declared; i++) {
@@ -1551,7 +1742,7 @@ static Type *typecheck_struct_lit(TypeChecker *tc, Node *node) {
                                  (int)fname.len, fname.str, (int)name.len, name.str);
         }
         Node *val = node->as.struct_lit.field_values.data[vi];
-        Type *vt = typecheck_node(tc, val);
+        Type *vt = vts ? vts[vi] : typecheck_node(tc, val);
         if (type_is_error(vt)) return vt;
         Type *expected = st->as.struc.fields[i].type;
         if (!type_eq(expected, vt)) {
@@ -2365,16 +2556,15 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
 
 static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.struct_decl.name;
-
-    /* Phase 2.4 step 1: a declaration with `<...>` never binds its name or
-     * its fields — instantiation lands with step 4. Reached from both the
-     * module pass and the body pass' default path. */
-    if (node->as.struct_decl.generics.len > 0) return;
+    bool generic = node->as.struct_decl.generics.len > 0;
 
     /* The module pass pre-registers top-level struct names (declare_type_decls)
      * so field types may reference structs declared later in the file. Fill
      * that type in place; a name not bound to a struct — a nested declaration
-     * inside a function body, or a shadowing local — gets a fresh type. */
+     * inside a function body, or a shadowing local — gets a fresh type.
+     * A generic declaration fills its *template*: fields resolve with the
+     * parameters in scope, so `value: T` lands as TYPE_PARAM(owner=decl) and
+     * literal inference can unify against it (Phase 2.4 step 3b). */
     Type *st_type = NULL;
     Symbol *existing = symbol_table_lookup(tc->symbols, name);
     if (existing && existing->type && existing->type->kind == TYPE_STRUCT) {
@@ -2387,10 +2577,15 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
             .type    = st_type,
             .is_mut  = false,
             .is_fn   = false,
+            .is_generic = generic,
+            .fn_ast  = NULL,
+            .type_ast = node,
             .def_loc = node->loc,
         };
         symbol_table_insert(tc->symbols, sym);
     }
+
+    size_t gmark = push_generic_bindings(tc, &node->as.struct_decl.generics, node);
 
     /* Populate fields */
     size_t field_count = node->as.struct_decl.field_names.len;
@@ -2399,7 +2594,10 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
         st_type->as.struc.field_count = field_count;
         for (size_t i = 0; i < field_count; i++) {
             Type *ft = resolve_type_node(tc, node->as.struct_decl.field_types.data[i]);
-            if (type_is_error(ft)) return;
+            if (type_is_error(ft)) {
+                pop_generic_scope(tc, gmark);
+                return;
+            }
             st_type->as.struc.fields[i].name = node->as.struct_decl.field_names.data[i];
             st_type->as.struc.fields[i].type = ft;
         }
@@ -2407,6 +2605,7 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
         st_type->as.struc.fields = NULL;
         st_type->as.struc.field_count = 0;
     }
+    pop_generic_scope(tc, gmark);
 }
 
 static int enum_variant_index(Type *en, InternedString variant) {
@@ -2488,9 +2687,6 @@ static void declare_type_decls(TypeChecker *tc, Node *module) {
     for (size_t i = 0; i < module->as.module.items.len; i++) {
         Node *item = module->as.module.items.data[i];
         if (item->kind == NODE_STRUCT_DECL) {
-            /* Phase 2.4 step 1: a declaration with `<...>` stays inert until
-             * instantiation lands. */
-            if (item->as.struct_decl.generics.len > 0) continue;
             Type *st = type_new(tc->arena, TYPE_STRUCT);
             st->as.struc.name = item->as.struct_decl.name;
             st->as.struc.fields = NULL;
@@ -2500,6 +2696,13 @@ static void declare_type_decls(TypeChecker *tc, Node *module) {
                 .type    = st,
                 .is_mut  = false,
                 .is_fn   = false,
+                /* Step 3b: a generic declaration binds its name too — as a
+                 * template, so `Box<i32>` finds the base and a bare `Box`
+                 * can complain about the missing arguments. Fields fill in
+                 * typecheck_struct_decl. */
+                .is_generic = item->as.struct_decl.generics.len > 0,
+                .fn_ast  = NULL,
+                .type_ast = item,
                 .def_loc = item->loc,
             };
             symbol_table_insert(tc->symbols, sym);

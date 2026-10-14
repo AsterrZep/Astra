@@ -704,7 +704,10 @@ pub const Emitter = struct {
                     }
                 },
                 .struct_decl => |s| {
-                    if (s.generics.len > 0) continue; // inert (Phase 2.4 step 1)
+                    // Generic declarations register under their source name
+                    // (Phase 2.4 step 3b): literals always spell the bare
+                    // name (`Box { ... }`) and every instance shares this
+                    // definition — the field names are the same for all.
                     if (self.structs.items.len >= MAX_STRUCTS) {
                         self.err(self.line(item), "too many struct declarations (max {d})", .{MAX_STRUCTS});
                         continue;
