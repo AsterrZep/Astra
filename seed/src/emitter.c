@@ -1312,6 +1312,13 @@ static void emit_expr(Emitter *e, Node *node) {
         size_t n_arms = node->as.match_expr.arms.len;
         int32_t base = e->sp;
 
+        /* Snapshot the local table before the hidden local and the arm
+         * bindings: the epilogue restores it wholesale. Retracting only
+         * the last slot (the old `local_count--`) left every earlier
+         * binding name in the table, so a later same-name reference
+         * resolved to the dead payload slot (audit §4.3). */
+        uint16_t match_lc0 = e->local_count;
+
         /* The matched value lives in a hidden local; every arm tests against
          * it and the arm body supplies the match's result. */
         uint8_t slot = add_local(e, hidden_local(e, "match_val"));
@@ -1539,11 +1546,10 @@ static void emit_expr(Emitter *e, Node *node) {
             e->code[end_jumps[k]].arg.offset = (int32_t)(end_target - end_jumps[k]);
         }
 
-        /* The hidden local occupied a stack slot *below* the result, and
-         * slots are reclaimed by dropping the index from the local table, not
-         * by popping the values on top of them. The old SWAP+POP here removed
-         * one value at the join, which happened to be a live local slot. */
-        e->local_count--;
+        /* The hidden local and the arm bindings are reclaimed by restoring
+         * the whole table snapshot, not by dropping one index: slots are
+         * live local slots below the result (audit §4.3). */
+        e->local_count = match_lc0;
         e->sp = base + 1;
     } break;
 

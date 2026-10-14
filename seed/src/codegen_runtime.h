@@ -392,11 +392,26 @@ static inline void astra_print_value(AstraValue v) {
     } break;
     case AST_ENUM:     printf("%s.%s", v.as.enum_val.enum_name, v.as.enum_val.variant_name); break;
     case AST_ENUM_DATA: {
+        /* Mirror the VM's Rust-like constructor form (audit §4.4): the
+         * old printer dropped the payload and printed `E.B` for `E.B(7)`. */
         AstraEnumObj *eo = (AstraEnumObj *)v.as.enum_obj;
-        if (eo && eo->enum_name && eo->variant_name && eo->enum_name[0])
+        if (eo && eo->enum_name && eo->variant_name && eo->enum_name[0]) {
             printf("%s.%s", eo->enum_name, eo->variant_name);
-        else
+            if (eo->field_count == 1) {
+                printf("(");
+                astra_print_value(eo->fields[0]);
+                printf(")");
+            } else if (eo->field_count > 1) {
+                printf("(");
+                for (size_t i = 0; i < eo->field_count; i++) {
+                    if (i > 0) printf(", ");
+                    astra_print_value(eo->fields[i]);
+                }
+                printf(")");
+            }
+        } else {
             printf("enum_data");
+        }
     } break;
     case AST_FN:       printf("fn"); break;
     case AST_OK:       printf("ok("); astra_print_value(*v.as.wrapped); printf(")"); break;
@@ -407,9 +422,11 @@ static inline void astra_print_value(AstraValue v) {
 }
 
 /* ---------- Arithmetic operations ---------- */
+/* Integer add/sub/mul wrap through uint64, matching the VM and zig's
+ * `+%`/`-%`/`*%` (audit §4.2): the raw operators were UB on overflow. */
 static inline AstraValue astra_add(AstraValue a, AstraValue b) {
     if (a.tag == AST_INT && b.tag == AST_INT)
-        return astra_int(a.as.int_val + b.as.int_val);
+        return astra_int((int64_t)((uint64_t)a.as.int_val + (uint64_t)b.as.int_val));
     if (a.tag == AST_FLOAT && b.tag == AST_FLOAT)
         return astra_float(a.as.float_val + b.as.float_val);
     if (a.tag == AST_INT && b.tag == AST_FLOAT)
@@ -433,7 +450,7 @@ static inline AstraValue astra_add(AstraValue a, AstraValue b) {
 
 static inline AstraValue astra_sub(AstraValue a, AstraValue b) {
     if (a.tag == AST_INT && b.tag == AST_INT)
-        return astra_int(a.as.int_val - b.as.int_val);
+        return astra_int((int64_t)((uint64_t)a.as.int_val - (uint64_t)b.as.int_val));
     if (a.tag == AST_FLOAT && b.tag == AST_FLOAT)
         return astra_float(a.as.float_val - b.as.float_val);
     if (a.tag == AST_INT && b.tag == AST_FLOAT)
@@ -447,7 +464,7 @@ static inline AstraValue astra_sub(AstraValue a, AstraValue b) {
 
 static inline AstraValue astra_mul(AstraValue a, AstraValue b) {
     if (a.tag == AST_INT && b.tag == AST_INT)
-        return astra_int(a.as.int_val * b.as.int_val);
+        return astra_int((int64_t)((uint64_t)a.as.int_val * (uint64_t)b.as.int_val));
     if (a.tag == AST_FLOAT && b.tag == AST_FLOAT)
         return astra_float(a.as.float_val * b.as.float_val);
     if (a.tag == AST_INT && b.tag == AST_FLOAT)
@@ -470,8 +487,13 @@ static inline AstraValue astra_div(AstraValue a, AstraValue b) {
     if (b.tag == AST_FLOAT && b.as.float_val == 0.0) {
         astra_runtime_error("division by zero");
     }
-    if (a.tag == AST_INT && b.tag == AST_INT)
+    if (a.tag == AST_INT && b.tag == AST_INT) {
+        /* INT64_MIN / -1 traps the hardware; the VM reports it as a
+         * positioned runtime error (audit §4.1). */
+        if (a.as.int_val == INT64_MIN && b.as.int_val == -1)
+            astra_runtime_error("integer overflow");
         return astra_int(a.as.int_val / b.as.int_val);
+    }
     if (a.tag == AST_FLOAT && b.tag == AST_FLOAT)
         return astra_float(a.as.float_val / b.as.float_val);
     if (a.tag == AST_INT && b.tag == AST_FLOAT)
@@ -489,8 +511,12 @@ static inline AstraValue astra_mod(AstraValue a, AstraValue b) {
     if (b.tag == AST_FLOAT && b.as.float_val == 0.0) {
         astra_runtime_error("modulo by zero");
     }
-    if (a.tag == AST_INT && b.tag == AST_INT)
+    if (a.tag == AST_INT && b.tag == AST_INT) {
+        /* Same hardware trap as division (audit §4.1). */
+        if (a.as.int_val == INT64_MIN && b.as.int_val == -1)
+            astra_runtime_error("integer overflow");
         return astra_int(a.as.int_val % b.as.int_val);
+    }
     /* Float remainder goes through fmod, like the VM's OPCODE_MOD. Without this
      * the C backend errored on `7.5 % 2.0`, which the VM evaluates to 1.5. */
     if (a.tag == AST_FLOAT && b.tag == AST_FLOAT)
@@ -501,7 +527,8 @@ static inline AstraValue astra_mod(AstraValue a, AstraValue b) {
 }
 
 static inline AstraValue astra_neg(AstraValue a) {
-    if (a.tag == AST_INT) return astra_int(-a.as.int_val);
+    /* Wrapping negation (audit §4.2), matching the VM and zig. */
+    if (a.tag == AST_INT) return astra_int((int64_t)(0u - (uint64_t)a.as.int_val));
     if (a.tag == AST_FLOAT) return astra_float(-a.as.float_val);
     astra_errorf("cannot negate %s", astra_tag_name(a.tag));
     return astra_nil();

@@ -1,0 +1,16 @@
+// Integer add/sub/mul/neg wrap through uint64 in the VM and the C
+// backend, matching zig's defined `+%`/`-%`/`*%` (audit §4.2): the raw
+// operators were UB on overflow (UBSan reported them on a legal
+// program). EXPECT lines pin the wrapped values all three backends
+// agree on.
+// EXPECT: -9223372036854775808
+// EXPECT: 9223372036854775807
+// EXPECT: -2
+// EXPECT: -9223372036854775808
+fn main() {
+    let max = 9223372036854775807
+    print(max + 1)
+    print(0 - 9223372036854775807 - 2)
+    print(max * 2)
+    print(0 - (0 - max - 1))
+}

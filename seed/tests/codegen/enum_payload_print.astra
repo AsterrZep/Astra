@@ -1,0 +1,12 @@
+// EXPECT: E.B(7)
+// EXPECT: E.Pair(1, 2)
+//
+// C backend twin of the VM's Rust-like constructor form for data-carrying
+// variants (audit §4.4): astra_print_value's AST_ENUM_DATA case used to
+// drop the payload and print `E.B` for `E.B(7)`, which enum_print.astra
+// never caught because it only prints unit variants.
+enum E { A B(i32) Pair(i32, i32) }
+fn main() {
+    print(B(7))
+    print(Pair(1, 2))
+}

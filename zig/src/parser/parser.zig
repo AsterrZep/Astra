@@ -992,10 +992,21 @@ pub const Parser = struct {
         var left = try self.parsePrefix();
         if (self.aborted) return error.ParseError;
 
+        // Each iteration wraps `left` one level deeper; a flat chain is
+        // iterative for the parser but recursive for the typechecker and
+        // emitter, which overflowed their C stacks at ~300 terms in the
+        // seed debug build (audit §4.6, mirror of the seed). Cap the chain
+        // the way PARSER_MAX_DEPTH caps nesting.
+        var chain_len: u32 = 0;
         while (true) {
             if (self.aborted) return error.ParseError;
             const prec = precOf(self.current.tag);
             if (prec == Prec.none or prec < min_prec) break;
+            chain_len += 1;
+            if (chain_len > PARSER_MAX_DEPTH) {
+                diagnostics_mod.emit(self.diag, self.filename, self.current.loc, "expression chain too deep (max {d})", .{PARSER_MAX_DEPTH});
+                return error.ParseError;
+            }
 
             const kind = self.current.tag;
             self.advance();

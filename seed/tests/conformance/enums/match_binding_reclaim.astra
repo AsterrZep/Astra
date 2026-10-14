@@ -1,0 +1,19 @@
+// Arm bindings are reclaimed wholesale at the match epilogue: retracting
+// only the last slot left every earlier binding name in the emitter's
+// local table, so a later same-name reference resolved to the dead
+// payload slot and printed the stale value in all three backends
+// (audit §4.3).
+// EXPECT: 3
+// EXPECT: 7
+// EXPECT: 3
+enum Pair { Two(i32, i32) }
+fn main() {
+    let a = 7
+    let p = Two(1, 2)
+    let r = match p {
+        Pair.Two(a, b) => a + b,
+    }
+    print(r)
+    print(a)
+    print(match some(3) { some(x) => x, none => 0 })
+}

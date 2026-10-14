@@ -1520,6 +1520,13 @@ pub const Emitter = struct {
         const arms = self.tree.extraSlice(m.arms);
         const base = self.sp;
 
+        // Snapshot the local table before the hidden local and the arm
+        // bindings: the epilogue restores it wholesale. Retracting only the
+        // last slot left every earlier binding name in the table, so a later
+        // same-name reference resolved to the dead payload slot (audit §4.3,
+        // mirror of the seed).
+        const match_lc0 = self.local_count;
+
         // The matched value lives in a hidden local; every arm tests against it.
         // addLocal already reports the limit; the 0xFF branch is recovery only.
         const slot = self.addLocal("$match_val");
@@ -1705,8 +1712,9 @@ pub const Emitter = struct {
             self.code.items[j].arg = .{ .offset = @intCast(end_target - j) };
         }
 
-        // Drop the hidden local's slot index (no POP: the result sits on top).
-        self.local_count -%= 1;
+        // Reclaim the hidden local AND the arm bindings by restoring the
+        // whole table snapshot (no POP: the result sits on top) — audit §4.3.
+        self.local_count = match_lc0;
         self.sp = base + 1;
     }
 

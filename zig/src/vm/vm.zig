@@ -891,6 +891,12 @@ pub const VM = struct {
                     if ((tag(b) == .int and b.int == 0) or (tag(b) == .float and b.float == 0.0)) {
                         return self.rt(line, "division by zero", .{});
                     }
+                    // INT64_MIN / -1 traps the hardware in C; the VMs must
+                    // report it as a runtime error instead (audit §4.1,
+                    // mirror of the seed).
+                    if (tag(a) == .int and tag(b) == .int and a.int == std.math.minInt(i64) and b.int == -1) {
+                        return self.rt(line, "integer overflow", .{});
+                    }
                     const v: ?Value = switch (a) {
                         .int => |x| switch (b) {
                             .int => |y| bc.vInt(@divTrunc(x, y)),
@@ -916,6 +922,11 @@ pub const VM = struct {
                     const a = self.pop();
                     if ((tag(b) == .int and b.int == 0) or (tag(b) == .float and b.float == 0.0)) {
                         return self.rt(line, "modulo by zero", .{});
+                    }
+                    // Same hardware trap as division (audit §4.1, mirror of
+                    // the seed).
+                    if (tag(a) == .int and tag(b) == .int and a.int == std.math.minInt(i64) and b.int == -1) {
+                        return self.rt(line, "integer overflow", .{});
                     }
                     const v: ?Value = switch (a) {
                         .int => |x| switch (b) {

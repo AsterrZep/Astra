@@ -186,6 +186,10 @@ pub const TypeChecker = struct {
     instances: std.ArrayListUnmanaged(Instance) = .empty,
     pending: std.ArrayListUnmanaged(PendingCall) = .empty,
     current_fn_return: ?*Type = null,
+    // Depth of enclosing fn/lambda bodies: current_fn_return is also null
+    // for an *unannotated* fn, so module scope is detected with this
+    // counter, not with the annotation (audit §4.5, mirror of the seed).
+    fn_depth: u32 = 0,
     // Location of the function currently being checked, used for body-level
     // diagnostics (`checkFnDecl` sets it before `checkFnBody`).
     pending_fn_loc: lexer.Loc = .{ .start = 0, .end = 0, .line = 0, .col = 0 },
@@ -1476,6 +1480,15 @@ pub const TypeChecker = struct {
             value_type = self.checkNode(v);
             if (isErrorType(value_type)) return value_type;
         }
+        // A module-scope `return` used to be silently accepted: both VMs
+        // treated it as "end of module" (rc=0, main never ran) and the C
+        // backend generated uncompilable C (audit §4.5, mirror of the seed).
+        // fn_depth, not current_fn_return: an unannotated fn also leaves
+        // the annotation null.
+        if (self.fn_depth == 0)
+            return self.errorType(loc, "return outside of a function", .{});
+        // An unannotated fn leaves the annotation null (inference path):
+        // only compare when there is one, like before (mirror of the seed).
         if (self.current_fn_return) |expected| {
             if (!typeEq(value_type, expected)) {
                 return self.errorType(loc, "return type {s} does not match function return type {s}", .{ value_type.kind.name(), expected.kind.name() });
@@ -1640,6 +1653,7 @@ pub const TypeChecker = struct {
         self.pushScope();
         const prev_return = self.current_fn_return;
         self.current_fn_return = ret_type;
+        self.fn_depth += 1;
 
         const params = self.tree.extraSlice(f.params);
         for (params, 0..) |p, i| {
@@ -1661,6 +1675,7 @@ pub const TypeChecker = struct {
         }
 
         self.current_fn_return = prev_return;
+        self.fn_depth -= 1;
         self.popScope();
     }
 
@@ -1687,8 +1702,10 @@ pub const TypeChecker = struct {
         }
         const saved = self.current_fn_return;
         self.current_fn_return = ret_type;
+        self.fn_depth += 1;
         const body_type = self.checkNode(l.body);
         self.current_fn_return = saved;
+        self.fn_depth -= 1;
         self.popScope();
 
         if (ret_type == null) {

@@ -2024,12 +2024,22 @@ static Node *parse_expression_impl(Parser *p, Precedence min_prec) {
      * compiler with a null dereference on a 20k-deep parenthesised input. */
     if (!left || p->aborted) return NULL;
 
-    /* led: infix operators — consume while precedence >= min_prec */
+    /* led: infix/postfix operators — consume while precedence >= min_prec.
+     * Each iteration wraps `left` one level deeper; a flat chain is
+     * iterative for the parser but recursive for the typechecker
+     * (typecheck_binary) and the emitter (emit_expr), which overflowed
+     * their C stacks at ~300 terms in the debug build (audit §4.6). Cap
+     * the chain the way PARSER_MAX_DEPTH caps nesting. */
+    size_t chain_len = 0;
     for (;;) {
         if (p->aborted) return NULL;
         Precedence prec = token_to_prec(p->current.kind);
         if (prec == PREC_NONE) break;
         if ((int)prec < (int)min_prec) break;
+        if (++chain_len > PARSER_MAX_DEPTH) {
+            parser_error(p, "expression chain too deep (max 256)");
+            return NULL;
+        }
 
         TokenKind kind = p->current.kind;
         advance(p);

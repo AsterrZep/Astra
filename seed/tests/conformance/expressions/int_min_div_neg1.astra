@@ -1,0 +1,8 @@
+// INT64_MIN / -1 traps the hardware (SIGFPE / ASan FPE / zig panic) in
+// every backend without a diagnostic (audit §4.1); all three now report
+// the same positioned runtime error.
+// EXPECT-RUNTIME-ERROR: integer overflow
+fn main() {
+    let min = 0 - 9223372036854775807 - 1
+    print(min / -1)
+}

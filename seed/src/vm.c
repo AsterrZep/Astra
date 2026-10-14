@@ -741,7 +741,10 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             Value b = vm_pop(vm);
             Value a = vm_pop(vm);
             if (a.kind == VAL_INT && b.kind == VAL_INT) {
-                if (!vm_push(vm, value_int(a.as.int_val + b.as.int_val))) return VM_RUNTIME_ERROR;
+                /* Wrapping arithmetic through uint64: the raw `+` was UB on
+                 * overflow (UBSan reported it on a legal program) while zig
+                 * defines the wrap with `+%` (audit §4.2). */
+                if (!vm_push(vm, value_int((int64_t)((uint64_t)a.as.int_val + (uint64_t)b.as.int_val)))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_FLOAT && b.kind == VAL_FLOAT) {
                 if (!vm_push(vm, value_float(a.as.float_val + b.as.float_val))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_INT && b.kind == VAL_FLOAT) {
@@ -776,7 +779,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             Value b = vm_pop(vm);
             Value a = vm_pop(vm);
             if (a.kind == VAL_INT && b.kind == VAL_INT) {
-                if (!vm_push(vm, value_int(a.as.int_val - b.as.int_val))) return VM_RUNTIME_ERROR;
+                if (!vm_push(vm, value_int((int64_t)((uint64_t)a.as.int_val - (uint64_t)b.as.int_val)))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_FLOAT && b.kind == VAL_FLOAT) {
                 if (!vm_push(vm, value_float(a.as.float_val - b.as.float_val))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_INT && b.kind == VAL_FLOAT) {
@@ -797,7 +800,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             Value b = vm_pop(vm);
             Value a = vm_pop(vm);
             if (a.kind == VAL_INT && b.kind == VAL_INT) {
-                if (!vm_push(vm, value_int(a.as.int_val * b.as.int_val))) return VM_RUNTIME_ERROR;
+                if (!vm_push(vm, value_int((int64_t)((uint64_t)a.as.int_val * (uint64_t)b.as.int_val)))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_FLOAT && b.kind == VAL_FLOAT) {
                 if (!vm_push(vm, value_float(a.as.float_val * b.as.float_val))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_INT && b.kind == VAL_FLOAT) {
@@ -823,6 +826,12 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 return VM_RUNTIME_ERROR;
             }
             if (a.kind == VAL_INT && b.kind == VAL_INT) {
+                /* INT64_MIN / -1 traps the hardware (SIGFPE/ASan FPE) and no
+                 * backend produced a diagnostic (audit §4.1). */
+                if (a.as.int_val == INT64_MIN && b.as.int_val == -1) {
+                    vm_runtime_error(vm, line, "integer overflow");
+                    return VM_RUNTIME_ERROR;
+                }
                 if (!vm_push(vm, value_int(a.as.int_val / b.as.int_val))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_FLOAT && b.kind == VAL_FLOAT) {
                 if (!vm_push(vm, value_float(a.as.float_val / b.as.float_val))) return VM_RUNTIME_ERROR;
@@ -849,6 +858,11 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 return VM_RUNTIME_ERROR;
             }
             if (a.kind == VAL_INT && b.kind == VAL_INT) {
+                /* Same hardware trap as DIV (audit §4.1). */
+                if (a.as.int_val == INT64_MIN && b.as.int_val == -1) {
+                    vm_runtime_error(vm, line, "integer overflow");
+                    return VM_RUNTIME_ERROR;
+                }
                 if (!vm_push(vm, value_int(a.as.int_val % b.as.int_val))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_FLOAT && b.kind == VAL_FLOAT) {
                 if (!vm_push(vm, value_float(fmod(a.as.float_val, b.as.float_val)))) return VM_RUNTIME_ERROR;
@@ -865,7 +879,9 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             Value a = vm_pop(vm);
             if (a.kind == VAL_INT) {
-                if (!vm_push(vm, value_int(-a.as.int_val))) return VM_RUNTIME_ERROR;
+                /* Wrapping negation: -INT64_MIN is UB with a raw unary minus
+                 * (audit §4.2); the uint64 wrap matches zig's `-%`. */
+                if (!vm_push(vm, value_int((int64_t)(0u - (uint64_t)a.as.int_val)))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_FLOAT) {
                 if (!vm_push(vm, value_float(-a.as.float_val))) return VM_RUNTIME_ERROR;
             } else {

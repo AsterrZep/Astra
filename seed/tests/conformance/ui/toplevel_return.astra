@@ -1,0 +1,9 @@
+// A module-scope `return` used to be silently accepted: both VMs treated
+// it as "end of module" (rc=0, main never ran) and the C backend
+// generated uncompilable C (`return frame[...]` from an int function)
+// (audit §4.5).
+// EXPECT-ERROR: return outside of a function
+return 5
+fn main() {
+    print(1)
+}

@@ -352,6 +352,10 @@ struct TypeChecker {
     StringTable *strings;
     SymbolTable *symbols;
     Type      *current_fn_return; /* return type of enclosing fn, or NULL */
+    /* Depth of enclosing fn/lambda bodies: `current_fn_return` is also NULL
+     * for an *unannotated* fn, so module scope is detected with this
+     * counter, not with the annotation (audit §4.5). */
+    int        fn_depth;
     /* Generic parameters of the fn currently being checked (Phase 2.4 step
      * 2a): a flat stack with save/restore marks, so `T` in an annotation
      * resolves to the enclosing generic fn's placeholder. */
@@ -2337,13 +2341,21 @@ static Type *typecheck_return(TypeChecker *tc, Node *node) {
         if (type_is_error(value_type)) return value_type;
     }
 
-    if (tc->current_fn_return) {
-        if (!type_eq(value_type, tc->current_fn_return)) {
-            return tc_error_type(tc, node->loc,
-                                 "return type %s does not match function return type %s",
-                                 type_kind_name(value_type->kind),
-                                 type_kind_name(tc->current_fn_return->kind));
-        }
+    /* A module-scope `return` used to be silently accepted: both VMs
+     * treated it as "end of module" (rc=0, main never ran) and the C
+     * backend generated uncompilable C (`return frame[...]` from an int
+     * function) (audit §4.5). fn_depth, not current_fn_return: an
+     * unannotated fn also leaves the annotation NULL. */
+    if (tc->fn_depth == 0) {
+        return tc_error_type(tc, node->loc, "return outside of a function");
+    }
+    /* An unannotated fn leaves the annotation NULL (inference path): only
+     * compare when there is one, like before. */
+    if (tc->current_fn_return && !type_eq(value_type, tc->current_fn_return)) {
+        return tc_error_type(tc, node->loc,
+                             "return type %s does not match function return type %s",
+                             type_kind_name(value_type->kind),
+                             type_kind_name(tc->current_fn_return->kind));
     }
 
     return value_type;
@@ -2675,6 +2687,7 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
     tc->current_fn_return = fn_node->as.fn_decl.return_type
         ? resolve_type_node(tc, fn_node->as.fn_decl.return_type)
         : NULL;
+    tc->fn_depth++;
 
     /* Insert parameters into scope */
     size_t param_count = fn_node->as.fn_decl.params.len;
@@ -2731,6 +2744,7 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
     }
 
     tc->current_fn_return = prev_return;
+    tc->fn_depth--;
     symbol_table_pop_scope(tc->symbols);
 }
 
@@ -3398,12 +3412,14 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
          * we'll infer it after type-checking the body. */
         Type *saved_return = tc->current_fn_return;
         tc->current_fn_return = ret_type;
+        tc->fn_depth++;
         /* Type-check body */
         Type *body_type = NULL;
         if (node->as.lambda.body) {
             body_type = typecheck_node(tc, node->as.lambda.body);
         }
         tc->current_fn_return = saved_return;
+        tc->fn_depth--;
         symbol_table_pop_scope(tc->symbols);
         /* Infer return type: if not annotated, use body type. For blocks
          * ending in return statements the body_type is void, so walk the
