@@ -1407,6 +1407,19 @@ pub const TypeChecker = struct {
         return result_type orelse self.newType(.void);
     }
 
+    /// `expr?` may unwind the enclosing frame with the absence/error, so
+    /// that frame's declared return must be able to carry it (mirror of
+    /// the seed's `try_check_enclosing_return`): a `?` inside a fn declared
+    /// `-> i32`, with no return at all, or at module level would hand the
+    /// caller a nil/err value under an i32 promise.
+    fn tryCheckEnclosingReturn(self: *TypeChecker, loc: lexer.Loc) void {
+        if (self.current_fn_return) |ret| {
+            if (isErrorType(ret) or ret.kind == .unknown) return;
+            if (ret.kind == .optional) return;
+        }
+        self.errFmt(loc, "? operator requires the enclosing function to return an optional type", .{});
+    }
+
     fn checkReturn(self: *TypeChecker, value: ?u32, loc: lexer.Loc) *Type {
         var value_type = self.newType(.void);
         if (value) |v| {
@@ -1757,6 +1770,18 @@ pub const TypeChecker = struct {
             .try_expr => |v| blk: {
                 const inner = self.checkNode(v);
                 if (isErrorType(inner)) break :blk inner;
+                // Seed parity: only a tagged value can unwind — a type
+                // parameter is checked once symbolically and left to its
+                // instantiations, everything else fails at run time on
+                // both backends, so it fails here instead. The bare `none`
+                // literal types as nil, not `T?`, so `none?` is rejected
+                // too: propagate absence through a typed optional or
+                // `return none`.
+                if (inner.kind != .optional and inner.kind != .param) {
+                    self.errFmt(loc, "? operator requires Result or Option, got {s}", .{inner.kind.name()});
+                    break :blk inner;
+                }
+                self.tryCheckEnclosingReturn(loc);
                 break :blk if (inner.kind == .optional) inner.inner.? else inner;
             },
             .range_expr => self.errorType(loc, "range expression is only valid as a for-loop iterator", .{}),

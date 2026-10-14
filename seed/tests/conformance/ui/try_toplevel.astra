@@ -1,0 +1,7 @@
+// Module level has no enclosing function to unwind — the frame the VM
+// would need does not exist, so `?` is rejected before it can trip the
+// runtime "outside function" guard.
+// EXPECT-ERROR: ? operator requires the enclosing function to return an optional type
+let x: i32? = some(1)
+let v = x?
+print(v)

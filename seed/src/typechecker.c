@@ -3130,6 +3130,22 @@ static void typecheck_module_body(TypeChecker *tc, Node *module) {
     }
 }
 
+/* `expr?` may unwind the enclosing frame with the absence/error, so that
+ * frame's declared return must be able to carry it: a `?` inside a fn
+ * declared `-> i32` (or with no return at all, or at module level) would
+ * hand the caller a nil/err value under an i32 promise. Checked statically
+ * instead of letting the VM unwind into a type lie. */
+static void try_check_enclosing_return(TypeChecker *tc, SrcLoc loc) {
+    Type *ret = tc->current_fn_return;
+    /* No tracked return (module level, unannotated fn/lambda): reject.
+     * An unresolvable annotation was already reported — don't pile on. */
+    if (ret && (ret->kind == TYPE_ERROR || ret->kind == TYPE_UNKNOWN)) return;
+    if (ret && ret->kind == TYPE_OPTIONAL) return;
+    tc_error(tc, loc,
+             "? operator requires the enclosing function to return an "
+             "optional type");
+}
+
 /* ============================================================
  * §8: Main Dispatch
  * ============================================================ */
@@ -3184,7 +3200,22 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
         Type *inner = typecheck_node(tc, node->as.try_expr.inner);
         if (type_is_error(inner)) return inner;
         /* `expr?` unwraps one optional layer: OPCODE_TRY_UNWRAP yields the
-         * payload, or unwinds the frame when the value is absent/err. */
+         * payload, or unwinds the frame when the value is absent/err.
+         * Only a tagged value can do that: a type parameter is checked once
+         * symbolically and left to its instantiations, everything else
+         * fails at run time on both backends — so it fails here instead.
+         * The bare `none` literal types as nil, not as `T?`, so `none?`
+         * gets the same rejection; propagate absence through a typed
+         * optional (`let v: i32? = none; v?`) or `return none`. The
+         * enclosing return must be optional for the unwind path to
+         * type-check. */
+        if (inner->kind != TYPE_OPTIONAL && inner->kind != TYPE_PARAM) {
+            tc_error(tc, node->loc,
+                     "? operator requires Result or Option, got %s",
+                     type_kind_name(inner->kind));
+            return inner;
+        }
+        try_check_enclosing_return(tc, node->loc);
         if (inner->kind == TYPE_OPTIONAL) return inner->as.optional.inner;
         return inner;
     }

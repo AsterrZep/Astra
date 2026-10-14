@@ -1,0 +1,9 @@
+// `?` needs a tagged value: a bare i32 has no payload to unwrap and no
+// absence to propagate, so the check fails statically instead of at run
+// time (both backends used to reach the runtime "? operator requires..."
+// guard only).
+// EXPECT-ERROR: ? operator requires Result or Option, got i32
+fn main() {
+    let x: i32 = 42;
+    print(x?)
+}

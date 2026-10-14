@@ -1,0 +1,10 @@
+// A `?` can unwind the frame with nil/err, so the declared return of the
+// enclosing function must be able to carry that value: `-> i32` would hand
+// the caller an absence under an i32 promise.
+// EXPECT-ERROR: ? operator requires the enclosing function to return an optional type
+fn unwrap_bad(x: i32?) -> i32 {
+    x?
+}
+fn main() {
+    print(unwrap_bad(some(1)))
+}
