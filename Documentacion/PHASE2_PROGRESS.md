@@ -10,7 +10,7 @@ bootstrap. Sustituye al compilador semilla en C (`seed/`, ver
 
 ---
 
-## 1. Estado actual (2026-09-29)
+## 1. Estado actual (2026-10-14)
 
 **El compilador Astra-0 completo (frontend + emitter + VM) está portado y
 verificado: compila y ejecuta la suite del seed con salida idéntica.**
@@ -34,19 +34,19 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 
 ### Verificación medida
 
-- **61/61** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **67/67** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
-- **44/44** ficheros `ui/` son rechazados. El emitter cierra
+- **62/62** ficheros `ui/` son rechazados. El emitter cierra
   `break_outside_loop` y la asignación a una variable capturada
   (`capture_assign`), que el type checker deja pasar a propósito; ambos
   parsers cierran `break` con valor (`break_value`).
 - **73 pruebas** (lexer, AST, parser, type checker, types, emitter,
   bytecode, VM, módulos, depurador, link multi-módulo, diagnósticos y
   conformance) en `zig build test`.
-- Gates de CI: suite seed **123/123** (105 conformance + 17 codegen +
-  `--check-constructs`), paridad de dumps **83/83 ficheros, 0
+- Gates de CI: suite seed **148/148** (129 conformance + 18 codegen +
+  `--check-constructs`), paridad de dumps **91/91 ficheros, 0
   divergentes**.
 
 ---
@@ -142,6 +142,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 10 | **InternPool de tipos** (substrato de genéricos) | ✅ | `src/typechecker/types.zig`: pool hash-consed con identidad canónica (struct/enum por nombre); `typeEq` = fast-path de puntero + reglas de unificación del seed recursivas en compuestos (`array(int_literal)` ≡ `[]i32`); fn sin retorno anotado normalizado a `void` (paridad con `a.ret orelse voidType` del seed). 53/53 tests. Sustituye el diseño "un heap-node por ocurrencia" (`PHASE2_ARCHITECTURE.md` §3.3) |
 | 11 | **Colección de declaraciones** (forward-refs de tipo) | ✅ | Pase 0 en ambos compiladores (`typecheck_module_pass`/`checkModule`): registra nombres de struct/enum con layout vacío antes de resolver firmas y fields, así las declaraciones se referencian en cualquier orden (incl. recursión mutua). Caso nuevo `types/forward_type_refs.astra`; suite 96/96 seed, 53/53 zig. Los structs anidados en cuerpos de función siguen sin funcionar (paridad — ya fallaban igual antes) |
 | 12 | **Traits y métodos (Fase 2.3) — pasos 1–5** | ✅ | `trait`/`impl` parsean en nodos, el type checker registra la tabla de métodos por tipo nominal y baja los cuerpos, `x.m()` hace dispatch estático al global `Type.method`/`Type.Trait.method`, y un `impl T for X` se valida contra las firmas del trait (sin defaults). Semántica y límites en §8; suites 123/123 seed, 73/73 zig, paridad 83/83 |
+| 13 | **Genéricos (Fase 2.4) — pasos 1–4** | ✅ | `GenericParams` con bounds parsea en fn/struct/enum/trait/impl; fns genéricas chequeadas simbólicamente con `TYPE_PARAM`; inferencia en call-site con instancias monomórficas (y pendientes por instancia); `Name<args...>` en tipos con fix del `>>`; structs genéricos end-to-end (plantilla, inferencia en literales, instancias internadas); bounds verificados contra registros `impl T for X`. Semántica y límites en §9; suites 148/148 seed, 73/73 zig, paridad 91/91 |
 
 ---
 
@@ -567,7 +568,7 @@ compiladores, con mensajes de error byte-idénticos.
 |:----|:------------|
 | Objetos de trait / vtable (`dyn`) | GAP §11 paso 5 de la fase 2.3 (runtime) — el dispatch actual es 100 % estático |
 | UFCS (`T::method(x)`, métodos como valores) | Con genéricos (fase 2.4) |
-| `impl<T> Trait for T`, bounds en genéricos | Fase 2.4 |
+| `impl<T> Trait for T` | Fase 2.4 (los bounds de genéricos ya están: §9.3) |
 | Métodos y traits cross-módulo (tabla `pub trait` exportable, `impl m.T for X`) | Con la semántica multi-módulo de traits: las tablas viven en cada `TypeChecker`, un módulo no ve los métodos del otro, y `from dep import T` no se exporta aún; el emitter tampoco sabe a qué módulo pertenece un `Type.Trait.method` |
 | Métodos default en traits | Error explícito hoy (§8.2) |
 | Desambiguar entre traits con el mismo método | Requiere calificación explícita (nueva sintaxis) |
@@ -582,3 +583,119 @@ override inherent vs trait) y trece casos `ui/` (`self_outside_impl`,
 `impl_primitive_receiver`, `method_arg_count`, `trait_unknown`,
 `trait_missing_method`, `trait_signature_mismatch`,
 `trait_default_method`).
+
+---
+
+## 9. Genéricos (Fase 2.4) — pasos 1–4 completos
+
+Genéricos de Astra (`research/010` §7.3/§12.1) en ambos compiladores,
+con el seed como referencia y paridad byte-a-byte de mensajes y dumps.
+Los commits por paso están en la fila 13 de §4; aquí el detalle.
+
+### 9.1 Sintaxis (paso 1, `daa0db4`)
+
+`GenericParams ::= "<" GenericParam ("," GenericParam)* ">"` con
+`GenericParam ::= Identifier (":" TraitBound ("+" TraitBound)*)?` parsea
+inerte en fn/struct/enum/trait/impl → un `NODE_TYPE_PARAM` por parámetro,
+con `bounds` como identificadores `NODE_TYPE_IDENT` (traits aún sin
+namespace). Límite duro: 32 parámetros por lista, el mismo que retiene el
+checker.
+
+### 9.2 Fns genéricas (pasos 2a–2b, `e43520e` + `4f85d2b`)
+
+- **2a**: la firma se registra con placeholders `TYPE_PARAM`
+  (internados por nombre + nodo dueño, así dos `T` de fns distintas no
+  colisionan) y el cuerpo se chequea **una vez simbólicamente** con ese
+  stack en scope (marca/restore). El nombre de una fn genérica no es un
+  valor (`ui/generic_as_value`).
+- **2b**: inferencia en el call-site — `unify_bind` recorre
+  firma↔argumentos (literal entero → `i32` por defecto, recursión en
+  arrays/opcionales/fns) con el env pre-sembrado en orden de declaración
+  (el mangle depende de ese orden). Conflicto →
+  `cannot be both %s and %s`; incompleto →
+  `cannot infer type parameter`. Binding concreto → instancia
+  materializada (fn renombrada al mangle `f<i32>` + rewrites de los
+  pendientes); binding abstracto (el call vive dentro de otro cuerpo
+  genérico) → `pending`, resuelto cuando la instancia externa sea
+  concreta. Los cuerpos **no** se re-chequean por instancia: son
+  simbólicos.
+
+### 9.3 Argumentos de tipo y structs genéricos (paso 3, `af0e692` + `0800660`)
+
+- **3a**: `Name<args...>` en posición de tipo (recursivo con guard de
+  profundidad, cap de 32 argumentos) y fix del `>>` en el lexer
+  (`gt_depth` + `>` pendiente): el `>` que cierra argumentos se reparte
+  antes del siguiente token, así `Vec<Vec<T>>` cierra dos veces y
+  `a >> b` sigue siendo shift. `--dump-tokens`/`--dump-ast` con paridad
+  (`TypeArgs`).
+- **3b**: `resolve_type_with_args` valida base desconocida (mensaje
+  `unknown type` de siempre — el test anidado depende de él), base que no
+  es struct genérico (`does not take type arguments`) y aridad
+  (`expected N, got M`); un nombre genérico sin argumentos en posición de
+  tipo → `type 'Box' requires type arguments`. La instancia `Box<i32>`
+  se materializa con mangle `Base<T1,T2>` **insertando el símbolo antes
+  de resolver los campos** (recursión de tipos) y re-resolviéndolos del
+  AST con los parámetros sustituidos: la plantilla conserva sus
+  `TYPE_PARAM`, así que el orden de declaraciones no la contamina. Los
+  literales `Box { v: ... }` **infieren** los argumentos desde los
+  valores (unify + caché de tipos chequeados una sola vez) con los
+  mismos mensajes de conflicto/inferencia que las llamadas y dueño =
+  nombre del struct. El emitter deja de ignorar structs con `<...>`:
+  todas las instancias comparten el `StructDef` del nombre fuente (los
+  literales siempre escriben el nombre base).
+
+### 9.4 Bounds (paso 4, `da08fa4`)
+
+Una lista de registros `impl T for X` — no la tabla de métodos: un trait
+sin métodos no registra ninguna entrada — responde si un tipo concreto
+lleva un trait. El chequeo ocurre en los tres sitios donde un env se
+vuelve concreto (llamada genérica, inferencia de literal, argumentos en
+anotación):
+
+```
+type parameter 'T' of 'accept' requires bound 'Show': type 'i32' does not implement trait 'Show'
+```
+
+Solo struct/enum pueden satisfacer un bound (el pass de impl lo exige);
+primitivas y compuestos, nunca. El **nombre** del bound se valida en
+firme al vincular los parámetros (`unknown trait 'Missing'`), dentro de
+`push_generic_bindings`/`pushGenericBindings`: el pre-pase de traits ya
+corrió, y fn + struct cubren todas las declaraciones genéricas vivas. Los
+bindings **abstractos** (parámetro de la fn envolvente) se saltan: el
+cuerpo se chequea una vez simbólicamente y el chequeo perezoso no se
+re-ejecuta por instancia.
+
+### 9.5 Auditoría de límites (5 fixes)
+
+`deb0964` (los pendientes de instancias perdían sus rewrites al crecer el
+array), `cb2eb9f` (mangle que desbordaba su búfer de 512 → rechazo
+explícito), `31a3fb0` (codificación C inyectiva para identificadores
+manglados), `54fd94e` (techos duros: 32 parámetros, 256 instancias, guard
+previo), `ae5ee81` (dos NULL-deref del typechecker hallados por fuzz +
+regresión `ui/fuzz_field_access_null_type`).
+
+### 9.6 Diferido y límites conocidos
+
+| Qué | Estado |
+|:----|:-------|
+| **Enums genéricos** | Parsean y declaran inertes (checker/emitter los saltan); sin argumentos de tipo en construcción no hay forma de escribirlos |
+| **`impl<T> Trait for T` e impls sobre instancias** (`impl Show for Box<i32>`) | El target del `impl` no parsea argumentos; `impl<T>` sigue inerte |
+| **Bounds sobre bindings abstractos** | No se re-verifican al instanciar la fn envolvente (cuerpo simbólico, chequeo único) |
+| **Bounds en enums/trait/impl genéricos** | Esas declaraciones siguen inertes: solo fn y struct vinculan parámetros |
+| **Args sobre primitivas** (`i32<f32>`) | Se aceptan en silencio: las primitivas resuelven antes de mirar los argumentos |
+| **Método sobre parámetro** (`x.show()` con `T: Show`) | El dispatch no consulta bounds (UFCS/`T::m`, §8.3) |
+| **Genéricos cross-módulo (Zig)** | `collectExports` filtra `generics.len == 0` (herencia de la Fase 2.2): una plantilla `pub` no se exporta (`module 'x' does not export 'Box'`) y `Export` no arrastra `is_generic`/`type_ast`. El seed es de fichero único (sin capa de exports) |
+| **where-clauses, turbofish (`f<i32>()`), blanket impls, `type_alias` genérico** | No parsean / fuera de alcance |
+| **Techos** | 32 parámetros, 32 argumentos, 256 instancias, mangle ≤ 512 bytes — cada uno con su error dedicado |
+
+### 9.7 Tests
+
+- Positivos: `generics/{inert,instantiate,many_instances,generic_then_shift,generic_struct,bounds_ok}`;
+  probe de dumps `zig/tests/dump_probes/generic_params.astra`.
+- `ui/` (17): `generic_{as_value,cannot_infer,conflict,instance_limit,name_too_long,op_on_param,param_limit,param_vs_concrete}`,
+  `generic_struct_{cannot_infer,conflict}`,
+  `generic_type_{requires_args,wrong_arg_count}`,
+  `type_args_{on_nongeneric,unknown_base}`,
+  `bound_{not_satisfied,not_satisfied_struct,unknown_trait}`.
+- Gates: suite seed **148/148**, `zig build test` **73/73**, paridad de
+  dumps **91/91**, `--check-constructs` OK.

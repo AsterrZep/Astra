@@ -545,14 +545,36 @@ Zig catches most C UB at compile time or with safety checks:
 in both compilers (`seed/tests/conformance/traits/method_dispatch.astra` y
 `trait_conformance.astra`, mensajes byte-idénticos).
 
-### Phase 2.4 — Generics
+### Phase 2.4 — Generics ✅ (2026-10-14, steps 1–4)
 
-1. **Parser:** Parse `<T>` generic parameters
-2. **Type checker:** Generic type inference, trait bounds on generics
+1. **Parser:** Parse `<T>` generic parameters ✅ — `GenericParams` with
+   `T: Show + Debug` bounds on fn/struct/enum/trait/impl (32 params max);
+   `Name<args...>` in type position with the `>>` split fixed in the lexer
+2. **Type checker:** Generic type inference, trait bounds on generics ✅ —
+   symbolic body check under `TYPE_PARAM` placeholders, call-site
+   inference with per-instance pending resolution, generic struct
+   templates + literal inference, bounds checked against an
+   `impl T for X` record registry (eager `unknown trait` at binding time;
+   abstract bindings are skipped — one symbolic check per body)
 3. **Emitter:** Monomorphization (instantiate generic functions per type)
-4. **Runtime:** Generic struct/enum instantiation
+   ✅ — instances are renamed wrappers with rewrite patches; generic
+   structs share the source-name `StructDef`
+4. **Runtime:** Generic struct/enum instantiation 🟡 — structs ✅;
+   **generic enums remain inert** (parsed, skipped by checker/emitter —
+   with no type arguments at the construction site there is no way to
+   write one yet)
 
-**Exit criteria:** `fn identity<T>(x: T) -> T` works with type inference.
+**Exit criteria:** `fn identity<T>(x: T) -> T` works with type inference —
+✅ (`seed/tests/conformance/generics/instantiate.astra`).
+
+**Remaining (details in `PHASE2_PROGRESS.md` §9.6):** generic enums,
+`impl<T> Trait for T` and impls over instances (`impl Show for Box<i32>`),
+bounds on abstract bindings and on enum/trait/impl declarations, type
+args on primitives (`i32<f32>` accepted silently), method dispatch
+through bounds (`x.show()` with `T: Show` — needs UFCS), generics
+across module boundaries (the Zig exporter filters `generics.len == 0`
+and `Export` carries no `is_generic`/`type_ast`), where-clauses, turbofish
+`f<i32>()`, blanket impls, generic `type_alias`.
 
 ### Phase 2.5 — Error Propagation
 

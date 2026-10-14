@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Genéricos (seed + Zig, Fase 2.4, pasos 1–4)**: `GenericParams` con
+  bounds (`T: Show + Debug`) parsea en fn/struct/enum/trait/impl y el `>>`
+  de `Vec<Vec<T>>` se reparte en dos `>` (`af0e692`); las fns genéricas
+  se chequean simbólicamente con placeholders `TYPE_PARAM` (`e43520e`) y
+  la inferencia en call-site materializa instancias monomórficas con
+  pendientes por instancia (`4f85d2b`, parseo inerte en `daa0db4`);
+  `Box<i32>` en posición de tipo y los literales `Box { v: ... }`
+  rellenan la plantilla con los argumentos concretos — símbolo insertado
+  antes que los campos (recursión de tipos), tipos internados por nombre
+  (una instancia = un `*Type`) e inferencia con caché de los valores
+  chequeados una sola vez (`0800660`); los bounds se verifican en los
+  tres sitios de instanciación contra registros `impl T for X` — no la
+  tabla de métodos, un trait sin métodos no registra entradas — con
+  `unknown trait` en firme al vincular los parámetros (`da08fa4`).
+  Auditoría de límites: cinco fixes (los pendientes de instancias
+  perdían sus rewrites al crecer el array, mangle >512 bytes, C
+  inyectivo para nombres manglados, techos 32 params/256 instancias,
+  dos NULL-deref de fuzz con regresión). Diferidos: enums genéricos,
+  `impl<T>` e impls sobre instancias, bounds sobre bindings abstractos,
+  args sobre primitivas (`i32<f32>` silencioso), método sobre parámetro
+  (UFCS), genéricos cross-módulo (el exportador zig filtra
+  `generics.len == 0`), where-clauses, turbofish, blanket impls:
+  `PHASE2_PROGRESS.md` §9.6. Fijado por 6 casos `generics/` y 17 casos
+  `ui/` — suite seed 148/148, zig 73/73, paridad de dumps 91/91, CI
+  verde en ambos compiladores.
 - **Traits y métodos con dispatch estático (seed + Zig, Fase 2.3)**: los
   bloques `trait`/`impl` pasan de inertes a funcionales en tres pasos
   (`13b2f5c` parseo, `96ade27` dispatch, `288b5ea` conformidad). El type
