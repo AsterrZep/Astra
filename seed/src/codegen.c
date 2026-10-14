@@ -937,6 +937,16 @@ static void emit_instructions(Codegen *cg,
             cg_writef(cg, "    {\n");
             cg_writef(cg, "        int _fn_slot = sp - 1 - %u;\n", argc);
             cg_writef(cg, "        AstraValue _fnv = frame[_fn_slot];\n");
+            /* The try context is a single global pair (codegen_runtime.h):
+             * a callee that uses `?` installs its own setjmp over the
+             * caller's, and if it returned normally the caller's next `?`
+             * would longjmp into that callee's popped frame. Save the
+             * enclosing context around every call so each frame's `?`
+             * lands on its own live setjmp, chain by chain. */
+            cg_writef(cg, "        jmp_buf _save_jmp;\n");
+            cg_writef(cg, "        int _save_active = astra_error_active;\n");
+            cg_writef(cg, "        AstraValue _save_value = astra_error_value;\n");
+            cg_writef(cg, "        memcpy(_save_jmp, astra_error_jmp, sizeof(jmp_buf));\n");
             cg_writef(cg, "        if (_fnv.tag == AST_FN && _fnv.as.fn_val && "
                      "_fnv.as.fn_val->param_count == 255) {\n");
             cg_writef(cg, "            frame[_fn_slot] = "
@@ -949,6 +959,9 @@ static void emit_instructions(Codegen *cg,
             cg_writef(cg, "        } else {\n");
             cg_writef(cg, "            astra_runtime_error(\"cannot call non-function value\");\n");
             cg_writef(cg, "        }\n");
+            cg_writef(cg, "        memcpy(astra_error_jmp, _save_jmp, sizeof(jmp_buf));\n");
+            cg_writef(cg, "        astra_error_active = _save_active;\n");
+            cg_writef(cg, "        astra_error_value = _save_value;\n");
             cg_writef(cg, "    }\n");
         } break;
 

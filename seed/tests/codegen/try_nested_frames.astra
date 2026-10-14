@@ -1,0 +1,21 @@
+// The C backend keeps one global try-context (codegen_runtime.h): every
+// ?-installing callee used to overwrite it and leave it pointing at its
+// own popped frame, so the caller's next `?` longjmp'd into dead stack —
+// a bogus "? operator requires..." error here while the VM printed nil.
+// OPCODE_CALL now saves/restores the context around each call, so
+// propagation chains through nested frames exactly like the VM.
+// EXPECT: nil
+fn inner(x: i32?) -> i32? {
+    let v = x?
+    some(v + 1)
+}
+
+fn outer(x: i32) -> i32? {
+    let a = inner(some(1))?
+    let b = inner(none)?
+    some(a + b)
+}
+
+fn main() {
+    print(outer(5))
+}
