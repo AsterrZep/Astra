@@ -1,0 +1,14 @@
+// A prefixed integer literal must carry at least one real digit: `0x`,
+// `0b7`, `0o8` and friends used to fold to 0 in the seed while zig
+// rejected them (audit §2.8). Both now reject with the canonical message
+// at the start of the literal.
+// EXPECT-ERROR: integer literal is out of range for i64
+fn main() {
+    print(0x);
+    print(0b);
+    print(0o);
+    print(0b7);
+    print(0o8);
+    print(0x_);
+    print(0xg);
+}

@@ -239,9 +239,11 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
             size_t len = l->pos - (size_t)(start - l->source);
             char *text = arena_strdup(l->arena, start, len);
             int64_t val = 0;
+            size_t digits = 0;
             for (size_t i = 2; i < len; i++) {
                 char c = text[i];
                 if (c == '_') continue;
+                digits++;
                 int64_t digit = (c >= '0' && c <= '9') ? (c - '0')
                               : (c >= 'a' && c <= 'f') ? (c - 'a' + 10)
                                                        : (c - 'A' + 10);
@@ -249,6 +251,11 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
                     return make_error(l, "integer literal is out of range for i64",
                                       start_line, start_col, start_offset);
             }
+            /* `0x` with no digits used to fold to 0 silently; zig rejects
+             * the literal with this message (audit §2.8). */
+            if (digits == 0)
+                return make_error(l, "integer literal is out of range for i64",
+                                  start_line, start_col, start_offset);
             Token t = make_token(l, TOKEN_INT_LIT, start_line, start_col,
                                  start_offset, text, len);
             t.literal.int_val = val;
@@ -265,13 +272,19 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
             size_t len = l->pos - (size_t)(start - l->source);
             char *text = arena_strdup(l->arena, start, len);
             int64_t val = 0;
+            size_t digits = 0;
             for (size_t i = 2; i < len; i++) {
                 char c = text[i];
                 if (c == '_') continue;
+                digits++;
                 if (!accumulate_digit(&val, c - '0', 2))
                     return make_error(l, "integer literal is out of range for i64",
                                       start_line, start_col, start_offset);
             }
+            /* `0b` with no digits used to fold to 0 silently (audit §2.8). */
+            if (digits == 0)
+                return make_error(l, "integer literal is out of range for i64",
+                                  start_line, start_col, start_offset);
             Token t = make_token(l, TOKEN_INT_LIT, start_line, start_col,
                                  start_offset, text, len);
             t.literal.int_val = val;
@@ -288,13 +301,19 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
             size_t len = l->pos - (size_t)(start - l->source);
             char *text = arena_strdup(l->arena, start, len);
             int64_t val = 0;
+            size_t digits = 0;
             for (size_t i = 2; i < len; i++) {
                 char c = text[i];
                 if (c == '_') continue;
+                digits++;
                 if (!accumulate_digit(&val, c - '0', 8))
                     return make_error(l, "integer literal is out of range for i64",
                                       start_line, start_col, start_offset);
             }
+            /* `0o` with no digits used to fold to 0 silently (audit §2.8). */
+            if (digits == 0)
+                return make_error(l, "integer literal is out of range for i64",
+                                  start_line, start_col, start_offset);
             Token t = make_token(l, TOKEN_INT_LIT, start_line, start_col,
                                  start_offset, text, len);
             t.literal.int_val = val;
@@ -338,9 +357,13 @@ static Token read_number(Lexer *l, uint32_t start_line, uint32_t start_col,
     if (is_float) {
         Token t = make_token(l, TOKEN_FLOAT_LIT, start_line, start_col,
                              start_offset, text, len);
-        char buf[64];
+        /* Strip underscores into a buffer sized to the literal. A fixed
+         * char buf[64] silently truncated any float literal longer than 63
+         * significant characters and strtod'd the wrong number — `0.5e-61`
+         * with padding read as a different value than zig's (audit §2.4). */
+        char *buf = arena_alloc(l->arena, len + 1, _Alignof(char));
         size_t j = 0;
-        for (size_t i = 0; i < len && j < sizeof(buf) - 1; i++) {
+        for (size_t i = 0; i < len; i++) {
             if (text[i] != '_') buf[j++] = text[i];
         }
         buf[j] = '\0';

@@ -1,0 +1,8 @@
+// A float literal longer than 63 significant characters used to be
+// truncated into a fixed char buf[64] before strtod, yielding a different
+// value than zig computed (audit §2.4). The underscore-padded literal
+// below is 74 digits wide: the number must come out intact.
+// EXPECT: 1.23457e+72
+fn main() {
+    print(1234567890123456789012345678901234567890123456789012345678901234567890123.5);
+}
