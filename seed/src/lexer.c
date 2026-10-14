@@ -449,7 +449,7 @@ static Token next_token(Lexer *l) {
             advance(l);
             return make_token(l, TOKEN_NEQ, start_line, start_col, start_off, "!=", 2);
         }
-        return make_token(l, TOKEN_NOT, start_line, start_col, start_off, "!", 1);
+        return make_token(l, TOKEN_BANG, start_line, start_col, start_off, "!", 1);
     case '<':
         if (next == '=') {
             advance(l);

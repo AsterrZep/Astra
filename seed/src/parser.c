@@ -625,6 +625,10 @@ static Node *parse_block_impl(Parser *p) {
  * ----------------------------------------------------------- */
 
 static Node *parse_if(Parser *p) {
+    /* Guarded entry (PARSER_MAX_DEPTH): the `else if` chain recurses through
+     * parse_if without any block or expression frame between links, so a
+     * 30k-long chain used to blow the C stack (audit §2.2). */
+    if (!parser_enter(p)) return NULL;
     SrcLoc loc = p->previous.loc;
     Node *n = node_new(p->arena, NODE_IF, loc);
     skip_newlines(p);
@@ -642,19 +646,25 @@ static Node *parse_if(Parser *p) {
             advance(p);
             /* Create an if node for else-if */
             Node *elif = parse_if(p);
-            /* Wrap in a block */
-            Node *blk = node_new(p->arena, NODE_BLOCK, elif->loc);
-            blk->as.block.stmts.data = arena_new_array(p->arena, Node *, 1);
-            blk->as.block.stmts.len = 1;
-            blk->as.block.stmts.cap = 1;
-            blk->as.block.stmts.data[0] = elif;
-            blk->as.block.last_expr = NULL;
-            n->as.if_expr.else_block = blk;
+            if (elif != NULL) {
+                /* Wrap in a block */
+                Node *blk = node_new(p->arena, NODE_BLOCK, elif->loc);
+                blk->as.block.stmts.data = arena_new_array(p->arena, Node *, 1);
+                blk->as.block.stmts.len = 1;
+                blk->as.block.stmts.cap = 1;
+                blk->as.block.stmts.data[0] = elif;
+                blk->as.block.last_expr = NULL;
+                n->as.if_expr.else_block = blk;
+            }
+            /* elif == NULL: depth breached and the parser is aborted; the
+             * else branch stays unset, which the driver never typechecks
+             * because the parse already failed. */
         } else {
             expect(p, TOKEN_LBRACE, "'{' for else body");
             n->as.if_expr.else_block = parse_block(p);
         }
     }
+    parser_leave(p);
     return n;
 }
 
@@ -830,8 +840,16 @@ static Node *parse_pattern_primary(Parser *p) {
 }
 
 static Node *parse_pattern(Parser *p) {
+    /* Guarded entry (PARSER_MAX_DEPTH): parse_pattern and
+     * parse_pattern_primary call each other through builtin-variant payloads
+     * (`some(some(...))`), a cycle the expression and block guards never see
+     * (audit §2.3). */
+    if (!parser_enter(p)) return NULL;
     Node *first = parse_pattern_primary(p);
-    if (!check(p, TOKEN_PIPE)) return first;
+    if (!check(p, TOKEN_PIPE)) {
+        parser_leave(p);
+        return first;
+    }
 
     Node *n = node_new(p->arena, NODE_PATTERN_OR, first->loc);
     n->as.pattern_or.alts.data = NULL;
@@ -847,6 +865,7 @@ static Node *parse_pattern(Parser *p) {
                        &n->as.pattern_or.alts.len,
                        &n->as.pattern_or.alts.cap, alt);
     }
+    parser_leave(p);
     return n;
 }
 

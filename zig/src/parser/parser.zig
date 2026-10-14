@@ -409,6 +409,11 @@ pub const Parser = struct {
     }
 
     fn parseIf(self: *Parser) anyerror!u32 {
+        // Guarded entry (PARSER_MAX_DEPTH): the `else if` chain recurses
+        // through parseIf without a block or expression frame between links
+        // (audit §2.2, seed parse_if does the same).
+        if (!self.enter()) return error.ParseError;
+        defer self.leave();
         const loc = self.previous.loc;
         self.skipNewlines();
         const saved = self.no_struct_lit;
@@ -1233,6 +1238,12 @@ pub const Parser = struct {
     // ── Patterns ──────────────────────────────────────────────────
 
     fn parsePattern(self: *Parser) anyerror!u32 {
+        // Guarded entry (PARSER_MAX_DEPTH): parsePattern and
+        // parsePatternPrimary call each other through builtin-variant
+        // payloads (`some(some(...))`) — a cycle the expression guard never
+        // sees (audit §2.3, seed parse_pattern does the same).
+        if (!self.enter()) return error.ParseError;
+        defer self.leave();
         const first = try self.parsePatternPrimary();
         if (!self.check(.pipe)) return first;
 

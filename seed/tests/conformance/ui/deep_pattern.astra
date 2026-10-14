@@ -1,0 +1,11 @@
+// parse_pattern and parse_pattern_primary call each other through
+// builtin-variant payloads: `some(some(...))` x300 blew the stack in
+// both compilers without the depth guard (audit §2.3).
+// EXPECT-ERROR: nesting too deep
+fn main() {
+    let x = some(some(1));
+    match x {
+        some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(some(0))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) => {}
+        none => {}
+    }
+}

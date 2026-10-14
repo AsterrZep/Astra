@@ -1,0 +1,13 @@
+// Unary logical not: `!` parses through the TOKEN_BANG nud that
+// operator_table.c declares (the lexer used to emit TOKEN_NOT, which
+// had no nud at all — print(!true) failed to parse; audit §2.1).
+// EXPECT: false
+// EXPECT: true
+// EXPECT: true
+// EXPECT: false
+fn main() {
+    print(!true);
+    print(!false);
+    print(!(1 == 2));
+    print(!(!false));
+}
