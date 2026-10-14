@@ -1,0 +1,26 @@
+// Phase 2.4 step 4: a bound checked at a call site. `i32` can never carry
+// an impl (the impl pass requires struct or enum), so the instantiation of
+// `accept` reports the missing trait. The struct literal below exercises
+// the same message for a nominal type with no impl.
+// EXPECT-ERROR: type parameter 'T' of 'accept' requires bound 'Show': type 'i32' does not implement trait 'Show'
+
+trait Show {
+}
+
+struct Point {
+    x: i32
+}
+
+struct Box<T: Show> {
+    v: T
+}
+
+fn accept<T: Show>(x: T) -> i32 {
+    1
+}
+
+fn main() {
+    print(accept(1))
+    let b = Box { v: Point { x: 2 } }
+    print(b.v.x)
+}

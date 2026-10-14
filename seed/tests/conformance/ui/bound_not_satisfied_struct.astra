@@ -1,0 +1,27 @@
+// Phase 2.4 step 4: a bound checked at struct-literal inference. `Point` is
+// a nominal type but declares no `impl Show for Point`, so the literal
+// `Box { v: Point { x: 2 } }` fails the bound of `Box<T: Show>`. The
+// annotation `Box2<i32>` exercises the same check in type position.
+// EXPECT-ERROR: type parameter 'T' of 'Box' requires bound 'Show': type 'Point' does not implement trait 'Show'
+
+trait Show {
+}
+
+struct Point {
+    x: i32
+}
+
+struct Box<T: Show> {
+    v: T
+}
+
+struct Box2<T: Show> {
+    v: T
+}
+
+fn main() {
+    let b = Box { v: Point { x: 2 } }
+    print(b.v.x)
+    let z: Box2<i32> = Box2 { v: 3 }
+    print(z.v)
+}

@@ -1,0 +1,16 @@
+// Phase 2.4 step 4: bounds name a known trait, checked eagerly when the
+// declaration binds its parameters — neither generic is ever instantiated,
+// so a lazy check at the use site would stay silent.
+// EXPECT-ERROR: unknown trait 'Missing'
+
+fn never<T: Missing>(x: T) -> i32 {
+    1
+}
+
+struct Wrap<T: Gone> {
+    v: T
+}
+
+fn main() {
+    print(0)
+}

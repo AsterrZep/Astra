@@ -336,6 +336,15 @@ typedef struct {
     size_t         method_count;
 } TraitInfo;
 
+/* One `impl T for X` block (Phase 2.4 step 4): bound checking asks this
+ * registry whether a concrete type carries the trait. The method table
+ * alone cannot answer — an impl of a method-less trait registers no method
+ * entry, so scanning it would report a satisfied bound as missing. */
+typedef struct {
+    InternedString type_name;
+    InternedString trait_name;
+} ImplRecord;
+
 typedef struct { InternedString name; Type *type; } GenericBinding;
 
 struct TypeChecker {
@@ -377,6 +386,9 @@ struct TypeChecker {
     TraitInfo  *traits;
     size_t     trait_count;
     size_t     trait_cap;
+    ImplRecord *impls;
+    size_t     impl_count;
+    size_t     impl_cap;
 };
 
 static void checker_add_variant(TypeChecker *tc, InternedString variant, Type *et) {
@@ -526,6 +538,46 @@ static TraitInfo *checker_find_trait(TypeChecker *tc, InternedString name) {
         if (string_eq(tc->traits[i].name, name)) return &tc->traits[i];
     }
     return NULL;
+}
+
+/* Phase 2.4 step 4: record `impl T for X` so bound checking can ask whether
+ * a concrete type carries a trait. Appended for every trait impl whose
+ * target resolved to a struct/enum — conformance errors do not remove it
+ * (the compile already failed, and a partial impl still names intent). */
+static void checker_add_impl(TypeChecker *tc, InternedString type_name,
+                             InternedString trait_name) {
+    if (tc->impl_count >= tc->impl_cap) {
+        size_t nc = tc->impl_cap == 0 ? 8 : tc->impl_cap * 2;
+        ImplRecord *nd = arena_new_array(tc->arena, ImplRecord, nc);
+        if (tc->impls) {
+            memcpy(nd, tc->impls, sizeof(ImplRecord) * tc->impl_count);
+        }
+        tc->impls = nd;
+        tc->impl_cap = nc;
+    }
+    tc->impls[tc->impl_count] = (ImplRecord){
+        .type_name  = type_name,
+        .trait_name = trait_name,
+    };
+    tc->impl_count++;
+}
+
+/* Does the concrete type `ty` carry an `impl T for ...` record? Nominal
+ * types answer by name; everything else cannot have an impl at all (the
+ * impl pass requires struct or enum), and TYPE_PARAM is abstract — the
+ * caller skips it before reaching here. */
+static bool impl_record_exists(TypeChecker *tc, Type *ty,
+                               InternedString trait_name) {
+    InternedString tn;
+    if (ty->kind == TYPE_STRUCT) tn = ty->as.struc.name;
+    else if (ty->kind == TYPE_ENUM) tn = ty->as.enumeration.name;
+    else return false;
+    for (size_t i = 0; i < tc->impl_count; i++) {
+        if (string_eq(tc->impls[i].type_name, tn) &&
+            string_eq(tc->impls[i].trait_name, trait_name))
+            return true;
+    }
+    return false;
 }
 
 /* Exact (type, method, trait) lookup for conformance — unlike
@@ -679,6 +731,19 @@ static size_t push_generic_bindings(TypeChecker *tc, NodeList *gens, Node *owner
     for (size_t i = 0; i < n; i++) {
         Node *tp = gens->data[i];
         if (!tp || tp->kind != NODE_TYPE_PARAM) continue;
+        /* Step 4: every bound must name a known trait. Checked at binding
+         * time (eager, like Rust): the trait pre-pass has run before any
+         * signature or field resolves, so the registry is complete. Only
+         * fn and struct declarations bind their parameters — enum/trait/
+         * impl generics stay inert until their own step. */
+        for (size_t j = 0; j < tp->as.type_param.bounds.len; j++) {
+            Node *b = tp->as.type_param.bounds.data[j];
+            if (!b || b->kind != NODE_TYPE_IDENT) continue;
+            InternedString bound = b->as.type_ident.name;
+            if (!checker_find_trait(tc, bound))
+                tc_error(tc, b->loc, "unknown trait '%.*s'",
+                         (int)bound.len, bound.str);
+        }
         Type *pt = type_new(tc->arena, TYPE_PARAM);
         pt->as.type_param.name  = tp->as.type_param.name;
         pt->as.type_param.owner = owner;
@@ -1358,6 +1423,52 @@ static Type *ensure_struct_instance(TypeChecker *tc, Node *decl,
     return st;
 }
 
+/* Phase 2.4 step 4: at each instantiation, every bound declared on the
+ * parameter list must hold for the concrete binding. Abstract bindings
+ * (TYPE_PARAM — a call inside another generic body) are skipped: bodies
+ * are checked once symbolically, so verifying them would need a
+ * per-instance re-check (documented gap, §9). A bound whose trait is
+ * unknown was already reported when the declaration bound its parameters
+ * (push_generic_bindings), so it is skipped here instead of duplicated. */
+static void check_generic_bounds(TypeChecker *tc, NodeList *generics,
+                                 GenericBinding *env, size_t env_n,
+                                 InternedString owner, SrcLoc loc) {
+    size_t n = generics->len < env_n ? generics->len : env_n;
+    for (size_t i = 0; i < n; i++) {
+        Type *ty = env[i].type;
+        if (!ty || ty->kind == TYPE_PARAM || ty->kind == TYPE_ERROR) continue;
+        Node *tp = generics->data[i];
+        if (!tp || tp->kind != NODE_TYPE_PARAM) continue;
+        for (size_t j = 0; j < tp->as.type_param.bounds.len; j++) {
+            Node *b = tp->as.type_param.bounds.data[j];
+            if (!b || b->kind != NODE_TYPE_IDENT) continue;
+            InternedString bound = b->as.type_ident.name;
+            if (!checker_find_trait(tc, bound)) continue;
+            if (impl_record_exists(tc, ty, bound)) continue;
+            char tbuf[512];
+            int tn;
+            if (ty->kind == TYPE_STRUCT)
+                tn = snprintf(tbuf, sizeof tbuf, "%.*s",
+                              (int)ty->as.struc.name.len, ty->as.struc.name.str);
+            else if (ty->kind == TYPE_ENUM)
+                tn = snprintf(tbuf, sizeof tbuf, "%.*s",
+                              (int)ty->as.enumeration.name.len,
+                              ty->as.enumeration.name.str);
+            else
+                tn = snprintf(tbuf, sizeof tbuf, "%s", type_kind_name(ty->kind));
+            if (tn < 0 || (size_t)tn >= sizeof tbuf) tn = (int)sizeof tbuf - 1;
+            tc_error(tc, loc,
+                     "type parameter '%.*s' of '%.*s' requires bound "
+                     "'%.*s': type '%.*s' does not implement trait '%.*s'",
+                     (int)tp->as.type_param.name.len, tp->as.type_param.name.str,
+                     (int)owner.len, owner.str,
+                     (int)bound.len, bound.str,
+                     tn, tbuf,
+                     (int)bound.len, bound.str);
+        }
+    }
+}
+
 /* `Name<args...>` in a type position (Phase 2.4 step 3b): resolve the
  * arguments, mangle them into the instance key and materialize the cached
  * struct type. The base must be a generic struct declaration; anything else
@@ -1395,6 +1506,8 @@ static Type *resolve_type_with_args(TypeChecker *tc, Node *node,
         env[i].type = resolve_type_node(tc, gargs->data[i]);
         if (type_is_error(env[i].type)) return env[i].type;
     }
+    check_generic_bounds(tc, &decl->as.struct_decl.generics, env, n,
+                         name, node->loc);
     return ensure_struct_instance(tc, decl, env, n, node->loc);
 }
 
@@ -1452,6 +1565,8 @@ static Type *typecheck_generic_call(TypeChecker *tc, Node *node, Symbol *csym) {
                                  (int)csym->name.len, csym->name.str);
         }
     }
+    check_generic_bounds(tc, &fn->as.fn_decl.generics, env, env_n,
+                         csym->name, node->loc);
 
     Type *ret = fn_type->as.fn.ret
         ? type_subst(tc, fn_type->as.fn.ret, fn, env, env_n)
@@ -1723,6 +1838,8 @@ static Type *typecheck_struct_lit(TypeChecker *tc, Node *node) {
                                      (int)name.len, name.str);
             }
         }
+        check_generic_bounds(tc, &decl->as.struct_decl.generics, env, n,
+                             name, node->loc);
         Type *inst = ensure_struct_instance(tc, decl, env, n, node->loc);
         if (type_is_error(inst)) return inst;
         st = inst;
@@ -2849,6 +2966,11 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
                              type_kind_name(recv->kind));
                     break;
                 }
+                /* Phase 2.4 step 4: bound checking consults this record;
+                 * the method table alone cannot (a method-less trait impl
+                 * registers no method entry). */
+                if (!inherent)
+                    checker_add_impl(tc, tname, impl->as.impl_decl.trait_name);
 
                 for (size_t j = 0; j < impl->as.impl_decl.items.len; j++) {
                     Node *fn = impl->as.impl_decl.items.data[j];

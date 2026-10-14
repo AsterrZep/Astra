@@ -154,6 +154,12 @@ fn isErrorType(t: *const Type) bool {
 /// resolves to the enclosing generic fn's placeholder.
 const GenericBinding = struct { name: []const u8, type_: *Type };
 
+/// One `impl T for X` block (Phase 2.4 step 4): bound checking asks this
+/// registry whether a concrete type carries the trait. The method table
+/// alone cannot answer — an impl of a method-less trait registers no
+/// method entry, so scanning it would report a satisfied bound as missing.
+const ImplRecord = struct { type_name: []const u8, trait_name: []const u8 };
+
 pub const TypeChecker = struct {
     a: std.mem.Allocator,
     filename: []const u8,
@@ -167,6 +173,9 @@ pub const TypeChecker = struct {
     variants: std.ArrayListUnmanaged(Variant) = .empty,
     methods: std.ArrayListUnmanaged(Method) = .empty,
     traits: std.ArrayListUnmanaged(TraitInfo) = .empty,
+    /// Every `impl T for X` block (Phase 2.4 step 4): bound checking asks
+    /// this registry whether a concrete type carries the trait.
+    impls: std.ArrayListUnmanaged(ImplRecord) = .empty,
     generic_stack: std.ArrayListUnmanaged(GenericBinding) = .empty,
     /// The generic fn whose body is being checked (Phase 2.4 step 2b):
     /// call sites whose bindings still mention its parameters are recorded
@@ -425,6 +434,17 @@ pub const TypeChecker = struct {
         const mark = self.generic_stack.items.len;
         for (self.tree.extraSlice(gens)) |g| {
             const tp = self.tree.node(g).type_param;
+            // Step 4: every bound must name a known trait. Checked at
+            // binding time (eager, like Rust): the trait pre-pass has run
+            // before any signature or field resolves, so the registry is
+            // complete. Only fn and struct declarations bind their
+            // parameters — enum/trait/impl generics stay inert until their
+            // own step.
+            for (self.tree.extraSlice(tp.bounds)) |bi| {
+                const bound = self.tree.node(bi).type_ident.name;
+                if (self.findTrait(bound) == null)
+                    self.errFmt(self.tree.loc(bi), "unknown trait '{s}'", .{bound});
+            }
             const pt = self.pool.paramType(tp.name, owner) catch @panic("OOM");
             self.generic_stack.append(self.a, .{ .name = tp.name, .type_ = pt }) catch @panic("OOM");
         }
@@ -622,6 +642,7 @@ pub const TypeChecker = struct {
             env[k] = .{ .name = tp.name, .type_ = self.resolveTypeNode(gargs[k]) };
             if (isErrorType(env[k].type_.?)) return env[k].type_.?;
         }
+        self.checkGenericBounds(params, env, name, loc);
         return self.ensureStructInstance(decl, env, loc);
     }
 
@@ -660,6 +681,47 @@ pub const TypeChecker = struct {
         }
         st.fields = buf;
         return st;
+    }
+
+    /// Does the concrete type `ty` carry an `impl T for ...` record?
+    /// Nominal types answer by name; everything else cannot have an impl
+    /// at all (the impl pass requires struct or enum), and abstract
+    /// `.param` bindings are skipped by the caller.
+    fn implRecordExists(self: *TypeChecker, ty: *Type, trait_name: []const u8) bool {
+        if (ty.kind != .struct_ and ty.kind != .enum_) return false;
+        for (self.impls.items) |r| {
+            if (std.mem.eql(u8, r.type_name, ty.name) and
+                std.mem.eql(u8, r.trait_name, trait_name)) return true;
+        }
+        return false;
+    }
+
+    /// Phase 2.4 step 4: at each instantiation, every bound declared on the
+    /// parameter list must hold for the concrete binding. Abstract bindings
+    /// (`.param` — a call inside another generic body) are skipped: bodies
+    /// are checked once symbolically, so verifying them would need a
+    /// per-instance re-check (documented gap, §9). A bound whose trait is
+    /// unknown was already reported when the declaration bound its
+    /// parameters (pushGenericBindings), so it is skipped here instead of
+    /// duplicated.
+    fn checkGenericBounds(self: *TypeChecker, generics: []const u32, env: []Binding, owner: []const u8, loc: lexer.Loc) void {
+        const n = @min(generics.len, env.len);
+        for (generics[0..n], env[0..n]) |g, b| {
+            const ty = b.type_ orelse continue;
+            if (ty.kind == .param or isErrorType(ty)) continue;
+            const tp = self.tree.node(g).type_param;
+            for (self.tree.extraSlice(tp.bounds)) |bi| {
+                const bound = self.tree.node(bi).type_ident.name;
+                if (self.findTrait(bound) == null) continue;
+                if (self.implRecordExists(ty, bound)) continue;
+                const tname: []const u8 = if (ty.kind == .struct_ or ty.kind == .enum_)
+                    ty.name
+                else
+                    ty.kind.name();
+                self.errFmt(loc, "type parameter '{s}' of '{s}' requires bound '{s}': type '{s}' does not implement trait '{s}'",
+                    .{ tp.name, owner, bound, tname, bound });
+            }
+        }
     }
 
     /// Replace the type parameters of `fn_idx` inside `t` with their binding
@@ -836,6 +898,7 @@ pub const TypeChecker = struct {
                 return self.errorType(loc, "cannot infer type parameter '{s}' of '{s}'", .{ b.name, fname });
             }
         }
+        self.checkGenericBounds(generics, env, fname, loc);
 
         const ret: *Type = if (fn_type.ret) |r|
             self.typeSubst(r, fn_idx, env) orelse self.newType(.void)
@@ -1077,6 +1140,7 @@ pub const TypeChecker = struct {
                 if (b.type_ == null)
                     return self.errorType(loc, "cannot infer type parameter '{s}' of '{s}'", .{ b.name, name });
             }
+            self.checkGenericBounds(self.tree.extraSlice(self.tree.node(decl).struct_decl.generics), env, name, loc);
             // NOTE: `sym` must not be used after this point — inserting the
             // instance may grow the symbol array and invalidate the pointer.
             const inst = self.ensureStructInstance(decl, env, loc);
@@ -1859,6 +1923,12 @@ pub const TypeChecker = struct {
         }
         const inherent = im.trait_name == null;
         const trait_name = im.trait_name orelse "";
+        // Phase 2.4 step 4: bound checking consults this record; the method
+        // table alone cannot (a method-less trait impl registers no method
+        // entry).
+        if (im.trait_name) |trn|
+            self.impls.append(self.a, .{ .type_name = im.type_name, .trait_name = trn })
+                catch @panic("OOM");
         for (self.tree.extraSlice(im.items)) |fidx| {
             if (std.meta.activeTag(self.tree.node(fidx)) != .fn_decl) continue;
             const floc = self.tree.loc(fidx);

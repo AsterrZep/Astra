@@ -1,0 +1,33 @@
+// Phase 2.4 step 4 (both compilers): satisfied bounds. A concrete binding
+// passes the check when an `impl T for X` record names the trait — even a
+// method-less one, which registers no method entry — and the instantiation
+// proceeds normally.
+// EXPECT: 1
+// EXPECT: 1
+// EXPECT: point
+
+trait Show {
+}
+
+struct Point {
+    x: i32
+}
+
+impl Show for Point {
+}
+
+struct Box<T: Show> {
+    v: T
+}
+
+fn accept<T: Show>(x: T) -> i32 {
+    1
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    let b = Box { v: p }
+    print(accept(p))
+    print(b.v.x)
+    print("point")
+}
