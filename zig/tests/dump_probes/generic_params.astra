@@ -1,5 +1,7 @@
 // Parse-only probe: generic parameter lists on every declaration site, plus
-// type-position arguments (still discarded by parse_type until step 4).
+// type-position arguments — real AST nodes since step 3a, with the closing
+// `>>` of a nested argument list lexed as two `>` closers. The checker still
+// resolves only the base name until step 3b.
 // Not run by the conformance suite — dump_parity.sh sweeps this file.
 pub fn pub_id<T>(x: T) -> T { x }
 fn two<A, B>(a: A, b: B) -> A { a }
@@ -10,4 +12,6 @@ trait Show { fn show(self); }
 trait Named<T> { fn name(self); }
 impl<T> Holder { fn ping(self) -> i32 { 1 } }
 fn annotated(x: Box<i32>) -> i32 { 0 }
+fn nested(x: Vec<Vec<i32>>) -> i32 { 0 }
+fn triple(x: Map<i32, Vec<string>>) -> i32 { 0 }
 fn main() { print(1) }

@@ -561,6 +561,7 @@ typedef struct {
 /* Type nodes */
 typedef struct {
     InternedString name;
+    NodeList        generics; /* type arguments of `Box<i32>`, empty without `<...>` */
 } TypeIdent;
 
 typedef struct {

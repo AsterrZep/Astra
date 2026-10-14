@@ -201,6 +201,12 @@ pub const Parser = struct {
             return self.failFmt("expected {s}", .{tag.name()});
         }
         self.advance();
+        // A `>` closed a `<...>` list: drop out of generic mode so a later
+        // `>>` lexes as a shift again (paired with the increments in
+        // parseGenericParams and parseType).
+        if (tag == .gt and self.tokenizer.gt_depth > 0) {
+            self.tokenizer.gt_depth -= 1;
+        }
     }
 
     /// Consume `;` and newlines. Records whether a genuine `;` was seen so the
@@ -491,7 +497,9 @@ pub const Parser = struct {
     fn parseGenericParams(self: *Parser) anyerror!ast.List {
         var params: std.ArrayListUnmanaged(u32) = .empty;
         defer params.deinit(self.allocator);
-        if (!self.match(.lt)) return self.tree.addExtra(@as([]const u32, &.{}));
+        if (!self.check(.lt)) return self.tree.addExtra(@as([]const u32, &.{}));
+        self.tokenizer.gt_depth += 1;
+        self.advance();
         var count: usize = 0;
         while (true) {
             // Matches the typechecker's generic-stack cap: the check side
@@ -509,7 +517,7 @@ pub const Parser = struct {
                 while (true) {
                     try self.expect(.identifier);
                     const b = self.previous.text;
-                    try bounds.append(self.allocator, try self.add(.{ .type_ident = b }, self.previous.loc));
+                    try bounds.append(self.allocator, try self.add(.{ .type_ident = .{ .name = b } }, self.previous.loc));
                     if (!self.match(.plus)) break;
                 }
             }
@@ -639,7 +647,7 @@ pub const Parser = struct {
                                 ftype = try self.parseType();
                             } else {
                                 // The identifier *was* the type (`Paso(i32)`).
-                                ftype = try self.add(.{ .type_ident = maybe_name }, self.previous.loc);
+                                ftype = try self.add(.{ .type_ident = .{ .name = maybe_name } }, self.previous.loc);
                             }
                         } else {
                             ftype = try self.parseType();
@@ -852,22 +860,44 @@ pub const Parser = struct {
     // ── Types ─────────────────────────────────────────────────────
 
     fn parseType(self: *Parser) anyerror!u32 {
+        // Guarded entry (PARSER_MAX_DEPTH): with real type arguments,
+        // `Vec<Vec<Vec<...>>>` recurses once per nesting level, where the old
+        // skip loop was iterative. The seed guards `parse_type` the same way.
+        if (!self.enter()) return error.ParseError;
+        defer self.leave();
+        return self.parseTypeImpl();
+    }
+
+    fn parseTypeImpl(self: *Parser) anyerror!u32 {
         var n: u32 = undefined;
         if (self.check(.identifier)) {
             self.advance();
-            n = try self.add(.{ .type_ident = self.previous.text }, self.previous.loc);
-            // Generic arguments are parsed and discarded for now: the seed does
-            // the same (`Result<T, E>` keeps only the base name).
+            const loc = self.previous.loc;
+            const name = self.previous.text;
+            var args: std.ArrayListUnmanaged(u32) = .empty;
+            defer args.deinit(self.allocator);
+            // Type arguments are real nodes now (Phase 2.4 step 3a): the
+            // checker still resolves only the base name until step 3b, but
+            // they reach the AST dump and survive a closing `>>`.
             if (self.check(.lt)) {
+                self.tokenizer.gt_depth += 1;
                 self.advance();
-                var depth: i32 = 1;
-                while (depth > 0 and !self.check(.eof)) {
-                    if (self.check(.lt)) depth += 1;
-                    if (self.check(.gt)) depth -= 1;
-                    if (depth > 0) self.advance();
+                var count: usize = 0;
+                while (true) {
+                    // Mirrors the seed: an argument list longer than the
+                    // typechecker's binding cap would be dead weight.
+                    if (count >= 32) {
+                        self.report("too many type arguments (max 32)");
+                        break;
+                    }
+                    try args.append(self.allocator, try self.parseType());
+                    count += 1;
+                    if (!self.match(.comma)) break;
                 }
-                if (depth == 0) self.advance();
+                try self.expect(.gt);
             }
+            const glist = try self.tree.addExtra(@as([]const u32, args.items));
+            n = try self.add(.{ .type_ident = .{ .name = name, .generics = glist } }, loc);
         } else if (self.match(.lbracket)) {
             const loc = self.previous.loc;
             const elem = try self.parseType();

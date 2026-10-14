@@ -256,6 +256,13 @@ pub const Tokenizer = struct {
     col: u32,
     allocator: std.mem.Allocator,
     cached: ?Token = null,
+    /// `>>` inside a generic context (`Vec<Vec<i32>>`) must lex as two `>`
+    /// closers, not as a shift. The parser bumps gt_depth while it consumes
+    /// a `<...>` list; a SHR scanned at depth > 0 emits the first `>` and
+    /// parks the second one in `owed` (Phase 2.4 step 3a, mirrors
+    /// `Lexer.owed_gt` in the seed).
+    gt_depth: u32 = 0,
+    owed: ?Token = null,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Tokenizer {
         return .{
@@ -314,6 +321,12 @@ pub const Tokenizer = struct {
     }
 
     fn scan(self: *Tokenizer) Token {
+        // A queued second `>` from a split `>>` outranks everything: it
+        // belongs to a `<...>` list the parser is still inside.
+        if (self.owed) |t| {
+            self.owed = null;
+            return t;
+        }
         self.skipWhitespace();
         if (self.atEnd()) {
             return .{ .tag = .eof, .loc = .{ .start = self.pos, .end = self.pos, .line = self.line, .col = self.col } };
@@ -509,6 +522,21 @@ pub const Tokenizer = struct {
             } else .lt,
             '>' => if (two == '>') blk: {
                 _ = self.advance();
+                if (self.gt_depth > 0) {
+                    // Inside `<...>` the two characters are two closers, not
+                    // a shift: hand out the first `>` now and queue the
+                    // second one (Phase 2.4 step 3a).
+                    self.owed = .{
+                        .tag = .gt,
+                        .loc = .{ .start = start_off + 1, .end = start_off + 2, .line = line, .col = col + 1 },
+                        .text = self.source[start_off + 1 .. start_off + 2],
+                    };
+                    return .{
+                        .tag = .gt,
+                        .loc = .{ .start = start_off, .end = start_off + 1, .line = line, .col = col },
+                        .text = self.source[start_off .. start_off + 1],
+                    };
+                }
                 break :blk .shr;
             } else if (two == '=') blk: {
                 _ = self.advance();

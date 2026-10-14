@@ -426,7 +426,10 @@ pub const TypeChecker = struct {
         const i = idx orelse return self.newType(.unknown);
         const loc = self.tree.loc(i);
         return switch (self.tree.node(i)) {
-            .type_ident => |name| blk: {
+            .type_ident => |t| blk: {
+                // Type arguments ride along in `t.generics` but only the base
+                // name resolves until Phase 2.4 step 3b.
+                const name = t.name;
                 if (std.mem.eql(u8, name, "void")) break :blk self.newType(.void);
                 if (std.mem.eql(u8, name, "bool")) break :blk self.newType(.bool_);
                 if (std.mem.eql(u8, name, "i32")) break :blk self.newType(.int);
@@ -1698,7 +1701,7 @@ pub const TypeChecker = struct {
         const im = self.tree.node(impl_idx).impl_decl;
         // Phase 2.4 step 1: a block with `<...>` stays inert.
         if (im.generics.len > 0) return;
-        const recv_node = self.tree.addNode(.{ .type_ident = im.type_name }, self.tree.loc(impl_idx)) catch @panic("OOM");
+        const recv_node = self.tree.addNode(.{ .type_ident = .{ .name = im.type_name } }, self.tree.loc(impl_idx)) catch @panic("OOM");
         const recv = self.resolveTypeNode(recv_node);
         if (isErrorType(recv)) return;
         if (recv.kind != .struct_ and recv.kind != .enum_) {
@@ -1722,7 +1725,7 @@ pub const TypeChecker = struct {
                     self.errFmt(floc, "type of 'self' must be '{s}'", .{im.type_name});
                 }
             } else {
-                const syn = self.tree.addNode(.{ .type_ident = im.type_name }, floc) catch @panic("OOM");
+                const syn = self.tree.addNode(.{ .type_ident = .{ .name = im.type_name } }, floc) catch @panic("OOM");
                 self.tree.nodes.items[params[0]].param.type_node = syn;
             }
             // Signature with the receiver removed from the call-site arity

@@ -1,0 +1,17 @@
+// Phase 2.4 step 3a: a `<...>` list leaves gt_depth balanced, so a shift
+// right later in the same file still lexes as `>>` — before the generic
+// declaration, in its body, and after it.
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn shift_inside() -> i32 {
+    9 >> 2
+}
+
+print(id(7))
+// EXPECT: 7
+print(shift_inside())
+// EXPECT: 2
+print(8 >> 1 >> 1)
+// EXPECT: 2

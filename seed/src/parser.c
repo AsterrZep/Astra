@@ -114,6 +114,11 @@ static bool match(Parser *p, TokenKind kind) {
 static void expect(Parser *p, TokenKind kind, const char *msg) {
     if (check(p, kind)) {
         advance(p);
+        /* A `>` closed a `<...>` list: drop out of generic mode so a later
+         * `>>` lexes as a shift again (paired with the increments in
+         * parse_generic_params and parse_type). */
+        if (kind == TOKEN_GT && p->lexer->gt_depth > 0)
+            p->lexer->gt_depth--;
     } else {
         fprintf(stderr, "error:");
         srcloc_print(p->current.loc);
@@ -164,6 +169,7 @@ static Node *parse_declaration(Parser *p);
 static Node *parse_block(Parser *p);
 static Node *parse_block_impl(Parser *p);
 static Node *parse_type(Parser *p);
+static Node *parse_type_impl(Parser *p);
 static Node *parse_pattern(Parser *p);
 
 /* -----------------------------------------------------------
@@ -960,7 +966,9 @@ static void parse_generic_params(Parser *p, NodeList *out) {
     out->data = NULL;
     out->len  = 0;
     out->cap  = 0;
-    if (!match(p, TOKEN_LT)) return;
+    if (!check(p, TOKEN_LT)) return;
+    p->lexer->gt_depth++;
+    advance(p);
     size_t count = 0;
     do {
         /* Matches the typechecker's generic-stack cap: the check side keeps
@@ -1604,23 +1612,46 @@ static Node *parse_from(Parser *p) {
  * Type parsing
  * ----------------------------------------------------------- */
 
+/* Guarded entry point for types (see PARSER_MAX_DEPTH): with real type
+ * arguments, `Vec<Vec<Vec<...>>>` recurses once per nesting level, where the
+ * old skip loop was iterative. */
 static Node *parse_type(Parser *p) {
+    if (!parser_enter(p)) return NULL;
+    Node *n = parse_type_impl(p);
+    parser_leave(p);
+    return n;
+}
+
+static Node *parse_type_impl(Parser *p) {
     Node *n = NULL;
     if (check(p, TOKEN_IDENT)) {
         advance(p);
         n = node_new(p->arena, NODE_TYPE_IDENT, p->previous.loc);
         n->as.type_ident.name = p->previous.text;
-        /* Handle generic type parameters: Result<T, E>, Option<T> */
+        n->as.type_ident.generics.data = NULL;
+        n->as.type_ident.generics.len  = 0;
+        n->as.type_ident.generics.cap  = 0;
+        /* Type arguments: `Result<T, E>`, `Box<Vec<i32>>`. The checker still
+         * resolves only the base name until step 3b, but the arguments are
+         * real nodes now — they reach the AST dump and survive `>>`. */
         if (check(p, TOKEN_LT)) {
-            advance(p); /* consume < */
-            /* For now, skip generic arguments until > */
-            int depth = 1;
-            while (depth > 0 && !check(p, TOKEN_EOF)) {
-                if (check(p, TOKEN_LT)) depth++;
-                if (check(p, TOKEN_GT)) depth--;
-                if (depth > 0) advance(p);
-            }
-            if (depth == 0) advance(p); /* consume > */
+            p->lexer->gt_depth++;
+            advance(p);
+            size_t count = 0;
+            do {
+                if (count >= 32) {
+                    parser_error(p, "too many type arguments (max 32)");
+                    break;
+                }
+                Node *arg = parse_type(p);
+                if (arg) {
+                    node_list_push(p, &n->as.type_ident.generics.data,
+                                   &n->as.type_ident.generics.len,
+                                   &n->as.type_ident.generics.cap, arg);
+                }
+                count++;
+            } while (match(p, TOKEN_COMMA));
+            expect(p, TOKEN_GT, "'>'");
         }
     } else if (match(p, TOKEN_LBRACKET)) {
         SrcLoc loc = p->previous.loc;

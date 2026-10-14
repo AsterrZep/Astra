@@ -1,0 +1,10 @@
+// Type arguments parse into the AST (Phase 2.4 step 3a) but the checker
+// still resolves only the base name. `Vec` is never declared, so the message
+// stays stable after step 3b; the nested `>>` must have lexed as two `>`
+// closers for this error to appear at all (the old skip loop swallowed the
+// rest of the file here).
+// EXPECT-ERROR: unknown type 'Vec'
+let x: Vec<Vec<i32>> = nil;
+fn main() {
+    print(x)
+}

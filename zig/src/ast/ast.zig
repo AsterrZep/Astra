@@ -139,6 +139,13 @@ pub const VariantBind = struct { variant: u32, bindings: List };
 pub const BuiltinVariant = struct { kind: BuiltinKind, payload: ?u32 };
 pub const TypeArray = struct { elem: u32, size: ?u32 };
 pub const TypeFn = struct { params: List, ret: ?u32 };
+/// A named type with its arguments: `Box<i32>` keeps the base name and a
+/// (possibly empty) argument list. The checker resolves only the base name
+/// until Phase 2.4 step 3b, but the arguments are real nodes (step 3a).
+pub const TypeIdent = struct {
+    name: []const u8,
+    generics: List = .{ .start = 0, .len = 0 },
+};
 /// One `<T: Bound + Bound>` parameter. Phase 2.4 step 1: parsed inert on
 /// fn/struct/enum/trait/impl declarations; inference lands with step 2.
 pub const TypeParam = struct { name: []const u8, bounds: List };
@@ -200,7 +207,7 @@ pub const Node = union(Tag) {
     pattern_variant_bind: VariantBind,
     pattern_builtin_variant: BuiltinVariant,
     pattern_or: List,
-    type_ident: []const u8,
+    type_ident: TypeIdent,
     type_optional: u32,
     type_array: TypeArray,
     type_fn: TypeFn,
@@ -278,8 +285,8 @@ pub const Tree = struct {
             try indent(writer, depth + 1);
             try writer.print("TypeParam({s}", .{tp.name});
             for (self.extraSlice(tp.bounds), 0..) |b, bi| {
-                if (bi == 0) try writer.print(": {s}", .{self.nodes.items[b].type_ident})
-                else try writer.print(" + {s}", .{self.nodes.items[b].type_ident});
+                if (bi == 0) try writer.print(": {s}", .{self.nodes.items[b].type_ident.name})
+                else try writer.print(" + {s}", .{self.nodes.items[b].type_ident.name});
             }
             try writer.writeAll(")\n");
         }
@@ -545,7 +552,15 @@ pub const Tree = struct {
                 try writer.print("PatternOr({d})\n", .{l.len});
                 for (self.extraSlice(l)) |c| try self.dumpNode(writer, c, depth + 1);
             },
-            .type_ident => |name| try writer.print("TypeIdent({s})\n", .{name}),
+            .type_ident => |t| {
+                try writer.print("TypeIdent({s})\n", .{t.name});
+                const args = self.extraSlice(t.generics);
+                if (args.len > 0) {
+                    try indent(writer, depth + 1);
+                    try writer.writeAll("TypeArgs\n");
+                    for (args) |a| try self.dumpNode(writer, a, depth + 2);
+                }
+            },
             .type_optional => |inner| {
                 try writer.writeAll("TypeOptional\n");
                 try self.dumpNode(writer, inner, depth + 1);
@@ -565,8 +580,8 @@ pub const Tree = struct {
             .type_param => |tp| {
                 try writer.print("TypeParam({s}", .{tp.name});
                 for (self.extraSlice(tp.bounds), 0..) |b, bi| {
-                    if (bi == 0) try writer.print(": {s}", .{self.nodes.items[b].type_ident})
-                    else try writer.print(" + {s}", .{self.nodes.items[b].type_ident});
+                    if (bi == 0) try writer.print(": {s}", .{self.nodes.items[b].type_ident.name})
+                    else try writer.print(" + {s}", .{self.nodes.items[b].type_ident.name});
                 }
                 try writer.writeAll(")\n");
             },

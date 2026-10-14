@@ -50,6 +50,15 @@ struct Lexer {
     Arena        *arena;
     Token         cached;
     bool          has_cached;
+    /* `>>` inside a generic context (`Vec<Vec<i32>>`) must lex as two `>`
+     * closers, not as a shift. The parser bumps gt_depth while it consumes a
+     * `<...>` list; a SHR scanned at depth > 0 emits the first `>` and parks
+     * the second one in owed_gt for the next call (Phase 2.4 step 3a). */
+    unsigned      gt_depth;
+    bool          owed_gt;
+    uint32_t      owed_line;
+    uint32_t      owed_col;
+    uint32_t      owed_off;
 };
 
 /* -----------------------------------------------------------

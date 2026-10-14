@@ -430,6 +430,12 @@ static void dump_node(Node *node, int indent) {
         printf("TypeIdent(%.*s)\n",
                (int)node->as.type_ident.name.len,
                node->as.type_ident.name.str);
+        if (node->as.type_ident.generics.len > 0) {
+            indent_print(indent + 1);
+            printf("TypeArgs\n");
+            for (size_t i = 0; i < node->as.type_ident.generics.len; i++)
+                dump_node(node->as.type_ident.generics.data[i], indent + 2);
+        }
         break;
     case NODE_TYPE_OPTIONAL:
         printf("TypeOptional\n");

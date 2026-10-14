@@ -383,6 +383,14 @@ static Token read_identifier(Lexer *l, uint32_t start_line, uint32_t start_col,
 }
 
 static Token next_token(Lexer *l) {
+    /* A queued second `>` from a split `>>` outranks everything: it belongs
+     * to a `<...>` list the parser is still inside. */
+    if (l->owed_gt) {
+        l->owed_gt = false;
+        return make_token(l, TOKEN_GT, l->owed_line, l->owed_col,
+                          (uint32_t)l->owed_off, l->source + l->owed_off, 1);
+    }
+
     skip_whitespace(l);
 
     uint32_t start_line = l->line;
@@ -458,6 +466,18 @@ static Token next_token(Lexer *l) {
             return make_token(l, TOKEN_GE, start_line, start_col, start_off, ">=", 2);
         }
         if (next == '>') {
+            /* Inside `<...>` the two characters are two closers, not a
+             * shift: hand out the first `>` now and queue the second one
+             * so the pending `>>` becomes `> >` (Phase 2.4 step 3a). */
+            if (l->gt_depth > 0) {
+                advance(l);
+                l->owed_gt   = true;
+                l->owed_line = start_line;
+                l->owed_col  = start_col + 1;
+                l->owed_off  = start_off + 1;
+                return make_token(l, TOKEN_GT, start_line, start_col, start_off,
+                                  l->source + start_off, 1);
+            }
             advance(l);
             return make_token(l, TOKEN_SHR, start_line, start_col, start_off, ">>", 2);
         }
@@ -532,6 +552,11 @@ Lexer *lexer_create(const char *filename, const char *source, size_t source_len,
     l->strings   = strings;
     l->arena     = arena;
     l->has_cached = false;
+    l->gt_depth   = 0;
+    l->owed_gt    = false;
+    l->owed_line  = 0;
+    l->owed_col   = 0;
+    l->owed_off   = 0;
     return l;
 }
 
