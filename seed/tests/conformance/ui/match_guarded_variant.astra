@@ -1,0 +1,13 @@
+// A guarded arm only covers its variant when the guard holds at run
+// time, so it must not satisfy exhaustiveness: with `E.B` covered only
+// by `if flag`, the match fell through at run time and returned nil
+// under an i32 promise, byte-identically in both compilers (audit §3.4).
+// EXPECT-ERROR: non-exhaustive match: missing variant 'E.B'
+enum E { A B }
+fn f(e: E, flag: bool) -> i32 {
+    return match e {
+        E.A => 1,
+        E.B if flag => 2
+    }
+}
+fn main() { print(f(E.B, false)) }

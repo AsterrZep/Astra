@@ -1,0 +1,10 @@
+// An optional target must cover the absence too: `match x { some(v) =>
+// v }` on x = none fell through and returned nil under an i32 promise
+// (audit §3.4). Both compilers used to accept this.
+// EXPECT-ERROR: non-exhaustive match: missing 'none' arm
+fn f(x: i32?) -> i32 {
+    return match x {
+        some(v) => v
+    }
+}
+fn main() { print(f(none)) }

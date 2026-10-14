@@ -1358,7 +1358,14 @@ pub const TypeChecker = struct {
                 }
             },
             .pattern_builtin_variant => |bv| {
-                if (bv.kind == .none) return;
+                if (bv.kind == .none) {
+                    // none covers the absence slot of an optional target
+                    // (audit §3.4, mirror of the seed).
+                    if (target.kind == .optional and covered.len > 1) covered[1] = true;
+                    return;
+                }
+                // some/ok/err carry the payload tag (slot 0 of an optional).
+                if (target.kind == .optional and covered.len > 0) covered[0] = true;
                 // ok/err/some bind against the payload type: the
                 // constructors return optional(inner), so passing `target`
                 // down typed the binding `optional` and rejected literal
@@ -1379,7 +1386,16 @@ pub const TypeChecker = struct {
         const target = self.checkNode(m.target);
         if (isErrorType(target)) return target;
 
-        const covered_n: usize = if (target.kind == .enum_) target.variants.len else 0;
+        // Option/Result static type is .optional: slot 0 = payload tag
+        // (some/ok/err), slot 1 = none. Without this the check never ran
+        // for optionals and `match x { some(v) => v }` returned nil under
+        // an i32 promise (audit §3.4, mirror of the seed).
+        const covered_n: usize = if (target.kind == .enum_)
+            target.variants.len
+        else if (target.kind == .optional)
+            2
+        else
+            0;
         const covered = self.a.alloc(bool, if (covered_n > 0) covered_n else 1) catch @panic("OOM");
         @memset(covered, false);
         var has_wildcard = false;
@@ -1388,7 +1404,17 @@ pub const TypeChecker = struct {
         for (self.tree.extraSlice(m.arms)) |arm_idx| {
             const arm = self.tree.node(arm_idx).match_arm;
             self.pushScope();
-            self.checkPattern(arm.pattern, target, &has_wildcard, covered[0..covered_n]);
+            // A guarded arm only covers its variant when the guard holds at
+            // run time (audit §3.4): it must neither mark coverage nor
+            // waive exhaustiveness — `E.B if flag =>` alone used to accept
+            // a match that printed nil under an i32 promise.
+            var guard_wildcard = false;
+            const wc: *bool = if (arm.guard != null) &guard_wildcard else &has_wildcard;
+            const cov: []bool = if (arm.guard != null) covered[0..0] else covered[0..covered_n];
+            self.checkPattern(arm.pattern, target, wc, cov);
+            // An unguarded bare binding matches every value, like `_`.
+            if (arm.guard == null and isTag(self.tree.node(arm.pattern), .pattern_bind))
+                has_wildcard = true;
             if (arm.guard) |g| {
                 const gt = self.checkNode(g);
                 if (!isErrorType(gt) and gt.kind != .bool_) {
@@ -1406,12 +1432,20 @@ pub const TypeChecker = struct {
             self.popScope();
         }
 
-        if (target.kind == .enum_ and !has_wildcard) {
+        // Exhaustiveness (mirror of the seed): an enum match without a
+        // wildcard covers every variant; an optional match must cover the
+        // payload tag (some/ok/err) and none — otherwise the match can
+        // fall through and yield nil under whatever type the context
+        // promised (audit §3.4).
+        if (!has_wildcard and target.kind == .enum_) {
             for (covered[0..covered_n], 0..) |c, v| {
                 if (!c) {
                     self.errFmt(loc, "non-exhaustive match: missing variant '{s}.{s}'", .{ target.name, target.variants[v] });
                 }
             }
+        } else if (!has_wildcard and target.kind == .optional) {
+            if (!covered[0]) self.errFmt(loc, "non-exhaustive match: missing payload arm (some/ok/err)", .{});
+            if (!covered[1]) self.errFmt(loc, "non-exhaustive match: missing 'none' arm", .{});
         }
 
         return result_type orelse self.newType(.void);

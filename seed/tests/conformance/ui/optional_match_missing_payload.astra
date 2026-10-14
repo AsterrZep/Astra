@@ -1,0 +1,9 @@
+// The symmetric hole: an optional match covering only `none` leaves
+// every present value falling through to nil (audit §3.4).
+// EXPECT-ERROR: non-exhaustive match: missing payload arm (some/ok/err)
+fn f(x: i32?) -> i32 {
+    return match x {
+        none => 0
+    }
+}
+fn main() { print(f(some(1))) }

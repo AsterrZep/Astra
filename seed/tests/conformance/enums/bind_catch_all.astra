@@ -1,0 +1,9 @@
+// An unguarded bare binding in an arm position matches every value,
+// like `_`, and waives exhaustiveness — both compilers used to reject
+// it as non-exhaustive (audit §3.4).
+// EXPECT: E.B
+enum E { A B }
+fn main() {
+    let e = E.B;
+    match e { x => print(x) }
+}

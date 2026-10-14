@@ -2206,9 +2206,15 @@ static void check_pattern(TypeChecker *tc, Node *pat, Type *target,
         BuiltinVariantKind bvk = pat->as.pattern_builtin_variant.kind;
         Node *payload = pat->as.pattern_builtin_variant.payload;
         if (bvk == BUILTIN_VARIANT_NONE) {
-            /* none matches nil (no payload to bind) */
+            /* none matches nil (no payload to bind); on an optional target
+             * it covers the absence slot (audit §3.4). */
+            if (covered && target->kind == TYPE_OPTIONAL && covered_n > 1)
+                covered[1] = true;
             return;
         }
+        /* some/ok/err carry the payload tag (slot 0 of an optional). */
+        if (covered && target->kind == TYPE_OPTIONAL && covered_n > 0)
+            covered[0] = true;
         /* ok/err/some: bind the payload pattern against the payload type.
          * The constructors return TYPE_OPTIONAL wrapping the payload, so
          * handing `target` down typed every binding as `optional` while the
@@ -2236,7 +2242,12 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
     if (type_is_error(target)) return target;
 
     size_t covered_n = (target->kind == TYPE_ENUM)
-        ? target->as.enumeration.variant_count : 0;
+        ? target->as.enumeration.variant_count
+        /* Option/Result static type is TYPE_OPTIONAL: slot 0 = payload tag
+         * (some/ok/err), slot 1 = none. Without this the check never ran
+         * for optionals and `match x { some(v) => v }` returned nil under
+         * an i32 promise (audit §3.4). */
+        : (target->kind == TYPE_OPTIONAL ? 2 : 0);
     bool *covered = arena_new_array(tc->arena, bool, covered_n > 0 ? covered_n : 1);
     bool has_wildcard = false;
 
@@ -2246,7 +2257,17 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
         MatchArm *arm = &node->as.match_expr.arms.data[i];
         symbol_table_push_scope(tc->symbols);
 
-        check_pattern(tc, arm->pattern, target, &has_wildcard, covered, covered_n);
+        /* A guarded arm only covers its variant when the guard holds at
+         * run time (audit §3.4): it must neither mark coverage nor waive
+         * exhaustiveness — `E.B if flag =>` alone used to accept a match
+         * that printed nil under an i32 promise. */
+        bool guard_wildcard = false;
+        check_pattern(tc, arm->pattern, target,
+                      arm->guard ? &guard_wildcard : &has_wildcard,
+                      arm->guard ? NULL : covered, covered_n);
+        /* An unguarded bare binding matches every value, like `_`. */
+        if (!arm->guard && arm->pattern->kind == NODE_PATTERN_BIND)
+            has_wildcard = true;
 
         if (arm->guard) {
             Type *guard_type = typecheck_node(tc, arm->guard);
@@ -2274,8 +2295,11 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
     }
 
     /* Exhaustiveness: an enum match without a wildcard must cover every
-     * variant (research/04 §9 and ARCHITECTURE.md §11.3). */
-    if (target->kind == TYPE_ENUM && !has_wildcard) {
+     * variant (research/04 §9 and ARCHITECTURE.md §11.3). An optional
+     * match must cover the payload tag (some/ok/err) and none — otherwise
+     * the match can fall through and yield nil under whatever type the
+     * context promised (audit §3.4). */
+    if (!has_wildcard && target->kind == TYPE_ENUM) {
         for (size_t v = 0; v < covered_n; v++) {
             if (!covered[v]) {
                 tc_error(tc, node->loc,
@@ -2286,6 +2310,13 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
                          target->as.enumeration.variants[v].str);
             }
         }
+    } else if (!has_wildcard && target->kind == TYPE_OPTIONAL) {
+        if (!covered[0])
+            tc_error(tc, node->loc,
+                     "non-exhaustive match: missing payload arm (some/ok/err)");
+        if (!covered[1])
+            tc_error(tc, node->loc,
+                     "non-exhaustive match: missing 'none' arm");
     }
 
     return result_type ? result_type : type_new(tc->arena, TYPE_VOID);
