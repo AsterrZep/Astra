@@ -210,5 +210,62 @@ mínimas tras perderse el informe original de los agentes explore
 | `zig build test` | 🟢 73/73 |
 | `ui_message_parity.sh` | 🟢 total=81, accept_fail=0, first_fail=0, known=1; msg_diff_full=12 (bucket informativo de cascadas) |
 
+---
+
+## §4 — Emitter + VM seed (`emitter.c`, `vm.c`)
+
+Seis hallazgos (4.1–4.6) más dos notas de higiene, de una auditoría con
+sondas sobre los invariantes de `AGENTS.md` (balance de pila, offsets
+`T-P`, frames slot 0/1, scopes por secuencia, recurrencia acotada).
+Cerrados los seis en `e88d925`.
+
+| # | Sev | Archivo:línea | Qué pasa | Estado |
+|:-:|:---:|:--------------|:---------|:-------|
+| 4.1 | 🔴 | `vm.c:825` (DIV), `codegen_runtime.h` `astra_div`/`astra_mod`, `vm.zig:896` | `INT64_MIN / -1` (y `% -1`) trampaba el hardware en **los tres backends**: ASan FPE + abort en el debug del seed, SIGFPE en release, `Excepción de coma flotante` en el binario C, panic `integer overflow` en zig — ninguno producía un diagnóstico posicionado. | ✅ fix `e88d925` — guard con `integer overflow` idéntico en vm.c, codegen_runtime y vm.zig; test `expressions/int_min_div_neg1.astra` (EXPECT-RUNTIME-ERROR) |
+| 4.2 | 🔴 | `vm.c` ADD/SUB/MUL/NEG, `codegen_runtime.h` `astra_add/sub/mul/neg` | La aritmética entera con overflow era **UB** en el VM seed y en el C backend (UBSan la reportaba en un programa legal: `max + 1`), mientras zig la definía con `+%`/`-%`/`*%` (wrap). Las salidas coincidían en la práctica, pero dos de los tres caminos eran indefinidos. | ✅ fix `e88d925` — wrap vía casts `uint64_t` en los dos lados C; test `expressions/integer_wrap.astra` (4 EXPECTs con los valores envueltos) |
+| 4.3 | 🟠 | `emitter.c:1546`, `emitter/emitter.zig:1709` | El epílogo del `NODE_MATCH` reclaimaba **solo el último slot** (`local_count--`), no el bloque de bindings del arm: con un patrón de ≥2 campos, los nombres anteriores quedaban vivos en la tabla local del emitter y una referencia posterior al mismo nombre resolvía al slot muerto con el payload viejo — `print(a)` tras `Pair.Two(a, b) => a+b` imprimía el payload en los **tres** backends (respuesta incorrecta silenciosa). | ✅ fix `e88d925` — snapshot de `local_count` antes del local oculto y restauración entera en ambos emitters; test `enums/match_binding_reclaim.astra` (3/7/3) |
+| 4.4 | 🟠 | `codegen_runtime.h` `astra_print_value` `AST_ENUM_DATA` | El C backend imprimía un variant con payload como `E.B` (sin los campos) donde el VM seed y zig imprimen la forma constructora `E.B(7)`; `enum_print.astra` solo cubre unit variants, por eso el sweep no lo pillar. | ✅ fix `e88d925` — espejo del print del VM (paréntesis, campos `", "`-separados); test `codegen/enum_payload_print.astra` |
+| 4.5 | 🟠 | `vm.c:1447` (`OPCODE_RET` con `frame_count == 0`), `typechecker.c` `typecheck_return` | Un `return` a scope de módulo se aceptaba en silencio: ambos VMs lo trataban como "fin del módulo" (rc=0, `main` no corría) y el C backend generaba `return frame[sp-1]` dentro de una función `int` → C que no compila. | ✅ fix `e88d925` — ambos chequeadores rechazan `return outside of a function`; el alcance se mide con `fn_depth` (contador de cuerpos fn/lambda), **no** con `current_fn_return`, que también es NULL en una fn sin anotar (el primer intento rechazaba returns legítimos y lo pilló `result_match`); test `ui/toplevel_return.astra` |
+| 4.6 | 🔴 | `parser.c` loop Pratt (`led`), `parser.zig` `parseExprImpl`, `typechecker.c:913`, `emitter.c:994` | El guard de profundidad del parser cubre su descenso recursivo, pero el loop Pratt es **iterativo**: una cadena plana (`1+1+1+…`, `a[0][0]…`) construye árboles tan profundos como quiera el usuario y `typecheck_binary`/`emit_expr` recursan una vez por nodo sin cota — ASan stack-overflow a **300** términos en el debug del seed, SIGSEGV a ≥8000 en release, zig segfault a 20k. | ✅ fix `e88d925` — contador de cadena en el loop Pratt de ambos parsers, cap = `PARSER_MAX_DEPTH` (256), `expression chain too deep (max 256)`; test `ui/expr_chain_deep.astra` |
+
+### Notas de higiene (§4, sin acción)
+
+- 33+ bucles anidados: ambos compilan rechazan con `loop nesting too
+  deep (max 32)` (sin posición) seguido de ~40 `internal: stack
+  imbalance` en cascada — consistente entre compilers, ruidoso.
+- `field 'f' expects fn, got fn` (mismatch de tipos fn en campos) es
+  byte-idéntico en los tres pero no dice *qué* tipos fn difieren.
+
+### Invariantes verificados OK (§4)
+
+1. **Balance de pila** — modelo de efectos en compile-time
+   (`opcode_stack_effect`) + neutralidad de sentencia; cero errores de
+   desbalance interno en probes legales; `while`/`for`/`return`/`break`/
+   `continue` sin POP final; la asignación produce su valor.
+2. **Offsets de salto** — todos los sitios de patch usan `T-P`; VM
+   `ip += offset; ip--`; C `i + offset`; loops, break/continue, if como
+   expresión, match dentro de loops: byte-idénticos en los tres.
+3. **Frames** — slot 0 oculto `$ret`/callee, params desde 1; top-level
+   como globales; GET_CAPTURE lee `stack[base]`.
+4. **Scopes** — `symbol_table_pop_scope` elimina por `seq >= cutoff`
+   (nunca por hash). La tabla de *locales del emitter* tenía el bug
+   4.3, pero no es la symbol table.
+5. **Recurrencia acotada** — ahora completa: parser (§2.2/2.3) **y**
+   cadenas planas (§4.6).
+
+### Familias exploradas y limpias (§4)
+
+Cobertura de opcodes (los 53 con case en vm.c **y** codegen.c; el
+`default:` de codegen es error duro — sin drops silenciosos); patching
+de bucles; `return` en todas las posiciones (menos módulo = 4.5);
+arity en runtime (guard en `vm.c:1386`); edges del modelo de valores
+(aliasing de arrays/structs, OOB y índice negativo con mensaje
+byte-idéntico en los tres, división float por cero, `%` negativo,
+comparación de strings uniformemente diferida a runtime); builtins (solo
+`print`, alcanzable solo vía GET_GLOBAL); `?` fuera de loops y por
+frames anidados; switches de depuración `ASTRA_DUMP_VM`/`ASTRA_TRACE`.
+
+---
+
 *(Las secciones siguientes se van añadiendo conforme avanza la
 auditoría; cada una cierra con su commit.)*
