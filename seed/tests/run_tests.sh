@@ -60,6 +60,30 @@ else
     fail=$((fail + 1))
 fi
 
+# ------------------------------------------------------------
+# --dump-ast exit codes (audit §2.7)
+# ------------------------------------------------------------
+# Error recovery returns a partial module even when the parse failed, so
+# the flag used to exit 0 on broken files while zig exits 1. Pin both
+# directions: a valid file still dumps and exits 0, a broken one fails.
+if "$ASTRA" --dump-ast "$DIR/expressions/not_op.astra" >/dev/null 2>&1; then
+    echo "ok   --dump-ast exit 0 on a valid file"
+    pass=$((pass + 1))
+else
+    echo "FAIL --dump-ast exited non-zero on a valid file"
+    fail=$((fail + 1))
+fi
+bad_ast="$(mktemp)"
+printf 'fn main() {\n    let x = ;\n}\n' > "$bad_ast"
+if "$ASTRA" --dump-ast "$bad_ast" >/dev/null 2>&1; then
+    echo "FAIL --dump-ast exited 0 on a parse error (audit §2.7)"
+    fail=$((fail + 1))
+else
+    echo "ok   --dump-ast exit 1 on a parse error"
+    pass=$((pass + 1))
+fi
+rm -f "$bad_ast"
+
 while IFS= read -r file; do
     rel="${file#"$ROOT"/}"
 

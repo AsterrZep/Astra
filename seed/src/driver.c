@@ -649,7 +649,11 @@ static bool run_dump_tokens(Compiler *c) {
 
 static bool run_dump_ast(Compiler *c) {
     Node *module = parser_parse_module(c->parser);
-    if (!module) {
+    /* Error recovery hands back a partial module even when the parse
+     * failed, so the exit code has to consult parser_had_error — zig's
+     * --dump-ast exits 1 and prints nothing on a broken file (audit §2.7);
+     * returning on module == NULL alone made this mode always exit 0. */
+    if (!module || parser_had_error(c->parser)) {
         fprintf(stderr, "error: parse failed\n");
         return false;
     }
