@@ -20,6 +20,13 @@ jobs:
       - name: Test suite (registry gate + VM + C backend)
         run: ./tests/run_tests.sh
         working-directory: seed
+      # PRE_LLVM_AUDIT §1: every non-UI conformance case through the VM and
+      # through --emit-c + gcc, stdout/stderr/rc byte-identical. run_tests.sh
+      # only round-trips tests/codegen/, so divergences outside it (like the
+      # call-depth guard bug of §1.1) were invisible before this sweep.
+      - name: Differential sweep (VM vs --emit-c + gcc)
+        run: ./tests/sweep_emit_c.sh
+        working-directory: seed
       - name: Release build compiles clean
         run: make release
         working-directory: seed
@@ -73,3 +80,8 @@ jobs:
         working-directory: zig
       - name: Byte-for-byte dump comparison
         run: ./zig/tests/dump_parity.sh
+      # PRE_LLVM_AUDIT §1: both compilers must reject every ui/ case with the
+      # same FIRST diagnostic line (`file:line:col: error: msg`). Accepted
+      # divergences live in the script's KNOWN_FIRST_LINE list (§1.7).
+      - name: ui diagnostic messages (seed <-> zig)
+        run: ./zig/tests/ui_message_parity.sh
