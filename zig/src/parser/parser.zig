@@ -425,7 +425,7 @@ pub const Parser = struct {
         const cond = try self.parseExpression();
         self.no_struct_lit = saved;
         self.skipNewlines();
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{' for if body");
         const then_block = try self.parseBlock();
 
         var else_block: ?u32 = null;
@@ -437,7 +437,7 @@ pub const Parser = struct {
                 const one = try self.tree.addExtra(&.{elif});
                 else_block = try self.add(.{ .block = .{ .stmts = one, .tail = null } }, self.tree.loc(elif));
             } else {
-                try self.expect(.lbrace);
+                try self.expectMsg(.lbrace, "'{' for else body");
                 else_block = try self.parseBlock();
             }
         }
@@ -452,7 +452,7 @@ pub const Parser = struct {
         const cond = try self.parseExpression();
         self.no_struct_lit = saved;
         self.skipNewlines();
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{' for while body");
         const body = try self.parseBlock();
         return self.add(.{ .while_expr = .{ .cond = cond, .body = body } }, loc);
     }
@@ -470,7 +470,7 @@ pub const Parser = struct {
         const iter = try self.parseExpression();
         self.no_struct_lit = saved;
         self.skipNewlines();
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{' for for body");
         const body = try self.parseBlock();
         return self.add(.{ .for_expr = .{ .var_name = name, .iter = iter, .body = body } }, loc);
     }
@@ -483,7 +483,7 @@ pub const Parser = struct {
         self.no_struct_lit = saved;
 
         self.skipNewlines();
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{' for match");
         self.skipNewlines();
 
         var arms: std.ArrayListUnmanaged(u32) = .empty;
@@ -493,7 +493,7 @@ pub const Parser = struct {
             const pattern = try self.parsePattern();
             var guard: ?u32 = null;
             if (self.match(.kw_if)) guard = try self.parseExpression();
-            try self.expect(.fat_arrow);
+            try self.expectMsg(.fat_arrow, "'=>'");
             self.skipNewlines();
             var body: u32 = undefined;
             if (self.check(.lbrace)) {
@@ -618,7 +618,7 @@ pub const Parser = struct {
             const empty = try self.tree.addExtra(@as([]const u32, &.{}));
             break :blk try self.add(.{ .block = .{ .stmts = empty, .tail = null } }, loc);
         } else blk: {
-            try self.expect(.lbrace);
+            try self.expectMsg(.lbrace, "'{' for function body");
             break :blk try self.parseBlock();
         };
         const list = try self.tree.addExtra(params.items);
@@ -631,7 +631,7 @@ pub const Parser = struct {
         const name = self.previous.text;
         const generics = try self.parseGenericParams();
 
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{'");
         self.skipNewlines();
         var fields: std.ArrayListUnmanaged(u32) = .empty;
         defer fields.deinit(self.allocator);
@@ -655,7 +655,7 @@ pub const Parser = struct {
         const name = self.previous.text;
         const generics = try self.parseGenericParams();
 
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{'");
         self.skipNewlines();
         var variants: std.ArrayListUnmanaged(u32) = .empty;
         defer variants.deinit(self.allocator);
@@ -716,7 +716,7 @@ pub const Parser = struct {
         var items: std.ArrayListUnmanaged(u32) = .empty;
         defer items.deinit(self.allocator);
 
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{'");
         const saved_self = self.allow_self;
         const saved_sig = self.allow_sig_only;
         self.allow_self = true;
@@ -767,7 +767,7 @@ pub const Parser = struct {
         var items: std.ArrayListUnmanaged(u32) = .empty;
         defer items.deinit(self.allocator);
 
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{'");
         const saved_self = self.allow_self;
         const saved_sig = self.allow_sig_only;
         self.allow_self = true;
@@ -1142,7 +1142,7 @@ pub const Parser = struct {
         if (self.match(.arrow)) ret = try self.parseType();
 
         self.skipNewlines();
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{' for lambda body");
         const body = try self.parseBlock();
         const list = try self.tree.addExtra(params.items);
         return self.add(.{ .lambda_expr = .{ .params = list, .ret = ret, .body = body } }, loc);
@@ -1217,7 +1217,7 @@ pub const Parser = struct {
     }
 
     fn parseStructLiteral(self: *Parser, name: []const u8, loc: lexer.Loc) anyerror!u32 {
-        try self.expect(.lbrace);
+        try self.expectMsg(.lbrace, "'{'");
         self.skipNewlines();
         var fields: std.ArrayListUnmanaged(u32) = .empty;
         defer fields.deinit(self.allocator);

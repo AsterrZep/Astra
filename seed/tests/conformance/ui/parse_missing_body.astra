@@ -1,0 +1,10 @@
+// A missing `{` for a function body must not fabricate a brace-less
+// block that swallows the following declarations as its "body": the
+// parser stops at the fault and synchronizes, so `let x = 5` is
+// re-parsed as a top-level item instead of vanishing (audit §2.13).
+// The expect wording was harmonized seed↔zig (audit §2.6), so the
+// first line is byte-identical in both compilers.
+// EXPECT-ERROR: expected '{' for function body, got let
+fn f()
+let x = 5
+print(x)
