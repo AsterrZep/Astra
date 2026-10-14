@@ -2,7 +2,7 @@
 
 > **Version**: 0.1  
 > **Status**: Design  
-> **Last updated**: 2025
+> **Last updated**: 2026
 
 ## Table of Contents
 
