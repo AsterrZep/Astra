@@ -1050,7 +1050,10 @@ struct Value {
         bool        bool_val;
         int64_t     int_val;
         double      float_val;
-        const char *string_val; /* interned */
+        /* Strings carry their length: an interned literal may contain a
+         * NUL byte (`\0` escape) and a `%s`/strlen read silently
+         * truncated it at print, concat, len and equality (audit §2.14). */
+        struct { const char *str; size_t len; } string_val;
         ArrayObj   *array_val;
         StructObj  *struct_val;
         StructDef  *struct_def;
@@ -1068,7 +1071,7 @@ Value value_nil(void);
 Value value_bool(bool v);
 Value value_int(int64_t v);
 Value value_float(double v);
-Value value_string(const char *s);
+Value value_string(const char *s, size_t len);
 Value value_array(ArrayObj *a);
 Value value_struct(StructObj *s);
 Value value_struct_def(StructDef *d);

@@ -133,7 +133,7 @@ static void emit_assign_into(Emitter *e, Node *place, Node *value, uint32_t line
         emit_expr(e, value);
         emit_inst(e, OPCODE_SET_INDEX, line);
     } else if (place->kind == NODE_FIELD_ACCESS) {
-        uint32_t idx = add_constant(e, value_string(place->as.field_access.field.str));
+        uint32_t idx = add_constant(e, value_string(place->as.field_access.field.str, place->as.field_access.field.len));
         emit_expr(e, value);
         emit_inst_index(e, OPCODE_SET_FIELD, idx, line);
     } else {
@@ -1008,7 +1008,7 @@ static void emit_expr(Emitter *e, Node *node) {
     } break;
 
     case NODE_STRING_LIT: {
-        uint32_t idx = add_constant(e, value_string(node->as.string_lit.value.str));
+        uint32_t idx = add_constant(e, value_string(node->as.string_lit.value.str, node->as.string_lit.value.len));
         emit_inst_index(e, OPCODE_CONST, idx, node->loc.line);
     } break;
 
@@ -1041,7 +1041,7 @@ static void emit_expr(Emitter *e, Node *node) {
                         }
                     }
                 }
-                uint32_t idx = add_constant(e, value_string(gname.str));
+                uint32_t idx = add_constant(e, value_string(gname.str, gname.len));
                 emit_inst_index(e, OPCODE_GET_GLOBAL, idx, node->loc.line);
             }
         }
@@ -1148,7 +1148,7 @@ static void emit_expr(Emitter *e, Node *node) {
             callee->as.field_access.method.str) {
             uint32_t line = node->loc.line;
             uint32_t name_idx = add_constant(e,
-                value_string(callee->as.field_access.method.str));
+                value_string(callee->as.field_access.method.str, callee->as.field_access.method.len));
             emit_inst_index(e, OPCODE_GET_GLOBAL, name_idx, line);
             emit_expr(e, callee->as.field_access.object);
             for (size_t i = 0; i < node->as.call.args.len; i++) {
@@ -1303,7 +1303,7 @@ static void emit_expr(Emitter *e, Node *node) {
             }
         }
         emit_expr(e, obj);
-        uint32_t idx = add_constant(e, value_string(node->as.field_access.field.str));
+        uint32_t idx = add_constant(e, value_string(node->as.field_access.field.str, node->as.field_access.field.len));
         emit_inst_index(e, OPCODE_GET_FIELD, idx, node->loc.line);
     } break;
 
@@ -1738,7 +1738,7 @@ static void emit_expr(Emitter *e, Node *node) {
                         (int)name.len, name.str);
                 e->error_count++;
             } else {
-                uint32_t idx = add_constant(e, value_string(name.str));
+                uint32_t idx = add_constant(e, value_string(name.str, name.len));
                 emit_inst_index(e, OPCODE_SET_GLOBAL, idx, line);
                 emit_inst_index(e, OPCODE_GET_GLOBAL, idx, line);
             }
@@ -2100,7 +2100,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         /* Top-level functions become globals so any function can call them
          * (function frames reset their local table). */
         uint32_t fn_idx = add_constant(e, value_fn(fn));
-        uint32_t name_idx = add_constant(e, value_string(node->as.fn_decl.name.str));
+        uint32_t name_idx = add_constant(e, value_string(node->as.fn_decl.name.str, node->as.fn_decl.name.len));
         if (e->scope_depth == 0) {
             emit_inst_index(e, OPCODE_CONST, fn_idx, line);
             emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
@@ -2126,12 +2126,12 @@ static void emit_stmt(Emitter *e, Node *node) {
         }
         if (e->scope_depth == 0) {
             /* Module-level bindings are globals, visible from every function. */
-            uint32_t name_idx = add_constant(e, value_string(node->as.var_decl.name.str));
+            uint32_t name_idx = add_constant(e, value_string(node->as.var_decl.name.str, node->as.var_decl.name.len));
             emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
         } else {
             uint8_t slot = add_local(e, node->as.var_decl.name);
             if (slot == 0xFF) {
-                uint32_t name_idx = add_constant(e, value_string(node->as.var_decl.name.str));
+                uint32_t name_idx = add_constant(e, value_string(node->as.var_decl.name.str, node->as.var_decl.name.len));
                 emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
             } else {
                 emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
@@ -2148,12 +2148,12 @@ static void emit_stmt(Emitter *e, Node *node) {
             emit_inst_index(e, OPCODE_CONST, idx, line);
         }
         if (e->scope_depth == 0) {
-            uint32_t name_idx = add_constant(e, value_string(node->as.const_decl.name.str));
+            uint32_t name_idx = add_constant(e, value_string(node->as.const_decl.name.str, node->as.const_decl.name.len));
             emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
         } else {
             uint8_t slot = add_local(e, node->as.const_decl.name);
             if (slot == 0xFF) {
-                uint32_t name_idx = add_constant(e, value_string(node->as.const_decl.name.str));
+                uint32_t name_idx = add_constant(e, value_string(node->as.const_decl.name.str, node->as.const_decl.name.len));
                 emit_inst_index(e, OPCODE_SET_GLOBAL, name_idx, line);
             } else {
                 /* Without this store a `const` declared inside a function left
@@ -2258,7 +2258,7 @@ void emitter_emit(Emitter *e, Node *module) {
         Node *item = module->as.module.items.data[i];
         if (item->kind == NODE_FN_DECL && item->as.fn_decl.generics.len == 0 &&
             string_eq(item->as.fn_decl.name, main_name)) {
-            uint32_t name_idx = add_constant(e, value_string(main_name.str));
+            uint32_t name_idx = add_constant(e, value_string(main_name.str, main_name.len));
             emit_inst_index(e, OPCODE_GET_GLOBAL, name_idx, item->loc.line);
             emit_inst(e, OPCODE_CALL, item->loc.line);
             e->code[e->code_len - 1].arg.arg_count = 0;

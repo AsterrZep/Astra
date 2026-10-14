@@ -339,7 +339,11 @@ pub const Parser = struct {
         if (self.match(.kw_impl)) return try self.parseImplBlock();
         if (self.match(.kw_const)) return try self.parseVarDecl(true, is_pub);
         if (self.match(.kw_let)) return try self.parseVarDecl(false, false);
-        if (self.match(.kw_var)) return try self.parseVarDecl(false, false);
+        // `var` is a leftover keyword with no binding syntax (ARCH §8.1:
+        // the canonical form is `let` / `let mut`). The stray entry below
+        // used to parse `var x = 5` as an immutable let, so the *decl*
+        // compiled and only the later assignment failed (audit §2.5);
+        // seed rejects `var` at the token, and so does zig now.
         if (self.match(.kw_use)) return try self.parseUse();
         if (self.match(.kw_import)) return try self.parseImport();
         if (self.match(.kw_from)) return try self.parseFrom();

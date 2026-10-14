@@ -86,16 +86,18 @@ static void cg_writef(Codegen *cg, const char *fmt, ...) {
  * stays strlen-based; what this guards is that a quote, backslash or control
  * byte cannot close the literal early and inject arbitrary C into the output
  * (the generated .c is handed to a native compiler). */
-static void cg_write_c_escaped(Codegen *cg, const char *s) {
-    for (const unsigned char *p = (const unsigned char *)s; p && *p; p++) {
-        if (*p == '"' || *p == '\\') {
-            char esc[3] = { '\\', (char)*p, '\0' };
+static void cg_write_c_escaped(Codegen *cg, const char *s, size_t len) {
+    for (size_t i = 0; s && i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') {
+            char esc[3] = { '\\', (char)c, '\0' };
             cg_write(cg, esc);
-        } else if (*p < 0x20 || *p == 0x7f) {
-            /* Three octal digits: never merges with a following literal char. */
-            cg_writef(cg, "\\%03o", (unsigned)*p);
+        } else if (c < 0x20 || c == 0x7f) {
+            /* Three octal digits: never merges with a following literal char
+             * (covers a NUL byte inside the literal, audit §2.14). */
+            cg_writef(cg, "\\%03o", (unsigned)c);
         } else {
-            char lit[2] = { (char)*p, '\0' };
+            char lit[2] = { (char)c, '\0' };
             cg_write(cg, lit);
         }
     }
@@ -506,8 +508,8 @@ static void emit_global_decls(Codegen *cg) {
             uint32_t name_idx = code[i].arg.index;
             if (name_idx < const_len && constants[name_idx].kind == VAL_STRING) {
                 InternedString name = {0};
-                name.str = constants[name_idx].as.string_val;
-                name.len = (size_t)strlen(constants[name_idx].as.string_val);
+                name.str = constants[name_idx].as.string_val.str;
+                name.len = constants[name_idx].as.string_val.len;
                 make_global_cname(cg, name);
             }
         }
@@ -522,8 +524,8 @@ static void emit_global_decls(Codegen *cg) {
                     uint32_t name_idx = fn->code[j].arg.index;
                     if (name_idx < fn->const_len && fn->constants[name_idx].kind == VAL_STRING) {
                         InternedString name = {0};
-                        name.str = fn->constants[name_idx].as.string_val;
-                        name.len = (size_t)strlen(fn->constants[name_idx].as.string_val);
+                        name.str = fn->constants[name_idx].as.string_val.str;
+                        name.len = fn->constants[name_idx].as.string_val.len;
                         make_global_cname(cg, name);
                     }
                 }
@@ -576,8 +578,8 @@ static void emit_fn_forward_decls(Codegen *cg) {
                     uint32_t name_idx = code[j+1].arg.index;
                     if (name_idx < const_len && constants[name_idx].kind == VAL_STRING) {
                         InternedString name = {0};
-                        name.str = constants[name_idx].as.string_val;
-                        name.len = (size_t)strlen(constants[name_idx].as.string_val);
+                        name.str = constants[name_idx].as.string_val.str;
+                        name.len = constants[name_idx].as.string_val.len;
                         make_fn_cname(cg, name);
                     }
                     break;
@@ -614,7 +616,7 @@ static void emit_fn_bodies(Codegen *cg) {
                 uint32_t fn_idx = code[j].arg.index;
                 uint32_t name_idx = code[j+1].arg.index;
                 if (name_idx < const_len && constants[name_idx].kind == VAL_STRING &&
-                    strcmp(constants[name_idx].as.string_val, fname.str) == 0 &&
+                    strcmp(constants[name_idx].as.string_val.str, fname.str) == 0 &&
                     fn_idx < const_len && constants[fn_idx].kind == VAL_FN) {
                     emit_fn_body(cg, cname, constants[fn_idx].as.fn_val);
                     break;
@@ -717,8 +719,8 @@ static void emit_instructions(Codegen *cg,
                     break;
                 case VAL_STRING:
                     cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_string_new(\"");
-                    cg_write_c_escaped(cg, v.as.string_val);
-                    cg_writef(cg, "\", %ld));\n", (long)strlen(v.as.string_val));
+                    cg_write_c_escaped(cg, v.as.string_val.str, v.as.string_val.len);
+                    cg_writef(cg, "\", %ld));\n", (long)v.as.string_val.len);
                     break;
                 case VAL_FN: {
                     FnObj *fn_obj = v.as.fn_val;
@@ -743,7 +745,7 @@ static void emit_instructions(Codegen *cg,
                                         code[j + 1].op == OPCODE_SET_GLOBAL) {
                                         uint32_t nidx = code[j + 1].arg.index;
                                         if (nidx < const_len && constants[nidx].kind == VAL_STRING &&
-                                            strcmp(constants[nidx].as.string_val,
+                                            strcmp(constants[nidx].as.string_val.str,
                                                    cg->fn_map[fi].name.str) == 0) {
                                             fname = cg->fn_map[fi].c_name;
                                             break;
@@ -827,8 +829,8 @@ static void emit_instructions(Codegen *cg,
             const char *gname = "g_unknown";
             if (name_idx < const_len && constants[name_idx].kind == VAL_STRING) {
                 InternedString is = {0};
-                is.str = constants[name_idx].as.string_val;
-                is.len = strlen(constants[name_idx].as.string_val);
+                is.str = constants[name_idx].as.string_val.str;
+                is.len = constants[name_idx].as.string_val.len;
                 gname = make_global_cname(cg, is);
             }
             cg_writef(cg, "    ASTRA_PUSH(frame, sp, %s);\n", gname);
@@ -839,8 +841,8 @@ static void emit_instructions(Codegen *cg,
             const char *gname = "g_unknown";
             if (name_idx < const_len && constants[name_idx].kind == VAL_STRING) {
                 InternedString is = {0};
-                is.str = constants[name_idx].as.string_val;
-                is.len = strlen(constants[name_idx].as.string_val);
+                is.str = constants[name_idx].as.string_val.str;
+                is.len = constants[name_idx].as.string_val.len;
                 gname = make_global_cname(cg, is);
             }
             cg_writef(cg, "    %s = frame[--sp];\n", gname);
@@ -1077,7 +1079,7 @@ static void emit_instructions(Codegen *cg,
         case OPCODE_GET_FIELD: {
             uint32_t name_idx = inst.arg.index;
             const char *fname = (name_idx < const_len && constants[name_idx].kind == VAL_STRING)
-                               ? constants[name_idx].as.string_val : "";
+                               ? constants[name_idx].as.string_val.str : "";
             cg_writef(cg, "    /* GET_FIELD '%s' */\n", fname);
             cg_writef(cg, "    {\n");
             cg_writef(cg, "        AstraValue _obj = frame[--sp];\n");
@@ -1093,7 +1095,7 @@ static void emit_instructions(Codegen *cg,
         case OPCODE_SET_FIELD: {
             uint32_t name_idx = inst.arg.index;
             const char *fname = (name_idx < const_len && constants[name_idx].kind == VAL_STRING)
-                               ? constants[name_idx].as.string_val : "";
+                               ? constants[name_idx].as.string_val.str : "";
             cg_writef(cg, "    /* SET_FIELD '%s' */\n", fname);
             cg_writef(cg, "    {\n");
             cg_writef(cg, "        AstraValue _val = frame[--sp];\n");
@@ -1271,7 +1273,8 @@ static void emit_module_code(Codegen *cg) {
     /* Source file for runtime-error positions; set before any user code
      * runs so every error prints `file:line: ` like the VM driver. */
     cg_write(cg, "    astra_file = \"");
-    cg_write_c_escaped(cg, cg->filename ? cg->filename : "<input>");
+    cg_write_c_escaped(cg, cg->filename ? cg->filename : "<input>",
+                       cg->filename ? strlen(cg->filename) : strlen("<input>"));
     cg_write(cg, "\";\n");
 
     size_t code_len = 0;

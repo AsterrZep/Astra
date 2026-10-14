@@ -1,0 +1,11 @@
+// `var` is a leftover keyword with no binding syntax (ARCH §8.1: the
+// canonical form is `let` / `let mut`). Zig used to parse `var x = 5`
+// as an immutable let, so the declaration compiled and only the later
+// assignment failed; seed rejected `var` at the token (audit §2.5).
+// Both compilers now reject the token, first line byte-identical.
+// EXPECT-ERROR: unexpected token in expression
+fn main() {
+    var x = 5;
+    x = x + 1;
+    print(x)
+}

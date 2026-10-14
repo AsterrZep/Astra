@@ -1,0 +1,13 @@
+// A string literal may contain a NUL byte (`\0` escape): the VM value
+// carries its length, so concat and equality do not silently truncate
+// at the NUL (audit §2.14 — seed's Value used to be a bare `char *`
+// compared and concatenated with strlen/strcmp, and printed with %s).
+// The assertions compare the NUL-bearing string against a literal so a
+// truncation turns `true` into `false`; all three backends must agree.
+// EXPECT: true
+// EXPECT: true
+fn main() {
+    let s = "a\0b";
+    print(s + "c" == "a\0bc")
+    print("x" + s == "xa\0b")
+}

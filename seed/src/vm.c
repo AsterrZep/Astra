@@ -34,10 +34,11 @@ Value value_float(double f) {
     return v;
 }
 
-Value value_string(const char *s) {
+Value value_string(const char *s, size_t len) {
     Value v = {0};
     v.kind = VAL_STRING;
-    v.as.string_val = s;
+    v.as.string_val.str = s;
+    v.as.string_val.len = len;
     return v;
 }
 
@@ -160,7 +161,7 @@ bool value_is_truthy(Value v) {
     case VAL_BOOL:   return v.as.bool_val;
     case VAL_INT:    return v.as.int_val != 0;
     case VAL_FLOAT:  return v.as.float_val != 0.0;
-    case VAL_STRING: return v.as.string_val != NULL && v.as.string_val[0] != '\0';
+    case VAL_STRING: return v.as.string_val.str != NULL && v.as.string_val.len > 0;
     case VAL_ARRAY:  return v.as.array_val != NULL && v.as.array_val->len > 0;
     case VAL_STRUCT: return v.as.struct_val != NULL;
     case VAL_STRUCT_DEF: return v.as.struct_def != NULL;
@@ -205,7 +206,9 @@ static void value_print_stream(FILE *out, Value v) {
     case VAL_BOOL:   fprintf(out, "%s", v.as.bool_val ? "true" : "false"); break;
     case VAL_INT:    fprintf(out, "%ld", (long)v.as.int_val); break;
     case VAL_FLOAT:  fprintf(out, "%g", v.as.float_val); break;
-    case VAL_STRING: fprintf(out, "%s", v.as.string_val); break;
+    /* fwrite, not "%.*s": printf's %s stops at a NUL byte even when the
+     * precision allows more (audit §2.14). */
+    case VAL_STRING: fwrite(v.as.string_val.str, 1, v.as.string_val.len, out); break;
     case VAL_ARRAY:
         fprintf(out, "[");
         if (v.as.array_val) {
@@ -314,9 +317,11 @@ static bool value_eq(Value a, Value b) {
     case VAL_INT:    return a.as.int_val == b.as.int_val;
     case VAL_FLOAT:  return a.as.float_val == b.as.float_val;
     case VAL_STRING:
-        if (a.as.string_val == b.as.string_val) return true;
-        if (!a.as.string_val || !b.as.string_val) return false;
-        return strcmp(a.as.string_val, b.as.string_val) == 0;
+        if (a.as.string_val.str == b.as.string_val.str) return true;
+        if (!a.as.string_val.str || !b.as.string_val.str) return false;
+        return a.as.string_val.len == b.as.string_val.len &&
+               memcmp(a.as.string_val.str, b.as.string_val.str,
+                      a.as.string_val.len) == 0;
     case VAL_ARRAY:  return a.as.array_val == b.as.array_val;
     case VAL_STRUCT: {
         StructObj *x = a.as.struct_val;
@@ -673,7 +678,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 vm_runtime_error(vm, line, "global name index %u out of range", inst.arg.index);
                 return VM_RUNTIME_ERROR;
             }
-            const char *name = vm->constants[inst.arg.index].as.string_val;
+            const char *name = vm->constants[inst.arg.index].as.string_val.str;
             /* Check built-in globals */
             if (name && strcmp(name, "print") == 0) {
                 if (!vm_push(vm, value_fn(vm->builtin_print_fn))) return VM_RUNTIME_ERROR;
@@ -703,7 +708,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 vm_runtime_error(vm, line, "stack underflow on set_global");
                 return VM_RUNTIME_ERROR;
             }
-            const char *name = vm->constants[inst.arg.index].as.string_val;
+            const char *name = vm->constants[inst.arg.index].as.string_val.str;
             Value val = vm_pop(vm);
             /* Look up in globals table and update if found */
             bool found = false;
@@ -744,18 +749,19 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             } else if (a.kind == VAL_FLOAT && b.kind == VAL_INT) {
                 if (!vm_push(vm, value_float(a.as.float_val + (double)b.as.int_val))) return VM_RUNTIME_ERROR;
             } else if (a.kind == VAL_STRING && b.kind == VAL_STRING) {
-                /* String concatenation */
-                size_t len_a = strlen(a.as.string_val);
-                size_t len_b = strlen(b.as.string_val);
+                /* String concatenation (length-bounded: a NUL byte inside
+                 * either operand must not truncate the result, audit §2.14) */
+                size_t len_a = a.as.string_val.len;
+                size_t len_b = b.as.string_val.len;
                 char *buf = arena_alloc(vm->arena, len_a + len_b + 1, 1);
                 if (!buf) {
                     vm_runtime_error(vm, line, "out of memory");
                     return VM_RUNTIME_ERROR;
                 }
-                memcpy(buf, a.as.string_val, len_a);
-                memcpy(buf + len_a, b.as.string_val, len_b);
+                memcpy(buf, a.as.string_val.str, len_a);
+                memcpy(buf + len_a, b.as.string_val.str, len_b);
                 buf[len_a + len_b] = '\0';
-                if (!vm_push(vm, value_string(buf))) return VM_RUNTIME_ERROR;
+                if (!vm_push(vm, value_string(buf, len_a + len_b))) return VM_RUNTIME_ERROR;
             } else {
                 vm_runtime_error(vm, line, "cannot add %s and %s", type_name(a), type_name(b));
                 return VM_RUNTIME_ERROR;
@@ -1137,7 +1143,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             Value obj = vm_pop(vm);
             size_t n = 0;
             if (obj.kind == VAL_ARRAY && obj.as.array_val) n = obj.as.array_val->len;
-            else if (obj.kind == VAL_STRING && obj.as.string_val) n = strlen(obj.as.string_val);
+            else if (obj.kind == VAL_STRING && obj.as.string_val.str) n = obj.as.string_val.len;
             else {
                 vm_runtime_error(vm, line, "cannot take length of %s", type_name(obj));
                 return VM_RUNTIME_ERROR;
@@ -1216,7 +1222,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             Value val = vm_pop(vm);
             Value obj = vm_pop(vm);
-            const char *field = vm->constants[inst.arg.index].as.string_val;
+            const char *field = vm->constants[inst.arg.index].as.string_val.str;
             if (obj.kind != VAL_STRUCT || !obj.as.struct_val) {
                 vm_runtime_error(vm, line, "cannot access field on %s", type_name(obj));
                 return VM_RUNTIME_ERROR;
@@ -1299,7 +1305,7 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 return VM_RUNTIME_ERROR;
             }
             Value obj = vm_pop(vm);
-            const char *field = vm->constants[inst.arg.index].as.string_val;
+            const char *field = vm->constants[inst.arg.index].as.string_val.str;
             if (obj.kind != VAL_STRUCT || !obj.as.struct_val) {
                 vm_runtime_error(vm, line, "cannot access field on %s", type_name(obj));
                 return VM_RUNTIME_ERROR;

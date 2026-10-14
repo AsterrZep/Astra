@@ -104,7 +104,12 @@ void token_print(Token t) {
     } else if (t.kind == TOKEN_FLOAT_LIT) {
         printf("  %g", t.literal.float_val);
     } else if (t.kind == TOKEN_STRING_LIT || t.kind == TOKEN_IDENT) {
-        printf("  \"%.*s\"", (int)t.text.len, t.text.str);
+        /* fwrite, not "%.*s": printf stops at a NUL byte inside a string
+         * literal even when the precision allows more (audit §2.14);
+         * zig dumps the raw bytes, so the dumps must match byte-for-byte. */
+        printf("  \"");
+        fwrite(t.text.str, 1, t.text.len, stdout);
+        printf("\"");
     }
 
     printf("\n");
@@ -184,9 +189,12 @@ static void dump_node(Node *node, int indent) {
         printf("FloatLit(%g)\n", node->as.float_lit.value);
         break;
     case NODE_STRING_LIT:
-        printf("StringLit(\"%.*s\")\n",
-               (int)node->as.string_lit.value.len,
-               node->as.string_lit.value.str);
+        /* fwrite, not "%.*s": printf stops at a NUL byte inside the
+         * literal even when the precision allows more (audit §2.14);
+         * zig dumps the raw bytes, so the dumps must match byte-for-byte. */
+        printf("StringLit(\"");
+        fwrite(node->as.string_lit.value.str, 1, node->as.string_lit.value.len, stdout);
+        printf("\")\n");
         break;
     case NODE_BOOL_LIT:
         printf("BoolLit(%s)\n", node->as.bool_lit.value ? "true" : "false");
