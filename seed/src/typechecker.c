@@ -874,9 +874,13 @@ static Type *typecheck_ident(TypeChecker *tc, Node *node) {
                              (int)name.len, name.str);
     }
     if (!sym->type) {
-        return tc_error_type(tc, node->loc,
-                             "symbol '%.*s' has no type",
-                             (int)name.len, name.str);
+        /* Every binding path types its symbol (lambda and fn parameters
+         * without an annotation default to unknown at insertion). A symbol
+         * that still reaches here without a type degrades to unknown — the
+         * same flow zig uses — instead of seed's old "has no type" error,
+         * which diverged from zig and pointed at the symptom rather than
+         * the untyped binding (audit §1.6/§3.6). */
+        return type_new(tc->arena, TYPE_UNKNOWN);
     }
     return sym->type;
 }
@@ -1698,11 +1702,15 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
     for (size_t i = 0; i < arg_count; i++) {
         Type *arg_type = typecheck_node(tc, node->as.call.args.data[i]);
         if (type_is_error(arg_type)) return arg_type;
-        if (!type_eq(arg_type, callee->as.fn.params[i])) {
+        /* An unannotated parameter is unknown and unknown accepts anything
+         * (type_eq). Guard the NULL defensively: the error path below would
+         * dereference it (audit §3.1 crash at this exact line). */
+        Type *pt = callee->as.fn.params[i];
+        if (pt && !type_eq(arg_type, pt)) {
             return tc_error_type(tc, node->loc,
                                  "argument %zu: expected %s, got %s",
                                  i + 1,
-                                 type_kind_name(callee->as.fn.params[i]->kind),
+                                 type_kind_name(pt->kind),
                                  type_kind_name(arg_type->kind));
         }
     }
@@ -2525,6 +2533,10 @@ static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
             pop_generic_scope(tc, gmark);
             return;
         }
+        /* No annotation (e.g. `self` when the impl pass could not synthesize
+         * it): the signature type must not carry NULL into call sites —
+         * typecheck_call dereferenced it (audit §3.2). */
+        if (!param_types[i]) param_types[i] = type_new(tc->arena, TYPE_UNKNOWN);
     }
 
     /* Resolve return type */
@@ -2621,6 +2633,10 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
     size_t param_count = fn_node->as.fn_decl.params.len;
     for (size_t i = 0; i < param_count; i++) {
         Type *pt = resolve_type_node(tc, fn_node->as.fn_decl.param_types.data[i]);
+        /* Unannotated parameter (`self` on a failed impl, or any missing
+         * annotation): bind unknown rather than NULL, so uses of the symbol
+         * type-check as unknown instead of crashing (audit §3.2). */
+        if (!pt) pt = type_new(tc->arena, TYPE_UNKNOWN);
         Symbol sym = {
             .name    = fn_node->as.fn_decl.params.data[i],
             .type    = pt,
@@ -3258,6 +3274,11 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
         for (size_t i = 0; i < param_count; i++) {
             param_types[i] = resolve_type_node(tc, node->as.lambda.param_types.data[i]);
             if (type_is_error(param_types[i])) return type_new(tc->arena, TYPE_VOID);
+            /* `|x|` with no annotation: the body scope and the fn type both
+             * take this array — NULL made `x + 1` report "symbol has no
+             * type" and crashed typecheck_call on `f(2)` (audit §3.1).
+             * Unknown flows through type_eq and matches zig's behaviour. */
+            if (!param_types[i]) param_types[i] = type_new(tc->arena, TYPE_UNKNOWN);
         }
         /* Resolve return type from annotation */
         Type *ret_type = NULL;

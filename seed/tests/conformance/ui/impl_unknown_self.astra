@@ -1,0 +1,12 @@
+// `impl Undefined` cannot synthesize the receiver, so `self` arrives
+// untyped: both compilers degrade it to unknown and report the field
+// access on unknown — seed's old `symbol 'self' has no type` was the
+// §1.6 divergence (audit §3.2).
+// EXPECT-ERROR: unknown type 'Undefined'
+struct S { a: i32 }
+impl Undefined {
+    fn m(self) -> i32 {
+        return self.a
+    }
+}
+fn main() { print(1) }
