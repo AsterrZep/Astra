@@ -1,0 +1,11 @@
+// A repeated key in a struct literal silently reused the first value —
+// `S { a: 1, a: 2 }` type-checked and printed 1 (audit §3.5). Both
+// compilers now reject it byte-identically.
+// EXPECT-ERROR: duplicate field 'a' in struct literal
+struct S {
+    a: i32
+}
+fn main() {
+    let s = S { a: 1, a: 2 };
+    print(s.a)
+}

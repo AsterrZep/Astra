@@ -1,0 +1,11 @@
+// Duplicate field names in a struct declaration silently overwrote each
+// other — the last declaration won and the struct type-checked (audit
+// §3.5). Both compilers now reject it byte-identically.
+// EXPECT-ERROR: duplicate field 'a' in struct 'S'
+struct S {
+    a: i32
+    a: string
+}
+fn main() {
+    print(1)
+}

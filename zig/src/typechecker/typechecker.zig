@@ -1077,9 +1077,15 @@ pub const TypeChecker = struct {
         var st = sym.type_;
 
         // Unknown fields first (against the template: instance fields keep
-        // the declaration's names).
-        for (self.tree.extraSlice(fields)) |fidx| {
+        // the declaration's names); a repeated key used to silently reuse
+        // the first value (audit §3.5, mirror of the seed).
+        for (self.tree.extraSlice(fields), 0..) |fidx, i| {
             const fname = self.tree.node(fidx).struct_init_field.name;
+            for (self.tree.extraSlice(fields)[0..i]) |pidx| {
+                if (std.mem.eql(u8, self.tree.node(pidx).struct_init_field.name, fname)) {
+                    return self.errorType(loc, "duplicate field '{s}' in struct literal", .{ fname });
+                }
+            }
             var found = false;
             for (st.fields) |f| {
                 if (std.mem.eql(u8, f.name, fname)) {
@@ -1711,6 +1717,15 @@ pub const TypeChecker = struct {
             const mark = self.pushGenericBindings(s.generics, idx);
             for (fields, 0..) |fidx, i| {
                 const fd = self.tree.node(fidx).field_decl;
+                // Duplicate field names silently overwrote each other — a
+                // struct with two `a` fields type-checked and the last
+                // declaration won (audit §3.5, mirror of the seed).
+                for (fields[0..i]) |pidx| {
+                    if (std.mem.eql(u8, self.tree.node(pidx).field_decl.name, fd.name)) {
+                        self.errFmt(self.tree.loc(idx), "duplicate field '{s}' in struct '{s}'", .{ fd.name, s.name });
+                        break;
+                    }
+                }
                 const ft = self.resolveTypeNode(fd.type_node);
                 if (isErrorType(ft)) {
                     self.popGenericScope(mark);
@@ -2151,6 +2166,12 @@ pub const TypeChecker = struct {
                 .var_decl => |v| self.checkVarDecl(v, self.tree.loc(it), false),
                 .const_decl => |v| self.checkVarDecl(v, self.tree.loc(it), true),
                 .impl_decl => self.checkImplBodies(it),
+                // Bodies were fully checked in the first pass; the `else`
+                // path re-checked them and duplicated every diagnostic
+                // (audit §3.5 surfaced it: "duplicate field" printed
+                // twice, mirror of the seed). Nested declarations still
+                // go through checkNode inside function bodies.
+                .struct_decl, .enum_decl => {},
                 else => _ = self.checkNode(it),
             }
         }

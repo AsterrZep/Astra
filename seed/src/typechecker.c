@@ -1776,9 +1776,16 @@ static Type *typecheck_struct_lit(TypeChecker *tc, Node *node) {
     Type *st = sym->type;
     size_t declared = st->as.struc.field_count;
 
-    /* No unknown fields. */
+    /* No duplicate keys, no unknown fields. */
     for (size_t i = 0; i < node->as.struct_lit.field_names.len; i++) {
         InternedString fname = node->as.struct_lit.field_names.data[i];
+        for (size_t j = 0; j < i; j++) {
+            if (string_eq(node->as.struct_lit.field_names.data[j], fname)) {
+                return tc_error_type(tc, node->loc,
+                                     "duplicate field '%.*s' in struct literal",
+                                     (int)fname.len, fname.str);
+            }
+        }
         bool found = false;
         for (size_t j = 0; j < declared; j++) {
             if (string_eq(st->as.struc.fields[j].name, fname)) { found = true; break; }
@@ -2766,6 +2773,20 @@ static void typecheck_struct_decl(TypeChecker *tc, Node *node) {
         st_type->as.struc.fields = arena_new_array(tc->arena, StructField, field_count);
         st_type->as.struc.field_count = field_count;
         for (size_t i = 0; i < field_count; i++) {
+            /* Duplicate field names silently overwrote each other — a
+             * struct with two `a` fields type-checked and the last
+             * declaration won (audit §3.5). Collect and keep going. */
+            for (size_t j = 0; j < i; j++) {
+                if (string_eq(node->as.struct_decl.field_names.data[j],
+                              node->as.struct_decl.field_names.data[i])) {
+                    tc_error(tc, node->loc,
+                             "duplicate field '%.*s' in struct '%.*s'",
+                             (int)node->as.struct_decl.field_names.data[i].len,
+                             node->as.struct_decl.field_names.data[i].str,
+                             (int)name.len, name.str);
+                    break;
+                }
+            }
             Type *ft = resolve_type_node(tc, node->as.struct_decl.field_types.data[i]);
             if (type_is_error(ft)) {
                 pop_generic_scope(tc, gmark);
@@ -3159,6 +3180,14 @@ static void typecheck_module_body(TypeChecker *tc, Node *module) {
             break;
         case NODE_CONST_DECL:
             typecheck_const_decl(tc, item);
+            break;
+        case NODE_STRUCT_DECL:
+        case NODE_ENUM_DECL:
+            /* Bodies were fully checked in typecheck_module_pass; the
+             * `default` path re-checked them and duplicated every
+             * diagnostic (audit §3.5 surfaced it: "duplicate field"
+             * printed twice). Nested declarations inside function bodies
+             * still go through typecheck_node. */
             break;
         case NODE_IMPL:
             /* Bodies of the methods pass 1 registered. Their names are the
