@@ -21,6 +21,7 @@ const ConstructSpec construct_field_access = {
     .note      = "One syntax, two meanings, decided by the type checker: if the base "
                   "expression is a struct the name must be a field, if it is an enum "
                   "type name the name must be a variant (see variant_path.c). "
-                  "`?`-chaining on a field access is not implemented.",
+                  "Postfix `?` chains over field access like over any Pratt postfix "
+                  "left (parser.c).",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

@@ -45,12 +45,9 @@ const ConstructSpec construct_type_annotation = {
                   "| \"[\" Type (\";\" Expression)? \"]\" | \"*\" \"const\"? Type | \"&\" \"mut\"? Type",
     .research  = "research/010 §6 (type annotation grammar), §12.1; research/011 §5.2",
     .note      = "Implemented: builtin names (`i32`, `f64`, `bool`, `string`), struct "
-                  "names, enum names, `[T]` arrays and `(T, T) -> T` function types. "
-                  "NOT implemented: `T?` optionals — the node exists (TYPE_OPTIONAL) "
-                  "but parse_type never consumes the `?`, so `let x: i32? = null;` is "
-                  "a parse error even though research/010 §12.1 specifies "
-                  "`OptionalType ::= PrimaryType \"?\"` and research/011 Tier 2 lists "
-                  "it. Also missing: generic arguments `T<U>`, fixed-size arrays "
+                  "names, enum names, `[T]` arrays, `(T, T) -> T` function types, "
+                  "`T?` optionals (`OptionalType`, research/010 §12.1) and generic "
+                  "arguments `Name<U>` (Phase 2.4). Also missing: fixed-size arrays "
                   "`[T; N]`, tuples, raw pointers and references. Types are resolved "
                   "by name at check time; there is no unification (research/011 §8.1 "
                   "calls for simplified HM, which the seed does not yet need). "

@@ -78,7 +78,7 @@ static const OperatorSpec astra_operators[] = {
     { ".",  TOKEN_DOT,       OPERATOR_POSTFIX,  OPERATOR_LEFT,  BP_POSTFIX, 12, OPERATOR_NO_BIN_OP, OPERATOR_NO_UN_OP, NULL },
     { "[",  TOKEN_LBRACKET,  OPERATOR_POSTFIX,  OPERATOR_LEFT,  BP_POSTFIX, 12, OPERATOR_NO_BIN_OP, OPERATOR_NO_UN_OP, NULL },
     { "(",  TOKEN_LPAREN,    OPERATOR_POSTFIX,  OPERATOR_LEFT,  BP_POSTFIX, 12, OPERATOR_NO_BIN_OP, OPERATOR_NO_UN_OP, NULL },
-    { "?",  TOKEN_QUESTION,  OPERATOR_POSTFIX,  OPERATOR_LEFT,  0,          12, OPERATOR_NO_BIN_OP, OPERATOR_NO_UN_OP, "postfix try-operator (§12.2 row 12), parsed directly in the Pratt loop (parser.c) once Option/Result gave `?` something to unwrap" },
+    { "?",  TOKEN_QUESTION,  OPERATOR_POSTFIX,  OPERATOR_LEFT,  BP_POSTFIX, 12, OPERATOR_NO_BIN_OP, OPERATOR_NO_UN_OP, "postfix try-operator (§12.2 row 12), parsed directly in the Pratt loop (parser.c) once Option/Result gave `?` something to unwrap" },
 };
 
 /* Not implemented in Astra-0: `**` (specified as §12.2 row 10, right
