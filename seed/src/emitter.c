@@ -979,7 +979,7 @@ static void sp_check(Emitter *e, Node *node, int32_t before, int expected,
     int32_t want = before + expected;
     if (e->sp == want) return;
 
-    fprintf(stderr, "error:%s:%u: internal: stack imbalance in %s %s: "
+    fprintf(stderr, "%s:%u: error: internal: stack imbalance in %s %s: "
                     "expected height %d, emitter computed %d\n",
             node->loc.filename ? node->loc.filename : "?", node->loc.line,
             where, node_kind_name(node->kind), want, e->sp);
@@ -1732,7 +1732,7 @@ static void emit_expr(Emitter *e, Node *node) {
                  * silently diverge from the enclosing frame. Refuse at compile
                  * time instead. */
                 fprintf(stderr,
-                        "error:%s:%u: cannot assign to captured variable '%.*s' "
+                        "%s:%u: error: cannot assign to captured variable '%.*s' "
                         "(closures capture by value)\n",
                         node->loc.filename ? node->loc.filename : "?", line,
                         (int)name.len, name.str);
@@ -1776,7 +1776,8 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_BREAK: {
         if (e->loop_depth == 0) {
-            fprintf(stderr, "error: 'break' used outside of a loop\n");
+            fprintf(stderr, "%s:%u: error: 'break' used outside of a loop\n",
+                    node->loc.filename ? node->loc.filename : "?", node->loc.line);
             e->error_count++;
             break;
         }
@@ -1787,7 +1788,8 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_CONTINUE: {
         if (e->loop_depth == 0) {
-            fprintf(stderr, "error: 'continue' used outside of a loop\n");
+            fprintf(stderr, "%s:%u: error: 'continue' used outside of a loop\n",
+                    node->loc.filename ? node->loc.filename : "?", node->loc.line);
             e->error_count++;
             break;
         }
@@ -1856,7 +1858,7 @@ static void emit_expr(Emitter *e, Node *node) {
                 } else {
                     /* Analysis and emission must agree; a miss here would
                      * build an env with the wrong layout. */
-                    fprintf(stderr, "error:%s:%u: internal: capture '%.*s' "
+                    fprintf(stderr, "%s:%u: error: internal: capture '%.*s' "
                             "unresolved at creation site\n",
                             node->loc.filename ? node->loc.filename : "?", line,
                             (int)fv.caps[i].name.len, fv.caps[i].name.str);
@@ -1930,7 +1932,7 @@ static void emit_expr(Emitter *e, Node *node) {
         }
 
         if (e->sp != 0) {
-            fprintf(stderr, "error:%s:%u: internal: lambda leaves %d "
+            fprintf(stderr, "%s:%u: error: internal: lambda leaves %d "
                             "value(s) on the stack at return\n",
                     node->loc.filename ? node->loc.filename : "?", node->loc.line,
                     (int)e->sp);
@@ -2070,7 +2072,7 @@ static void emit_stmt(Emitter *e, Node *node) {
          * path inside the body unbalanced the stack — which is how the missing
          * implicit return used to pass unnoticed. */
         if (e->sp != 0) {
-            fprintf(stderr, "error:%s:%u: internal: function '%.*s' leaves %d "
+            fprintf(stderr, "%s:%u: error: internal: function '%.*s' leaves %d "
                             "value(s) on the stack at return\n",
                     node->loc.filename ? node->loc.filename : "?", node->loc.line,
                     (int)node->as.fn_decl.name.len, node->as.fn_decl.name.str,

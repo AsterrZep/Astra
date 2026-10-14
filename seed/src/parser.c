@@ -61,16 +61,15 @@ static void parser_error(Parser *p, const char *msg) {
      * a position but no cause, so the lexer's message wins whenever the offending
      * token is one — this is the single place every lexer error reaches the user
      * through. */
+    if (p->aborted) return;
     if (p->current.kind == TOKEN_ERROR) {
-        fprintf(stderr, "error:");
         srcloc_print(p->current.loc);
-        fprintf(stderr, ": %.*s\n", (int)p->current.text.len, p->current.text.str);
+        fprintf(stderr, ": error: %.*s\n", (int)p->current.text.len, p->current.text.str);
         p->had_error = true;
         return;
     }
-    fprintf(stderr, "error:");
     srcloc_print(p->current.loc);
-    fprintf(stderr, ": %s\n", msg);
+    fprintf(stderr, ": error: %s\n", msg);
     p->had_error = true;
 }
 
@@ -80,10 +79,12 @@ static void parser_error(Parser *p, const char *msg) {
 static bool parser_enter(Parser *p) {
     if (p->aborted) return false;
     if (p->depth >= PARSER_MAX_DEPTH) {
-        p->aborted = true;
         char msg[64];
         snprintf(msg, sizeof(msg), "nesting too deep (max %d)", PARSER_MAX_DEPTH);
-        parser_error(p, msg);
+        parser_error(p, msg);   /* must run before the seal: parser_error
+                                 * is silent once aborted, and reporting the
+                                 * first breach is its whole contract */
+        p->aborted = true;      /* seal: the unwind prints nothing more */
         return false;
     }
     p->depth++;
@@ -120,9 +121,9 @@ static void expect(Parser *p, TokenKind kind, const char *msg) {
         if (kind == TOKEN_GT && p->lexer->gt_depth > 0)
             p->lexer->gt_depth--;
     } else {
-        fprintf(stderr, "error:");
+        if (p->aborted) return; /* the breach report already ended the diagnostics */
         srcloc_print(p->current.loc);
-        fprintf(stderr, ": expected %s, got %s\n", msg, token_kind_name(p->current.kind));
+        fprintf(stderr, ": error: expected %s, got %s\n", msg, token_kind_name(p->current.kind));
         p->had_error = true;
     }
 }
@@ -1154,9 +1155,8 @@ static Node *parse_struct_decl(Parser *p, bool is_pub) {
         optional_semi(p);
         skip_newlines(p);
         if (p->current.loc.offset == iter_start) {
-            fprintf(stderr, "error:");
             srcloc_print(p->current.loc);
-            fprintf(stderr, ": aborting struct body after parse error\n");
+            fprintf(stderr, ": error: aborting struct body after parse error\n");
             break;
         }
     }
@@ -1195,9 +1195,8 @@ static Node *parse_enum_decl(Parser *p, bool is_pub) {
             /* The body loop guard: without progress one bad token would
              * report the same error forever. */
             if (p->current.loc.offset == iter_start) {
-                fprintf(stderr, "error:");
                 srcloc_print(p->current.loc);
-                fprintf(stderr, ": aborting enum body after parse error\n");
+                fprintf(stderr, ": error: aborting enum body after parse error\n");
                 break;
             }
         }
@@ -1281,9 +1280,8 @@ static Node *parse_enum_decl(Parser *p, bool is_pub) {
         optional_semi(p);
         skip_newlines(p);
         if (p->current.loc.offset == iter_start && !p->had_error) {
-            fprintf(stderr, "error:");
             srcloc_print(p->current.loc);
-            fprintf(stderr, ": aborting enum body after parse error\n");
+            fprintf(stderr, ": error: aborting enum body after parse error\n");
             break;
         }
     }
@@ -1336,9 +1334,8 @@ static Node *parse_trait_decl(Parser *p, bool is_pub) {
         n->as.trait_decl.items.data[n->as.trait_decl.items.len++] = fn;
         skip_newlines(p);
         if (p->current.loc.offset == iter_start && !p->had_error) {
-            fprintf(stderr, "error:");
             srcloc_print(p->current.loc);
-            fprintf(stderr, ": aborting trait body after parse error\n");
+            fprintf(stderr, ": error: aborting trait body after parse error\n");
             break;
         }
     }
@@ -1405,9 +1402,8 @@ static Node *parse_impl_block(Parser *p) {
         n->as.impl_decl.items.data[n->as.impl_decl.items.len++] = fn;
         skip_newlines(p);
         if (p->current.loc.offset == iter_start && !p->had_error) {
-            fprintf(stderr, "error:");
             srcloc_print(p->current.loc);
-            fprintf(stderr, ": aborting impl body after parse error\n");
+            fprintf(stderr, ": error: aborting impl body after parse error\n");
             break;
         }
     }
@@ -1557,9 +1553,8 @@ static Node *parse_from(Parser *p) {
         if (p->had_error && p->current.loc.offset == iter_start) {
             /* No progress: without this the loop would report the same bad
              * token forever (same guard as the enum body loop). */
-            fprintf(stderr, "error:");
             srcloc_print(p->current.loc);
-            fprintf(stderr, ": aborting import list after parse error\n");
+            fprintf(stderr, ": error: aborting import list after parse error\n");
             break;
         }
         SrcLoc         item_loc   = p->previous.loc;
