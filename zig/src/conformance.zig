@@ -18,6 +18,7 @@ const parser = @import("parser/parser.zig");
 const typechecker = @import("typechecker/typechecker.zig");
 const emitter = @import("emitter/emitter.zig");
 const vm = @import("vm/vm.zig");
+const diagnostics_mod = @import("diagnostics.zig");
 
 /// The seed suite lives outside the Zig package; resolve it relative to the
 /// build root. Candidates cover `zig build test` (cwd = zig/) and a direct
@@ -62,13 +63,27 @@ const Outcome = struct { parsed: bool, type_ok: bool, emit_ok: bool, ran: bool, 
 /// allocated `out_buf` receives the output; the VM writes through a fixed
 /// writer so nothing escapes to the test process's stdout.
 fn runProgram(arena: std.mem.Allocator, source: []const u8, name: []const u8, out_buf: []u8) Outcome {
+    // Every diagnostic this runner produces is *expected* (each ui/ case is
+    // rejected on purpose), so record them in a sink with echo off: a
+    // non-empty `result_stderr` makes the zig build runner render a
+    // failure-style `failed command: .../test --listen=-` line even on a green
+    // run (audit §6.6). Failures still surface — the Outcome flags carry them
+    // and the tests return an error naming the case.
+    var sink = diagnostics_mod.Sink.init(arena);
+    sink.echo = false;
+    defer sink.deinit();
+
     var tree = ast.Tree.init(arena, source);
     var p = parser.Parser.init(arena, source, &tree);
+    p.filename = name;
+    p.diag = &sink;
     const root = p.parse() catch return .{ .parsed = false, .type_ok = false, .emit_ok = false, .ran = false, .output = "", .runtime_error = null };
     var tc = typechecker.TypeChecker.init(arena, &tree, name) catch return .{ .parsed = true, .type_ok = false, .emit_ok = false, .ran = false, .output = "", .runtime_error = null };
+    tc.diag = &sink;
     tc.check(root);
     if (tc.error_count != 0) return .{ .parsed = true, .type_ok = false, .emit_ok = true, .ran = false, .output = "", .runtime_error = null };
     var em = emitter.Emitter.init(arena, &tree, name);
+    em.diag = &sink;
     // Phase 2.4 step 2b: same instance wiring as main.zig's single-file path.
     if (tc.instances.items.len > 0) {
         var em_inst = arena.alloc(emitter.Instance, tc.instances.items.len) catch return .{ .parsed = true, .type_ok = true, .emit_ok = false, .ran = false, .output = "", .runtime_error = null };
@@ -108,11 +123,17 @@ test "runs every non-ui seed conformance file and matches its expectations" {
     var walker = try dir.walk(std.testing.allocator);
     defer walker.deinit();
 
+    var seen: usize = 0; // every `.astra` the walker yields
+    var seen_ui: usize = 0; // ... of which `ui/` cases (the only skip here)
     var checked: usize = 0;
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.path, ".astra")) continue;
-        if (std.mem.startsWith(u8, entry.path, "ui/")) continue;
+        seen += 1;
+        if (std.mem.startsWith(u8, entry.path, "ui/")) {
+            seen_ui += 1;
+            continue;
+        }
 
         const source = try dir.readFileAlloc(io, entry.path, std.testing.allocator, .limited(1 << 20));
         defer std.testing.allocator.free(source);
@@ -125,7 +146,10 @@ test "runs every non-ui seed conformance file and matches its expectations" {
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |line| {
             if (directive(line, "EXPECT-RUNTIME-ERROR:")) |text| {
-                want_runtime_error = text;
+                // Seed semantics (`run_tests.sh` reads it with `head -1`): the
+                // FIRST directive wins; a later one on the same file used to
+                // silently override it here (audit §6.2).
+                if (want_runtime_error == null) want_runtime_error = text;
             } else if (directive(line, "EXPECT:")) |text| {
                 try expected.appendSlice(std.testing.allocator, text);
                 try expected.append(std.testing.allocator, '\n');
@@ -166,7 +190,13 @@ test "runs every non-ui seed conformance file and matches its expectations" {
         }
         checked += 1;
     }
-    try std.testing.expect(checked > 40);
+    // Audit §6.2 / exit criterion §0.3 (no loose `checked > N`): every `.astra`
+    // the walker yielded must have been processed — `ui/` is the only skip, so
+    // a walker/filter regression that drops files breaks this equality instead
+    // of quietly shrinking the count below a hand-picked floor. The floor that
+    // remains is derived: a tree the walker yields nothing from is not a suite.
+    try std.testing.expectEqual(seen - seen_ui, checked);
+    try std.testing.expect(seen > 0);
 }
 
 test "rejects every ui seed conformance file" {
@@ -179,11 +209,13 @@ test "rejects every ui seed conformance file" {
     var walker = try dir.walk(std.testing.allocator);
     defer walker.deinit();
 
+    var seen_ui: usize = 0; // every `ui/` case the walker yields
     var checked: usize = 0;
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.path, ".astra")) continue;
         if (!std.mem.startsWith(u8, entry.path, "ui/")) continue;
+        seen_ui += 1;
 
         const source = try dir.readFileAlloc(io, entry.path, std.testing.allocator, .limited(1 << 20));
         defer std.testing.allocator.free(source);
@@ -198,5 +230,9 @@ test "rejects every ui seed conformance file" {
         }
         checked += 1;
     }
-    try std.testing.expect(checked > 15);
+    // Same seen-vs-processed invariant as the runner above (audit §6.2): the
+    // `ui/` filter is the only skip, so every ui case the walker yields must
+    // be checked. The floor is derived — the suite must have ui cases at all.
+    try std.testing.expectEqual(seen_ui, checked);
+    try std.testing.expect(seen_ui > 0);
 }

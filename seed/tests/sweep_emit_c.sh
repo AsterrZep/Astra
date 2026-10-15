@@ -38,7 +38,11 @@ while IFS= read -r f; do
     total=$((total + 1))
 
     # The C backend is single-file: fixtures that import sibling modules
-    # need the loader the codegen does not drive.
+    # need the loader the codegen does not drive. WHY these 3 skip
+    # (module/import_from.astra, module/use_paths.astra, module/root_import.astra):
+    # the seed *discards* `import`/`from`/`use` (types them void, emits
+    # nothing — single-file driver, no loader), while zig actually resolves
+    # the module graph, so only zig can run their bodies to completion.
     if grep -qE '^(import|from|use) ' "$f"; then
         echo "skip $rel (module import)"
         skip=$((skip + 1))

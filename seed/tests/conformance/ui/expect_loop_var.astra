@@ -1,0 +1,8 @@
+// `for <ident> in <iter>` binds exactly one loop variable: a missing name is
+// reported with the seed's phrase (`expected loop variable name, got in`) —
+// audit §6.1 replaced zig's bare `expected IDENT, got in`.
+// EXPECT-ERROR: expected loop variable name, got in
+fn main() {
+    for in [1, 2] {
+    }
+}

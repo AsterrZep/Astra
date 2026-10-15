@@ -1,0 +1,76 @@
+// A loop body may nest EMITTER_MAX_LOOP_DEPTH (32) levels deep; the 33rd
+// `while` is a hard emitter error in both compilers, and since audit §6.3 it
+// carries the loop node's own `file:line:col:` position on both sides (the
+// seed used to print a bare `error: …` with no location at all).
+// EXPECT-ERROR: loop nesting too deep (max 32)
+
+fn main() {
+    let i = 0
+    while i < 32 {
+        while i < 32 {
+            while i < 32 {
+                while i < 32 {
+                    while i < 32 {
+                        while i < 32 {
+                            while i < 32 {
+                                while i < 32 {
+                                    while i < 32 {
+                                        while i < 32 {
+                                            while i < 32 {
+                                                while i < 32 {
+                                                    while i < 32 {
+                                                        while i < 32 {
+                                                            while i < 32 {
+                                                                while i < 32 {
+                                                                    while i < 32 {
+                                                                        while i < 32 {
+                                                                            while i < 32 {
+                                                                                while i < 32 {
+                                                                                    while i < 32 {
+                                                                                        while i < 32 {
+                                                                                            while i < 32 {
+                                                                                                while i < 32 {
+                                                                                                    while i < 32 {
+                                                                                                        while i < 32 {
+                                                                                                            while i < 32 {
+                                                                                                                while i < 32 {
+                                                                                                                    while i < 32 {
+                                                                                                                        while i < 32 {
+                                                                                                                            while i < 32 {
+                                                                                                                                while i < 32 {
+                                                                                                                                    while i < 32 {
+                                                                                                                                        print(i)
+                                                                                                                                    }
+                                                                                                                                }
+                                                                                                                            }
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

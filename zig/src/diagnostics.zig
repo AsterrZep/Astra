@@ -14,7 +14,19 @@
 //! no wiring at all.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const lexer = @import("lexer/lexer.zig");
+
+/// Audit §6.6: in a *test* build the unwired diagnostic path (`emit(null, …)`,
+/// a phase with no `Sink`) is dropped instead of echoed to stderr. The zig
+/// build runner renders failure-style formatting for any step with a
+/// non-empty `result_stderr`, so a green `zig build test` whose unit tests
+/// printed their own *expected* errors still showed a misleading
+/// `failed command: …/test --listen=-`. Tests that need the messages wire a
+/// `Sink` (`echo = false`, read `items`); flip this to `false` temporarily to
+/// see the unwired ones again while debugging. The CLI build is unaffected —
+/// `builtin.is_test` is false for the executable.
+pub var quiet_in_tests: bool = true;
 
 /// A single compiler diagnostic. `span` carries what the reporting phase
 /// actually knows: the parser and the type checker have a full `Loc`, the
@@ -103,6 +115,7 @@ pub fn format(buf: []u8, file: []const u8, span: lexer.Loc, msg: []const u8) []u
 }
 
 fn printOne(file: []const u8, span: lexer.Loc, msg: []const u8) void {
+    if (builtin.is_test and quiet_in_tests) return;
     var buf: [4096]u8 = undefined;
     std.debug.print("{s}\n", .{format(&buf, file, span, msg)});
 }

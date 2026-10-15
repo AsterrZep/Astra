@@ -1,0 +1,12 @@
+// A struct field is `name: Type` (ARCHITECTURE.md §10.1) — the ':' is not
+// optional, and since audit §6.1 both compilers spell its absence the seed's
+// way, quoted punctuation and all (`expected ':', got IDENT`, never
+// `expected :, got IDENT`).
+// EXPECT-ERROR: expected ':', got IDENT
+struct P {
+    x i32
+}
+
+fn main() {
+    print("x");
+}

@@ -22,12 +22,11 @@ root=$(cd "$here/../.." && pwd)
 SEED="$root/seed/astra-seed"
 ZIG="$root/zig/zig-out/bin/astra-zig"
 
-# First-line divergences accepted on purpose (PRE_LLVM_AUDIT §1):
-#   too_many_locals.astra — seed's Emitter has no filename at all
-#   (emitter.c add_local reports bare "error: ..."), and zig's own loc
-#   carries no line either; both sides are degraded, neither can grow a
-#   position without plumbing a SrcLoc through add_local.
-KNOWN_FIRST_LINE=" too_many_locals.astra "
+# No first-line divergence is accepted on purpose: audit §6.3 closed the last
+# one (too_many_locals.astra — the seed's Emitter had no filename at all and
+# zig's own loc carried no line; the seed now names the file from the module
+# node's SrcLoc, so both sides print `file: error: too many locals (max 256)`).
+KNOWN_FIRST_LINE=""
 
 for bin in "$SEED" "$ZIG"; do
     if [ ! -x "$bin" ]; then

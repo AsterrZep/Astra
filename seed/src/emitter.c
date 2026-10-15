@@ -251,7 +251,15 @@ static uint8_t add_local(Emitter *e, InternedString name) {
      * changing the program's scoping without a word. */
     if (e->local_count >= EMITTER_MAX_LOCALS) {
         if (!e->locals_limit_reported) {
-            fprintf(stderr, "error: too many locals (max %d)\n", EMITTER_MAX_LOCALS);
+            /* No node carries a position here, so the file alone is what the
+             * zig side prints for the same limit (`file: error: …`,
+             * diagnostics format with an empty span) — audit §6.3. */
+            if (e->filename)
+                fprintf(stderr, "%s: error: too many locals (max %d)\n",
+                        e->filename, EMITTER_MAX_LOCALS);
+            else
+                fprintf(stderr, "error: too many locals (max %d)\n",
+                        EMITTER_MAX_LOCALS);
             e->locals_limit_reported = true;
             e->error_count++;
         }
@@ -678,9 +686,20 @@ static void patch_push(Emitter *e, size_t **data, size_t *len, size_t *cap, size
     (*data)[(*len)++] = idx;
 }
 
-static LoopPatch *loop_enter(Emitter *e) {
+static LoopPatch *loop_enter(Emitter *e, SrcLoc loc) {
     if (e->loop_depth >= EMITTER_MAX_LOOP_DEPTH) {
-        fprintf(stderr, "error: loop nesting too deep (max %d)\n", EMITTER_MAX_LOOP_DEPTH);
+        /* Same position shape as the zig emitter's `errLoc`: the loop node's
+         * `file:line:col: error: …` (audit §6.3). The filename degrades the
+         * way diagnostics.format does when a component is missing. */
+        if (loc.filename)
+            fprintf(stderr, "%s:%u:%u: error: loop nesting too deep (max %d)\n",
+                    loc.filename, loc.line, loc.column, EMITTER_MAX_LOOP_DEPTH);
+        else if (e->filename)
+            fprintf(stderr, "%s:%u:%u: error: loop nesting too deep (max %d)\n",
+                    e->filename, loc.line, loc.column, EMITTER_MAX_LOOP_DEPTH);
+        else
+            fprintf(stderr, "%u:%u: error: loop nesting too deep (max %d)\n",
+                    loc.line, loc.column, EMITTER_MAX_LOOP_DEPTH);
         e->error_count++;
         return NULL;
     }
@@ -1598,7 +1617,7 @@ static void emit_expr(Emitter *e, Node *node) {
     case NODE_WHILE: {
         uint32_t line = node->loc.line;
         size_t loop_start = e->code_len;
-        LoopPatch *lp = loop_enter(e);
+        LoopPatch *lp = loop_enter(e, node->loc);
         if (lp) lp->continue_target = loop_start;
         emit_expr(e, node->as.while_expr.cond);
         emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
@@ -1646,7 +1665,7 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_inst_index(e, OPCODE_SET_LOCAL, slot_end, line);
 
             loop_start = e->code_len;
-            lp = loop_enter(e);
+            lp = loop_enter(e, node->loc);
 
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_end, line);
@@ -1677,7 +1696,7 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_inst_index(e, OPCODE_SET_LOCAL, slot_idx, line);
 
             loop_start = e->code_len;
-            lp = loop_enter(e);
+            lp = loop_enter(e, node->loc);
 
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_arr, line);
@@ -2254,6 +2273,13 @@ void emitter_set_instances(Emitter *e, GenericInstance *instances, size_t count)
 
 void emitter_emit(Emitter *e, Node *module) {
     if (!e || !module) return;
+    /* The module node's SrcLoc comes straight from the lexer, filename
+     * included: adopting it here gives every report that has *no* node to
+     * point at (`too many locals`) the same `file: error: …` first line the
+     * zig emitter prints (audit §6.3). Deriving it from the tree instead of
+     * threading it through `emitter_create` keeps the constructor — and its
+     * three callers (driver, the --emit-c path, the fuzzer) — untouched. */
+    if (!e->filename) e->filename = module->loc.filename;
     register_types(e, module);
     emit_stmt(e, module);
 

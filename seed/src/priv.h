@@ -131,6 +131,10 @@ typedef struct {
 struct Emitter {
     Arena        *arena;
     StringTable  *strings;
+    /* Source file being emitted: the reports that have no node to point at
+     * (`too many locals`) still name the file, matching the zig emitter's
+     * `file: error: …` shape (audit §6.3). */
+    const char   *filename;
 
     Instruction  *code;
     size_t         code_len;

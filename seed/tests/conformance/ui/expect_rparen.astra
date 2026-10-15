@@ -1,0 +1,7 @@
+// Every call argument list closes with ')' — a missing one is reported at the
+// token actually found, spelled the seed's way since audit §6.1 (quoted
+// punctuation, not the bare `)` of the token table).
+// EXPECT-ERROR: expected ')', got NEWLINE
+fn main() {
+    print(1
+}

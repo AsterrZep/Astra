@@ -253,6 +253,14 @@ pub const Emitter = struct {
         diagnostics_mod.emit(self.diag, self.filename, .{ .start = 0, .end = 0, .line = ln, .col = 0 }, fmt, args);
     }
 
+    /// Same report with the position the emitter actually has for the node —
+    /// `file:line:col:` like every other phase (used by the loop-nest guard,
+    /// whose callers hold a full `Loc`; audit §6.3).
+    fn errLoc(self: *Emitter, loc: lexer.Loc, comptime fmt: []const u8, args: anytype) void {
+        self.error_count += 1;
+        diagnostics_mod.emit(self.diag, self.filename, .{ .start = loc.start, .end = loc.end, .line = loc.line, .col = loc.col }, fmt, args);
+    }
+
     fn line(self: *const Emitter, idx: u32) u32 {
         return self.tree.loc(idx).line;
     }
@@ -759,9 +767,9 @@ pub const Emitter = struct {
 
     // ── Loop patch lists ──────────────────────────────────────────
 
-    fn loopEnter(self: *Emitter, ln: u32) ?*LoopPatch {
+    fn loopEnter(self: *Emitter, loc: lexer.Loc) ?*LoopPatch {
         if (self.loop_depth >= MAX_LOOP_DEPTH) {
-            self.err(ln, "loop nesting too deep (max {d})", .{MAX_LOOP_DEPTH});
+            self.errLoc(loc, "loop nesting too deep (max {d})", .{MAX_LOOP_DEPTH});
             return null;
         }
         const lp = &self.loops[self.loop_depth];
@@ -1384,7 +1392,7 @@ pub const Emitter = struct {
             },
             .while_expr => |w| {
                 const loop_start = self.code.items.len;
-                const lp = self.loopEnter(ln);
+                const lp = self.loopEnter(self.tree.loc(idx));
                 if (lp) |p| p.continue_target = loop_start;
                 self.emitExpr(w.cond);
                 self.emitInstOffset(.jump_if_false, 0, ln);
@@ -1396,7 +1404,7 @@ pub const Emitter = struct {
                 self.code.items[patch_exit].arg = .{ .offset = @intCast(exit_target - patch_exit) };
                 self.loopLeave(lp, exit_target);
             },
-            .for_expr => |f| self.emitFor(f, ln),
+            .for_expr => |f| self.emitFor(f, self.tree.loc(idx)),
             .assignment => |asn| self.emitAssign(asn, ln),
             .return_stmt => |maybe| {
                 if (maybe) |v| {
@@ -1718,7 +1726,8 @@ pub const Emitter = struct {
         self.sp = base + 1;
     }
 
-    fn emitFor(self: *Emitter, f: ast.ForExpr, ln: u32) void {
+    fn emitFor(self: *Emitter, f: ast.ForExpr, loc: lexer.Loc) void {
+        const ln = loc.line;
         const saved_depth = self.scope_depth;
         self.scope_depth += 1;
 
@@ -1750,7 +1759,7 @@ pub const Emitter = struct {
             self.emitInstIndex(.set_local, slot_end, ln);
 
             loop_start = self.code.items.len;
-            lp = self.loopEnter(ln);
+            lp = self.loopEnter(loc);
             self.emitInstIndex(.get_local, slot_idx, ln);
             self.emitInstIndex(.get_local, slot_end, ln);
             self.emitInst(if (r.inclusive) .le else .lt, ln);
@@ -1776,7 +1785,7 @@ pub const Emitter = struct {
             self.emitInstIndex(.set_local, slot_idx, ln);
 
             loop_start = self.code.items.len;
-            lp = self.loopEnter(ln);
+            lp = self.loopEnter(loc);
             self.emitInstIndex(.get_local, slot_idx, ln);
             self.emitInstIndex(.get_local, slot_arr, ln);
             self.emitInst(.len, ln);

@@ -207,8 +207,42 @@ pub const Parser = struct {
         }
     }
 
+    /// The seed never calls `expect()` bare: every site passes its own
+    /// description — quoted punctuation (`')'`, `':'`, `'in'`…) or a context
+    /// phrase (`function name`, `loop variable name`…). Sites whose seed
+    /// counterpart uses a stable quoted spelling resolve through this table
+    /// so `expect(tag)` alone already prints the seed's text (audit §6.1);
+    /// identifier-context sites pass their phrase through `expectMsg`
+    /// instead, mirroring the seed call site one-for-one.
+    fn seedExpectName(tag: lexer.Tag) []const u8 {
+        return switch (tag) {
+            .lparen => "'('",
+            .rparen => "')'",
+            .lbracket => "'['",
+            .rbracket => "']'",
+            .lbrace => "'{'",
+            .rbrace => "'}'",
+            .colon => "':'",
+            .comma => "','",
+            .semicolon => "';'",
+            .eq => "'='",
+            .arrow => "'->'",
+            .fat_arrow => "'=>'",
+            .lt => "'<'",
+            .gt => "'>'",
+            .pipe => "'|'",
+            .question => "'?'",
+            .at => "'@'",
+            .kw_in => "'in'",
+            // The one keyword the seed expects by bare spelling:
+            // `expect(p, TOKEN_IMPORT, "import")` (parse_from).
+            .kw_import => "import",
+            else => tag.seedName(),
+        };
+    }
+
     fn expect(self: *Parser, tag: lexer.Tag) anyerror!void {
-        return self.expectMsg(tag, tag.seedName());
+        return self.expectMsg(tag, seedExpectName(tag));
     }
 
     /// Seed-shaped `expect(p, kind, msg)`: prints
@@ -217,12 +251,7 @@ pub const Parser = struct {
     /// caller's description of what was expected (audit §1.3).
     fn expectMsg(self: *Parser, tag: lexer.Tag, msg: []const u8) anyerror!void {
         if (!self.check(tag)) {
-            var buf: [256]u8 = undefined;
-            const m = std.fmt.bufPrint(&buf, "expected {s}, got {s}", .{
-                msg,
-                self.current.tag.seedName(),
-            }) catch "parse error";
-            self.reportExact(m);
+            self.reportExpected(msg);
             return error.ParseError;
         }
         self.advance();
@@ -232,6 +261,35 @@ pub const Parser = struct {
         if (tag == .gt and self.tokenizer.gt_depth > 0) {
             self.tokenizer.gt_depth -= 1;
         }
+    }
+
+    /// The shared `expected %s, got %s` report behind `expectMsg` and
+    /// `expectOr`: the token actually found is spelled with the seed's
+    /// `token_kind_name`, what was expected with the caller's description.
+    fn reportExpected(self: *Parser, msg: []const u8) void {
+        var buf: [256]u8 = undefined;
+        const m = std.fmt.bufPrint(&buf, "expected {s}, got {s}", .{
+            msg,
+            self.current.tag.seedName(),
+        }) catch "parse error";
+        self.reportExact(m);
+    }
+
+    /// Report-and-continue form of `expectMsg`: prints the same line, records
+    /// the error and returns whether the token was there — the shape of the
+    /// seed's `expect()` where the caller *ignores* the return value and lets
+    /// a progress guard decide when to bail (struct/enum bodies: audit §6.1,
+    /// `parse_struct_decl` / `parse_enum_decl`).
+    fn expectOr(self: *Parser, tag: lexer.Tag, msg: []const u8) bool {
+        if (self.check(tag)) {
+            self.advance();
+            if (tag == .gt and self.tokenizer.gt_depth > 0) {
+                self.tokenizer.gt_depth -= 1;
+            }
+            return true;
+        }
+        self.reportExpected(msg);
+        return false;
     }
 
     /// Consume `;` and newlines. Records whether a genuine `;` was seen so the
@@ -460,7 +518,7 @@ pub const Parser = struct {
     fn parseFor(self: *Parser) anyerror!u32 {
         const loc = self.previous.loc;
         self.skipNewlines();
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "loop variable name");
         const name = self.previous.text;
         self.skipNewlines();
         try self.expect(.kw_in);
@@ -543,13 +601,13 @@ pub const Parser = struct {
                 self.report("too many type parameters (max 32)");
                 break;
             }
-            try self.expect(.identifier);
+            try self.expectMsg(.identifier, "type parameter name");
             const name = self.previous.text;
             var bounds: std.ArrayListUnmanaged(u32) = .empty;
             defer bounds.deinit(self.allocator);
             if (self.match(.colon)) {
                 while (true) {
-                    try self.expect(.identifier);
+                    try self.expectMsg(.identifier, "trait name");
                     const b = self.previous.text;
                     try bounds.append(self.allocator, try self.add(.{ .type_ident = .{ .name = b } }, self.previous.loc));
                     if (!self.match(.plus)) break;
@@ -566,7 +624,7 @@ pub const Parser = struct {
 
     fn parseFnDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "function name");
         const name = self.previous.text;
         const generics = try self.parseGenericParams();
 
@@ -576,7 +634,7 @@ pub const Parser = struct {
         try self.expect(.lparen);
         if (!self.check(.rparen)) {
             while (true) {
-                try self.expect(.identifier);
+                try self.expectMsg(.identifier, "parameter name");
                 const pname = self.previous.text;
                 // A typeless `self` receiver: the name stands alone (`,` or
                 // `)` follows), so `self: Point` keeps meaning an ordinary
@@ -627,7 +685,7 @@ pub const Parser = struct {
 
     fn parseStructDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "struct name");
         const name = self.previous.text;
         const generics = try self.parseGenericParams();
 
@@ -635,15 +693,31 @@ pub const Parser = struct {
         self.skipNewlines();
         var fields: std.ArrayListUnmanaged(u32) = .empty;
         defer fields.deinit(self.allocator);
+        // Seed shape (`parse_struct_decl`): a failed `expect` inside the field
+        // loop is *not* fatal — each missing piece is reported and the loop
+        // keeps going, the progress guard at the bottom is what bails, and the
+        // rest of the body is swallowed up to its closing brace (audit §6.1 /
+        // §1.5: without this zig lost the seed's `expected ':'` →
+        // `expected type` → `aborting struct body` cascade and jumped straight
+        // to `unexpected token in expression` at the stray `}`).
         while (!self.check(.rbrace) and !self.check(.eof) and !self.aborted) {
-            try self.expectMsg(.identifier, "field name");
+            const iter_start = self.current.loc.start;
+            _ = self.expectOr(.identifier, "field name");
             const fname = self.previous.text;
-            try self.expect(.colon);
+            _ = self.expectOr(.colon, "':'");
             const ftype = try self.parseType();
             try fields.append(self.allocator, try self.add(.{ .field_decl = .{ .name = fname, .type_node = ftype } }, self.previous.loc));
             self.optionalSemi();
             self.skipNewlines();
+            if (self.current.loc.start == iter_start) {
+                self.reportExact("aborting struct body after parse error");
+                break;
+            }
         }
+        // A malformed body is swallowed up to its closing brace (the expect
+        // below consumes it) so the stray '}' is not re-reported at module
+        // level — seed does the same.
+        while (!self.check(.rbrace) and !self.check(.eof)) self.advance();
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(fields.items);
         return self.add(.{ .struct_decl = .{ .name = name, .fields = list, .is_pub = is_pub, .generics = generics } }, loc);
@@ -651,7 +725,7 @@ pub const Parser = struct {
 
     fn parseEnumDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "enum name");
         const name = self.previous.text;
         const generics = try self.parseGenericParams();
 
@@ -660,7 +734,18 @@ pub const Parser = struct {
         var variants: std.ArrayListUnmanaged(u32) = .empty;
         defer variants.deinit(self.allocator);
         while (!self.check(.rbrace) and !self.check(.eof) and !self.aborted) {
-            try self.expectMsg(.identifier, "variant name");
+            // Seed checks `had_error && no progress` right after the name
+            // expect; a failed `expect` consumes nothing, so that condition
+            // holds exactly when the expect below fails — hence no separate
+            // progress variable here (the seed's bottom-of-loop twin cannot
+            // fire: a successful expect always moves `offset`).
+            if (!self.expectOr(.identifier, "variant name")) {
+                // Seed (`parse_enum_decl`): the body bails instead of looping
+                // — the `aborting enum body` line is the seed's, at the same
+                // position (audit §6.1 cheap win a).
+                self.reportExact("aborting enum body after parse error");
+                break;
+            }
             const vname = self.previous.text;
 
             var payload: ?u32 = null;
@@ -691,7 +776,7 @@ pub const Parser = struct {
                         self.skipNewlines();
                     }
                 }
-                try self.expect(.rparen);
+                try self.expectMsg(.rparen, "')' after variant payload");
                 const plist = try self.tree.addExtra(pfields.items);
                 payload = try self.add(.{ .payload = plist }, ploc);
             }
@@ -699,6 +784,9 @@ pub const Parser = struct {
             self.optionalSemi();
             self.skipNewlines();
         }
+        // Seed: swallow a malformed body up to its closing brace so the stray
+        // '}' is not re-reported at module level.
+        while (!self.check(.rbrace) and !self.check(.eof)) self.advance();
         try self.expect(.rbrace);
         const list = try self.tree.addExtra(variants.items);
         return self.add(.{ .enum_decl = .{ .name = name, .variants = list, .is_pub = is_pub, .generics = generics } }, loc);
@@ -709,7 +797,7 @@ pub const Parser = struct {
     /// (step 1, inert until Phase 2.4 step 2) follows the name.
     fn parseTraitDecl(self: *Parser, is_pub: bool) anyerror!u32 {
         const loc = self.previous.loc;
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "trait name");
         const name = self.previous.text;
         const generics = try self.parseGenericParams();
 
@@ -751,14 +839,14 @@ pub const Parser = struct {
     fn parseImplBlock(self: *Parser) anyerror!u32 {
         const loc = self.previous.loc;
         const generics = try self.parseGenericParams();
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "type name");
         const first = self.previous.text;
 
         var trait_name: ?[]const u8 = null;
         var type_name: []const u8 = undefined;
         if (self.match(.kw_for)) {
             trait_name = first;
-            try self.expect(.identifier);
+            try self.expectMsg(.identifier, "type name");
             type_name = self.previous.text;
         } else {
             type_name = first;
@@ -798,7 +886,7 @@ pub const Parser = struct {
         var is_mut = false;
         if (!is_const and self.match(.kw_mut)) is_mut = true;
 
-        try self.expect(.identifier);
+        try self.expectMsg(.identifier, "variable name");
         const name = self.previous.text;
 
         var type_node: ?u32 = null;
@@ -855,7 +943,7 @@ pub const Parser = struct {
         self.skipNewlines();
         var alias: ?[]const u8 = null;
         if (self.match(.kw_as)) {
-            try self.expect(.identifier);
+            try self.expectMsg(.identifier, "alias");
             alias = self.previous.text;
         }
         self.optionalSemi();
@@ -881,7 +969,7 @@ pub const Parser = struct {
             const item_loc = self.previous.loc;
             var alias: ?[]const u8 = null;
             if (self.match(.kw_as)) {
-                try self.expect(.identifier);
+                try self.expectMsg(.identifier, "alias");
                 alias = self.previous.text;
             }
             try items.append(self.allocator, try self.add(.{ .import_item = .{ .name = name, .alias = alias } }, item_loc));
@@ -965,8 +1053,12 @@ pub const Parser = struct {
             const list = try self.tree.addExtra(params.items);
             return self.add(.{ .type_fn = .{ .params = list, .ret = ret } }, loc);
         } else {
-            try self.expect(.identifier); // produces a clear error
-            unreachable;
+            // Seed (`parse_type_impl`): `parser_error(p, "expected type")`
+            // and a `void` fallback node — reporting must NOT abort the caller,
+            // or the struct/enum body loops lose the progress guard that
+            // produces the seed's `aborting … body` line (audit §6.1).
+            self.report("expected type");
+            n = try self.add(.{ .type_ident = .{ .name = "void" } }, self.current.loc);
         }
 
         if (self.match(.question)) {
@@ -1122,7 +1214,13 @@ pub const Parser = struct {
     fn parseBuiltinCtor(self: *Parser, comptime tag: BuiltinCtor) anyerror!u32 {
         const tok = self.current;
         self.advance();
-        try self.expect(.lparen);
+        // Seed wording differs per constructor (`'(' after some` / `ok` /
+        // `err`); the closing `')'` is the same for all three.
+        try self.expectMsg(.lparen, switch (tag) {
+            .some_expr => "'(' after some",
+            .ok_expr => "'(' after ok",
+            .err_expr => "'(' after err",
+        });
         const value = try self.parseExpression();
         try self.expect(.rparen);
         return switch (tag) {
@@ -1139,7 +1237,7 @@ pub const Parser = struct {
 
         if (!self.check(.pipe)) {
             while (true) {
-                try self.expect(.identifier);
+                try self.expectMsg(.identifier, "parameter name");
                 const pname = self.previous.text;
                 var ptype: ?u32 = null;
                 if (self.match(.colon)) ptype = try self.parseType();
@@ -1147,7 +1245,7 @@ pub const Parser = struct {
                 if (!self.match(.comma)) break;
             }
         }
-        try self.expect(.pipe);
+        try self.expectMsg(.pipe, "'|' after lambda parameters");
 
         var ret: ?u32 = null;
         if (self.match(.arrow)) ret = try self.parseType();
@@ -1319,7 +1417,7 @@ pub const Parser = struct {
                 var payload: ?u32 = null;
                 if (self.match(.lparen)) {
                     payload = try self.parsePattern();
-                    try self.expect(.rparen);
+                    try self.expectMsg(.rparen, "')' after pattern");
                 }
                 return self.add(.{ .pattern_builtin_variant = .{ .kind = kind, .payload = payload } }, tok.loc);
             },
@@ -1332,7 +1430,7 @@ pub const Parser = struct {
                 const tok = self.current;
                 self.advance();
                 if (self.match(.dot)) {
-                    try self.expect(.identifier);
+                    try self.expectMsg(.identifier, "variant name");
                     const variant_name = self.previous.text;
                     const obj = try self.add(.{ .identifier = tok.text }, tok.loc);
                     const variant = try self.add(.{ .field_access = .{ .object = obj, .field = variant_name } }, tok.loc);
@@ -1342,14 +1440,14 @@ pub const Parser = struct {
                         self.skipNewlines();
                         if (!self.check(.rparen)) {
                             while (true) {
-                                try self.expect(.identifier);
+                                try self.expectMsg(.identifier, "binding name");
                                 const bname = self.previous.text;
                                 try bindings.append(self.allocator, try self.add(.{ .pattern_bind = bname }, self.previous.loc));
                                 if (!self.match(.comma)) break;
                                 self.skipNewlines();
                             }
                         }
-                        try self.expect(.rparen);
+                        try self.expectMsg(.rparen, "')' after variant bindings");
                         const list = try self.tree.addExtra(bindings.items);
                         return self.add(.{ .pattern_variant_bind = .{ .variant = variant, .bindings = list } }, tok.loc);
                     }

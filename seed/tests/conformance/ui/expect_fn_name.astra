@@ -1,0 +1,6 @@
+// `fn` must be followed by a name: the expectation is a *phrase*, not the
+// token kind — `expected function name, got (`, identical in both compilers
+// since audit §6.1 (the seed never printed `expected IDENT, got (`).
+// EXPECT-ERROR: expected function name, got (
+fn (x: i32) {
+}
