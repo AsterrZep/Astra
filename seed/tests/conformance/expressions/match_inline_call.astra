@@ -1,0 +1,34 @@
+// A `match` used as a call argument shares the frame with the already-pushed
+// receiver: the hidden scrutinee local must land on the runtime frontier, not
+// on the declaration-count slot (audit §4.7 — was `cannot call non-function
+// value` in both VMs before the fix; the C backend was immune).
+// EXPECT: 20
+// EXPECT: 40
+// EXPECT: [1]
+// EXPECT: [1, 2, 3]
+// EXPECT: 6
+// EXPECT: 3
+// EXPECT: 6
+fn f(x: i32) -> i32 {
+    x * 2
+}
+
+enum Pair {
+    A(i32)
+    B
+}
+
+fn main() {
+    let x = 5
+    print(match x { 1 => 10, _ => 20 })
+    print(match x { _ => match x { _ => 40 } })
+    print([match x { _ => 1 }])
+    print([1, match x { _ => 2 }, 3])
+    print(f(match x { _ => 3 }))
+    // NEW_ENUM packs nf payload cells and the layout constant; the exact
+    // runtime model must shrink by nf+1 or the match below computes a
+    // frontier the frame never reaches.
+    let p = A(3)
+    print(match p { Pair.A(v) => v, Pair.B => 0 })
+    print(f(match p { Pair.A(v) => v, Pair.B => 0 }))
+}

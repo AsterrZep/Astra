@@ -1,0 +1,17 @@
+// Statement-position matches used to leave their internals (hidden
+// scrutinee, bindings, arm locals) behind as permanent frame residue, so a
+// later inline match computed its frontier from a height the runtime had
+// already drifted past. The close now reclaims that residue at the origin
+// (audit §4.7).
+// EXPECT: 2
+// EXPECT: 1
+// EXPECT: 7
+fn main() {
+    let x = 5
+    let a = match x { _ => 1 }
+    print(match x { _ => 2 })
+    print(a)
+    let mut i = 0
+    while i < 2 { let t = i; i = i + 1 }
+    print(match x { 5 => 7, _ => 0 })
+}

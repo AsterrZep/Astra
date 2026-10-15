@@ -1,0 +1,20 @@
+// EXPECT: 20
+// EXPECT: 2
+// EXPECT: 80
+//
+// C backend twin of conformance/expressions/match_inline_call.astra (audit §4.7).
+// The C backend was always immune to the inline-frame corruption (its layout
+// derives from max_slot), but the emitter now emits frontier padding and
+// per-path closes with much higher slot numbers — this pins that the same
+// bytecode round-trips through codegen: receiver and result stay contiguous
+// for CALL, and a branch local cannot land on the receiver.
+fn f(x: i32) -> i32 {
+    x * 2
+}
+
+fn main() {
+    let x = 5
+    print(match x { 1 => 10, _ => 20 })
+    print(if x == 5 { let a = 1; a + 1 } else { 0 })
+    print(f(match x { _ => { let t = 40; t } }))
+}

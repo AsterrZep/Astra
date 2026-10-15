@@ -855,7 +855,19 @@ static void emit_instructions(Codegen *cg,
         } break;
 
         case OPCODE_SET_LOCAL: {
-            cg_writef(cg, "    frame[%u] = frame[--sp];\n", inst.arg.index);
+            /* vm.c pops the value and then pads the frame with nil up to the
+             * slot before storing, so a fresh slot (at or above the current
+             * height) *extends* the frame instead of merely writing into it.
+             * Keeping that behaviour — together with starting sp at
+             * local_count in emit_fn_body — makes this backend's frame
+             * evolve exactly like the VM's, which is what lets the emitter
+             * address inline value constructs' hidden slots and closes
+             * statically in both backends (audit §4.7). */
+            cg_writef(cg,
+                "    { AstraValue _sv = frame[--sp];\n"
+                "      while (%u >= sp) { ASTRA_PUSH(frame, sp, astra_nil()); }\n"
+                "      frame[%u] = _sv; }\n",
+                inst.arg.index, inst.arg.index);
         } break;
 
         case OPCODE_GET_GLOBAL: {
@@ -1330,7 +1342,13 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
     if (max_slot < (uint16_t)fn->local_count)
         max_slot = fn->local_count;
 
-    cg_writef(cg, "    uint16_t sp = %u;\n", (unsigned)max_slot);
+    /* Start sp at local_count, not max_slot: at entry the VM's frame holds
+     * exactly the callee slot plus the parameters, and body locals appear as
+     * their SET_LOCALs execute (vm.c pads up to the slot). Mirroring that
+     * keeps both backends' frames in the same coordinates, which the
+     * emitter's static close targets rely on (audit §4.7). max_slot still
+     * sizes and pre-touches the frame array. */
+    cg_writef(cg, "    uint16_t sp = %u;\n", (unsigned)fn->local_count);
     cg_write(cg, "    (void)argc;\n");
     for (uint16_t i = 0; i < max_slot; i++) {
         cg_writef(cg, "    (void)frame[%u];\n", i);

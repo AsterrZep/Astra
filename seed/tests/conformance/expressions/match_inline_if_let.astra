@@ -1,0 +1,16 @@
+// A branch that declares a local allocates a hidden slot too: inline as a
+// call argument it used to overwrite the receiver exactly like the match did
+// (audit §4.7 — same frontier padding and per-branch close).
+// EXPECT: 2
+// EXPECT: 1
+// EXPECT: 3
+// EXPECT: 6
+fn main() {
+    let c = true
+    print(if c { let a = 1; a + 1 } else { 5 })
+    print(if c { let a = 1; a } else { let b = 2; b })
+    let d = false
+    print(if d { let a = 1; a } else { 3 })
+    let e = 2
+    print(if e == 2 { let a = 3; a * 2 } else { 0 })
+}

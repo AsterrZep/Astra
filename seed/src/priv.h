@@ -187,6 +187,15 @@ struct Emitter {
     int32_t        sp;
     int32_t        sp_high;
 
+    /* Exact VM frame height (frame-relative, callee slot included; 0 at
+     * module level). Unlike `sp`, which models the historical "locals don't
+     * count" convention, `rt` tracks what vm.c will actually see: SET_LOCAL
+     * pads the frame up to its slot, pop_scope reclaims table entries but
+     * never stack cells, and a value construct's pending values (a call's
+     * receiver) sit above the local table. The match/if emitters place their
+     * hidden slots, arm locals and closes at this frontier — see audit §4.7. */
+    int32_t        rt;
+
     /* Limit reports fire once each: a 300-local function would otherwise
      * print the same diagnostic per binding. */
     bool           code_limit_reported;

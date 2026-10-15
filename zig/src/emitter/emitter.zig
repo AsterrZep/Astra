@@ -144,6 +144,16 @@ pub const Emitter = struct {
     sp: i32 = 0,
     sp_high: i32 = 0,
 
+    /// Exact VM frame height (frame-relative, callee slot included; 0 at
+    /// module level). Unlike `sp`, which models the historical "locals don't
+    /// count" convention, `rt` tracks what the VM will actually see:
+    /// SET_LOCAL pads the frame up to its slot, popScope reclaims table
+    /// entries but never stack cells, and a value construct's pending values
+    /// (a call's receiver) sit above the local table. The match/if emitters
+    /// place their hidden slots, arm locals and closes at this frontier —
+    /// see audit §4.7.
+    rt: i32 = 0,
+
     /// Mangled prefix of this module's globals ("" for single-file).
     prefix: []const u8 = "",
     /// Names bound by import declarations, mapped to their real globals.
@@ -272,6 +282,21 @@ pub const Emitter = struct {
         if (self.sp > self.sp_high) self.sp_high = self.sp;
     }
 
+    /// Height effect of one instruction on the *actual* VM frame (`self.rt`).
+    /// Identical to `stackEffect` except for SET_LOCAL, where the VM pops the
+    /// value and then pads the frame with nil up to the slot: the new height
+    /// is max(rt-1, slot+1) — net 0 when the slot sits at the frontier (a
+    /// fresh local), -1 when it reuses a slot further down (audit §4.7).
+    fn rtAdvance(self: *Emitter, op: OpCode, operand: u32) void {
+        if (op == .set_local) {
+            const after_pop = self.rt - 1;
+            const after_pad: i32 = @as(i32, @intCast(operand)) + 1;
+            self.rt = @max(after_pop, after_pad);
+        } else {
+            self.rt += op.stackEffect(operand);
+        }
+    }
+
     fn emitInst(self: *Emitter, op: OpCode, ln: u32) void {
         // The limit is a policy, not a physical wall: report it, then keep
         // appending so the stack model stays consistent. error_count > 0
@@ -283,6 +308,10 @@ pub const Emitter = struct {
         }
         self.code.append(self.a, .{ .op = op, .line = ln }) catch @panic("OOM");
         self.spAdvance(op.stackEffect(0));
+        // SET_LOCAL's height effect depends on its slot operand, which
+        // emitInstIndex patches right after this returns — spSetIndex
+        // applies it there. Every SET_LOCAL must go through emitInstIndex.
+        if (op != .set_local) self.rtAdvance(op, 0);
     }
 
     /// Patch an instruction's `index` operand, correcting the stack model for
@@ -296,6 +325,13 @@ pub const Emitter = struct {
         };
         self.code.items[code_index].arg = .{ .index = value };
         self.spAdvance(op.stackEffect(value) - op.stackEffect(old));
+        if (op == .set_local) {
+            // emitInst skipped it: now that the slot is known, apply the
+            // exact runtime effect (see rtAdvance).
+            self.rtAdvance(op, value);
+        } else {
+            self.rt += op.stackEffect(value) - op.stackEffect(old);
+        }
     }
 
     fn spSetArgcount(self: *Emitter, code_index: usize, value: u8) void {
@@ -307,6 +343,7 @@ pub const Emitter = struct {
         };
         self.code.items[code_index].arg = .{ .arg_count = value };
         self.spAdvance(op.stackEffect(value) - op.stackEffect(old));
+        self.rt += op.stackEffect(value) - op.stackEffect(old);
     }
 
     fn emitInstIndex(self: *Emitter, op: OpCode, index: u32, ln: u32) void {
@@ -400,6 +437,63 @@ pub const Emitter = struct {
             self.locals[self.local_count - 1].depth >= self.scope_depth)
         {
             self.local_count -= 1;
+        }
+    }
+
+    /// Pad the local table up to the runtime frontier (audit §4.7). The
+    /// locals a value construct allocates (hidden scrutinee, arm bindings,
+    /// arm `let`s) must all land at or above every cell that is already
+    /// live: a call receiver pushed just before the construct sits at rt-1,
+    /// and a declaration-count slot below it would overwrite the receiver,
+    /// because SET_LOCAL writes at base+slot. After padding,
+    /// `local_count == rt`, so each of the construct's SET_LOCALs lands
+    /// exactly on the frontier and extends the frame the way the VM's own
+    /// padding does.
+    fn padLocalsToRt(self: *Emitter, rt: i32) void {
+        while (@as(i32, @intCast(self.local_count)) < rt) {
+            if (self.addLocal("$pad") == 0xFF)
+                break; // addLocal already reported the limit; recovery only
+        }
+    }
+
+    /// Close a value construct (audit §4.7). Its result sits on top of the
+    /// stack, but the cells the construct allocated — hidden scrutinee,
+    /// bindings, arm locals — sit between the frontier the construct entered
+    /// at and that result. Move the result down to `target` (the entry
+    /// frontier) and drop everything above it, so every path leaves exactly
+    /// one cell — the value — above where the construct started. The
+    /// receiver of a surrounding call then sits at target-1 with the result
+    /// at target, which keeps the callee and its arguments contiguous for
+    /// CALL's fn_idx = sp - 1 - argc.
+    fn emitValueClose(self: *Emitter, target: i32, ln: u32) void {
+        self.emitInstIndex(.set_local, @intCast(target), ln);
+        // rtAdvance's max() guarantees self.rt >= target + 1 after the store.
+        const extra = self.rt - (target + 1);
+        if (extra > 0) {
+            self.emitInst(.pop, ln);
+            self.spSetIndex(self.code.items.len - 1, @intCast(extra));
+        }
+    }
+
+    /// After a loop, the cells its declarations created exist only on paths
+    /// that executed them: a `while false { let t = 1 }` (or a `break`
+    /// before the declaration) leaves the frame lower than the linear model
+    /// counted, and a later value construct would compute its frontier from
+    /// a height the runtime never reached (audit §4.7). Re-create the
+    /// missing cells unconditionally at the exit target: each
+    /// `CONST nil; SET_LOCAL s` either fills a hole — extending the frame up
+    /// to the model, exactly like the VM's padding — or overwrites a dead
+    /// loop local with nil. Every exit path (natural, `break`, zero
+    /// iterations) then leaves the same height. The range starts at the
+    /// loop-entry frontier, so loop state that outlives an iteration (for_i,
+    /// for_arr, the loop variable) is only overwritten after the loop ends,
+    /// when it is dead.
+    fn emitLoopExitEnsure(self: *Emitter, entry_rt: i32, ln: u32) void {
+        var s = entry_rt;
+        while (s < self.rt) : (s += 1) {
+            const z = self.addNil();
+            self.emitInstIndex(.const_, z, ln);
+            self.emitInstIndex(.set_local, @intCast(s), ln);
         }
     }
 
@@ -778,11 +872,65 @@ pub const Emitter = struct {
         return lp;
     }
 
-    fn loopLeave(self: *Emitter, lp: ?*LoopPatch, exit_target: usize) void {
-        const p = lp orelse return;
-        for (p.breaks.items) |b| {
-            const off: i32 = @intCast(@as(i64, @intCast(exit_target)) - @as(i64, @intCast(b)));
-            self.code.items[b].arg = .{ .offset = off };
+    /// Finish a loop and return the real join point of its exit paths. A
+    /// `break` jumps out from wherever it appears: when it sits above the
+    /// exit height — because it skipped a match/if close on its way — its
+    /// path must drop those dead cells before joining, or a later value
+    /// construct would compute a frontier the runtime never reaches (audit
+    /// §4.7). `break_stmt` stashed the model height of each break in its
+    /// placeholder offset. Breaks at or below the exit height join directly:
+    /// the loop exit's ensure fills them in. The reconcile stubs are
+    /// appended here, so the caller must re-patch the natural exit (the
+    /// condition's jump) past them, onto the returned join.
+    fn loopLeave(self: *Emitter, lp: ?*LoopPatch) usize {
+        const p = lp orelse return self.code.items.len;
+        const exit_rt = self.rt;
+        const n = p.breaks.items.len;
+        const heights = self.a.alloc(i32, n) catch @panic("OOM");
+        const stub_jumps = self.a.alloc(usize, n) catch @panic("OOM");
+        for (p.breaks.items, 0..) |b, i| {
+            // break_stmt stashed the model height here; remember it before
+            // the offset is patched away.
+            heights[i] = switch (self.code.items[b].arg) {
+                .offset => |v| v,
+                else => 0,
+            };
+            stub_jumps[i] = 0;
+        }
+        for (p.breaks.items, 0..) |b, i| {
+            const extra = heights[i] - exit_rt;
+            if (extra > 0) {
+                const site = b;
+                const bline = self.code.items[site].line;
+                // The stub only runs on this break's path; keep the linear
+                // model (which continues at the natural exit) untouched.
+                const sp_save = self.sp;
+                const rt_save = self.rt;
+                const site_off: i32 = @intCast(@as(i64, @intCast(self.code.items.len)) - @as(i64, @intCast(site)));
+                self.code.items[site].arg = .{ .offset = site_off };
+                self.emitInst(.pop, bline);
+                self.spSetIndex(self.code.items.len - 1, @intCast(extra));
+                self.emitInstOffset(.jump, 0, bline);
+                self.sp = sp_save;
+                self.rt = rt_save;
+                stub_jumps[i] = self.code.items.len - 1;
+            }
+        }
+        const join = self.code.items.len;
+        for (p.breaks.items, 0..) |b, i| {
+            const stubbed = stub_jumps[i] != 0;
+            const extra = heights[i] - exit_rt;
+            if (!stubbed and extra <= 0) {
+                const off: i32 = @intCast(@as(i64, @intCast(join)) - @as(i64, @intCast(b)));
+                self.code.items[b].arg = .{ .offset = off };
+            }
+        }
+        for (p.breaks.items, 0..) |_, i| {
+            if (stub_jumps[i] != 0) {
+                const sj = stub_jumps[i];
+                const off: i32 = @intCast(@as(i64, @intCast(join)) - @as(i64, @intCast(sj)));
+                self.code.items[sj].arg = .{ .offset = off };
+            }
         }
         // `continue` jumps *back* to the continue target, so the offset is
         // negative; compute it signed rather than wrapping unsigned arithmetic.
@@ -791,6 +939,7 @@ pub const Emitter = struct {
             self.code.items[c].arg = .{ .offset = off };
         }
         self.loop_depth -= 1;
+        return join;
     }
 
     fn patchPush(self: *Emitter, list: *std.ArrayListUnmanaged(usize), idx: usize) void {
@@ -990,6 +1139,7 @@ pub const Emitter = struct {
         const saved_local_count = self.local_count;
         const saved_scope_depth = self.scope_depth;
         const saved_sp = self.sp;
+        const saved_rt = self.rt;
         const saved_capture_count = self.capture_count;
         var saved_locals: [MAX_LOCALS]Local = undefined;
         var i: usize = 0;
@@ -1013,6 +1163,10 @@ pub const Emitter = struct {
         const plist = self.tree.extraSlice(params);
         for (plist) |p| _ = self.addLocal(self.tree.node(p).param.name);
         fn_obj.param_count = @truncate(plist.len);
+        // The callee sits at slot 0 and the caller pushed the arguments
+        // contiguously after it: the body starts with exactly local_count
+        // cells on the frame (audit §4.7).
+        self.rt = @intCast(self.local_count);
 
         // A block ending in a tail expression already left its value on the
         // stack: that is the Rust-style implicit tail return.
@@ -1045,6 +1199,7 @@ pub const Emitter = struct {
         self.local_count = saved_local_count;
         self.scope_depth = saved_scope_depth;
         self.sp = saved_sp;
+        self.rt = saved_rt;
         self.capture_count = saved_capture_count;
         i = 0;
         while (i < saved_local_count) : (i += 1) self.locals[i] = saved_locals[i];
@@ -1113,6 +1268,7 @@ pub const Emitter = struct {
                     // a JUMP_IF_FALSE popped its condition, so both rejoin at
                     // the same height.
                     const base = self.sp;
+                    const rt0 = self.rt;
                     self.emitExpr(b.left);
                     self.emitInstOffset(.jump_if_false, 0, ln);
                     const patch_false = self.code.items.len - 1;
@@ -1126,17 +1282,21 @@ pub const Emitter = struct {
 
                     self.code.items[patch_false].arg = .{ .offset = @intCast(self.code.items.len - patch_false) };
                     self.sp = base;
+                    self.rt = rt0;
                     const false_idx = self.addConstant(bc.vBool(false));
                     self.emitInstIndex(.const_, false_idx, ln);
 
                     self.code.items[patch_right_false].arg = .{ .offset = @intCast(self.code.items.len - patch_right_false) };
                     self.sp = base;
+                    self.rt = rt0;
                     self.emitInstIndex(.const_, false_idx, ln);
 
                     self.code.items[patch_end].arg = .{ .offset = @intCast(self.code.items.len - patch_end) };
                     self.sp = base + 1;
+                    self.rt = rt0 + 1;
                 } else if (b.op == .or_or) {
                     const base = self.sp;
+                    const rt0 = self.rt;
                     self.emitExpr(b.left);
                     self.emitInstOffset(.jump_if_true, 0, ln);
                     const patch_true = self.code.items.len - 1;
@@ -1150,15 +1310,18 @@ pub const Emitter = struct {
 
                     self.code.items[patch_true].arg = .{ .offset = @intCast(self.code.items.len - patch_true) };
                     self.sp = base;
+                    self.rt = rt0;
                     const true_idx = self.addConstant(bc.vBool(true));
                     self.emitInstIndex(.const_, true_idx, ln);
 
                     self.code.items[patch_right_true].arg = .{ .offset = @intCast(self.code.items.len - patch_right_true) };
                     self.sp = base;
+                    self.rt = rt0;
                     self.emitInstIndex(.const_, true_idx, ln);
 
                     self.code.items[patch_end].arg = .{ .offset = @intCast(self.code.items.len - patch_end) };
                     self.sp = base + 1;
+                    self.rt = rt0 + 1;
                 } else {
                     self.emitExpr(b.left);
                     self.emitExpr(b.right);
@@ -1372,25 +1535,40 @@ pub const Emitter = struct {
             },
             .if_expr => |i| {
                 const base = self.sp;
+                // Exact runtime height at entry (audit §4.7): branch `let`s
+                // live in hidden locals just like the match's scrutinee, so
+                // they need the same frontier treatment to stay clear of a
+                // pending receiver.
+                const rt0 = self.rt;
+                const if_lc0 = self.local_count;
+                self.padLocalsToRt(rt0);
                 self.emitExpr(i.cond);
                 self.emitInstOffset(.jump_if_false, 0, ln);
                 const patch_false = self.code.items.len - 1;
                 self.emitBranchValue(i.then_block, "if", ln);
+                self.emitValueClose(rt0, ln);
                 self.emitInstOffset(.jump, 0, ln);
                 const patch_over = self.code.items.len - 1;
                 self.code.items[patch_false].arg = .{ .offset = @intCast(self.code.items.len - patch_false) };
                 // The else arm starts after JUMP_IF_FALSE popped the condition.
                 self.sp = base;
+                self.rt = rt0;
                 if (i.else_block) |eb| {
                     self.emitBranchValue(eb, "else", ln);
                 } else {
                     const z = self.addNil();
                     self.emitInstIndex(.const_, z, ln);
                 }
+                self.emitValueClose(rt0, ln);
                 self.code.items[patch_over].arg = .{ .offset = @intCast(self.code.items.len - patch_over) };
                 self.sp = base + 1;
+                self.rt = rt0 + 1;
+                // Reclaim the pad dummies; the branch locals were already
+                // popped by their blocks.
+                self.local_count = if_lc0;
             },
             .while_expr => |w| {
+                const entry_rt = self.rt;
                 const loop_start = self.code.items.len;
                 const lp = self.loopEnter(self.tree.loc(idx));
                 if (lp) |p| p.continue_target = loop_start;
@@ -1400,9 +1578,11 @@ pub const Emitter = struct {
                 self.emitLoopBody(w.body);
                 const back: i32 = @intCast(@as(i64, @intCast(loop_start)) - @as(i64, @intCast(self.code.items.len)));
                 self.emitInstOffset(.jump, back, ln);
-                const exit_target = self.code.items.len;
-                self.code.items[patch_exit].arg = .{ .offset = @intCast(exit_target - patch_exit) };
-                self.loopLeave(lp, exit_target);
+                const join = self.loopLeave(lp);
+                // The natural exit skips the break reconcile stubs.
+                self.code.items[patch_exit].arg = .{ .offset = @intCast(join - patch_exit) };
+                // Every exit path (natural, break, zero iterations) lands here.
+                self.emitLoopExitEnsure(entry_rt, ln);
             },
             .for_expr => |f| self.emitFor(f, self.tree.loc(idx)),
             .assignment => |asn| self.emitAssign(asn, ln),
@@ -1421,6 +1601,11 @@ pub const Emitter = struct {
                 } else {
                     self.emitInstOffset(.jump, 0, ln);
                     const lp = &self.loops[self.loop_depth - 1];
+                    // Stash this break's model height in the still-unused
+                    // offset: loopLeave needs to know how far this path sits
+                    // above the exit height, to drop any cells whose close
+                    // the jump skips (audit §4.7).
+                    self.code.items[self.code.items.len - 1].arg = .{ .offset = @intCast(self.rt) };
                     self.patchPush(&lp.breaks, self.code.items.len - 1);
                 }
             },
@@ -1520,13 +1705,21 @@ pub const Emitter = struct {
         self.emitInst(.new_enum, ln);
         self.code.items[self.code.items.len - 1].arg = .{ .index = (@as(u32, @intCast(vi)) << 16) | @as(u32, @intCast(nf)) };
         // emitInst applied stackEffect(new_enum, 0) = +1; the real effect is
-        // -nf (pops nf+1, pushes 1), so correct by -(nf+1).
+        // -nf (pops nf+1, pushes 1), so correct by -(nf+1). The exact runtime
+        // model needs the same correction (audit §4.7): a match after the
+        // construction computes its frontier from rt.
         self.spAdvance(-@as(i32, @intCast(nf)) - 1);
+        self.rt += -@as(i32, @intCast(nf)) - 1;
     }
 
     fn emitMatch(self: *Emitter, m: ast.MatchExpr, ln: u32) void {
         const arms = self.tree.extraSlice(m.arms);
         const base = self.sp;
+        // Exact runtime height at entry (audit §4.7). Pending expression
+        // values — a call's receiver — live above the local table, so the
+        // declaration-count slots below cannot hold the scrutinee: the store
+        // would overwrite the receiver.
+        const rt0 = self.rt;
 
         // Snapshot the local table before the hidden local and the arm
         // bindings: the epilogue restores it wholesale. Retracting only the
@@ -1535,6 +1728,12 @@ pub const Emitter = struct {
         // mirror of the seed).
         const match_lc0 = self.local_count;
 
+        // Pad past every live cell, then take the next slot: the hidden
+        // local lands exactly on the frontier where the scrutinee is about
+        // to be pushed, so SET_LOCAL stores it without moving it and without
+        // touching the receiver (audit §4.7).
+        self.padLocalsToRt(rt0);
+
         // The matched value lives in a hidden local; every arm tests against it.
         // addLocal already reports the limit; the 0xFF branch is recovery only.
         const slot = self.addLocal("$match_val");
@@ -1542,6 +1741,9 @@ pub const Emitter = struct {
             self.emitExpr(m.target);
             self.emitInstIndex(.set_local, slot, ln);
         }
+        // Every arm is entered at this height: the store landed on the
+        // frontier (slot == rt0), so it is net-zero on the frame.
+        const rt_test = self.rt;
 
         var end_jumps: std.ArrayListUnmanaged(usize) = .empty;
         var has_wildcard = false;
@@ -1550,7 +1752,19 @@ pub const Emitter = struct {
             const arm = self.tree.node(arm_idx).match_arm;
             const pat = arm.pattern;
             const body = arm.body;
+
+            // A builtin/variant arm's guard-false edge — which must start at
+            // arm-entry height again — is re-targeted onto the real next arm
+            // at the end of this iteration (audit §4.7). The Zig port emits
+            // each arm once (no duplicate plain copy), so the end of the
+            // iteration IS the real next arm.
+            var arm_gf_patch: usize = 0;
+            var arm_stub_jump: usize = 0;
+
+            // Each arm is entered after the previous arm's body jumped away,
+            // so it starts at the height the scrutinee store left behind.
             self.sp = base;
+            self.rt = rt_test;
 
             switch (self.tree.node(pat)) {
                 .pattern_wildcard => {
@@ -1560,13 +1774,19 @@ pub const Emitter = struct {
                         self.emitInstOffset(.jump_if_false, 0, ln);
                         const guard_false = self.code.items.len - 1;
                         self.emitBranchValue(body, "match arm", ln);
+                        self.emitValueClose(rt0, ln);
                         self.emitInstOffset(.jump, 0, ln);
                         self.patchPush(&end_jumps, self.code.items.len - 1);
+                        // Guard failed: push nil as the arm result, then close
+                        // it like any other path so the match still leaves
+                        // exactly one cell above its entry height.
+                        self.code.items[guard_false].arg = .{ .offset = @intCast(self.code.items.len - guard_false) };
                         const z = self.addNil();
                         self.emitInstIndex(.const_, z, ln);
-                        self.code.items[guard_false].arg = .{ .offset = @intCast(self.code.items.len - guard_false) };
+                        self.emitValueClose(rt0, ln);
                     } else {
                         self.emitBranchValue(body, "match arm", ln);
+                        self.emitValueClose(rt0, ln);
                         self.emitInstOffset(.jump, 0, ln);
                         self.patchPush(&end_jumps, self.code.items.len - 1);
                     }
@@ -1582,13 +1802,20 @@ pub const Emitter = struct {
                         self.emitInstOffset(.jump_if_false, 0, ln);
                         const guard_false = self.code.items.len - 1;
                         self.emitBranchValue(body, "match arm", ln);
+                        self.emitValueClose(rt0, ln);
                         self.emitInstOffset(.jump, 0, ln);
                         self.patchPush(&end_jumps, self.code.items.len - 1);
+                        // Guard failed: push nil as the arm result and close
+                        // it. (The `break` below still makes later arms
+                        // unreachable — audit §4.8 — so this path ends in the
+                        // MATCH_NONE trap, as before.)
+                        self.code.items[guard_false].arg = .{ .offset = @intCast(self.code.items.len - guard_false) };
                         const z = self.addNil();
                         self.emitInstIndex(.const_, z, ln);
-                        self.code.items[guard_false].arg = .{ .offset = @intCast(self.code.items.len - guard_false) };
+                        self.emitValueClose(rt0, ln);
                     } else {
                         self.emitBranchValue(body, "match arm", ln);
+                        self.emitValueClose(rt0, ln);
                         self.emitInstOffset(.jump, 0, ln);
                         self.patchPush(&end_jumps, self.code.items.len - 1);
                     }
@@ -1607,6 +1834,7 @@ pub const Emitter = struct {
                     // Extract payload fields into binding locals. Re-fetch the
                     // enum from the match local per field: SET_LOCAL writes a
                     // fixed stack slot, which can overwrite the enum data.
+                    const bind_count = self.tree.extraSlice(vb.bindings).len;
                     for (self.tree.extraSlice(vb.bindings), 0..) |b, k| {
                         self.emitInstIndex(.get_local, slot, ln);
                         self.emitInstIndex(.get_enum_field, @intCast(k), ln);
@@ -1622,13 +1850,43 @@ pub const Emitter = struct {
                         guard_false_jump = self.code.items.len - 1;
                     }
                     self.emitBranchValue(body, "match arm", ln);
+                    self.emitValueClose(rt0, ln);
                     self.emitInstOffset(.jump, 0, ln);
                     self.patchPush(&end_jumps, self.code.items.len - 1);
+
+                    // A failed guard jumps from *after* the bindings were
+                    // extracted: drop them on that edge, so the next arm's
+                    // tests start at arm-entry height again (audit §4.7). The
+                    // edge's final target is patched at the end of this
+                    // iteration.
+                    var guard_stub: usize = 0;
+                    const has_stub = arm.guard != null and bind_count > 0;
+                    if (has_stub) {
+                        guard_stub = self.code.items.len;
+                        self.emitInst(.pop, ln);
+                        self.spSetIndex(self.code.items.len - 1, @intCast(bind_count));
+                        self.emitInstOffset(.jump, 0, ln);
+                        arm_stub_jump = self.code.items.len - 1;
+                    }
 
                     const next_arm = self.code.items.len;
                     self.code.items[no_match].arg = .{ .offset = @intCast(next_arm - no_match) };
                     if (guard_false_jump) |gf| {
-                        self.code.items[gf].arg = .{ .offset = @intCast(next_arm - gf) };
+                        if (has_stub) {
+                            arm_gf_patch = gf;
+                            self.code.items[gf].arg = .{ .offset = @intCast(guard_stub - gf) };
+                        } else {
+                            self.code.items[gf].arg = .{ .offset = @intCast(next_arm - gf) };
+                        }
+                    }
+
+                    // Re-target the guard-false stub onto the real next arm:
+                    // this iteration ends here.
+                    if (arm_gf_patch != 0) {
+                        self.code.items[arm_gf_patch].arg = .{ .offset = @intCast(self.code.items.len - arm_gf_patch) };
+                    }
+                    if (arm_stub_jump != 0) {
+                        self.code.items[arm_stub_jump].arg = .{ .offset = @intCast(self.code.items.len - arm_stub_jump) };
                     }
                     continue :arms_loop;
                 },
@@ -1668,13 +1926,44 @@ pub const Emitter = struct {
                         guard_false_jump = self.code.items.len - 1;
                     }
                     self.emitBranchValue(body, "match arm", ln);
+                    self.emitValueClose(rt0, ln);
                     self.emitInstOffset(.jump, 0, ln);
                     self.patchPush(&end_jumps, self.code.items.len - 1);
+
+                    // A failed guard jumps from *after* the payload was
+                    // extracted into its binding local: drop that cell on the
+                    // edge so the next arm's tests start at arm-entry height
+                    // again (audit §4.7). The edge's final target is patched
+                    // at the end of this iteration.
+                    var guard_stub: usize = 0;
+                    const has_stub = arm.guard != null and
+                        if (b.payload) |payload| std.meta.activeTag(self.tree.node(payload)) == .pattern_bind else false;
+                    if (has_stub) {
+                        guard_stub = self.code.items.len;
+                        self.emitInst(.pop, ln);
+                        self.spSetIndex(self.code.items.len - 1, 1);
+                        self.emitInstOffset(.jump, 0, ln);
+                        arm_stub_jump = self.code.items.len - 1;
+                    }
 
                     const next_arm = self.code.items.len;
                     self.code.items[no_match].arg = .{ .offset = @intCast(next_arm - no_match) };
                     if (guard_false_jump) |gf| {
-                        self.code.items[gf].arg = .{ .offset = @intCast(next_arm - gf) };
+                        if (has_stub) {
+                            arm_gf_patch = gf;
+                            self.code.items[gf].arg = .{ .offset = @intCast(guard_stub - gf) };
+                        } else {
+                            self.code.items[gf].arg = .{ .offset = @intCast(next_arm - gf) };
+                        }
+                    }
+
+                    // Re-target the guard-false stub onto the real next arm:
+                    // this iteration ends here.
+                    if (arm_gf_patch != 0) {
+                        self.code.items[arm_gf_patch].arg = .{ .offset = @intCast(self.code.items.len - arm_gf_patch) };
+                    }
+                    if (arm_stub_jump != 0) {
+                        self.code.items[arm_stub_jump].arg = .{ .offset = @intCast(self.code.items.len - arm_stub_jump) };
                     }
                     continue :arms_loop;
                 },
@@ -1698,9 +1987,13 @@ pub const Emitter = struct {
                 guard_false_jump = self.code.items.len - 1;
             }
             self.emitBranchValue(body, "match arm", ln);
+            self.emitValueClose(rt0, ln);
             self.emitInstOffset(.jump, 0, ln);
             self.patchPush(&end_jumps, self.code.items.len - 1);
 
+            // A failed guard falls into the next arm's tests from
+            // arm-entry height: a plain pattern extracts no bindings, so no
+            // stub is needed on this edge (audit §4.7).
             const next_arm = self.code.items.len;
             self.code.items[no_match].arg = .{ .offset = @intCast(next_arm - no_match) };
             if (guard_false_jump) |gf| {
@@ -1710,8 +2003,11 @@ pub const Emitter = struct {
 
         if (!has_wildcard) {
             // No arm matched: trap instead of yielding a lying nil
-            // (audit §3.8 backstop, mirror of the seed).
+            // (audit §3.8 backstop, mirror of the seed). The instruction
+            // models the push it never delivers; control never reaches past
+            // the trap.
             self.sp = base;
+            self.rt = rt0;
             self.emitInst(.match_none, ln);
         }
 
@@ -1724,10 +2020,14 @@ pub const Emitter = struct {
         // whole table snapshot (no POP: the result sits on top) — audit §4.3.
         self.local_count = match_lc0;
         self.sp = base + 1;
+        // Every arm path closed itself to the entry frontier: the match
+        // leaves exactly one cell — its result — above where it started.
+        self.rt = rt0 + 1;
     }
 
     fn emitFor(self: *Emitter, f: ast.ForExpr, loc: lexer.Loc) void {
         const ln = loc.line;
+        const entry_rt = self.rt;
         const saved_depth = self.scope_depth;
         self.scope_depth += 1;
 
@@ -1809,9 +2109,11 @@ pub const Emitter = struct {
 
         const back: i32 = @intCast(@as(i64, @intCast(loop_start)) - @as(i64, @intCast(self.code.items.len)));
         self.emitInstOffset(.jump, back, ln);
-        const exit_target = self.code.items.len;
-        self.code.items[patch_exit].arg = .{ .offset = @intCast(exit_target - patch_exit) };
-        self.loopLeave(lp, exit_target);
+        const join = self.loopLeave(lp);
+        // The natural exit skips the break reconcile stubs.
+        self.code.items[patch_exit].arg = .{ .offset = @intCast(join - patch_exit) };
+        // Every exit path (natural, break, zero iterations) lands here.
+        self.emitLoopExitEnsure(entry_rt, ln);
 
         self.popScope();
         self.scope_depth = saved_depth;

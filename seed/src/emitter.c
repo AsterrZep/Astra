@@ -122,6 +122,21 @@ static void sp_advance(Emitter *e, int32_t delta) {
     if (e->sp > e->sp_high) e->sp_high = e->sp;
 }
 
+/* Height effect of one instruction on the *actual* VM frame (`e->rt`).
+ * Identical to opcode_stack_effect except for SET_LOCAL, where vm.c pops the
+ * value and then pads the frame with nil up to the slot: the new height is
+ * max(rt-1, slot+1) — net 0 when the slot sits at the frontier (a fresh
+ * local), -1 when it reuses a slot further down (audit §4.7). */
+static void rt_advance(Emitter *e, OpCode op, uint32_t operand) {
+    if (op == OPCODE_SET_LOCAL) {
+        int32_t after_pop = e->rt - 1;
+        int32_t after_pad = (int32_t)operand + 1;
+        e->rt = after_pop > after_pad ? after_pop : after_pad;
+    } else {
+        e->rt += opcode_stack_effect(op, operand);
+    }
+}
+
 /* Emit a store into the last link of an lvalue chain. `place` is the final
  * `.field` / `[index]` link with its `object` stripped: the caller already
  * emitted the read of the aggregate the chain walks to. Both store forms
@@ -173,6 +188,11 @@ static void emit_inst(Emitter *e, OpCode op, uint32_t line) {
     inst.line = line;
     e->code[e->code_len++] = inst;
     sp_advance(e, opcode_stack_effect(op, 0));
+    /* SET_LOCAL's height effect depends on its slot operand, which
+     * emit_inst_index patches right after this returns — sp_set_index
+     * applies it there. Every SET_LOCAL must go through emit_inst_index. */
+    if (op != OPCODE_SET_LOCAL)
+        rt_advance(e, op, 0);
 }
 
 /* Some operands are counts of values, so patching one changes the stack
@@ -183,6 +203,13 @@ static void sp_set_index(Emitter *e, size_t code_index, uint32_t value) {
     uint32_t old = e->code[code_index].arg.index;
     e->code[code_index].arg.index = value;
     sp_advance(e, opcode_stack_effect(op, value) - opcode_stack_effect(op, old));
+    if (op == OPCODE_SET_LOCAL) {
+        /* emit_inst skipped it: now that the slot is known, apply the exact
+         * runtime effect (see rt_advance). */
+        rt_advance(e, op, value);
+    } else {
+        e->rt += opcode_stack_effect(op, value) - opcode_stack_effect(op, old);
+    }
 }
 
 static void sp_set_argcount(Emitter *e, size_t code_index, uint8_t value) {
@@ -191,6 +218,7 @@ static void sp_set_argcount(Emitter *e, size_t code_index, uint8_t value) {
     uint8_t old = e->code[code_index].arg.arg_count;
     e->code[code_index].arg.arg_count = value;
     sp_advance(e, opcode_stack_effect(op, value) - opcode_stack_effect(op, old));
+    e->rt += opcode_stack_effect(op, value) - opcode_stack_effect(op, old);
 }
 
 static void emit_inst_index(Emitter *e, OpCode op, uint32_t index, uint32_t line) {
@@ -713,16 +741,70 @@ static LoopPatch *loop_enter(Emitter *e, SrcLoc loc) {
     return lp;
 }
 
-static void loop_leave(Emitter *e, LoopPatch *lp, size_t exit_target) {
-    if (!lp) return;
-    for (size_t i = 0; i < lp->break_len; i++) {
-        e->code[lp->breaks[i]].arg.offset = (int32_t)(exit_target - lp->breaks[i]);
+static size_t loop_leave(Emitter *e, LoopPatch *lp) {
+    /* Returns the real join point of the loop's exit paths. A `break` jumps
+     * out from wherever it appears: when it sits above the exit height —
+     * because it skipped a match/if close on its way — its path must drop
+     * those dead cells before joining, or a later value construct would
+     * compute a frontier the runtime never reaches (audit §4.7). NODE_BREAK
+     * stashed the model height of each break in its placeholder offset.
+     * Breaks at or below the exit height join directly: the loop exit's
+     * ensure fills them in. The reconcile stubs are appended here, so the
+     * caller must re-patch the natural exit (the condition's jump) past
+     * them, onto the returned join. */
+    if (!lp) return e->code_len;
+    int32_t exit_rt = e->rt;
+    size_t n = lp->break_len;
+    int32_t *heights = NULL;
+    size_t *stub_jumps = NULL;
+    if (n > 0) {
+        heights = arena_alloc(e->arena, sizeof(int32_t) * n, _Alignof(int32_t));
+        stub_jumps = arena_alloc(e->arena, sizeof(size_t) * n, _Alignof(size_t));
+    }
+    for (size_t i = 0; i < n; i++) {
+        /* NODE_BREAK stashed the model height here; remember it before the
+         * offset is patched away. */
+        heights[i] = e->code[lp->breaks[i]].arg.offset;
+        stub_jumps[i] = 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        int32_t extra = (heights ? heights[i] : 0) - exit_rt;
+        if (extra > 0 && heights && stub_jumps) {
+            size_t site = lp->breaks[i];
+            uint32_t bline = e->code[site].line;
+            /* The stub only runs on this break's path; keep the linear model
+             * (which continues at the natural exit) untouched. */
+            int32_t sp_save = e->sp;
+            int32_t rt_save = e->rt;
+            e->code[site].arg.offset = (int32_t)(e->code_len - site);
+            emit_inst(e, OPCODE_POP, bline);
+            sp_set_index(e, e->code_len - 1, (uint32_t)extra);
+            emit_inst_offset(e, OPCODE_JUMP, 0, bline);
+            e->sp = sp_save;
+            e->rt = rt_save;
+            stub_jumps[i] = e->code_len - 1;
+        }
+    }
+    size_t join = e->code_len;
+    for (size_t i = 0; i < n; i++) {
+        bool stubbed = stub_jumps && stub_jumps[i] != 0;
+        int32_t extra = heights ? heights[i] - exit_rt : 0;
+        if (!stubbed && extra <= 0)
+            e->code[lp->breaks[i]].arg.offset =
+                (int32_t)(join - lp->breaks[i]);
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (stub_jumps && stub_jumps[i] != 0) {
+            e->code[stub_jumps[i]].arg.offset =
+                (int32_t)(join - stub_jumps[i]);
+        }
     }
     for (size_t i = 0; i < lp->cont_len; i++) {
         e->code[lp->conts[i]].arg.offset =
             (int32_t)(lp->continue_target - lp->conts[i]);
     }
     e->loop_depth--;
+    return join;
 }
 
 /* Emit a branch so that it always leaves exactly one value on the stack.
@@ -898,6 +980,59 @@ static InternedString hidden_local(Emitter *e, const char *tag) {
     char buf[32];
     snprintf(buf, sizeof(buf), "$%s", tag);
     return string_intern_cstr(e->strings, buf);
+}
+
+/* Pad the local table up to the runtime frontier (audit §4.7). The locals a
+ * value construct allocates (hidden scrutinee, arm bindings, arm `let`s) must
+ * all land at or above every cell that is already live: a call receiver
+ * pushed just before the construct sits at rt-1, and a declaration-count slot
+ * below it would overwrite the receiver, because SET_LOCAL writes at
+ * base+slot. After padding, `local_count == rt`, so each of the construct's
+ * SET_LOCALs lands exactly on the frontier and extends the frame the way the
+ * VM's own padding does. */
+static void pad_locals_to_rt(Emitter *e, int32_t rt) {
+    while ((int32_t)e->local_count < rt) {
+        if (add_local(e, hidden_local(e, "pad")) == 0xFF)
+            break; /* add_local already reported the limit; recovery only */
+    }
+}
+
+/* Close a value construct (audit §4.7). Its result sits on top of the stack,
+ * but the cells the construct allocated — hidden scrutinee, bindings, arm
+ * locals — sit between the frontier the construct entered at and that result.
+ * Move the result down to `target` (the entry frontier) and drop everything
+ * above it, so every path leaves exactly one cell — the value — above where
+ * the construct started. The receiver of a surrounding call then sits at
+ * target-1 with the result at target, which keeps the callee and its
+ * arguments contiguous for OPCODE_CALL's fn_idx = sp - 1 - argc. */
+static void emit_value_close(Emitter *e, int32_t target, uint32_t line) {
+    emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)target, line);
+    /* rt_advance's max() guarantees e->rt >= target + 1 after the store. */
+    int32_t extra = e->rt - (target + 1);
+    if (extra > 0) {
+        emit_inst(e, OPCODE_POP, line);
+        sp_set_index(e, e->code_len - 1, (uint32_t)extra);
+    }
+}
+
+/* After a loop, the cells its declarations created exist only on paths that
+ * executed them: a `while false { let t = 1 }` (or a `break` before the
+ * declaration) leaves the frame lower than the linear model counted, and a
+ * later value construct would compute its frontier from a height the runtime
+ * never reached (audit §4.7). Re-create the missing cells unconditionally at
+ * the exit target: each `CONST nil; SET_LOCAL s` either fills a hole —
+ * extending the frame up to the model, exactly like the VM's padding — or
+ * overwrites a dead loop local with nil. Every exit path (natural, `break`,
+ * zero iterations) then leaves the same height. The range starts at the
+ * loop-entry frontier, so loop state that outlives an iteration (for_i,
+ * for_arr, the loop variable) is only overwritten after the loop ends, when
+ * it is dead. */
+static void emit_loop_exit_ensure(Emitter *e, int32_t entry_rt, uint32_t line) {
+    for (int32_t s = entry_rt; s < e->rt; s++) {
+        uint32_t z = add_constant(e, value_nil());
+        emit_inst_index(e, OPCODE_CONST, z, line);
+        emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)s, line);
+    }
 }
 
 /* -----------------------------------------------------------
@@ -1078,6 +1213,7 @@ static void emit_expr(Emitter *e, Node *node) {
              * skip target is entered right after a JUMP_IF_FALSE popped its
              * condition, so both rejoin at the same height. */
             int32_t base = e->sp;
+            int32_t rt0 = e->rt;
             emit_expr(e, node->as.binary.left);
             emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
             size_t patch_false = e->code_len - 1;
@@ -1091,18 +1227,22 @@ static void emit_expr(Emitter *e, Node *node) {
 
             e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
             e->sp = base;
+            e->rt = rt0;
             uint32_t false_idx = add_constant(e, value_bool(false));
             emit_inst_index(e, OPCODE_CONST, false_idx, line);
 
             e->code[patch_right_false].arg.offset = (int32_t)(e->code_len - patch_right_false);
             e->sp = base;
+            e->rt = rt0;
             emit_inst_index(e, OPCODE_CONST, false_idx, line);
 
             e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
             e->sp = base + 1;
+            e->rt = rt0 + 1;
         } else if (node->as.binary.op == OP_OR) {
             /* Short-circuit OR: any true operand decides the result. */
             int32_t base = e->sp;
+            int32_t rt0 = e->rt;
             emit_expr(e, node->as.binary.left);
             emit_inst_offset(e, OPCODE_JUMP_IF_TRUE, 0, line);
             size_t patch_true = e->code_len - 1;
@@ -1116,15 +1256,18 @@ static void emit_expr(Emitter *e, Node *node) {
 
             e->code[patch_true].arg.offset = (int32_t)(e->code_len - patch_true);
             e->sp = base;
+            e->rt = rt0;
             uint32_t true_idx = add_constant(e, value_bool(true));
             emit_inst_index(e, OPCODE_CONST, true_idx, line);
 
             e->code[patch_right_true].arg.offset = (int32_t)(e->code_len - patch_right_true);
             e->sp = base;
+            e->rt = rt0;
             emit_inst_index(e, OPCODE_CONST, true_idx, line);
 
             e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
             e->sp = base + 1;
+            e->rt = rt0 + 1;
         } else {
             emit_expr(e, node->as.binary.left);
             emit_expr(e, node->as.binary.right);
@@ -1221,8 +1364,11 @@ static void emit_expr(Emitter *e, Node *node) {
                     /* emit_inst applied opcode_stack_effect(op, 0) = +1, but
                      * the real effect is -(nf) [pops nf+1, pushes 1]. Correct
                      * the model: +1 already applied, need total -(nf), so
-                     * adjust by -(nf) - (+1) = -(nf+1). */
+                     * adjust by -(nf) - (+1) = -(nf+1). The exact runtime
+                     * model needs the same correction (audit §4.7): a match
+                     * after the construction computes its frontier from rt. */
                     sp_advance(e, -(int)nf - 1);
+                    e->rt += -(int)nf - 1;
                     break;
                 }
             }
@@ -1335,6 +1481,11 @@ static void emit_expr(Emitter *e, Node *node) {
         uint32_t line = node->loc.line;
         size_t n_arms = node->as.match_expr.arms.len;
         int32_t base = e->sp;
+        /* Exact runtime height at entry (audit §4.7). Pending expression
+         * values — a call's receiver — live above the local table, so the
+         * declaration-count slots below cannot hold the scrutinee: the store
+         * would overwrite the receiver. */
+        int32_t rt0 = e->rt;
 
         /* Snapshot the local table before the hidden local and the arm
          * bindings: the epilogue restores it wholesale. Retracting only
@@ -1342,6 +1493,12 @@ static void emit_expr(Emitter *e, Node *node) {
          * binding name in the table, so a later same-name reference
          * resolved to the dead payload slot (audit §4.3). */
         uint16_t match_lc0 = e->local_count;
+
+        /* Pad past every live cell, then take the next slot: the hidden
+         * local lands exactly on the frontier where the scrutinee is about
+         * to be pushed, so SET_LOCAL stores it without moving it and without
+         * touching the receiver (audit §4.7). */
+        pad_locals_to_rt(e, rt0);
 
         /* The matched value lives in a hidden local; every arm tests against
          * it and the arm body supplies the match's result. */
@@ -1352,6 +1509,9 @@ static void emit_expr(Emitter *e, Node *node) {
         }
         emit_expr(e, node->as.match_expr.target);
         emit_inst_index(e, OPCODE_SET_LOCAL, slot, line);
+        /* Every arm is entered at this height: the store landed on the
+         * frontier (slot == rt0), so it is net-zero on the frame. */
+        int32_t rt_test = e->rt;
 
         size_t *end_jumps = NULL;
         size_t  end_len = 0, end_cap = 0;
@@ -1361,11 +1521,19 @@ static void emit_expr(Emitter *e, Node *node) {
             Node *pat  = node->as.match_expr.arms.data[i].pattern;
             Node *body = node->as.match_expr.arms.data[i].body;
 
+            /* Builtin/variant arms fall through into a duplicate plain copy
+             * of themselves (re-testing there is harmless), so their
+             * guard-false edge — which must start at arm-entry height again —
+             * is re-targeted past that copy onto the real next arm at the end
+             * of the iteration (audit §4.7). */
+            size_t arm_gf_patch = 0, arm_stub_jump = 0;
+
             /* Each arm is entered after the previous arm's body jumped away, so
              * it starts at the height the scrutinee store left behind. The
              * pattern tests are net zero: GET_LOCAL, push the pattern, EQ,
              * JUMP_IF_TRUE. */
             e->sp = base;
+            e->rt = rt_test;
 
             if (pat && pat->kind == NODE_PATTERN_WILDCARD) {
                 has_wildcard = true;
@@ -1375,14 +1543,19 @@ static void emit_expr(Emitter *e, Node *node) {
                     emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
                     size_t guard_false = e->code_len - 1;
                     emit_branch_value(e, body, "match arm", line);
+                    emit_value_close(e, rt0, line);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
-                    /* Guard failed: push nil as the arm result. */
+                    /* Guard failed: push nil as the arm result, then close it
+                     * like any other path so the match still leaves exactly
+                     * one cell above its entry height. */
+                    e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
                     uint32_t z = add_constant(e, value_nil());
                     emit_inst_index(e, OPCODE_CONST, z, line);
-                    e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
+                    emit_value_close(e, rt0, line);
                 } else {
                     emit_branch_value(e, body, "match arm", line);
+                    emit_value_close(e, rt0, line);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
                 }
@@ -1405,14 +1578,20 @@ static void emit_expr(Emitter *e, Node *node) {
                     emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
                     size_t guard_false = e->code_len - 1;
                     emit_branch_value(e, body, "match arm", line);
+                    emit_value_close(e, rt0, line);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
-                    /* Guard failed: push nil as the arm result. */
+                    /* Guard failed: push nil as the arm result and close it.
+                     * (The `break` below still makes later arms unreachable —
+                     * audit §4.8 — so this path ends in the MATCH_NONE trap,
+                     * as before.) */
+                    e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
                     uint32_t z = add_constant(e, value_nil());
                     emit_inst_index(e, OPCODE_CONST, z, line);
-                    e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
+                    emit_value_close(e, rt0, line);
                 } else {
                     emit_branch_value(e, body, "match arm", line);
+                    emit_value_close(e, rt0, line);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
                 }
@@ -1463,13 +1642,36 @@ static void emit_expr(Emitter *e, Node *node) {
                 }
 
                 emit_branch_value(e, body, "match arm", line);
+                emit_value_close(e, rt0, line);
                 emit_inst_offset(e, OPCODE_JUMP, 0, line);
                 patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+
+                /* A failed guard jumps from *after* the bindings were
+                 * extracted: drop them on that edge, so the next arm's tests
+                 * start at arm-entry height again (audit §4.7). The edge's
+                 * final target is patched after the duplicate plain copy,
+                 * below. */
+                size_t guard_stub = 0;
+                bool has_stub = has_guard && bind_count > 0;
+                if (has_stub) {
+                    guard_stub = e->code_len;
+                    emit_inst(e, OPCODE_POP, line);
+                    sp_set_index(e, e->code_len - 1, (uint32_t)bind_count);
+                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                    arm_stub_jump = e->code_len - 1;
+                }
 
                 size_t next_arm = e->code_len;
                 e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
                 if (has_guard) {
-                    e->code[guard_false_jump].arg.offset = (int32_t)(next_arm - guard_false_jump);
+                    if (has_stub) {
+                        arm_gf_patch = guard_false_jump;
+                        e->code[guard_false_jump].arg.offset =
+                            (int32_t)(guard_stub - guard_false_jump);
+                    } else {
+                        e->code[guard_false_jump].arg.offset =
+                            (int32_t)(next_arm - guard_false_jump);
+                    }
                 }
             }
 
@@ -1514,13 +1716,36 @@ static void emit_expr(Emitter *e, Node *node) {
                 }
 
                 emit_branch_value(e, body, "match arm", line);
+                emit_value_close(e, rt0, line);
                 emit_inst_offset(e, OPCODE_JUMP, 0, line);
                 patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+
+                /* A failed guard jumps from *after* the payload was extracted
+                 * into its binding local: drop that cell on the edge so the
+                 * next arm's tests start at arm-entry height again (audit
+                 * §4.7). The edge's final target is patched after the
+                 * duplicate plain copy, below. */
+                size_t guard_stub = 0;
+                bool has_stub = has_guard && payload && payload->kind == NODE_PATTERN_BIND;
+                if (has_stub) {
+                    guard_stub = e->code_len;
+                    emit_inst(e, OPCODE_POP, line);
+                    sp_set_index(e, e->code_len - 1, 1);
+                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                    arm_stub_jump = e->code_len - 1;
+                }
 
                 size_t next_arm = e->code_len;
                 e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
                 if (has_guard) {
-                    e->code[guard_false_jump].arg.offset = (int32_t)(next_arm - guard_false_jump);
+                    if (has_stub) {
+                        arm_gf_patch = guard_false_jump;
+                        e->code[guard_false_jump].arg.offset =
+                            (int32_t)(guard_stub - guard_false_jump);
+                    } else {
+                        e->code[guard_false_jump].arg.offset =
+                            (int32_t)(next_arm - guard_false_jump);
+                    }
                 }
             }
 
@@ -1548,14 +1773,25 @@ static void emit_expr(Emitter *e, Node *node) {
             }
 
             emit_branch_value(e, body, "match arm", line);
+            emit_value_close(e, rt0, line);
             emit_inst_offset(e, OPCODE_JUMP, 0, line);
             patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
 
+            /* A failed guard falls into the next arm's tests from
+             * arm-entry height: a plain pattern extracts no bindings, so no
+             * stub is needed on this edge (audit §4.7). */
             size_t next_arm = e->code_len;
             e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
             if (has_guard) {
                 e->code[guard_false_jump].arg.offset = (int32_t)(next_arm - guard_false_jump);
             }
+
+            /* Re-target the builtin/variant arms' guard-false stubs past the
+             * duplicate plain copy emitted above, onto the real next arm. */
+            if (arm_gf_patch)
+                e->code[arm_gf_patch].arg.offset = (int32_t)(e->code_len - arm_gf_patch);
+            if (arm_stub_jump)
+                e->code[arm_stub_jump].arg.offset = (int32_t)(e->code_len - arm_stub_jump);
         }
 
         if (!has_wildcard) {
@@ -1568,6 +1804,7 @@ static void emit_expr(Emitter *e, Node *node) {
              * stack model as the old `CONST nil`; control never reaches
              * past the trap. */
             e->sp = base;
+            e->rt = rt0;
             emit_inst(e, OPCODE_MATCH_NONE, line);
         }
 
@@ -1581,6 +1818,9 @@ static void emit_expr(Emitter *e, Node *node) {
          * live local slots below the result (audit §4.3). */
         e->local_count = match_lc0;
         e->sp = base + 1;
+        /* Every arm path closed itself to the entry frontier: the match
+         * leaves exactly one cell — its result — above where it started. */
+        e->rt = rt0 + 1;
     } break;
 
     case NODE_RANGE: {
@@ -1604,10 +1844,17 @@ static void emit_expr(Emitter *e, Node *node) {
     case NODE_IF: {
         uint32_t line2 = node->loc.line;
         int32_t base = e->sp;
+        /* Exact runtime height at entry (audit §4.7): branch `let`s live in
+         * hidden locals just like the match's scrutinee, so they need the
+         * same frontier treatment to stay clear of a pending receiver. */
+        int32_t rt0 = e->rt;
+        uint16_t if_lc0 = e->local_count;
+        pad_locals_to_rt(e, rt0);
         emit_expr(e, node->as.if_expr.cond);
         emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line2);
         size_t patch_false = e->code_len - 1;
         emit_branch_value(e, node->as.if_expr.then_block, "if", line2);
+        emit_value_close(e, rt0, line2);
         emit_inst_offset(e, OPCODE_JUMP, 0, line2);
         size_t patch_over = e->code_len - 1;
         e->code[patch_false].arg.offset = (int32_t)(e->code_len - patch_false);
@@ -1615,18 +1862,25 @@ static void emit_expr(Emitter *e, Node *node) {
          * it starts at the height the then arm did. Both arms must then agree,
          * which emit_branch_value enforces. */
         e->sp = base;
+        e->rt = rt0;
         if (node->as.if_expr.else_block) {
             emit_branch_value(e, node->as.if_expr.else_block, "else", line2);
         } else {
             uint32_t z = add_constant(e, value_nil());
             emit_inst_index(e, OPCODE_CONST, z, line2);
         }
+        emit_value_close(e, rt0, line2);
         e->code[patch_over].arg.offset = (int32_t)(e->code_len - patch_over);
         e->sp = base + 1;
+        e->rt = rt0 + 1;
+        /* Reclaim the pad dummies; the branch locals were already popped by
+         * their blocks. */
+        e->local_count = if_lc0;
     } break;
 
     case NODE_WHILE: {
         uint32_t line = node->loc.line;
+        int32_t entry_rt = e->rt;
         size_t loop_start = e->code_len;
         LoopPatch *lp = loop_enter(e, node->loc);
         if (lp) lp->continue_target = loop_start;
@@ -1636,13 +1890,16 @@ static void emit_expr(Emitter *e, Node *node) {
         emit_loop_body(e, node->as.while_expr.body);
         emit_inst_offset(e, OPCODE_JUMP,
             (int32_t)((int64_t)loop_start - (int64_t)e->code_len), line);
-        size_t exit_target = e->code_len;
-        e->code[patch_exit].arg.offset = (int32_t)(exit_target - patch_exit);
-        loop_leave(e, lp, exit_target);
+        size_t join = loop_leave(e, lp);
+        /* The natural exit skips the break reconcile stubs. */
+        e->code[patch_exit].arg.offset = (int32_t)(join - patch_exit);
+        /* Every exit path (natural, break, zero iterations) lands here. */
+        emit_loop_exit_ensure(e, entry_rt, line);
     } break;
 
     case NODE_FOR: {
         uint32_t line = node->loc.line;
+        int32_t entry_rt = e->rt;
         Node *iter = node->as.for_expr.iter;
         uint8_t saved_depth = e->scope_depth;
         e->scope_depth++;
@@ -1734,9 +1991,11 @@ static void emit_expr(Emitter *e, Node *node) {
 
         emit_inst_offset(e, OPCODE_JUMP,
             (int32_t)((int64_t)loop_start - (int64_t)e->code_len), line);
-        size_t exit_target = e->code_len;
-        e->code[patch_exit].arg.offset = (int32_t)(exit_target - patch_exit);
-        loop_leave(e, lp, exit_target);
+        size_t join = loop_leave(e, lp);
+        /* The natural exit skips the break reconcile stubs. */
+        e->code[patch_exit].arg.offset = (int32_t)(join - patch_exit);
+        /* Every exit path (natural, break, zero iterations) lands here. */
+        emit_loop_exit_ensure(e, entry_rt, line);
 
         pop_scope(e);
         e->scope_depth = saved_depth;
@@ -1819,6 +2078,10 @@ static void emit_expr(Emitter *e, Node *node) {
         }
         emit_inst_offset(e, OPCODE_JUMP, 0, node->loc.line);
         LoopPatch *lp = &e->loops[e->loop_depth - 1];
+        /* Stash this break's model height in the still-unused offset:
+         * loop_leave needs to know how far this path sits above the exit
+         * height, to drop any cells whose close the jump skips (audit §4.7). */
+        e->code[e->code_len - 1].arg.offset = e->rt;
         patch_push(e, &lp->breaks, &lp->break_len, &lp->break_cap, e->code_len - 1);
     } break;
 
@@ -1915,6 +2178,7 @@ static void emit_expr(Emitter *e, Node *node) {
         uint16_t saved_local_count = e->local_count;
         uint8_t saved_scope_depth = e->scope_depth;
         int32_t saved_sp = e->sp;
+        int32_t saved_rt = e->rt;
         uint16_t saved_capture_count = e->capture_count;
 
         /* Save the local slots we're about to overwrite (indices 0..N-1) */
@@ -1949,6 +2213,10 @@ static void emit_expr(Emitter *e, Node *node) {
         for (size_t i = 0; i < fn->param_count; i++) {
             add_local(e, node->as.lambda.params.data[i]);
         }
+        /* The callee sits at slot 0 and the caller pushed the arguments
+         * contiguously after it: the body starts with exactly local_count
+         * cells on the frame (audit §4.7). */
+        e->rt = (int32_t)e->local_count;
 
         bool body_is_block = node->as.lambda.body &&
                              node->as.lambda.body->kind == NODE_BLOCK;
@@ -1990,6 +2258,7 @@ static void emit_expr(Emitter *e, Node *node) {
         e->local_count = saved_local_count;
         e->scope_depth = saved_scope_depth;
         e->sp = saved_sp;
+        e->rt = saved_rt;
         e->capture_count = saved_capture_count;
 
         /* Restore the local slots we overwrote */
@@ -2042,6 +2311,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         uint16_t saved_local_count = e->local_count;
         uint8_t saved_scope_depth = e->scope_depth;
         int32_t saved_sp = e->sp;
+        int32_t saved_rt = e->rt;
         uint16_t saved_capture_count = e->capture_count;
 
         e->code = NULL;
@@ -2067,6 +2337,10 @@ static void emit_stmt(Emitter *e, Node *node) {
         for (size_t i = 0; i < fn->param_count; i++) {
             add_local(e, node->as.fn_decl.params.data[i]);
         }
+        /* The callee sits at slot 0 and the caller pushed the arguments
+         * contiguously after it: the body starts with exactly local_count
+         * cells on the frame (audit §4.7). */
+        e->rt = (int32_t)e->local_count;
 
         /* A block ending in a tail expression already left that value on the
          * stack, so it becomes the return value: this is the Rust-style
@@ -2131,6 +2405,7 @@ static void emit_stmt(Emitter *e, Node *node) {
         e->local_count = saved_local_count;
         e->scope_depth = saved_scope_depth;
         e->sp = saved_sp;
+        e->rt = saved_rt;
         e->capture_count = saved_capture_count;
 
         /* Top-level functions become globals so any function can call them
