@@ -65,6 +65,14 @@ typedef AstraValue (*AstraFnPtr)(AstraValue *args, uint8_t argc);
 typedef struct {
     AstraFnPtr fun;
     uint8_t    param_count;
+    /* Mirror of the VM's FnObj.code (audit §5.6): NULL exactly for builtins,
+     * which have no bytecode — their "body" is C behind `fun`. User functions
+     * and closures carry their own C function address here so CALL dispatch
+     * can tell a builtin apart from a real 255-parameter function, which vm.c
+     * does with `param_count == 255 && code == NULL` (vm.c OPCODE_CALL).
+     * Without the marker a closure with exactly 255 params took the builtin
+     * path and silently returned nil. */
+    const void *code;
     /* Closure env: captured values in capture-index order (capture-by-value,
      * ARCHITECTURE.md §30.5). Plain functions leave it NULL; a lambda body
      * reads it as frame[0].as.fn_val->env[i] because slot 0 of the frame is
@@ -123,8 +131,10 @@ struct AstraValue {
  * runtime failures possible at all.
  *
  * astra_runtime_error() itself sits at the bottom of this header; declaring it
- * here lets the operations above it report through it. */
+ * here lets the operations above it report through it. astra_try_unwind() is
+ * the sibling entry used only by the `?` propagation path (audit §5.2). */
 static inline void astra_runtime_error(const char *msg);
+static inline void astra_try_unwind(void);
 
 /* Source position of the instruction currently executing, written by the
  * generated code before each fallible instruction (cg_set_line in
@@ -195,7 +205,9 @@ extern AstraValue astra_error_value;
         (val) = *(val).as.wrapped; \
     } else if ((val).tag == AST_ERR || (val).tag == AST_NIL) { \
         astra_error_value = (val); \
-        longjmp(astra_error_jmp, 1); \
+        /* The `?` propagation unwind — the ONLY longjmp into a try context \
+         * (audit §5.2). Hard runtime errors never land here; they exit. */ \
+        astra_try_unwind(); \
     } else { \
         /* Same wording as the VM's TRY_UNWRAP default arm, so a `?` on a plain
          * value reads identically from either backend. */ \
@@ -271,9 +283,11 @@ static inline AstraValue astra_array_empty(int64_t capacity) {
 }
 
 /* Create a raw pointer value. Used for struct/enum definition objects, which the
- * generated code stores in a global and pushes as an opaque handle. */
-static inline AstraValue astra_ptr(void *p) {
-    AstraValue r; r.tag = AST_PTR; r.as.ptr_val = p; return r;
+ * generated code stores in a `static const` global and pushes as an opaque
+ * handle: the parameter is `const void *` so those literals pass without
+ * -Wdiscarded-qualifiers (audit §5.8). */
+static inline AstraValue astra_ptr(const void *p) {
+    AstraValue r; r.tag = AST_PTR; r.as.ptr_val = (void *)p; return r;
 }
 
 /* Create a unit enum variant value (`Color.Red`). Pattern matching compares the
@@ -286,11 +300,26 @@ static inline AstraValue astra_enum_val(const char *enum_name, const char *varia
     return r;
 }
 
-/* Create a function value. */
+/* Create a function value (user function or closure): `code` is non-NULL,
+ * the VM's marker for "this has bytecode to run". */
 static inline AstraValue astra_fn_new(AstraFnPtr fun, uint8_t param_count) {
     AstraFn *f = (AstraFn *)malloc(sizeof(AstraFn));
     f->fun = fun;
     f->param_count = param_count;
+    f->code = (const void *)fun;
+    f->env = NULL;
+    f->env_len = 0;
+    AstraValue r; r.tag = AST_FN; r.as.fn_val = f; return r;
+}
+
+/* Create a *builtin* function value: `code` stays NULL, exactly like a VM
+ * FnObj with no bytecode (audit §5.6). CALL dispatch picks the builtin path
+ * only when param_count == 255 *and* code == NULL. */
+static inline AstraValue astra_builtin_fn_new(AstraFnPtr fun, uint8_t param_count) {
+    AstraFn *f = (AstraFn *)malloc(sizeof(AstraFn));
+    f->fun = fun;
+    f->param_count = param_count;
+    f->code = NULL;
     f->env = NULL;
     f->env_len = 0;
     AstraValue r; r.tag = AST_FN; r.as.fn_val = f; return r;
@@ -304,6 +333,7 @@ static inline AstraValue astra_closure_new(AstraFnPtr fun, uint8_t param_count,
     AstraFn *f = (AstraFn *)malloc(sizeof(AstraFn));
     f->fun = fun;
     f->param_count = param_count;
+    f->code = (const void *)fun;
     f->env = NULL;
     f->env_len = env_len;
     if (env_len > 0) {
@@ -329,10 +359,17 @@ static inline AstraValue astra_wrap_some(AstraValue inner) {
     *heap = inner;
     AstraValue r; r.tag = AST_SOME; r.as.wrapped = heap; return r;
 }
+/* Unwrap ok/err/some into the inner value.
+ *
+ * Deliberately does NOT free `val.as.wrapped` (audit §5.1): `val` is a copy of
+ * the value, so freeing the heap cell here frees memory the *original* value
+ * still points at — two `match`es over the same `ok` double-freed it, and
+ * printing the scrutinee after a match was a heap-use-after-free (ASan). The
+ * VM frees nothing (arena, process lifetime), and this whole runtime follows
+ * the same process-lifetime allocation model: wrappers are malloc'd once and
+ * never released, which is what makes aliasing between copies safe. */
 static inline AstraValue astra_unwrap(AstraValue val) {
-    AstraValue inner = *val.as.wrapped;
-    free(val.as.wrapped);
-    return inner;
+    return *val.as.wrapped;
 }
 static inline uint8_t astra_tag_is(AstraValue val, int tag) {
     return (uint8_t)(val.tag == (AstraTag)tag);
@@ -740,12 +777,29 @@ static inline AstraValue astra_builtin_print(AstraValue *args, uint8_t argc) {
 }
 
 /* ---------- Runtime error ---------- */
+/* A *hard* runtime error (div-by-zero, bounds, nil receiver, …) is fatal, full
+ * stop: print `file:line: runtime error: msg` exactly like the VM's driver
+ * (driver.c) and exit(1). Audit §5.2: this used to longjmp whenever a try
+ * context was armed, so a function that both used `?` and hit a runtime error
+ * returned a stale astra_error_value instead — the program printed the error
+ * and then kept running with `nil`, exit 0, while the VM and zig aborted with
+ * exit 1. The setjmp context exists for one thing only: propagating `?`
+ * (none/err), which goes through astra_try_unwind() below. */
 static inline void astra_runtime_error(const char *msg) {
     fprintf(stderr, "%s:%u: runtime error: %s\n", astra_file, astra_line, msg);
-    if (astra_error_active) {
-        longjmp(astra_error_jmp, 1);
-    }
     exit(1);
+}
+
+/* The `?` none/err unwind: the only longjmp into a try context. Reached
+ * exclusively from ASTRA_TRY_UNWRAP, whose landing pad is the function
+ * prologue's ASTRA_TRY_CONTEXT() (or the module-level one), so the context is
+ * always armed when this runs — `astra_error_active` doubles as the guard
+ * against an unarmed longjmp (undefined behaviour), mirroring the VM's
+ * frame_count == 0 check on its TRY_UNWRAP none/err arms. */
+static inline void astra_try_unwind(void) {
+    if (!astra_error_active)
+        astra_runtime_error("try operator outside function");
+    longjmp(astra_error_jmp, 1);
 }
 
 /* ---------- Bounds-checked array access ----------
@@ -757,6 +811,12 @@ static inline void astra_runtime_error(const char *msg) {
  * a .astra file. The message is worded like the VM's so that the two backends
  * stay comparable. */
 static inline void astra_array_bounds(AstraArray *a, int64_t idx) {
+    /* Defensive: every caller (codegen.c INDEX/SET_INDEX) now guards its
+     * receiver first, so NULL cannot arrive — wording matches what those
+     * guards print for an AST_ARRAY with a NULL pointer, i.e. what vm.c says
+     * for VAL_ARRAY with a NULL pointer: "cannot index array" (audit §5.3). */
+    if (!a)
+        astra_runtime_error("cannot index array");
     if (idx < 0 || idx >= a->len) {
         char msg[96];
         snprintf(msg, sizeof(msg), "index %ld out of bounds (len %ld)",

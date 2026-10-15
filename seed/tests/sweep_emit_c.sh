@@ -56,8 +56,22 @@ while IFS= read -r f; do
     fi
 
     cf="${f%.astra}.c"
-    if ! gcc -w -I"$root/seed/src" -o "$work/bin" "$cf" -lm 2>"$work/gcc.err"; then
+    # -Wall -Wextra, not -w (audit §5.8): a warning in generated C is a
+    # codegen defect (discarded qualifiers, unused things, …) and must fail
+    # the sweep like any other divergence source.
+    if ! gcc -Wall -Wextra -I"$root/seed/src" -o "$work/bin" "$cf" -lm 2>"$work/gcc.err"; then
         echo "FAIL $rel: gcc rejected the generated C"
+        sed 's/^/    /' "$work/gcc.err"
+        fail=$((fail + 1))
+        continue
+    fi
+    # gcc exits 0 on warnings and still links a binary, so check its stderr
+    # explicitly — otherwise the -Wall -Wextra above would stay silent.
+    # If a warning class ever proves pervasive and unfixable, suppress it HERE
+    # with a narrowly scoped -Wno-<class> and a comment naming it; do not
+    # bring blanket -w back.
+    if [ -s "$work/gcc.err" ]; then
+        echo "FAIL $rel: gcc warned about the generated C"
         sed 's/^/    /' "$work/gcc.err"
         fail=$((fail + 1))
         continue

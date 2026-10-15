@@ -1,0 +1,13 @@
+// EXPECT-RUNTIME-ERROR: nil_receiver.astra:12: runtime error: cannot index nil
+//
+// Receiver guard for OPCODE_INDEX (audit §5.3): `a` is nil (declared, never
+// initialized), and the generated C used to dereference `_arr.as.array_val`
+// unchecked — SIGSEGV (exit 139) with no message at all, while the VM
+// reported "cannot index nil". codegen.c now mirrors vm.c's kind check
+// before touching the pointer, and after audit §5.2 the failure is a clean
+// exit 1. The runner requires exit 1 plus this exact message on both
+// backends, so neither the old crash nor a silently swallowed error can pass.
+fn main() {
+    let a: [i32]
+    print(a[0])
+}

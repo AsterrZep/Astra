@@ -114,12 +114,19 @@ static bool opcode_is_fallible(OpCode op) {
     case OPCODE_BIT_AND: case OPCODE_BIT_OR: case OPCODE_BIT_XOR:
     case OPCODE_SHL: case OPCODE_SHR: case OPCODE_BIT_NOT:
     case OPCODE_INDEX: case OPCODE_SET_INDEX:
+    case OPCODE_LEN:
+    case OPCODE_GET_FIELD: case OPCODE_SET_FIELD:
     case OPCODE_CALL: case OPCODE_TRY_UNWRAP:
         return true;
     default:
         return false;
     }
 }
+
+/* Value of the `last_line` dedup shadow meaning "the global astra_line does
+ * NOT hold our line": nothing stored yet, or a call may have overwritten it.
+ * No real source line equals it, so the next fallible op re-stores astra_line. */
+#define CG_NO_LINE ((unsigned)-1)
 
 /* Emits `astra_line = <line>;` only when the line changed: consecutive
  * fallible instructions from the same source line share one store. */
@@ -450,6 +457,20 @@ static void scan_struct_defs(Codegen *cg, const Instruction *code, size_t code_l
                 FnObj *fn = v.as.fn_val;
                 scan_struct_defs(cg, fn->code, fn->code_len, fn->constants, fn->const_len);
             }
+        } else if (code[i].op == OPCODE_CLOSURE) {
+            /* OPCODE_CLOSURE's operand packs (fn_const << 8) | capture_count —
+             * the same packing its emission reads (case OPCODE_CLOSURE below).
+             * A lambda reached only this way is never a CONST operand, so a
+             * struct used solely inside its body registered *during* body
+             * emission — after the forward declarations — and gcc reported
+             * `g_structdef_0 undeclared` (audit §5.5). Follow it here, at
+             * scan time. */
+            uint32_t fn_const = code[i].arg.index >> 8;
+            if (fn_const < const_len && constants[fn_const].kind == VAL_FN &&
+                constants[fn_const].as.fn_val) {
+                FnObj *fn = constants[fn_const].as.fn_val;
+                scan_struct_defs(cg, fn->code, fn->code_len, fn->constants, fn->const_len);
+            }
         }
     }
 }
@@ -476,6 +497,18 @@ static void scan_enum_defs(Codegen *cg, const Instruction *code, size_t code_len
                 register_enum_def(cg, v.as.enum_def);
             } else if (v.kind == VAL_FN && v.as.fn_val) {
                 FnObj *fn = v.as.fn_val;
+                scan_enum_defs(cg, fn->code, fn->code_len, fn->constants, fn->const_len);
+            }
+        } else if (code[i].op == OPCODE_CLOSURE) {
+            /* Same (fn_const << 8) | capture_count packing as the emission —
+             * see scan_struct_defs: a lambda reached only through CLOSURE is
+             * never a CONST operand, so an enum used solely inside its body
+             * would miss the scan and `g_enumdef_0` would be undeclared at the
+             * point the lambda body references it (audit §5.5). */
+            uint32_t fn_const = code[i].arg.index >> 8;
+            if (fn_const < const_len && constants[fn_const].kind == VAL_FN &&
+                constants[fn_const].as.fn_val) {
+                FnObj *fn = constants[fn_const].as.fn_val;
                 scan_enum_defs(cg, fn->code, fn->code_len, fn->constants, fn->const_len);
             }
         }
@@ -547,7 +580,7 @@ static void emit_global_decls(Codegen *cg) {
     for (size_t i = 0; i < cg->global_map_count; i++) {
         if (strcmp(cg->global_map[i].name.str, "print") == 0) {
             cg_writef(cg, "static void %s_init(void) { "
-                     "g_print = astra_fn_new((AstraFnPtr)astra_builtin_print, 255); }\n",
+                     "g_print = astra_builtin_fn_new((AstraFnPtr)astra_builtin_print, 255); }\n",
                      cg->global_map[i].c_name);
             break;
         }
@@ -725,7 +758,7 @@ static void emit_instructions(Codegen *cg,
                 case VAL_FN: {
                     FnObj *fn_obj = v.as.fn_val;
                     if (fn_obj && fn_obj->param_count == 255 && fn_obj->code == NULL) {
-                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_fn_new((AstraFnPtr)astra_builtin_print, 255));\n");
+                        cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_builtin_fn_new((AstraFnPtr)astra_builtin_print, 255));\n");
                     } else if (fn_obj) {
                         const char *cname = find_fn_obj_cname(cg, fn_obj);
                         if (cname) {
@@ -949,8 +982,15 @@ static void emit_instructions(Codegen *cg,
             cg_writef(cg, "        int _save_active = astra_error_active;\n");
             cg_writef(cg, "        AstraValue _save_value = astra_error_value;\n");
             cg_writef(cg, "        memcpy(_save_jmp, astra_error_jmp, sizeof(jmp_buf));\n");
+            /* Builtin dispatch mirrors vm.c exactly: `param_count == 255` is
+             * the builtin marker *only together with* `code == NULL`
+             * (vm.c OPCODE_CALL). Checking the count alone sent a closure
+             * with exactly 255 params down the builtin path — it called
+             * fun(args, 255) as if args were the print argv and returned
+             * nil instead of the 255th parameter (audit §5.6). */
             cg_writef(cg, "        if (_fnv.tag == AST_FN && _fnv.as.fn_val && "
-                     "_fnv.as.fn_val->param_count == 255) {\n");
+                     "_fnv.as.fn_val->param_count == 255 && "
+                     "_fnv.as.fn_val->code == NULL) {\n");
             cg_writef(cg, "            frame[_fn_slot] = "
                      "_fnv.as.fn_val->fun(frame + _fn_slot + 1, %u);\n", argc);
             cg_writef(cg, "            sp = _fn_slot + 1;\n");
@@ -973,6 +1013,13 @@ static void emit_instructions(Codegen *cg,
             cg_writef(cg, "        astra_error_active = _save_active;\n");
             cg_writef(cg, "        astra_error_value = _save_value;\n");
             cg_writef(cg, "    }\n");
+            /* The callee overwrites the global astra_line while it runs (its
+             * own fallible ops store their lines), so this stream's dedup
+             * shadow is stale after every call: an op that follows on the SAME
+             * source line would be skipped by cg_set_line and the error would
+             * report the callee's line (audit §5.4). Invalidate the shadow so
+             * the next fallible op re-stores astra_line. */
+            *last_line = CG_NO_LINE;
         } break;
 
         case OPCODE_RET: {
@@ -1038,23 +1085,51 @@ static void emit_instructions(Codegen *cg,
         case OPCODE_INDEX: {
             /* Bounds-checked via astra_array_get, never raw elems[]: direct
              * access used to read out of bounds and keep going with garbage
-             * (PHASE1_PROGRESS section 6, S10/S11). */
+             * (PHASE1_PROGRESS section 6, S10/S11). The receiver and index
+             * guards mirror vm.c OPCODE_INDEX word for word (audit §5.3):
+             * `_arr.as.array_val` used to be dereferenced unchecked, so
+             * `let a: [i32]; a[0]` segfaulted instead of reporting the VM's
+             * "cannot index nil". */
             cg_write(cg, "    {\n");
             cg_write(cg, "        AstraValue _idx = frame[--sp];\n");
             cg_write(cg, "        AstraValue _arr = frame[sp - 1];\n");
+            cg_write(cg, "        if (_arr.tag != AST_ARRAY || !_arr.as.array_val)\n");
+            cg_write(cg, "            astra_errorf(\"cannot index %s\", astra_tag_name(_arr.tag));\n");
+            cg_write(cg, "        if (_idx.tag != AST_INT)\n");
+            cg_write(cg, "            astra_errorf(\"array index must be int, got %s\", astra_tag_name(_idx.tag));\n");
             cg_write(cg, "        frame[sp - 1] = astra_array_get(_arr.as.array_val, _idx.as.int_val);\n");
             cg_write(cg, "    }\n");
         } break;
 
         case OPCODE_LEN: {
-            cg_write(cg, "    frame[sp-1] = astra_int(frame[sp-1].as.array_val->len);\n");
+            /* vm.c OPCODE_LEN accepts array and string receivers and words
+             * anything else as "cannot take length of %s" (audit §5.3): the
+             * old code read `frame[sp-1].as.array_val->len` unchecked, so a
+             * nil iterable in `for x in a` segfaulted. */
+            cg_write(cg, "    {\n");
+            cg_write(cg, "        AstraValue _len_v = frame[sp - 1];\n");
+            cg_write(cg, "        if (_len_v.tag == AST_ARRAY && _len_v.as.array_val) {\n");
+            cg_write(cg, "            frame[sp - 1] = astra_int(_len_v.as.array_val->len);\n");
+            cg_write(cg, "        } else if (_len_v.tag == AST_STRING && _len_v.as.string_val) {\n");
+            cg_write(cg, "            frame[sp - 1] = astra_int(_len_v.as.string_val->len);\n");
+            cg_write(cg, "        } else {\n");
+            cg_write(cg, "            astra_errorf(\"cannot take length of %s\", astra_tag_name(_len_v.tag));\n");
+            cg_write(cg, "        }\n");
+            cg_write(cg, "    }\n");
         } break;
 
         case OPCODE_SET_INDEX: {
+            /* Receiver/index guards mirror vm.c OPCODE_SET_INDEX (audit §5.3):
+             * writing through a nil array used to be a heap wild-pointer
+             * write, now it is the VM's "cannot index nil". */
             cg_write(cg, "    {\n");
             cg_write(cg, "        AstraValue _val = frame[--sp];\n");
             cg_write(cg, "        AstraValue _idx = frame[--sp];\n");
             cg_write(cg, "        AstraValue _arr = frame[sp - 1];\n");
+            cg_write(cg, "        if (_arr.tag != AST_ARRAY || !_arr.as.array_val)\n");
+            cg_write(cg, "            astra_errorf(\"cannot index %s\", astra_tag_name(_arr.tag));\n");
+            cg_write(cg, "        if (_idx.tag != AST_INT)\n");
+            cg_write(cg, "            astra_errorf(\"array index must be int, got %s\", astra_tag_name(_idx.tag));\n");
             cg_write(cg, "        astra_array_set(_arr.as.array_val, _idx.as.int_val, _val);\n");
             cg_write(cg, "        frame[sp - 1] = _val;\n");
             cg_write(cg, "    }\n");
@@ -1083,7 +1158,14 @@ static void emit_instructions(Codegen *cg,
             cg_writef(cg, "    /* GET_FIELD '%s' */\n", fname);
             cg_writef(cg, "    {\n");
             cg_writef(cg, "        AstraValue _obj = frame[--sp];\n");
+            /* Receiver guard mirrors vm.c GET_FIELD (audit §5.3): a nil
+             * receiver used to fall straight through to `_s->def->field_count`
+             * and segfault; the VM says "cannot access field on %s". */
+            cg_writef(cg, "        if (_obj.tag != AST_STRUCT || !_obj.as.struct_val)\n");
+            cg_writef(cg, "            astra_errorf(\"cannot access field on %%s\", astra_tag_name(_obj.tag));\n");
             cg_writef(cg, "        AstraStruct *_s = (AstraStruct *)_obj.as.struct_val;\n");
+            cg_writef(cg, "        if (!_s->def)\n");
+            cg_writef(cg, "            astra_errorf(\"cannot access field on %%s\", astra_tag_name(_obj.tag));\n");
             cg_writef(cg, "        int _fi = -1;\n");
             cg_writef(cg, "        for (size_t _i = 0; _i < _s->def->field_count; _i++) {\n");
             cg_writef(cg, "            if (strcmp(_s->def->field_names[_i], \"%s\") == 0) { _fi = (int)_i; break; }\n", fname);
@@ -1099,7 +1181,13 @@ static void emit_instructions(Codegen *cg,
             cg_writef(cg, "    /* SET_FIELD '%s' */\n", fname);
             cg_writef(cg, "    {\n");
             cg_writef(cg, "        AstraValue _val = frame[--sp];\n");
+            /* Same receiver guard as GET_FIELD (vm.c OPCODE_SET_FIELD): a nil
+             * receiver used to be a wild write through a NULL struct pointer. */
+            cg_writef(cg, "        if (frame[sp-1].tag != AST_STRUCT || !frame[sp-1].as.struct_val)\n");
+            cg_writef(cg, "            astra_errorf(\"cannot access field on %%s\", astra_tag_name(frame[sp-1].tag));\n");
             cg_writef(cg, "        AstraStruct *_s = (AstraStruct *)frame[sp-1].as.struct_val;\n");
+            cg_writef(cg, "        if (!_s->def)\n");
+            cg_writef(cg, "            astra_errorf(\"cannot access field on %%s\", astra_tag_name(frame[sp-1].tag));\n");
             cg_writef(cg, "        int _fi = -1;\n");
             cg_writef(cg, "        for (size_t _i = 0; _i < _s->def->field_count; _i++) {\n");
             cg_writef(cg, "            if (strcmp(_s->def->field_names[_i], \"%s\") == 0) { _fi = (int)_i; break; }\n", fname);
@@ -1247,7 +1335,7 @@ static void emit_fn_body(Codegen *cg, const char *c_name, FnObj *fn) {
     }
 
     /* Translate bytecode */
-    unsigned fn_line = 0;
+    unsigned fn_line = CG_NO_LINE;
     emit_instructions(cg, fn->code, fn->code_len,
                       fn->constants, fn->const_len, &fn_line);
 
@@ -1265,9 +1353,10 @@ static void emit_module_code(Codegen *cg) {
     cg_write(cg, "    uint16_t sp = 0;\n");
     cg_write(cg, "    (void)frame; (void)sp;\n\n");
 
-    /* Always set up error recovery context for module code so that
-     * runtime errors (array bounds, division by zero, etc.) use longjmp
-     * instead of exit(1). */
+    /* Arm the try context for module-level code. Since audit §5.2 hard
+     * runtime errors exit(1) directly and never longjmp, this context only
+     * catches the `?` none/err unwind of a module-level TRY_UNWRAP (which
+     * lands here and ends the run with exit 1, as before). */
     cg_write(cg, "    if (ASTRA_TRY_CONTEXT()) { astra_error_active = 0; return 1; }\n");
 
     /* Source file for runtime-error positions; set before any user code
@@ -1293,7 +1382,7 @@ static void emit_module_code(Codegen *cg) {
     const Value *constants = emitter_get_constants(cg->emitter, &const_len);
 
     /* Translate bytecode */
-    unsigned mod_line = 0;
+    unsigned mod_line = CG_NO_LINE;
     emit_instructions(cg, code, code_len, constants, const_len, &mod_line);
 
     cg_write(cg, "    return 0;\n");
