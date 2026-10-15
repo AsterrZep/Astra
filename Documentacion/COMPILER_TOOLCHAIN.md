@@ -694,7 +694,8 @@ Create a test suite with:
 ### 6.2 GitHub Actions CI
 
 ```yaml
-# .github/workflows/ci.yml
+# Example CI configuration (NOT the current pipeline — the real one is
+# .github/workflows/ci.yml: 3 jobs Linux-only, seed + zig + parity)
 name: CI
 
 on:
@@ -1162,6 +1163,12 @@ CFLAGS=-fsanitize=address,undefined -fstack-protector-strong \
 ---
 
 ## Summary: Recommended Toolchain
+
+> **Nota:** esto es una *recomendación*, no lo adoptado. La
+> implementación actual usa Makefile (seed) + `build.zig` (zig) +
+> libFuzzer; no hay CMake/Ninja, Unity/Ceedling, AFL++ ni matriz
+> macOS/Windows (el CI real es `.github/workflows/ci.yml`, 3 jobs en
+> Linux: `seed (C)`, `zig (Phase 2)`, `parity`).
 
 ### C Seed Compiler
 - **Compiler:** Clang (development), GCC (production)

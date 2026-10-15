@@ -32,7 +32,7 @@ ejecutable desde el bytecode, compilable con `gcc`/`clang`.
 | Type checker | ✅ | tabla de símbolos con ámbitos; exhaustividad de `match`; errores con ubicación |
 | Emitter | ✅ | bytecode de pila, parcheo de saltos, locales ocultos de bucle, `SWAP` para el temporal de `match` |
 | VM | ✅ | ~30 opcodes, frames de llamada, globals, builtins |
-| C Codegen | 🟡 | `--emit-c` genera .c compilable; aritmética, control, funciones, structs, enums, arrays. Ver §3c |
+| C Codegen | ✅ | `--emit-c` genera .c compilable; aritmética, control, funciones, structs, enums, arrays, lambdas, match, Option/Result, `?` — barrido `sweep_emit_c.sh` 83/83 con gcc `-Wall -Wextra`. Ver §3c |
 | Runner de tests | ✅ | `tests/run_tests.sh` (`EXPECT` / `EXPECT-ERROR`) |
 
 ## 2. Lenguaje soportado (Astra-0)
@@ -90,7 +90,8 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (**94 casos**), en verde en las tres
+los casos de conformidad. Cobertura actual (**219 casos**: 83 no-UI + 111 ui +
+22 codegen + secciones auxiliares), en verde en las tres
 variantes de build (`dev`, `debug` con ASan+UBSan+LSan, `release`).
 
 `EXPECT-RUNTIME-ERROR` se añadió el 2026-09-21: hasta entonces **ningún** test
@@ -280,9 +281,10 @@ Estas tres viven en `codegen_runtime.h` y están cubiertas por
 | Feature | Problema | Esfuerzo estimado |
 |:--------|:---------|:-------------------|
 Los cinco ítems que esta tabla daba por pendientes **ya funcionan** y desde el
-2026-09-21 están verificados automáticamente: el runner compila los 42 casos no-UI
-de conformidad con `--emit-c` + `gcc` y compara su salida con la de la VM
-(coincidencia exacta, sin fugas bajo LSan):
+2026-09-21 están verificados automáticamente: el barrido `tests/sweep_emit_c.sh`
+compila los 83 casos no-UI de conformidad con `--emit-c` + `gcc` y compara
+stdout/stderr/rc con la VM (coincidencia exacta, sin fugas bajo LSan; salta
+los 3 de módulos):
 
 | Feature | Estado real (medido) |
 |:--------|:---------------------|
@@ -377,8 +379,8 @@ Ordenado por valor para el objetivo de bootstrap.
       compilador Zig.
 
 ### Sistema de tipos
-- [ ] Genéricos básicos por monomorfización (Tier 3).
-- [ ] Traits con despacho simple (Tier 3).
+- [x] **Genéricos** por monomorfización — Fase 2.4 (seed + zig), `conformance/generics/`.
+- [x] **Traits con despacho estático** — Fase 2.3 (seed + zig), `conformance/traits/`.
 - [ ] Unidades de medida (fuera del alcance del seed).
 
 ### C Codegen (`--emit-c`)
@@ -391,7 +393,7 @@ Ordenado por valor para el objetivo de bootstrap.
 - [x] **Match**: funciona (el fallo de "cannot call non-function" era un efecto de los opcodes sin handler).
 - [x] **Option/Result**: `TRY_UNWRAP`, `TAG_IS`, `UNWRAP` verificados por `try_operator` y los 4 tests de Option/Result.
 - [x] **Enums con datos**: `pattern_bind`, `nested_pattern_bind`, `mixed_patterns` idénticos a la VM.
-- [x] **Suite vía C codegen**: `run_tests.sh` compila los 42 casos no-UI con `--emit-c` + `gcc` y compara salida (ver §6).
+- [x] **Suite vía C codegen**: el barrido `sweep_emit_c.sh` compila los 83 casos no-UI con `--emit-c` + `gcc` y compara salida (ver §6).
 - [x] **Escapado de literales de string**: el contenido se escribe escapado; antes un `"` en un string de Astra producía C inválido e inyectable (ver §6, S2).
 - [x] **Límites de los registros de nombres**: un programa con más de 256 globales corrompía memoria; ahora falla con diagnóstico (ver §6, S1).
 - [x] **Errores de runtime en código de módulo**: verificado (§3c); el runtime no depende de `setjmp` para reportar.
@@ -463,8 +465,8 @@ Ordenado por valor para el objetivo de bootstrap.
 | 24 | Module system (File-as-Module) | Alto | [ ] **Fase 2** | `research/011` §5.3 lo da por no-bloqueante para el bootstrap: el seed compila **un** fichero, que es lo que necesita para auto-hospedarse en un solo módulo |
 | 25 | Full C codegen test suite | Alto | ✅ | La suite completa corre por ambas rutas (registro + VM + C) |
 | 26 | CI multiplataforma | Alto | ✅ (Linux) | `.github/workflows/ci.yml` — suite del seed bajo ASan/UBSan/LSan + build release + suite Zig. macOS/Windows quedan como follow-up |
-| 27 | Genéricos básicos por monomorfización | Medio | [ ] | **Fase 2** |
-| 28 | Traits con despacho simple | Medio | [ ] | **Fase 2** |
+| 27 | Genéricos básicos por monomorfización | Medio | ✅ | **Fase 2.4** (seed + zig) — `conformance/generics/` (6 casos) |
+| 28 | Traits con despacho simple | Medio | ✅ | **Fase 2.3** (seed + zig) — `conformance/traits/` (3 casos) |
 | 29 | Migración completa de constructos (44 hooks) | Medio | ✖ decidido no hacer | `CONSTRUCT_REGISTRY.md` §8 |
 | 30 | Standard library mínima | Bajo | [ ] | **Fase 2** |
 | 31 | LSP básico | Bajo | [ ] | **Fase 2** |
@@ -621,8 +623,8 @@ construcción marcada como soportada sin ninguna prueba que la ejercite.
 
 ```bash
 cd seed
-make clean && make debug && make test        # 94 casos, ASan+UBSan+LSan, 0 fugas
-./astra-seed --check-constructs              # 46 constructos, 27 operadores, sin drift
+make clean && make debug && make test        # 219 casos, ASan+UBSan+LSan, 0 fugas
+./astra-seed --check-constructs              # 47 constructos, 27 operadores, sin drift
 
 # S1: 300 globales por la ruta de C (antes: SEGV)
 python3 -c "open('/tmp/g.astra','w').write(''.join('let g%d = %d;\n'%(i,i) for i in range(300))+'fn main() { print(g0) }\n')"

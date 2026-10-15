@@ -201,7 +201,7 @@ The C codegen generates executable C from Astra bytecode. The pipeline is:
 
 The conformance suite itself runs on the VM; the C round-trip is its own
 gate: every case in `tests/codegen/` is compiled through `--emit-c`, run
-with gcc and compared against its `EXPECT:` comments by `make test` (19
+with gcc and compared against its `EXPECT:` comments by `make test` (22
 cases; check new ones by hand with `-Wall -Wextra`). That covers:
 
 - Arithmetic, comparisons, booleans, strings, nil, **bitwise operators**
@@ -246,9 +246,10 @@ cases; check new ones by hand with `-Wall -Wextra`). That covers:
 
 ### What remains for Phase 1 completion
 
-| Item | Issue | Effort |
-|:-----|:------|:-------|
-| Module-level runtime errors | `astra_runtime_error` outside a setjmp context in generated module code — **verified 2026-10-12**: module main installs `ASTRA_TRY_CONTEXT` unconditionally; `tests/codegen/toplevel_oob.astra` and `error_line_in_fn.astra` exercise the longjmp path with `file:line:` positions | Done |
+Nothing: this list is complete (its last row, module-level runtime
+errors, was verified 2026-10-12 — `tests/codegen/toplevel_oob.astra`
+and `error_line_in_fn.astra` exercise the `ASTRA_TRY_CONTEXT` longjmp
+with `file:line:` positions).
 
 Everything else that was on this list (lambdas, match, Option/Result, `?`,
 data-carrying enums, the `tests/codegen/` round-trip) is implemented and now
@@ -273,7 +274,7 @@ agreed up front).
 | **tests** (conformance suite) | `tests/**` | `make test` |
 | **docs** | `Documentacion/**`, `AGENTS.md` | review |
 
-The construct workstreams are the finest-grained split: 46 constructs (one
+The construct workstreams are the finest-grained split: 47 constructs (one
 file per grammar production), so several can run at once. They have exactly
 one shared contract — `constructs/construct.h` — and the self-check is the
 arbiter: if two of them claim the same node kind, token or keyword,

@@ -28,7 +28,7 @@ seed/src/constructs/
 ├── registry.c           índice: la ÚNICA lista de constructos
 ├── operator_table.c     tabla de precedencia (§2.4 / §12.2) + su entrada
 ├── if.c  else.c  while.c  for.c  in.c  match.c  match_arm.c  ...
-└── ...                  46 archivos de constructo en total
+└── ...                  47 archivos de constructo en total
 ```
 
 ---
@@ -220,12 +220,12 @@ completa: no hay un quinto sitio que recordar.
 `--check-constructs` reporta el progreso:
 
 ```
-construct registry: 46 constructs
-sub-constructs: 13
-migrated (all three phases): 0 / 46
+construct registry: 47 constructs
+sub-constructs: 14
+migrated (all three phases): 0 / 47
 ```
 
-En este commit el registro **describe** los 46 constructos pero todavía no
+En este commit el registro **describe** los 47 constructos (46 en el commit original) pero todavía no
 ejecuta ninguno: `phases` es 0 en todos y los hooks son `NULL`. Eso es
 deliberado y es la razón de que los 27 tests sigan en verde — este hito es
 puramente aditivo y auditable.
@@ -244,7 +244,7 @@ La migración de los hooks va por fases, y cada fase es verificable por sí sola
 3. **check** — igual para el type checker. `match` y su exhaustividad
    (`research/04` §9.7) son los que más ganan.
 
-Cada fase se commitea por separado y `migrated: N / 46` es la métrica.
+Cada fase se commitea por separado y `migrated: N / 47` es la métrica.
 
 ### Guardarraíl
 
@@ -254,7 +254,7 @@ respeten dos reglas:
 
 - El registro es **declarativo**: describe, no abstrae. No hay vtable, ni
   registro dinámico, ni carga en tiempo de ejecución, ni un generador de
-  código. Son 46 structs constantes y unas tablas de punteros.
+  código. Son 47 structs constantes y unas tablas de punteros.
 - Ningún archivo de constructo **añade** un concepto al lenguaje. Cada uno
   documenta un constructo que ya existe en `research/010`, o marca
   explícitamente uno que está fuera de Astra-0.
@@ -268,12 +268,12 @@ parar.
 ## 8. Decisión sobre la migración de hooks (2026-09-21)
 
 **El seed no migra los hooks `parse` / `check` / `emit`. El registro se queda
-declarativo + validado (`migrated: 0 / 46`).** La decisión se toma con la
+declarativo + validado (`migrated: 0 / 47`).** La decisión se toma con la
 investigación delante, no por comodidad:
 
 - `research/011` §2.3.1 nombra la sobre-ingeniería del seed como su **primer
   anti-patrón** (*"quick and dirty — it's used once to bootstrap, then retired"*).
-  Mover 46 hooks a un despacho por punteros es, literalmente, cambiar `switch`
+  Mover 47 hooks a un despacho por punteros es, literalmente, cambiar `switch`
   simples por una vtable: cero cambio observable, más indirección y más superficie
   donde romper el invariante de pila del emisor.
 - `research/011` §3.3 —la estructura de módulos que ese mismo reporte prescribe—
@@ -305,16 +305,10 @@ hace fallar la suite antes de compilar nada.
 
 Derivado de los huecos registrados en los propios archivos:
 
-1. **`pattern_ident`** — es el desbloqueo. Sin binding de patrones no hay
-   variantes con datos, ni patrones anidados, ni `let` con destructuring
-   (`research/04` §9.4, §8.2). Todo lo demás de la lista depende de esto.
-2. **`enum_variant` con payload** — variantes con datos y el nodo propio que
-   hoy no existe (hoy `Enum.Variant` se baja a `NODE_FIELD_ACCESS`);
-   `research/04` §9.3 y las decisiones de layout de §6.2-6.4.
-3. **`match_arm` guards** — hoy el parser los **rechaza** explícitamente en vez
-   de aceptarlos y silenciosamente ignorarlos.
-4. **`Option` / `Result` y el operador `?`** — `research/04` §9.6; `?` está en
-   §12.2 fila 12 y su entrada de tabla ya está puesta con potencia 0
-   ("especificado, sin entrada en el Pratt").
+1-4. **Cerrados** — `pattern_ident` (bindings de patrones),
+`enum_variant` con payload, guards de `match_arm` y `Option`/`Result`
+con el operador `?` están implementados en seed y zig y verificados por
+`conformance/enums/*` y `ui/try_*` (PHASE1 §4; audit §3.3-3.4).
+
 5. **`index` con slices** (`xs[a..b]`) — necesita un tipo vista y un modelo de
    préstamo que el seed conscientemente no tiene.

@@ -1,8 +1,8 @@
 # Phase 2 Gap Analysis — Astra Self-Hosting Compiler (Zig)
 
 > **Status:** Working document
-> **Last updated:** 2026-09-28
-> **Baseline:** Phase 1 seed compiler (C, v0.1.0) — 44 constructs, 27 operators, 89 tests
+> **Last updated:** 2026-10-15
+> **Baseline:** Phase 1 seed compiler (C, v0.1.0) — 47 constructs, 27 operators, 219 tests
 
 ---
 
@@ -43,7 +43,7 @@ The gap is large but structured: the seed compiler's architecture (construct reg
 
 | Stage | File(s) | What it does |
 |:------|:--------|:-------------|
-| Lexer | `lexer.c` | Hand-written tokenizer, 32 keywords, string interning |
+| Lexer | `lexer.c` | Hand-written tokenizer, 36 keywords, string interning |
 | Parser | `parser.c` | Recursive descent + Pratt expressions, max depth 256 |
 | AST | `ast.c` | Node construction, source locations |
 | Type Checker | `typechecker.c` | Scoped symbol table, structural type unification |
@@ -63,7 +63,7 @@ The gap is large but structured: the seed compiler's architecture (construct reg
 | UInt64 | `VAL_UINT64` | Unsigned 64-bit |
 | Float | `VAL_FLOAT` | 64-bit double |
 | String | `VAL_STRING` | Heap-allocated, immutable, interned literals |
-| Array | `VAL_ARRAY` | Homogeneous, heap-allocated, `len`/`push`/`pop` |
+| Array | `VAL_ARRAY` | Homogeneous, heap-allocated; length léxica no expuesta (sin `len` builtin) |
 | Struct | `VAL_STRUCT` | Structural, named fields, heap-allocated |
 | Enum | `VAL_ENUM` | Unit variants + data-carrying variants |
 | Optional | `VAL_OPTION` | `some(x)` / `none`, unwrap with `?` |
@@ -79,7 +79,7 @@ The gap is large but structured: the seed compiler's architecture (construct reg
 |:---------|:----------|
 | Arithmetic | `+`, `-`, `*`, `/`, `%` |
 | Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` |
-| Logical | `and`, `or`, `not` |
+| Logical | `&&`, `\|\|` (las keywords `and`/`or`/`not` se lexean pero ningún parser las usa) |
 | Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` |
 | Assignment | `=` |
 | Index | `[]` (array/string index) |
@@ -87,7 +87,6 @@ The gap is large but structured: the seed compiler's architecture (construct reg
 | Call | `()` (function call) |
 | Range | `..` |
 | Pipe | `\|` (lambda start / bitwise-or disambiguation) |
-| Spread | `*` (array spread) |
 | Negation | `-` (unary) |
 
 ### 2.4 Control Flow
@@ -119,14 +118,15 @@ The gap is large but structured: the seed compiler's architecture (construct reg
 | Builtin | Signature | Notes |
 |:--------|:----------|:------|
 | `print` | `fn(any...) -> nil` | Variadic, prints to stdout |
-| `len` | `fn(array) -> int` | Array/string length |
-| `push` | `fn(array, value) -> nil` | Mutates array in-place |
-| `pop` | `fn(array) -> nil` | Mutates array in-place |
+
+El seed no tiene hoy ningún otro builtin: `len`/`push`/`pop` no existen
+(la longitud de arrays no está expuesta en Astra-0).
 
 ### 2.8 Test Coverage
 
-- 89 total tests (conformance + codegen round-trip)
-- 42 non-UI conformance cases verified on both VM and C backend
+- 219 total tests (conformance + codegen round-trip)
+- 83 non-UI conformance cases verified on both VM and C backend
+  (`sweep_emit_c.sh`)
 - `make test` runs VM + `--emit-c` + gcc round-trip, compares output
 
 ---
@@ -215,7 +215,10 @@ the open decisions.
 
 ## 5. Missing Features
 
-These are required by the architecture (`ARCHITECTURE.md`) but **not implemented** in Phase 1.
+These were required by the architecture and not implemented in Phase 1;
+**Traits, Generics and Methods were delivered by Fase 2.3/2.4** (both
+compilers, `conformance/traits/` + `generics/`). The remaining rows
+(Comptime, ARC/ORC, fibers, FFI, macros) are still open.
 
 ### 5.1 Tier 1 — Required for Self-Hosting
 
@@ -344,9 +347,11 @@ This hybrid approach requires the type checker to distinguish "structural types"
 
 ### 8.1 Registry Summary
 
-The construct registry (`constructs/registry.c`) has **46 entries** organized by
-category (44 here at the baseline; `from` and `import_item` landed on 2026-09-29
-with the module surface — see the note under §8.2):
+The construct registry (`constructs/registry.c`) has **47 entries** organized by
+category (44 at the original baseline; `from` and `import_item` landed on
+2026-09-29 with the module surface, and `trait`/`impl`/`generic_params` were
+reflagged *in* Astra-0 on 2026-10-15 — audit §7.14; the per-category rows
+below are the original snapshot):
 
 | Category | Count | In Astra-0 | Notes |
 |:---------|:------|:-----------|:------|
@@ -363,10 +368,10 @@ These are registered (keyword lexes, grammar documented) but `parse = NULL, chec
 
 | Construct | Token | Node | Why Excluded |
 |:----------|:------|:-----|:-------------|
-| `trait` | `TOKEN_TRAIT` | `NODE_NONE` | Needs generics, dynamic dispatch |
-| `impl` | `TOKEN_IMPL` | `NODE_NONE` | Needs methods, self parameter, vtable |
+| `trait` | `TOKEN_TRAIT` | (ver registry) | ~~Needs generics, dynamic dispatch~~ — entregado en Fase 2.3 (despacho estático); en Astra-0 desde 2026-10-15 |
+| `impl` | `TOKEN_IMPL` | (ver registry) | ~~Needs methods, self parameter, vtable~~ — entregado en Fase 2.3 (métodos + `self`); en Astra-0 desde 2026-10-15 |
 | `comptime` | `TOKEN_COMPTIME` | `NODE_NONE` | Meta-programming, not needed for seed |
-| `lambda` | `TOKEN_PIPE` | `NODE_LAMBDA` | Actually IN Astra-0, but closures lack captures |
+| `lambda` | `TOKEN_PIPE` | `NODE_LAMBDA` | IN Astra-0: closures con captura por valor (PHASE1 §4bis#16) |
 | `import` | `TOKEN_IDENT` | `NODE_NONE` | No multi-file support yet |
 | `type_alias` | `TOKEN_IDENT` | `NODE_NONE` | No lexer token for `type` keyword |
 | `export` | none | `NODE_NONE` | No module system |
@@ -487,7 +492,7 @@ Zig catches most C UB at compile time or with safety checks:
 | Risk | Impact | Mitigation |
 |:-----|:-------|:-----------|
 | **Build system complexity** | Annoying but solvable | Zig build system is simpler than Make |
-| **Test coverage regression** | Missing bugs | Port all 89 tests, add new ones per feature |
+| **Test coverage regression** | Missing bugs | Port all 89 tests (hoy la suite son 219), add new ones per feature |
 | **Performance regression** | Slower compilation | Profile early, use Zig's performance tools |
 
 ---
@@ -504,10 +509,10 @@ Zig catches most C UB at compile time or with safety checks:
 6. **Port emitter** — bytecode emission
 7. **Port VM** — stack interpreter
 8. **Port construct registry** — self-validation
-9. **Port all 89 tests** — verify parity with Phase 1
+9. **Port all 89 tests** (criterio histórico de la Fase 2.1; hoy la suite son 219) — verify parity with Phase 1
 10. **Port C codegen backend** — keep for bootstrap verification
 
-**Exit criteria:** `astra-zig` produces identical output to `astra-seed` on all 89 tests.
+**Exit criteria:** `astra-zig` produces identical output to `astra-seed` on all 89 tests (cumplido — la suite actual de 219 corre en verde en ambos).
 
 ### Phase 2.2 — Module System
 
@@ -730,7 +735,7 @@ Because the toolchain is ours, debugging can go further than C++:
 - `src/codegen.c` → `CodeGen.zig` (C backend)
 - `src/codegen_runtime.h` → `codegen_runtime.zig` or keep as C header
 
-### Constructs (44 files)
+### Constructs (47 files hoy)
 - `src/constructs/*.c` → `src/constructs/*.zig`
 - `src/constructs/construct.h` → `src/constructs/ConstructSpec.zig`
 - `src/constructs/registry.c` → `src/constructs/registry.zig`
