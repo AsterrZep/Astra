@@ -102,6 +102,11 @@ static int opcode_stack_effect(OpCode op, uint32_t operand) {
     case OPCODE_UNWRAP:
         return 0;
 
+    /* The unreachable match result: modeled as the push it never delivers
+     * (audit §3.8). */
+    case OPCODE_MATCH_NONE:
+        return 1;
+
     /* The layout constant sits under the N payload values; the VM consumes
      * layout + fields and pushes the finished enum handle. Emission sets the
      * packed operand afterwards, which is why the extra sp_advance lives at
@@ -1554,10 +1559,16 @@ static void emit_expr(Emitter *e, Node *node) {
         }
 
         if (!has_wildcard) {
-            /* No arm matched: yield nil so a match always produces a value. */
+            /* No arm matched. After audit §3.8 the typechecker proves
+             * totality for enums/optionals/bools and demands a catch-all
+             * for scalars, but Tier-2 optional aliasing (an ok/err value
+             * flowing where some/none was expected) can still slip every
+             * arm — trap with position instead of yielding a nil that
+             * lies under the promised type. Effect +1 keeps the same
+             * stack model as the old `CONST nil`; control never reaches
+             * past the trap. */
             e->sp = base;
-            uint32_t z = add_constant(e, value_nil());
-            emit_inst_index(e, OPCODE_CONST, z, line);
+            emit_inst(e, OPCODE_MATCH_NONE, line);
         }
 
         size_t end_target = e->code_len;

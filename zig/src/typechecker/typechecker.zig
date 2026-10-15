@@ -1320,6 +1320,15 @@ pub const TypeChecker = struct {
                 if (isErrorType(pt)) return;
                 if (!typeEq(pt, target)) {
                     self.errFmt(self.tree.loc(pat_idx), "pattern type {s} does not match match target type {s}", .{ pt.kind.name(), target.kind.name() });
+                    return;
+                }
+                // A bool literal marks its slot on a bool target (audit
+                // §3.8): covered[0] = false arm, covered[1] = true arm.
+                if (target.kind == .bool_ and covered.len > 1 and
+                    isTag(self.tree.node(pat_idx), .bool_literal))
+                {
+                    const bv = self.tree.node(pat_idx).bool_literal;
+                    covered[if (bv) @as(usize, 1) else 0] = true;
                 }
             },
             .pattern_bind => |name| {
@@ -1404,6 +1413,12 @@ pub const TypeChecker = struct {
             target.variants.len
         else if (target.kind == .optional)
             2
+        // bool has a finite, enumerable space too: slot 0 = false,
+        // slot 1 = true (audit §3.8). Scalars get no slots: infinite
+        // space, no range patterns — a catch-all covers them and sets
+        // has_wildcard instead (mirror of the seed).
+        else if (target.kind == .bool_)
+            2
         else
             0;
         const covered = self.a.alloc(bool, if (covered_n > 0) covered_n else 1) catch @panic("OOM");
@@ -1456,6 +1471,15 @@ pub const TypeChecker = struct {
         } else if (!has_wildcard and target.kind == .optional) {
             if (!covered[0]) self.errFmt(loc, "non-exhaustive match: missing payload arm (some/ok/err)", .{});
             if (!covered[1]) self.errFmt(loc, "non-exhaustive match: missing 'none' arm", .{});
+        } else if (!has_wildcard and target.kind == .bool_) {
+            if (!covered[0]) self.errFmt(loc, "non-exhaustive match: missing 'false' arm", .{});
+            if (!covered[1]) self.errFmt(loc, "non-exhaustive match: missing 'true' arm", .{});
+        } else if (!has_wildcard and !isErrorType(target)) {
+            // Every other target (int, float, string, struct, fn, …) needs
+            // a catch-all: infinite space, no range patterns in Astra-0
+            // (audit §3.8, mirror of the seed; ARCHITECTURE.md §11.3 and
+            // the strict model of research/04).
+            self.errFmt(loc, "non-exhaustive match: missing '_' arm", .{});
         }
 
         return result_type orelse self.newType(.void);

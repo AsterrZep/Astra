@@ -1,0 +1,8 @@
+// bool has a finite, enumerable space: true/false arms make the match
+// total without a catch-all (like enums), and one missing arm is a
+// compile error instead of a run-time nil (audit §3.8).
+// EXPECT-ERROR: non-exhaustive match: missing 'false' arm
+fn main() {
+    let b = true
+    print(match b { true => 1 })
+}

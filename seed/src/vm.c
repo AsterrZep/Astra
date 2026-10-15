@@ -517,6 +517,7 @@ static const char *opname(OpCode op) {
     case OPCODE_TRY_UNWRAP:   return "TRY_UNWRAP";
     case OPCODE_TAG_IS:       return "TAG_IS";
     case OPCODE_UNWRAP:       return "UNWRAP";
+    case OPCODE_MATCH_NONE:   return "MATCH_NONE";
     default:                  return "???";
     }
 }
@@ -1664,6 +1665,15 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                     return VM_RUNTIME_ERROR;
             }
         } break;
+
+        case OPCODE_MATCH_NONE:
+            /* Backstop of the exhaustiveness checker (audit §3.8): no arm
+             * matched at run time. Unreachable for provably-total targets,
+             * reachable through Tier-2 optional aliasing (an ok/err value
+             * flowing where some/none was expected) — abort with position
+             * instead of yielding a nil under the promised type. */
+            vm_runtime_error(vm, line, "no match arm matched");
+            return VM_RUNTIME_ERROR;
 
         default:
             vm_runtime_error(vm, line, "unknown opcode %d", (int)inst.op);

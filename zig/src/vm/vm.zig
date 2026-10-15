@@ -1379,6 +1379,11 @@ pub const VM = struct {
                         else => return self.rt(line, "unwrap requires ok, err, or some, got {s}", .{typeName(val)}),
                     };
                 },
+                // Backstop of the exhaustiveness checker (audit §3.8,
+                // mirror of the seed): Tier-2 optional aliasing (ok/err
+                // flowing where some/none was expected) can slip every
+                // arm — abort with position instead of a lying nil.
+                .match_none => return self.rt(line, "no match arm matched", .{}),
             }
 
             if (self.trace) self.traceState();

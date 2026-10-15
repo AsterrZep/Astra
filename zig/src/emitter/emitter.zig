@@ -1709,10 +1709,10 @@ pub const Emitter = struct {
         }
 
         if (!has_wildcard) {
-            // No arm matched: yield nil so a match always produces a value.
+            // No arm matched: trap instead of yielding a lying nil
+            // (audit §3.8 backstop, mirror of the seed).
             self.sp = base;
-            const z = self.addNil();
-            self.emitInstIndex(.const_, z, ln);
+            self.emitInst(.match_none, ln);
         }
 
         const end_target = self.code.items.len;

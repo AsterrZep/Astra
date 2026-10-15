@@ -1,0 +1,12 @@
+// Backstop of the exhaustiveness checker (audit §3.8): statically the
+// optional target is covered by some + none, but Tier-2 aliasing lets an
+// `ok`-tagged value flow where `some` was expected — the tag test slips
+// both arms at run time. The old fallback yielded a nil under an i32
+// promise; OPCODE_MATCH_NONE now aborts with position, identically on the
+// VM, the C backend and zig.
+// EXPECT-RUNTIME-ERROR: no match arm matched
+fn main() {
+    let o = ok(7);
+    let r = match o { some(v) => v, none => 0 };
+    print(r)
+}

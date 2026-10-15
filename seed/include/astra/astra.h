@@ -923,6 +923,14 @@ typedef enum {
     OPCODE_TRY_UNWRAP,    /* expr? — unwrap Result/Option or early return */
     OPCODE_TAG_IS,        /* pop value, push bool: is it the given tag? (operand: 0=Ok,1=Err,2=Some,3=None) */
     OPCODE_UNWRAP,        /* pop VAL_OK/VAL_ERR/VAL_SOME, push inner value */
+    OPCODE_MATCH_NONE,    /* no match arm matched at runtime: abort with a
+                             positioned error. The exhaustiveness checker
+                             (audit §3.8) makes this unreachable for
+                             provably-total targets, but Tier-2 optional
+                             aliasing (ok/err vs some tags) can still slip
+                             every arm — never yield a lying nil. Modeled as
+                             a push (+1) because the match "produces" the
+                             value control never reaches. */
 } OpCode;
 
 typedef struct {

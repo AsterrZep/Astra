@@ -2128,7 +2128,13 @@ static void check_pattern(TypeChecker *tc, Node *pat, Type *target,
             tc_error(tc, pat->loc,
                      "pattern type %s does not match match target type %s",
                      type_kind_name(pt->kind), type_kind_name(target->kind));
+            return;
         }
+        /* A bool literal marks its slot on a bool target (audit §3.8):
+         * covered[0] = false arm, covered[1] = true arm. */
+        if (pat->kind == NODE_BOOL_LIT && covered &&
+            target->kind == TYPE_BOOL && covered_n > 1)
+            covered[pat->as.bool_lit.value ? 1 : 0] = true;
         return;
     }
 
@@ -2258,7 +2264,12 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
          * (some/ok/err), slot 1 = none. Without this the check never ran
          * for optionals and `match x { some(v) => v }` returned nil under
          * an i32 promise (audit §3.4). */
-        : (target->kind == TYPE_OPTIONAL ? 2 : 0);
+        : (target->kind == TYPE_OPTIONAL ? 2
+        /* bool has a finite, enumerable space too: slot 0 = false,
+         * slot 1 = true (audit §3.8). Scalars get no slots: their space
+         * is infinite (and Astra-0 has no range patterns), so coverage
+         * means a catch-all arm, which sets has_wildcard instead. */
+        : (target->kind == TYPE_BOOL ? 2 : 0));
     bool *covered = arena_new_array(tc->arena, bool, covered_n > 0 ? covered_n : 1);
     bool has_wildcard = false;
 
@@ -2328,6 +2339,23 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
         if (!covered[1])
             tc_error(tc, node->loc,
                      "non-exhaustive match: missing 'none' arm");
+    } else if (!has_wildcard && target->kind == TYPE_BOOL) {
+        if (!covered[0])
+            tc_error(tc, node->loc,
+                     "non-exhaustive match: missing 'false' arm");
+        if (!covered[1])
+            tc_error(tc, node->loc,
+                     "non-exhaustive match: missing 'true' arm");
+    } else if (!has_wildcard && !type_is_error(target)) {
+        /* Every other target (int, float, string, struct, fn, …) has an
+         * infinite or non-pattern-enumerable space and Astra-0 has no
+         * range patterns, so a catch-all is mandatory — matching the
+         * `compile error por defecto` of ARCHITECTURE.md §11.3 and the
+         * strict model chosen by research/04 (audit §3.8). Without this
+         * the match fell through at run time and yielded a nil that lied
+         * under whatever type the context promised. */
+        tc_error(tc, node->loc,
+                 "non-exhaustive match: missing '_' arm");
     }
 
     return result_type ? result_type : type_new(tc->arena, TYPE_VOID);

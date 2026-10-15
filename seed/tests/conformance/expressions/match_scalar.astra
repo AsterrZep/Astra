@@ -1,11 +1,14 @@
 // Positive scalar `match`: int, string and bool targets, each with a `_`
-// fallback arm, and one arm per kind actually reached at run time. (Matches
-// WITHOUT `_` are a known hole — §3.8 — where the match falls through to nil;
-// that form is deliberately NOT pinned here.)
+// fallback arm, and one arm per kind actually reached at run time.
+// Matches WITHOUT `_` on scalars (and without both bool arms) are now a
+// compile error (audit §3.8) — pinned by ui/scalar_match_missing_wildcard
+// and ui/bool_match_missing_arm; the bool without catch-all below proves
+// true+false alone is total.
 // EXPECT: two
 // EXPECT: other
 // EXPECT: B
 // EXPECT: yes
+// EXPECT: 100
 fn main() {
     let n = 2
     match n {
@@ -31,4 +34,7 @@ fn main() {
         true => print("yes"),
         _ => print("q"),
     }
+    let b2 = false
+    let total = match b2 { false => 100, true => 200 }
+    print(total)
 }

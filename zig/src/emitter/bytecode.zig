@@ -83,6 +83,9 @@ pub const OpCode = enum(u8) {
     try_unwrap,
     tag_is,
     unwrap,
+    // Backstop of the exhaustiveness checker (audit §3.8): no arm matched
+    // at run time; modeled as a push, like the seed's OPCODE_MATCH_NONE.
+    match_none,
 
     /// Name as printed by `--dump-bytecode` (seed `opname()`).
     pub fn name(self: OpCode) []const u8 {
@@ -140,6 +143,7 @@ pub const OpCode = enum(u8) {
             .try_unwrap => "TRY_UNWRAP",
             .tag_is => "TAG_IS",
             .unwrap => "UNWRAP",
+            .match_none => "MATCH_NONE",
         };
     }
 
@@ -147,7 +151,7 @@ pub const OpCode = enum(u8) {
     /// matters for POP, NEW_ARRAY, NEW_STRUCT and CALL.
     pub fn stackEffect(self: OpCode, operand: u32) i32 {
         return switch (self) {
-            .const_, .dup, .get_local, .get_global, .get_capture => 1,
+            .const_, .dup, .get_local, .get_global, .get_capture, .match_none => 1,
             .pop => -@as(i32, @intCast(if (operand != 0) operand else 1)),
             .set_local, .set_global, .jump_if_false, .jump_if_true, .index, .print, .add, .sub, .mul, .div, .mod, .eq, .neq, .lt, .gt, .le, .ge, .and_, .or_, .bit_and, .bit_or, .bit_xor, .shl, .shr, .ret => -1,
             .new_array => 1 - @as(i32, @intCast(operand)),

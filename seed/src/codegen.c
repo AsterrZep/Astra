@@ -117,6 +117,7 @@ static bool opcode_is_fallible(OpCode op) {
     case OPCODE_LEN:
     case OPCODE_GET_FIELD: case OPCODE_SET_FIELD:
     case OPCODE_CALL: case OPCODE_TRY_UNWRAP:
+    case OPCODE_MATCH_NONE:
         return true;
     default:
         return false;
@@ -1272,6 +1273,12 @@ static void emit_instructions(Codegen *cg,
         } break;
         case OPCODE_UNWRAP: {
             cg_write(cg, "    frame[sp-1] = astra_unwrap(frame[sp-1]);\n");
+        } break;
+        case OPCODE_MATCH_NONE: {
+            /* Backstop of the exhaustiveness checker (audit §3.8): the VM
+             * aborts with `file:line: runtime error: no match arm matched`;
+             * astra_line was stored by the fallible-op annotation above. */
+            cg_write(cg, "    astra_runtime_error(\"no match arm matched\");\n");
         } break;
         case OPCODE_TRY_UNWRAP: {
             cg_write(cg, "    ASTRA_TRY_UNWRAP(frame[sp-1]);\n");
