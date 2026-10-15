@@ -412,4 +412,86 @@ artefactos, pero los targets existen y CI los corre).
 
 ---
 
-*(La sección siguiente (§9) cierra la auditoría.)*
+## §9 — Síntesis: cerrado, diferido y criterios de entrada a la Fase 2.6
+
+**29 commits** (`c1ee107`…`5a6b358`, todos con CI verde) entre el plan
+y este cierre. Nueve partes, **122 hallazgos** analizados (7 + 16 +
+17 + 8 + 8 + 8 + 16 + 31 + los accesorios), de los cuales se fixearon
+en código/docs **todo lo que era bug o fraude documental** y el resto
+quedó diferido con repro más abajo.
+
+### Criterios de salida (§0) — estado final
+
+| # | Criterio | Estado |
+|:-:|:---------|:-------|
+| 1 | Cero hallazgos 🔴 abiertos; 🟠 cerrados o diferidos con repro | ✅ Los 9 🔴 (arena OOB, NUL, INT64_MIN/−1, overflow UB, cadenas planas, unwrap UAF, receiver-nil, stack-imbalance de bucles) están cerrados con test. Los 🟠 restantes (3.8, 7.15) están diferidos **con repro y opciones de decisión** abajo. |
+| 2 | Los tres barridos de §1 como gate en CI | ✅ `sweep_emit_c.sh` (job seed), `ui_message_parity.sh` (job parity, `STRICT=1`), replay de fuzz `-runs=0` (job seed) — todos en `.github/workflows/ci.yml` y verdes en los 29 commits. |
+| 3 | Cada feature con `EXPECT`/`EXPECT-ERROR`; sin `checked > N` sueltos | ✅ §7 añadió los pines que faltaban (guards, inmutable, escapes, runtime errors, constructos rechazados) y §6.2 sustituyó `checked > 40/15` por invariantes seen-vs-procesados en `conformance.zig`. Residuales documentados: `--dump-bytecode`/`--dump-operators` sin gate propio (🔴-bajo valor, el segundo lo vigila `--check-constructs`). |
+| 4 | §4 (emitter/VM) cerrado: semántica verificada y fijada con tests | ✅ Invariantes 1-5 de `AGENTS.md` verificados con probes; 6 hallazgos cerrados; tests `integer_wrap`, `int_min_div_neg1`, `match_binding_reclaim`, `toplevel_return`, `expr_chain_deep`, `enum_payload_print`. |
+| 5 | Mensajes seed↔zig: byte-idénticos o divergencia aceptada y documentada | ✅ `known=0` (se eliminó el único KNOWN); `msg_diff_full=20` documentado como recuperación §1.5 (informativo; el gate compara la primera línea). |
+
+### Lo que se fixeó (mapa por parte)
+
+| Parte | Cerrados | Commits |
+|:------|:---------|:--------|
+| §1 barridos | 1.1-1.4, 1.6 (+gates) | `b3136d1`, `a72d4a7`, `6437aa0`, `123809d`, `ac987ca`, `2d2722f` |
+| §2 frontend | 2.1-2.14 + return-EOF | `8832fc9`, `5435722`, `b3c798b`, `2364a2c`, `179d138`, `97f8909`, `e5376a4`, `74a90b4` |
+| §3 semántica | 3.1-3.7, 3.10, 3.13(=1.6) | `ac987ca`, `213cc35`, `61b2e30`, `99759d5`, `74a90b4` |
+| §4 emitter/VM | 4.1-4.6 | `e88d925` |
+| §5 backend C | 5.1-5.6, 5.8 | `6961005` |
+| §6 zig | 6.1-6.4, 6.6, 2 wins | `492f6e4` |
+| §7 suite | 7.1-7.14 | `6e2a4e1` |
+| §8 docs | 8.1-8.31 | `bf37069`, `dd54c86`, `5a6b358` |
+| docs por parte | tablas §0-§8 | `c1ee107`, `2d2722f`, `66fb38e`, `ecee3a7`, `f9a1f27`, `5a6b358`, este commit |
+
+### Diferidos con razón (inventario definitivo)
+
+**Decisiones de lenguaje — bloquean réplica en LLVM si se ignoran:**
+
+| # | Diferido | Razón / opciones | Repro |
+|:-:|:---------|:-----------------|:------|
+| 3.8 | 🟠 Match sobre targets escalares sin exhaustividad → `nil` bajo promesa | Indecidible automáticamente: (a) exigir `_`/bind como Rust (compile error), o (b) panic en runtime en vez de `nil`. **Recomendado antes de Fase 2.6**: LLVM replicaría el hueco. | `sem/match_int_fall.astra` — los 3 backends imprimen `nil`; con `-> i32` el `+` revienta en runtime |
+| 7.15 | 🟠 `while`/`for` como expresión: seed rechaza en parser, zig acepta y su emitter muere con `internal: stack imbalance` | Decidir si Astra-0 los permite como expresión; en cualquier caso el error *internal* de zig es bug latente. | informe §7: w1/w2/w3 |
+| 3.9 | `+=` y asignadores compuestos | Dos opciones: implementar (lexer+parser; los desugars a medias existen en ambos typecheckers) o borrar de `research/010`/`ARCH §34.2`/`assign.c` y eliminar los brazos muertos. Docs ya anotados como no implementados. | `sem/compound.astra` |
+| 3.11 | Parámetros `mut` | Implementar (ARCH §34.3 ya lo retiró de la gramática) o fijar que los params son inmutables. Hoy la matriz de mutabilidad restante está en paridad total. | `sem/mut_param.astra` |
+| 3.12 | Redeclaración en mismo scope | Imponer la regla Rust (ARCH §30.1 original) o bendecir el shadowing actual (ya documentado en §30.1). | `sem/shadow_same.astra` |
+| 3.14 | `@non_exhaustive`, bindings `@`, rangos en patrones | Agendar o excluir formalmente de Astra-0 (ARCH §11.2-11.3 ya marcados fuera). | `sem/nonexh_attr/at_bind/range_pat` |
+| A1 | `let x: T` sin inicializador aceptado (da `nil` bajo la promesa) | Exigir `=` (la grammática de `research/010` ya lo dice) o añadir definite-assignment. | `sem/uninit_arg/uninit_local` |
+| 7.7 | `;` tras bloque con `}` es error | Aceptar sentencia vacía o mantener el rechazo (hoy fijado por `ui/trailing_semi_after_loop`). | el propio test |
+
+**Divergencias de texto/UX aceptadas (sin semántica en juego):**
+
+| # | Diferido | Razón |
+|:-:|:---------|:------|
+| 1.5 | Cascadas de recuperación en línea ≥2 (bucket `msg_diff_full=20`) | Diferencia de *recuperación*, no de diagnóstico: el gate compara la primera línea. Unificar exigiría hacer los `expect` de zig no-fatales en masa (§6.1 lo dejó anotado). |
+| 1.7 | `too_many_locals` sin línea/columna | §6.3 cerró la paridad (ambos imprimen `file:`); hilar `SrcLoc` por `add_local` queda como UX, idéntico en ambos lados. |
+| 5.7 | Global leído antes de definido: `cannot call non-function value` (C) vs `undefined global variable` (VM/zig) | Misma línea, mismo exit. Implica `g_defined_*` en el C backend; repro `sem5/e6_fwd.astra`. |
+| 6.5 | Higiene: interleaving con `2>&1`, `unknown option` vs `unknown flag`, resúmenes seed-only | Ningún gate compara streams fusionados; los resúmenes ya están filtrados por el gate de paridad. |
+| 7.16 | `tests/{hello,simple_test}.astra` no compilan (variable `result` = keyword) | Solo aportan parse-errors al corpus de fuzz; decisión: renombrar+plegar a conformance o dropear. |
+| A2 | Chequeo de asignación-a-capturada en los emitters (sin columna) | Coberto por `ui/capture_assign`; subirlo al typechecker es higiene. |
+| A3 | Keywords muertas `and/or/not/in/as/comptime` | Limpiar junto con §3.9; `&&`/`\|\|` son los operadores reales. |
+
+### Veredicto
+
+La auditoría **cierra sus criterios de salida**: cero 🔴 abiertos, los
+gates diferenciales en CI, cobertura mínima cumplida, §4 verificado y
+mensajes con paridad `known=0`. **La Fase 2.6 (backend LLVM) puede
+empezar** sobre esta base; las dos salvedades que se recomienda
+resolver *antes* de que el backend nuevo replique semántica son
+**§3.8** (el `nil` de match escalar sería un comportamiento heredado
+por diseño) y **§7.15** (la semántica de `while`/`for` como expresión
+debe estar decidida para que seed, zig y LLVM coincidan). El resto de
+diferidos son decisiones de lenguaje documentadas o deuda de UX, no
+bloqueos.
+
+### Gates finales (2026-10-15)
+
+| Gate | Valor |
+|:-----|:------|
+| seed `run_tests.sh` | 🟢 219/219 |
+| `--check-constructs` | 🟢 OK (47 constructs, 14 sub-constructs, 27 operadores) |
+| `sweep_emit_c.sh` | 🟢 83/83, skip=3, gcc `-Wall -Wextra` limpio |
+| `dump_parity.sh` | 🟢 111/111 |
+| `zig build test` | 🟢 73/73 (sin ruido `failed command`) |
+| `ui_message_parity.sh` | 🟢 total=111, accept_fail=0, first_fail=0, known=0, msg_diff_full=20 (informativo) |
+| CI (29 commits) | 🟢 todos los runs `success` |
