@@ -1175,14 +1175,14 @@ pub const Parser = struct {
                 self.advance();
                 return self.parseIf();
             },
-            .kw_while => {
-                self.advance();
-                return self.parseWhile();
-            },
-            .kw_for => {
-                self.advance();
-                return self.parseFor();
-            },
+            // `while`/`for` are STATEMENTS in Astra-0: they never produce a
+            // value (`break` with a value is unsupported — ui/break_value),
+            // so as expressions they could only ever be void. Accepting them
+            // here made `let x = while …` fall through to a void-in-let error
+            // and `print(while …)` reach the emitter as a call argument with
+            // no value — an *internal* stack-imbalance error (audit §7.15,
+            // research/021). The seed never had these cases; the statement
+            // path in parseStatement dispatches them before parseExpression.
             .kw_match => {
                 self.advance();
                 return self.parseMatch();

@@ -1,0 +1,8 @@
+// La forma que en zig llegaba al emitter y murió con un error interno
+// (`internal: stack imbalance in expression call_expr`): un for como
+// argumento de llamada. Tras §7.15 ambos parsers lo rechazan con la
+// primera línea idéntica.
+// EXPECT-ERROR: unexpected token in expression
+fn main() {
+    print(for i in [1] { print(i) })
+}

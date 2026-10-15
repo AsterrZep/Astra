@@ -1,0 +1,10 @@
+// Los bucles son sentencias en Astra-0: nunca producen valor (`break` con
+// valor no existe — ui/break_value), así que como expresión solo podrían
+// ser void. Zig aceptaba `while` en posición de expresión y el caso con
+// llamada llegaba al emitter como argumento sin valor — error *internal*
+// de stack imbalance (audit §7.15, research/021). Ambos rechazan en el
+// parser con primera línea idéntica.
+// EXPECT-ERROR: unexpected token in expression
+fn main() {
+    let x = while false { print(1) }
+}
