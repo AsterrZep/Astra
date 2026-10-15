@@ -1,0 +1,7 @@
+// Shifts are 64-bit: any amount outside 0..63 dies at run time, again with
+// identical wording on both backends (audit §1.1).
+// EXPECT-RUNTIME-ERROR: shift amount out of range (must be 0..63)
+fn main() {
+    let x = 1
+    print(x << 64)
+}

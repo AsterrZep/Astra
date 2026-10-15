@@ -1,0 +1,6 @@
+// Both branches of an if/else expression must have the same type.
+// EXPECT-ERROR: if branches have different types: integer literal vs string
+fn main() {
+    let y = if true { 1 } else { "s" }
+    print(y)
+}

@@ -1,0 +1,9 @@
+// Audit §7.1 (fallout): a value-less loop makes its block void, so binding
+// that block to `let` must be rejected — and the diagnostic must describe the
+// real cause. The previous wording claimed "a block whose last statement ends
+// in `;`", a semicolon this program does not have.
+// EXPECT-ERROR: variable 'x' cannot be initialized with a void expression: this expression has no value to bind (a block has one only when it ends in an expression, not a statement)
+fn main() {
+    let x = { while false { print(1) } };
+    print(x);
+}

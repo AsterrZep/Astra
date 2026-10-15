@@ -1,6 +1,6 @@
 // A call to a name that is neither a field nor a method of the receiver
 // reports the struct's field list, exactly as an unknown field read does.
-// EXPECT-ERROR: has no field
+// EXPECT-ERROR: struct 'Point' has no field 'nope'
 struct Point {
     x: i32
 }

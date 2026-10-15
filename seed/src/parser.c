@@ -585,19 +585,6 @@ static Node *parse_block_impl(Parser *p) {
 
     skip_newlines(p);
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !p->aborted) {
-        /* Check if this is an expression that could be the last expr in the block */
-        if (check(p, TOKEN_IDENT) || check(p, TOKEN_INT_LIT) || check(p, TOKEN_FLOAT_LIT) ||
-            check(p, TOKEN_STRING_LIT) || check(p, TOKEN_TRUE) || check(p, TOKEN_FALSE) ||
-            check(p, TOKEN_MINUS) || check(p, TOKEN_BANG) ||
-            check(p, TOKEN_LPAREN) || check(p, TOKEN_LBRACE) || check(p, TOKEN_IF) ||
-            check(p, TOKEN_WHILE) || check(p, TOKEN_FOR) || check(p, TOKEN_MATCH) ||
-            check(p, TOKEN_SOME) || check(p, TOKEN_NONE) ||
-            check(p, TOKEN_OK) || check(p, TOKEN_ERR)) {
-
-            /* Peek ahead: if next meaningful token is ; it's a statement */
-            /* For simplicity, parse as statement and check for last expr */
-        }
-
         Node *stmt = parse_statement(p);
         if (stmt) {
             /* This is the block's tail expression only when it is the last item
@@ -605,10 +592,17 @@ static Node *parse_block_impl(Parser *p) {
              * value, which is what makes `{ 7; }` void and `{ 7 }` an i32. */
             if (!p->last_stmt_semi &&
                 (check(p, TOKEN_RBRACE) || check(p, TOKEN_EOF))) {
+                /* Declarations, returns and jumps close the block without a
+                 * value. `while`/`for` join them: a value-less loop must never
+                 * become the tail, or `fn main() { while false { print(1) } }`
+                 * (closing braces on one line) would demand a value the
+                 * emitter cannot produce ("stack imbalance in expression
+                 * Block"). Audit §7.1. */
                 if (stmt->kind != NODE_FN_DECL && stmt->kind != NODE_STRUCT_DECL &&
                     stmt->kind != NODE_ENUM_DECL && stmt->kind != NODE_CONST_DECL &&
                     stmt->kind != NODE_VAR_DECL && stmt->kind != NODE_RETURN &&
-                    stmt->kind != NODE_BREAK && stmt->kind != NODE_CONTINUE) {
+                    stmt->kind != NODE_BREAK && stmt->kind != NODE_CONTINUE &&
+                    stmt->kind != NODE_WHILE && stmt->kind != NODE_FOR) {
                     n->as.block.last_expr = stmt;
                     break;
                 }

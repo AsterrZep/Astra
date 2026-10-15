@@ -1461,10 +1461,14 @@ pub const Parser = struct {
 };
 
 /// A block's trailing expression is a value-producing node; declarations,
-/// returns and jumps close the block without a value.
+/// returns and jumps close the block without a value. Value-less loops
+/// (`while`, `for`) belong to that same group: promoting one to a tail made
+/// `fn main() { while false { print(1) } }` (closing braces on one line)
+/// demand a value the emitter never computes — "stack imbalance in … block".
+/// Audit §7.1, mirrored from seed/src/parser.c.
 fn isTailCandidate(node: ast.Node) bool {
     return switch (node) {
-        .fn_decl, .struct_decl, .enum_decl, .const_decl, .var_decl, .return_stmt, .break_stmt, .continue_stmt => false,
+        .fn_decl, .struct_decl, .enum_decl, .const_decl, .var_decl, .return_stmt, .break_stmt, .continue_stmt, .while_expr, .for_expr => false,
         else => true,
     };
 }

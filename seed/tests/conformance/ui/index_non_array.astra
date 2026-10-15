@@ -1,0 +1,6 @@
+// Indexing something that is not an array.
+// EXPECT-ERROR: cannot index non-array type i32
+fn main() {
+    let x = 1
+    print(x[0])
+}

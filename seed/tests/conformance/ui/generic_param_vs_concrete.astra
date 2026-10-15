@@ -1,7 +1,7 @@
 // Passing a type parameter where a concrete type is required is a
 // definition-side error (Phase 2.4 step 2a): the symbolic check runs once,
 // for every instantiation at once.
-// EXPECT-ERROR: expected i32
+// EXPECT-ERROR: argument 1: expected i32, got type parameter
 fn wants_i32(n: i32) -> i32 {
     n
 }

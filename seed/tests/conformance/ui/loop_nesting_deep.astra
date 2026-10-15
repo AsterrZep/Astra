@@ -3,6 +3,7 @@
 // carries the loop node's own `file:line:col:` position on both sides (the
 // seed used to print a bare `error: …` with no location at all).
 // EXPECT-ERROR: loop nesting too deep (max 32)
+// EXPECT-ERROR-FIRST: tests/conformance/ui/loop_nesting_deep.astra:42:133: error: loop nesting too deep (max 32)
 
 fn main() {
     let i = 0

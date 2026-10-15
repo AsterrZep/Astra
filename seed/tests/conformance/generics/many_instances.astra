@@ -2,6 +2,17 @@
 // instances and reallocate the instance array mid-loop; the earlier
 // instance's callee rewrites must survive that reallocation (Phase 2.4
 // step 2b audit — the seed used to keep a pointer across the grow).
+// Every instance now returns its argument and prints it, so a stale rewrite
+// shows up as the wrong VALUE, not merely as a program that still ends in
+// "done" (audit §7.11).
+// EXPECT: 7
+// EXPECT: 8
+// EXPECT: 9
+// EXPECT: 10
+// EXPECT: 11
+// EXPECT: 12
+// EXPECT: 13
+// EXPECT: 3
 // EXPECT: done
 fn p1<T>(x: T) { x }
 fn p2<T>(x: T) { x }
@@ -14,12 +25,12 @@ fn b<T>(x: T) { x }
 fn c<T>(x: T) { x }
 fn a<T>(x: T) { b(x); c(x) }
 
-p1(1)
-p2(1)
-p3(1)
-p4(1)
-p5(1)
-p6(1)
-p7(1)
-a(1)
+print(p1(7))
+print(p2(8))
+print(p3(9))
+print(p4(10))
+print(p5(11))
+print(p6(12))
+print(p7(13))
+print(a(3))
 print("done")

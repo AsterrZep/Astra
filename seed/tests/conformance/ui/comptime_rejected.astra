@@ -1,0 +1,7 @@
+// `comptime` is registered but is NOT part of Astra-0 (constructs/comptime.c
+// stays `in_astra0 = false`): the token exists, nothing parses it, so the
+// statement dies in the expression parser on both compilers.
+// EXPECT-ERROR: unexpected token in expression
+fn main() {
+    comptime { print(1) }
+}

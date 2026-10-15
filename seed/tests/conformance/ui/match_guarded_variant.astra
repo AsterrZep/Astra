@@ -3,6 +3,7 @@
 // by `if flag`, the match fell through at run time and returned nil
 // under an i32 promise, byte-identically in both compilers (audit §3.4).
 // EXPECT-ERROR: non-exhaustive match: missing variant 'E.B'
+// EXPECT-ERROR-FIRST: tests/conformance/ui/match_guarded_variant.astra:9:12: error: non-exhaustive match: missing variant 'E.B'
 enum E { A B }
 fn f(e: E, flag: bool) -> i32 {
     return match e {

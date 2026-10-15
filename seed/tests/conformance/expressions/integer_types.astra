@@ -1,9 +1,17 @@
-// Integer type annotations: i64, u32, u64 are recognized by the typechecker.
-// These types are accepted in function signatures without "unknown type" errors.
-// EXPECT: hello
-fn uses_i64(x: i64) { }
-fn uses_u32(x: u32) { }
-fn uses_u64(x: u64) { }
+// Integer type annotations: i64, u32, u64 are recognized by the typechecker
+// in function signatures without "unknown type" errors. Each function is
+// actually called and its result printed (audit §7.11) — declaring the
+// signature alone proved nothing. types/integer_widths.astra covers the
+// literal/array/range/bitwise sides of the same types; this file is the
+// signature-and-call side, one function per type.
+// EXPECT: 43
+// EXPECT: 7
+// EXPECT: 9
+fn uses_i64(x: i64) -> i64 { x + 1 }
+fn uses_u32(x: u32) -> u32 { x + 1 }
+fn uses_u64(x: u64) -> u64 { x + 1 }
 fn main() {
-    print("hello")
+    print(uses_i64(42))
+    print(uses_u32(6))
+    print(uses_u64(8))
 }

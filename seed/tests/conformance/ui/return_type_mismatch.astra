@@ -1,0 +1,6 @@
+// A `return` value must match the declared `-> T` return type.
+// EXPECT-ERROR: return type string does not match function return type i32
+fn f() -> i32 {
+    return "s"
+}
+fn main() { print(f()) }

@@ -1,15 +1,15 @@
 // Fuzz regression (libFuzzer, 2026-10-13): a corrupted `struct` decl
 // leaves the `impl ... for Point` self without a type; the field access
 // used to deref the NULL type in typecheck_field_access.
+// This file used to also carry `// EXPECT:` lines for the trait/method body
+// below: they were dead (the EXPECT-ERROR branch short-circuits before they
+// are ever read), so they are gone — the body is input for the corrupted
+// decl, nothing more (audit §7.11).
 // EXPECT-ERROR: unknown struct 'Point'
 // Phase 2.3 step 5 (both compilers): trait conformance. An `impl T for X`
 // must name a known trait and provide every required method with a matching
 // signature; those methods then dispatch through `X.T.method`, and an
 // inherent method still shadows the trait's entry for every call site.
-// EXPECT: 7
-// EXPECT: point
-// EXPECT: 5
-// EXPECT: marker
 
 struc8t Point {
     x: i32

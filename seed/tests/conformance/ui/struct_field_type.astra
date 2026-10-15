@@ -1,5 +1,5 @@
 // A field initialised with the wrong type must be a compile error
-// EXPECT-ERROR: expects
+// EXPECT-ERROR: field 'x' expects i32, got string
 struct Point {
     x: i32
     y: i32

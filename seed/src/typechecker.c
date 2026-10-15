@@ -2476,10 +2476,14 @@ static void typecheck_var_decl(TypeChecker *tc, Node *node) {
     }
 
     if (val_type && val_type->kind == TYPE_VOID) {
+        /* Audit §7.1: the old hint claimed the initializer was a block whose
+         * last statement ended in `;` — untrue for `{ while … }`, `print(1)`
+         * or any other void value. State the fact that is always true and
+         * keep the block rule as a parenthetical. */
         tc_error(tc, node->loc,
                  "variable '%.*s' cannot be initialized with a void expression: "
-                 "a block whose last statement ends in `;` has no value, "
-                 "so leave the trailing expression without a semicolon",
+                 "this expression has no value to bind (a block has one only "
+                 "when it ends in an expression, not a statement)",
                  (int)name.len, name.str);
         return;
     }

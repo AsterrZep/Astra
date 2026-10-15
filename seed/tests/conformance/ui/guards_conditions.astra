@@ -1,0 +1,6 @@
+// An `if` condition must be bool (research/010 §5.3): an int is not truthy
+// in Astra-0.
+// EXPECT-ERROR: if condition must be bool, got integer literal
+fn main() {
+    if 1 { print(1) }
+}

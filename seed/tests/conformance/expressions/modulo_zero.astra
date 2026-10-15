@@ -1,0 +1,8 @@
+// Integer `%` by zero dies at run time with the same wording on the VM and
+// in generated C (audit §1.1).
+// EXPECT-RUNTIME-ERROR: modulo by zero
+fn main() {
+    let x = 10
+    let y = 0
+    print(x % y)
+}

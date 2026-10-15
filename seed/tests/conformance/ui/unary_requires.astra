@@ -1,0 +1,9 @@
+// The bitwise/logical/negation operators each name the type they need; this
+// file pins the bitwise wording (the sibling wordings were probed identical
+// seed<->zig: "bitwise not requires integer type, got f64",
+// "logical not requires bool, got integer literal",
+// "negation requires numeric type, got string").
+// EXPECT-ERROR: bitwise operator requires integer type, got string
+fn main() {
+    print("a" & 1)
+}

@@ -1,0 +1,9 @@
+// A match guard filters an arm at run time, so it must be bool.
+// EXPECT-ERROR: match guard must be bool, got integer literal
+fn main() {
+    let x = 1
+    match x {
+        1 if 5 => print(1),
+        _ => print(0),
+    }
+}

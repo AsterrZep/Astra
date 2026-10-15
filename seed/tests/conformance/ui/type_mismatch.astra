@@ -1,5 +1,6 @@
 // Type mismatch must be reported at compile time
-// EXPECT-ERROR: type mismatch
+// EXPECT-ERROR: type mismatch: variable 'x' declared as i32 but initialized with string
+// EXPECT-ERROR-FIRST: tests/conformance/ui/type_mismatch.astra:5:5: error: type mismatch: variable 'x' declared as i32 but initialized with string
 fn main() {
     let x: i32 = "not a number";
     print(x);

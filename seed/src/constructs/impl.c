@@ -1,4 +1,4 @@
-/* impl — ImplBlock  [OUTSIDE ASTRA-0]
+/* impl — ImplBlock  [IN ASTRA-0]
  * ============================================================
  * `ImplBlock ::= "impl" GenericParams? Type ("for" Type)? WhereClause?
  *                  "{" ImplItem* "}"`
@@ -24,11 +24,13 @@ const ConstructSpec construct_impl = {
     .position   = CONSTRUCT_ITEM,
     .phases     = 0,
     .has_braces = true,
-    .in_astra0  = false,
+    .in_astra0  = true,
     .deps       = deps,
     .grammar    = "ImplBlock ::= \"impl\" GenericParams? Type (\"for\" Type)? WhereClause? \"{\" ImplItem* \"}\"",
     .research   = "research/010 §12.1 (impl blocks); research/011 §5.2 (simple dispatch only)",
-    .note       = "Excluded from Astra-0. Phase 2.3: parses into NODE_IMPL "
+    .note       = "In Astra-0: conformance/traits/* and conformance/generics/* pass on "
+                  "it (audit §7.14 — research/011 §5.2 deferred it, the implemented "
+                  "language did not). Phase 2.3: parses into NODE_IMPL "
                   "(inherent `impl T` and `impl Tr for T`), the checker registers the "
                   "methods for static dispatch and verifies trait conformance, and the "
                   "emitter compiles them as mangled `Type.method` globals. Static "

@@ -1,0 +1,5 @@
+// `for` iterates arrays and ranges only — a bare int is not a sequence.
+// EXPECT-ERROR: for loop must iterate over an array or range, got integer literal
+fn main() {
+    for i in 5 { print(i) }
+}

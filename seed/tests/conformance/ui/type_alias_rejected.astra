@@ -1,0 +1,6 @@
+// `type Foo = i32` is not in Astra-0 (constructs/type_alias.c, in_astra0 =
+// false): `type` is not a keyword, so the line parses as an expression and
+// dies on the undefined name.
+// EXPECT-ERROR: undefined variable 'type'
+type Foo = i32
+fn main() { print(1) }

@@ -3,6 +3,7 @@
 // way, quoted punctuation and all (`expected ':', got IDENT`, never
 // `expected :, got IDENT`).
 // EXPECT-ERROR: expected ':', got IDENT
+// EXPECT-ERROR-FIRST: tests/conformance/ui/expect_colon.astra:8:7: error: expected ':', got IDENT
 struct P {
     x i32
 }

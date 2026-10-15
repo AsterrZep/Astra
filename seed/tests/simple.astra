@@ -1,3 +1,7 @@
+// Smoke file kept at tests/ root: it is a seed input for `make fuzz-run`
+// (`find tests -name '*.astra'` copies it into the corpus) and is NOT run by
+// run_tests.sh, which only walks tests/conformance. Probed output: 42.
+// EXPECT: 42
 fn main() {
     print(42);
 }

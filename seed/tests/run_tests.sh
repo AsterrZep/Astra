@@ -7,6 +7,12 @@
 #   // EXPECT: <line>              one expected stdout line (repeatable)
 #   // EXPECT-ERROR: <text>        the program must fail to compile and the
 #                                 error message must contain <text>
+#   // EXPECT-ERROR-FIRST: <text>  audit §7.8, optional: in addition to the
+#                                 EXPECT-ERROR above, <text> must appear in
+#                                 the FIRST diagnostic line only. Use it with
+#                                 the `file:line:col: error: …` prefix to pin
+#                                 the position the user sees first, not just
+#                                 the wording somewhere in the output.
 #   // EXPECT-RUNTIME-ERROR: <text> the program must compile, then fail while
 #                                 running. On the VM the message must contain
 #                                 <text>; for --emit-c a clean exit 1 with a
@@ -16,6 +22,11 @@
 #                                 alike since audit §1.1 (PRE_LLVM_AUDIT.md);
 #                                 the exit-1 check stays because a crash also
 #                                 exits non-zero.
+#
+# Only ONE EXPECT-ERROR: (and one EXPECT-RUNTIME-ERROR:) is honoured per file
+# — each is read with `head -1`, so a second directive used to be silently
+# ignored. That latent trap now fails the file: split it into one case per
+# directive (audit §7.8).
 #
 # Usage: ./tests/run_tests.sh   (or: make test)
 # ============================================================
@@ -87,6 +98,27 @@ rm -f "$bad_ast"
 while IFS= read -r file; do
     rel="${file#"$ROOT"/}"
 
+    # Directive-count guard (audit §7.8): each EXPECT-ERROR: /
+    # EXPECT-RUNTIME-ERROR: is read with `head -1`, so a second one in the
+    # same file used to be silently ignored — a latent trap that hides half
+    # of what the file claims to check. One file, one directive of each kind.
+    n_err="$(grep -cE '^// *EXPECT-ERROR:' "$file")"
+    n_rt="$(grep -cE '^// *EXPECT-RUNTIME-ERROR:' "$file")"
+    if [ "$n_err" -gt 1 ] || [ "$n_rt" -gt 1 ]; then
+        echo "FAIL $rel: $n_err EXPECT-ERROR: / $n_rt EXPECT-RUNTIME-ERROR: directive(s);"
+        echo "      only the first of each is read (head -1), the rest would be silently ignored."
+        echo "      Split it into one file per directive (audit §7.8)."
+        fail=$((fail + 1))
+        continue
+    fi
+    # EXPECT-ERROR-FIRST: is only ever checked inside the EXPECT-ERROR branch
+    # below, so carrying it without one would quietly check nothing.
+    if [ "$n_err" -eq 0 ] && grep -qE '^// *EXPECT-ERROR-FIRST:' "$file"; then
+        echo "FAIL $rel: EXPECT-ERROR-FIRST: without an EXPECT-ERROR: directive — nothing would check it"
+        fail=$((fail + 1))
+        continue
+    fi
+
     # Runtime failure: the compiler succeeds, the *program* does not. Checked
     # before EXPECT-ERROR because a runtime-error test also exits non-zero.
     if grep -qE '^// *EXPECT-RUNTIME-ERROR:' "$file"; then
@@ -124,6 +156,22 @@ while IFS= read -r file; do
             fail=$((fail + 1))
             continue
         fi
+        # Optional position pin (audit §7.8): EXPECT-ERROR-FIRST must appear
+        # in the FIRST diagnostic line only, so `file:line:col:` and the
+        # leading wording are asserted where the user actually reads them
+        # (anywhere else in the output would not do). EXPECT-ERROR above keeps
+        # its old semantics: substring of the whole output.
+        first_directive="$(grep -E '^// *EXPECT-ERROR-FIRST:' "$file" \
+            | sed -E 's|^// *EXPECT-ERROR-FIRST: *||' | head -1)"
+        if [ -n "$first_directive" ]; then
+            first_line="${actual%%$'\n'*}"
+            if ! contains "$first_directive" "$first_line"; then
+                echo "FAIL $rel: first diagnostic line does not contain '$first_directive'"
+                printf '      got: %s\n' "$first_line"
+                fail=$((fail + 1))
+                continue
+            fi
+        fi
         echo "ok   $rel (error as expected)"
         pass=$((pass + 1))
         continue
@@ -158,8 +206,15 @@ if [ -d "$CGDIR" ]; then
         # Compile a generated .c into the throwaway test binary.
         # -I"$ROOT/src" is required: the generated file includes codegen_runtime.h,
         # which lives in seed/src and not next to the emitted file.
+        # -Wall -Wextra, never -w (audit §7.10; same policy as sweep_emit_c.sh
+        # §5.8): a warning in generated C is a codegen defect — discarded
+        # qualifiers, unused things, incompatible pointers — and must fail this
+        # gate like any other divergence source. gcc exits 0 on warnings and
+        # still links the binary, so stderr is captured here and the caller
+        # checks it explicitly.
+        CG_GCC_ERR="$ROOT/build/codegen_gcc.err"
         cg_compile() {
-            gcc -w -I"$ROOT/src" -o "$ROOT/build/codegen_test" "$1" -lm 2>/dev/null
+            gcc -Wall -Wextra -I"$ROOT/src" -o "$ROOT/build/codegen_test" "$1" -lm 2>"$CG_GCC_ERR"
         }
 
         for file in "$CGDIR"/*.astra; do
@@ -197,13 +252,23 @@ if [ -d "$CGDIR" ]; then
             fi
             if ! cg_compile "$cfile"; then
                 echo "FAIL $rel: generated C did not compile"
-                rm -f "$cfile" "$ROOT/build/codegen_test"
+                sed 's/^/      /' "$CG_GCC_ERR" 2>/dev/null
+                rm -f "$cfile" "$ROOT/build/codegen_test" "$CG_GCC_ERR"
+                fail=$((fail + 1))
+                continue
+            fi
+            # gcc exits 0 on warnings, so a non-empty stderr is a FAIL of its
+            # own (the -Wall -Wextra above would otherwise stay silent).
+            if [ -s "$CG_GCC_ERR" ]; then
+                echo "FAIL $rel: gcc warned about the generated C"
+                sed 's/^/      /' "$CG_GCC_ERR"
+                rm -f "$cfile" "$ROOT/build/codegen_test" "$CG_GCC_ERR"
                 fail=$((fail + 1))
                 continue
             fi
             actual="$("$ROOT/build/codegen_test" 2>&1)"
             rc=$?
-            rm -f "$cfile" "$ROOT/build/codegen_test"
+            rm -f "$cfile" "$ROOT/build/codegen_test" "$CG_GCC_ERR"
 
             # The generated program is expected to die at run time, not to be
             # rejected by --emit-c or gcc. Exit 1 with a "runtime error" line is

@@ -1,0 +1,8 @@
+// Compound assignment (`+=`) is not in the Astra-0 grammar: the operator
+// table has no `+=` entry, so the statement dies in the expression parser.
+// EXPECT-ERROR: unexpected token in expression
+fn main() {
+    let x = 5
+    x += 1
+    print(x)
+}

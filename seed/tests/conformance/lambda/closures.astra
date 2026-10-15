@@ -4,6 +4,7 @@
 // EXPECT: 111
 // EXPECT: 50
 // EXPECT: 30
+// EXPECT: 6
 fn outer() -> i32 {
     let n = 5
     let f = |x: i32| -> i32 { x + n }
@@ -32,10 +33,21 @@ fn store() {
     saved = |x: i32| -> i32 { x + base }
 }
 
+// By value = snapshot at build time (audit §7.11): reassigning the captured
+// binding AFTER the closure exists must not reach into the closure, which is
+// what separates by-value from by-reference capture (f(1) stays 5+1=6, not 10+1).
+fn by_value() -> i32 {
+    let mut n = 5
+    let f = |x: i32| -> i32 { x + n }
+    n = 10
+    return f(1)
+}
+
 fn main() {
     print(outer())
     print(chain())
     print(top(8))
     store()
     print(saved(23))
+    print(by_value())
 }

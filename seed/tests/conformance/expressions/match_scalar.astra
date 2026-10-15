@@ -1,0 +1,34 @@
+// Positive scalar `match`: int, string and bool targets, each with a `_`
+// fallback arm, and one arm per kind actually reached at run time. (Matches
+// WITHOUT `_` are a known hole — §3.8 — where the match falls through to nil;
+// that form is deliberately NOT pinned here.)
+// EXPECT: two
+// EXPECT: other
+// EXPECT: B
+// EXPECT: yes
+fn main() {
+    let n = 2
+    match n {
+        1 => print("one"),
+        2 => print("two"),
+        _ => print("other"),
+    }
+    let m = 9
+    match m {
+        1 => print("one"),
+        2 => print("two"),
+        _ => print("other"),
+    }
+    let s = "b"
+    match s {
+        "a" => print("A"),
+        "b" => print("B"),
+        _ => print("q"),
+    }
+    let b = true
+    match b {
+        false => print("no"),
+        true => print("yes"),
+        _ => print("q"),
+    }
+}

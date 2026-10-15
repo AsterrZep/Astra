@@ -1,0 +1,7 @@
+// Only \" \\ \n \t are escape sequences (lexer); anything else is rejected
+// instead of silently keeping the backslash.
+// EXPECT-ERROR: invalid escape sequence
+fn main() {
+    let s = "bad \q escape"
+    print(s)
+}

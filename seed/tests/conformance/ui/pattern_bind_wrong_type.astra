@@ -1,5 +1,5 @@
 // Pattern binding with wrong type should error
-// EXPECT-ERROR: type mismatch
+// EXPECT-ERROR: type mismatch: variable 'n' declared as string but initialized with i32
 enum Color {
     Rgb(i32, i32, i32)
 }

@@ -1,5 +1,6 @@
 // Initialising a field the struct does not declare must be a compile error
-// EXPECT-ERROR: has no field
+// EXPECT-ERROR: struct 'Point' has no field 'z'
+// EXPECT-ERROR-FIRST: tests/conformance/ui/struct_unknown_field.astra:10:13: error: struct 'Point' has no field 'z'
 struct Point {
     x: i32
     y: i32

@@ -1,0 +1,5 @@
+// A `while` condition must be bool, same rule as `if`.
+// EXPECT-ERROR: while condition must be bool, got integer literal
+fn main() {
+    while 1 { print(1) }
+}

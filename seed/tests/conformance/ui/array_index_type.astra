@@ -1,0 +1,6 @@
+// An array index must be an integer, not a float.
+// EXPECT-ERROR: array index must be integer type, got f64
+fn main() {
+    let a = [1, 2]
+    print(a[0.5])
+}

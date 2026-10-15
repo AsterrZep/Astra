@@ -1,0 +1,11 @@
+// Every arm of a match must produce the same type; the arms are checked in
+// source order, so the second one is reported against the first.
+// EXPECT-ERROR: match arm type string does not match previous arm type integer literal
+fn main() {
+    let x = 1
+    let y = match x {
+        1 => 1,
+        _ => "s",
+    }
+    print(y)
+}

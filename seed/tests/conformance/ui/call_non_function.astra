@@ -1,0 +1,6 @@
+// Calling a value that is not a function.
+// EXPECT-ERROR: cannot call non-function type i32
+fn main() {
+    let x = 1
+    x()
+}

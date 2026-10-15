@@ -1562,7 +1562,10 @@ pub const TypeChecker = struct {
         }
 
         if (val_type != null and val_type.?.kind == .void) {
-            self.errFmt(loc, "variable '{s}' cannot be initialized with a void expression: a block whose last statement ends in `;` has no value, so leave the trailing expression without a semicolon", .{v.name});
+            // Audit §7.1: mirrored from seed/src/typechecker.c — the old hint
+            // asserted a `;`-terminated trailing statement, which is untrue
+            // for `{ while … }`, `print(1)` or any other void value.
+            self.errFmt(loc, "variable '{s}' cannot be initialized with a void expression: this expression has no value to bind (a block has one only when it ends in an expression, not a statement)", .{v.name});
             return;
         }
 

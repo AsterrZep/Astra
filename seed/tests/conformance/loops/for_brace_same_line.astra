@@ -1,0 +1,10 @@
+// Audit §7.1, `for` edition: the loop's `}` and the enclosing block's `}` are
+// on the SAME line, so the `for` is the block's last statement with no
+// newline between the two braces. Like `while`, a value-less `for` must stay
+// a statement instead of becoming the block's tail expression (same
+// "stack imbalance in expression Block" failure before the fix). The loop
+// iterates the array — the guarded body prints nothing.
+// EXPECT: start
+fn main() {
+    print("start")
+    for i in [1, 2] { if false { print("never") } } }

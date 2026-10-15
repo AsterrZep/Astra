@@ -1,0 +1,8 @@
+// `x as i32` casts are not in the Astra-0 grammar (no `as` operator), so the
+// expression parser stops at the keyword on both compilers.
+// EXPECT-ERROR: unexpected token in expression
+fn main() {
+    let x = 5
+    let y = x as i32
+    print(y)
+}

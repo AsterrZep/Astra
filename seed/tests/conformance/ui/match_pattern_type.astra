@@ -1,5 +1,5 @@
 // A pattern whose type differs from the match target must be rejected
-// EXPECT-ERROR: does not match
+// EXPECT-ERROR: pattern type string does not match match target type i32
 fn main() {
     let n = 3;
     print(match n {

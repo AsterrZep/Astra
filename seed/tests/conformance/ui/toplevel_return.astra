@@ -3,6 +3,7 @@
 // generated uncompilable C (`return frame[...]` from an int function)
 // (audit §4.5).
 // EXPECT-ERROR: return outside of a function
+// EXPECT-ERROR-FIRST: tests/conformance/ui/toplevel_return.astra:7:1: error: return outside of a function
 return 5
 fn main() {
     print(1)

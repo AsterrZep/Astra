@@ -1,5 +1,5 @@
 // Type mismatch with Option/Result
-// EXPECT-ERROR: type mismatch
+// EXPECT-ERROR: type mismatch: variable 'x' declared as i32 but initialized with optional
 fn main() {
     let x: i32 = ok("hello")
 }

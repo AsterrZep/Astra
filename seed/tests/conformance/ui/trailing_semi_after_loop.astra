@@ -1,0 +1,7 @@
+// CURRENT behaviour, decision deferred (audit §7.2): a `;` after a loop's
+// closing brace is not consumed by the statement parser and reaches the
+// expression parser, so both compilers stop at the `;` with a parse error.
+// The first line is byte-identical seed<->zig; only the recovery (line 2+)
+// differs.
+// EXPECT-ERROR: unexpected token in expression
+fn main() { while false { print(1) }; }

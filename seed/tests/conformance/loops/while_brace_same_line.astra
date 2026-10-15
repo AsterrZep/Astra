@@ -1,0 +1,11 @@
+// Audit §7.1: the loop's `}` and the enclosing block's `}` are on the SAME
+// line, so the `while` is the block's last statement with no newline between
+// the two braces. A value-less loop is a statement, never the block's tail
+// expression: before the fix the parser promoted it and the emitter raised
+// "internal: stack imbalance in expression Block: expected height 1,
+// emitter computed 0" on this legal program. The condition is false, so the
+// loop body never runs.
+// EXPECT: start
+fn main() {
+    print("start")
+    while false { print("never") } }

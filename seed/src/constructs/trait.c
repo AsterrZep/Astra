@@ -1,4 +1,4 @@
-/* trait — TraitDef  [OUTSIDE ASTRA-0]
+/* trait — TraitDef  [IN ASTRA-0]
  * ============================================================
  * `TraitDef ::= "trait" Identifier GenericParams? WhereClause?
  *                 "{" TraitItem* "}"`
@@ -24,15 +24,15 @@ const ConstructSpec construct_trait = {
     .position   = CONSTRUCT_ITEM,
     .phases     = 0,
     .has_braces = true,
-    .in_astra0  = false,
+    .in_astra0  = true,
     .deps       = deps,
     .grammar    = "TraitDef ::= \"trait\" Identifier GenericParams? WhereClause? \"{\" TraitItem* \"}\"",
     .research   = "research/010 §12.1 (trait definition)",
-    .note       = "Excluded from Astra-0 by research/011 §5.2 and §2.3 (\"don't implement "
-                  "traits, generics or comptime in the seed\"). Phase 2.3: parses into "
-                  "NODE_TRAIT, the checker collects the required method signatures for "
-                  "conformance and the emitter skips the block (traits have no runtime "
-                  "form). Still outside Astra-0 — it is Phase 2 language, not bootstrap "
-                  "material.",
+    .note       = "In Astra-0: conformance/traits/* passes on it (audit §7.14 — "
+                  "research/011 §5.2 and §2.3 said \"don't implement traits, generics "
+                  "or comptime in the seed\", and Phase 2.3 implemented them anyway). "
+                  "Parses into NODE_TRAIT, the checker collects the required method "
+                  "signatures for conformance and the emitter skips the block (traits "
+                  "have no runtime form).",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

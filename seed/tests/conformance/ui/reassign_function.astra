@@ -1,0 +1,7 @@
+// Rebinding a function name has its own diagnostic instead of the generic
+// immutable-variable one.
+// EXPECT-ERROR: cannot reassign function 'helper'
+fn helper() { print(1) }
+fn main() {
+    helper = 3
+}

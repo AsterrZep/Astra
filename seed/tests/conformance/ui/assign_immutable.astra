@@ -1,0 +1,8 @@
+// Assigning to a binding created with `let` (no `mut`) must be rejected at
+// compile time (ARCHITECTURE §8.1).
+// EXPECT-ERROR: cannot assign to immutable variable 'x'
+fn main() {
+    let x = 1
+    x = 2
+    print(x)
+}

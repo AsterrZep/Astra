@@ -1,0 +1,7 @@
+// Tuples are not a value type in Astra-0 (constructs/tuple_lit.c,
+// in_astra0 = false): a comma inside `( … )` is not accepted.
+// EXPECT-ERROR: expected ')', got ,
+fn main() {
+    let t = (1, 2)
+    print(t)
+}

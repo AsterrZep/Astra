@@ -1,0 +1,9 @@
+// Struct field shorthand `P { x }` is not in Astra-0: every field needs
+// `name: value` (ARCHITECTURE.md §10.1).
+// EXPECT-ERROR: expected ':', got }
+struct P { x: i32 }
+fn main() {
+    let x = 1
+    let p = P { x }
+    print(p.x)
+}

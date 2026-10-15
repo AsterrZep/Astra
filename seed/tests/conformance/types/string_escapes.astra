@@ -1,0 +1,13 @@
+// VM-path mirror of tests/codegen/string_escape.astra: the same escapes must
+// produce the same bytes through the bytecode VM as through the C backend.
+// EXPECT: say "hi" now
+// EXPECT: a\b
+// EXPECT: x
+// EXPECT: y
+// EXPECT: t	ab
+fn main() {
+    print("say \"hi\" now")
+    print("a\\b")
+    print("x\ny")
+    print("t\tab")
+}
