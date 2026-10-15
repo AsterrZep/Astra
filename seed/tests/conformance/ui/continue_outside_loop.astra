@@ -1,0 +1,7 @@
+// continue outside a loop must be rejected at compile time, with the same
+// file:line:col shape as every other positioned diagnostic (audit §1.2)
+// EXPECT-ERROR: 'continue' used outside of a loop
+// EXPECT-ERROR-FIRST: tests/conformance/ui/continue_outside_loop.astra:6:5: error: 'continue' used outside of a loop
+fn main() {
+    continue;
+}

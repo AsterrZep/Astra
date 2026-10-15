@@ -1,5 +1,6 @@
 // break outside a loop must be rejected at compile time
 // EXPECT-ERROR: 'break' used outside of a loop
+// EXPECT-ERROR-FIRST: tests/conformance/ui/break_outside_loop.astra:5:5: error: 'break' used outside of a loop
 fn main() {
     break;
 }

@@ -1817,6 +1817,11 @@ static Node *parse_statement(Parser *p) {
 
     if (check(p, TOKEN_BREAK)) {
         advance(p);
+        /* The node's position is the keyword itself: capturing
+         * p->previous.loc after optional_semi would point at the trailing
+         * newline/semicolon instead (parser.zig has always captured it
+         * here — audit §1.2). */
+        SrcLoc break_loc = p->previous.loc;
         /* A bare `break` ends at a statement boundary; anything else right
          * after it can only be a break-with-value, which Astra-0 does not
          * support (no `loop` construct to receive it — see constructs/break.c).
@@ -1827,12 +1832,14 @@ static Node *parse_statement(Parser *p) {
             parser_error(p, "break with a value is not supported in Astra-0");
         }
         optional_semi(p);
-        return node_new(p->arena, NODE_BREAK, p->previous.loc);
+        return node_new(p->arena, NODE_BREAK, break_loc);
     }
     if (check(p, TOKEN_CONTINUE)) {
         advance(p);
+        /* Keyword position, same as `break` above (audit §1.2). */
+        SrcLoc cont_loc = p->previous.loc;
         optional_semi(p);
-        return node_new(p->arena, NODE_CONTINUE, p->previous.loc);
+        return node_new(p->arena, NODE_CONTINUE, cont_loc);
     }
 
     /* Block */

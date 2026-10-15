@@ -2071,8 +2071,9 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_BREAK: {
         if (e->loop_depth == 0) {
-            fprintf(stderr, "%s:%u: error: 'break' used outside of a loop\n",
-                    node->loc.filename ? node->loc.filename : "?", node->loc.line);
+            fprintf(stderr, "%s:%u:%u: error: 'break' used outside of a loop\n",
+                    node->loc.filename ? node->loc.filename : "?",
+                    node->loc.line, node->loc.column);
             e->error_count++;
             break;
         }
@@ -2087,8 +2088,9 @@ static void emit_expr(Emitter *e, Node *node) {
 
     case NODE_CONTINUE: {
         if (e->loop_depth == 0) {
-            fprintf(stderr, "%s:%u: error: 'continue' used outside of a loop\n",
-                    node->loc.filename ? node->loc.filename : "?", node->loc.line);
+            fprintf(stderr, "%s:%u:%u: error: 'continue' used outside of a loop\n",
+                    node->loc.filename ? node->loc.filename : "?",
+                    node->loc.line, node->loc.column);
             e->error_count++;
             break;
         }

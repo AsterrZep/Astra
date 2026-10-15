@@ -1597,7 +1597,8 @@ pub const Emitter = struct {
             },
             .break_stmt => {
                 if (self.loop_depth == 0) {
-                    self.err(ln, "'break' used outside of a loop", .{});
+                    // file:line:col like every positioned route (audit §1.2).
+                    self.errLoc(self.tree.loc(idx), "'break' used outside of a loop", .{});
                 } else {
                     self.emitInstOffset(.jump, 0, ln);
                     const lp = &self.loops[self.loop_depth - 1];
@@ -1611,7 +1612,8 @@ pub const Emitter = struct {
             },
             .continue_stmt => {
                 if (self.loop_depth == 0) {
-                    self.err(ln, "'continue' used outside of a loop", .{});
+                    // file:line:col like every positioned route (audit §1.2).
+                    self.errLoc(self.tree.loc(idx), "'continue' used outside of a loop", .{});
                 } else {
                     self.emitInstOffset(.jump, 0, ln);
                     const lp = &self.loops[self.loop_depth - 1];
