@@ -1,11 +1,15 @@
 # 022 — TAREA: Fix §4.7 — Corrupción de frame de `match` inline (emitter VM)
 
 > **Nombre para delegar:** `TAREA-4.7-match-inline-frame`
-> **Estado a la entrada:** 🟠 ABIERTO — bug sin fix, dos intentos
-> revertidos, bloqueador estructural identificado y tres direcciones
-> de fix diseñadas. El árbol está **verde** (suite 224/224, CI verde,
-> commit `67ffe75`); este documento es la memoria completa para
-> continuarlo desde una conversación nueva.
+> **Estado:** ✅ **RESUELTA el 2026-10-15 por `ed1792e`** (fix en seed +
+> zig + codegen C; gates al cierre en §11, suite 229/229). Qué funcionó
+> de verdad: §11 al final de este documento. Lo que sigue es la memoria
+> histórica de los dos intentos previos y del bloqueador que condicionó
+> el diseño.
+> **Estado a la entrada (histórico):** 🟠 ABIERTO — bug sin fix, dos
+> intentos revertidos, bloqueador estructural identificado y tres
+> direcciones de fix diseñadas; el árbol estaba **verde** (suite 224/224,
+> CI verde, commit `67ffe75`).
 > **Dónde vive el registro corto:** `Documentacion/PRE_LLVM_AUDIT.md`
 > §4.7 (fila de la tabla §4).
 
@@ -92,7 +96,7 @@ sp=3 | [<fn>][5][5]           ; idx2 = 5  ← print ya no existe
 ; CALL: fn_idx = sp-1-argc apunta a 5 (un int) -> "cannot call non-function value"
 ```
 
-### 1.4 Bug adyacente DESCUBIERT y también abierto (§4.8 candidato)
+### 1.4 Bug adyacente DESCUBIERTO y registrado como fila §4.8 del audit (pendiente)
 
 `seed/src/emitter.c`, armada **bind con guardia**: tras el bloque de
 `NODE_PATTERN_BIND` hay un `break` incondicional (*"binding makes later
@@ -449,3 +453,91 @@ commit convencional español, push + CI verde.
    "RESUELTA el <fecha> por <hash>" con un párrafo final de *qué*
    funcionó (la dirección (i)/(ii)/(iii) real, no la teórica).
 6. Commit `fix(lang): … (audit §4.7)` en español, push, CI.
+
+---
+
+## 11. Resolución (2026-10-15, `ed1792e`) — qué funcionó de verdad
+
+Los items 1-3 y 6 de §10 se cumplen (229/229 en seed — 224 originales +
+5 tests nuevos —, sweep 88/88 skip=3, `--check-constructs` OK,
+`zig build test` 73/73, `dump_parity` 117/117 con 0 divergentes,
+`ui_message_parity` total=115 first_fail=0 known=0, CI verde, y 40
+probes sin una sola divergencia seed↔zig). El item 4 (§4.8) **no** se
+arregló y quedó registrado como fila nueva del audit; el item 5 (esta
+cabecera) es este párrafo.
+
+**La dirección (i), pero con cuatro piezas que los intentos previos no
+tuvo y una que rechazó:**
+
+1. **Altura exacta `e->rt` en paralelo al `sp` viejo** (la convención
+   `compile = runtime − 1` de §2.3 NO se tocó: los chequeos internos
+   siguen validando la convención vieja). `rt_advance` modela
+   `SET_LOCAL` como `max(rt−1, slot+1)` — exactamente lo que hace
+   `vm.c` — y **cada** resync (`&&`/`||`, brazos del match, epílogo,
+   ramas del `if`, entrada/salida de fn/lambda) lo empareja con su
+   valor exacto. Sin esto, cualquier objetivo estático sigue a ciegas.
+2. **Pad hasta la frontera runtime** en la entrada de `match` e `if`
+   (`pad_locals_to_rt`): el oculto, los bindings y los `let` de brazo
+   obtienen slots `== rt`, es decir, donde el runtime empuja de verdad.
+   Gracias al pad, durante el construct `local_count == rt` y cada
+   `SET_LOCAL` es fresco por construcción.
+3. **Cierre POR CAMINO** (`emit_value_close` = `SET_LOCAL(target)` +
+   `POP` de excedentes), emitido tras **cada** `emit_branch_value` y en
+   las aristas `guard=false`. El intento #2 cerraba una sola vez al
+   final (`variant A`: `block_arm` ❌ 40) — el cierre por camino es lo
+   que resolvió el conteo dependiente-del-camino de los locales de
+   brazo. Efecto colateral decisivo: **los matches en sentencia ya no
+   dejan residuo** (el cierre lo reclama en origen) — el bloqueador
+   estructural de §5 desaparece en vez de contabilizarse.
+4. **Normalización de bucles**: `emit_loop_exit_ensure` al objetivo de
+   salida de `while`/`for` (crea con `CONST nil; SET_LOCAL` las celdas
+   que solo creó un camino: 0 iteraciones, `break` temprano) y **stubs
+   de reconciliación para `break`** en `loop_leave` (un `break` salta
+   los cierres del `if`/`match` por los que pasa y deja celdas de más;
+   cada `break` estatura su altura en el offset placeholder y el stub
+   hace el `POP` exacto antes del join — pinjado por
+   `loops/loop_residue_inline.astra`).
+5. **Pieza que los intentos previos rechazaron y aquí fue
+   imprescindible: el backend C.** Los closes estáticos direccionan
+   `target` en coordenadas de frame; el C backend pre-alocaba
+   `[0, max_slot)` y su receptor vivía en `max_slot`, no en la frontera
+   del VM. `codegen.c` ahora replica `vm.c` al pie de la letra:
+   `SET_LOCAL` con pad de nil y `sp = local_count` en `emit_fn_body`
+   (no `max_slot`). Sin esto, `s24b` rompía en el binario C aunque el
+   VM imprimiera `20`.
+
+**Adyacentes resueltos en el mismo commit:** `print(if … { let … })`
+(el §1.2 daba el `if` por "correcto" — lo era solo sin `let` en rama);
+`NEW_ENUM` no corregía `rt` (la construcción `A(3,1)` inflaba la
+frontera y rompía el match siguiente — hallazgo del espejo zig); el
+`guard_false` de los brazos `_ if`/bind aterrizaba *después* del
+`CONST nil` (off-by-one que dejaba la pila sin valor).
+
+**§4.8 sigue ABIERTO (registrado como fila nueva del audit):** el
+`break` incondicional tras un binding con guardia sigue sin emitir los
+brazos posteriores (`match x { n if n > 9 => 1, _ => 2 }` con x=5 cae al
+trap `no match arm matched` en vez de imprimir 2). El cierre por camino
+de `ed1792e` no lo empeora ni lo arregla: quitar ese `break` exige
+parchear `guard_false` al brazo siguiente con los bindings ya extraídos
+(el stub POP ya existe para variantes/builtins — el fix probable es
+reutilizarlo).
+
+**Hueco conocido documentado (no cubierto por gates):** la altura de
+*iteración* vía `continue` que salta declaraciones queda por debajo del
+modelo: un `match`/`if` con receptor pending *dentro* de un loop cuyo
+camino anterior ejecutó un `continue` que se saltó un `let` calcularía
+`rt0` alto y dejaría un hueco nil entre receptor y resultado. Los 40
+probes (incluido `q21_continue`) lo pasan; si algún día aparece, el
+tratamiento es un stub de reconciliación en `continue_target` con el
+mismo patrón que el de `break`, excluyendo las celdas de estado vivo
+del loop (`for_i`/`for_arr`/variable).
+
+**Trampas nuevas aprendidas (añadir a §8):** los brazos
+variant/builtin caen en una **copia plain duplicada** del mismo brazo
+(`emitter.c` no tiene `break` al final de esos bloques): re-testear allí
+es inofensivo, pero una arista `guard=false` aterrizando en la copia
+re-evaluaba la guardia sobre bindings nunca extraídos — los stubs
+emergentes se parchan AL FINAL de la iteración, no dentro del bloque.
+Y los tests nuevos se escriben con la sintaxis real de Astra-0:
+`let mut`, `i32`, variantes de enum separadas por espacio/línea,
+construcción con el nombre plano (`A(3)`), lambdas `|x: i32| -> i32`.

@@ -227,7 +227,8 @@ Cerrados los seis en `e88d925`.
 | 4.5 | 🟠 | `vm.c:1447` (`OPCODE_RET` con `frame_count == 0`), `typechecker.c` `typecheck_return` | Un `return` a scope de módulo se aceptaba en silencio: ambos VMs lo trataban como "fin del módulo" (rc=0, `main` no corría) y el C backend generaba `return frame[sp-1]` dentro de una función `int` → C que no compila. | ✅ fix `e88d925` — ambos chequeadores rechazan `return outside of a function`; el alcance se mide con `fn_depth` (contador de cuerpos fn/lambda), **no** con `current_fn_return`, que también es NULL en una fn sin anotar (el primer intento rechazaba returns legítimos y lo pilló `result_match`); test `ui/toplevel_return.astra` |
 | 4.6 | 🔴 | `parser.c` loop Pratt (`led`), `parser.zig` `parseExprImpl`, `typechecker.c:913`, `emitter.c:994` | El guard de profundidad del parser cubre su descenso recursivo, pero el loop Pratt es **iterativo**: una cadena plana (`1+1+1+…`, `a[0][0]…`) construye árboles tan profundos como quiera el usuario y `typecheck_binary`/`emit_expr` recursan una vez por nodo sin cota — ASan stack-overflow a **300** términos en el debug del seed, SIGSEGV a ≥8000 en release, zig segfault a 20k. | ✅ fix `e88d925` — contador de cadena en el loop Pratt de ambos parsers, cap = `PARSER_MAX_DEPTH` (256), `expression chain too deep (max 256)`; test `ui/expr_chain_deep.astra` |
 
-| 4.7 | 🟠 | `emitter.c` `NODE_MATCH` (local oculto `$match_val`; **dossier completo con evidencia, intentos y diseño de fix: `Documentacion/research/022_TAREA_fix_47_match_inline_frame.md` — nombre de delegación `TAREA-4.7-match-inline-frame`**) | **Descubierto al implementar §3.8:** un `match` **inline como argumento de llamada** corrompe el frame en **los dos VMs**: `fn main() { let x = 5; print(match x { 1 => 10, _ => 20 }) }` → `runtime error: cannot call non-function value` (seed y zig; el C backend **imprime `20` correctamente**, inmune porque su layout deriva de `max_slot`). Causa raíz: los slots de locales y los valores de expresión comparten coordenadas del stack de la VM, y `add_local` asigna por recuento de declaración — el slot del local oculto del match coincide con el índice donde ya vive el receptor (`print`) empujado. Casos que pasan hoy lo hacen **por suerte de layout** (conteos de locales más altos desplazan el receptor: `enums/match_binding_reclaim.astra` inline funciona); la posición de sentencia no se ve afectada; sin `_` en escalares ahora lo salva el chequeo de §3.8 antes de llegar al runtime. | ⚠️ diferido a §9 — repro `/tmp/opencode/s24b.astra` (seed y zig: mismo error; C: `20`). **Segundo intento el 2026-10-15 (también revertido), con el bloqueador estructural ya identificado:** se implementó y validó por separado (a) efecto honesto de `SET_LOCAL` (0 cuando escribe en el slot del valor, −1 en otro caso), (b) pad del techo de locales hasta `base+1`, (c) cierre `SET_LOCAL(base+1)`+POPs con contador explícito de residuos (locales de brazo + bindings), (d) checks de balance contando locales frescos y contrato de unión en ramas — 6 de 8 probes y la mayor parte de la suite pasaban, **pero nunca todos a la vez**: el bloqueador es que **cada match en posición de sentencia deja valores stale en el frame (el VM nunca encoge)**, de modo que la altura real de runtime excede a la de compilación por un residuo creciente que **ningún objetivo estático** (pad, cierre, índice del receptor) puede conocer — los arreglos que funcionaban en programa frescos rompían con `binding_reclaim` (residuos previos). Direcciones viables registradas: **(i)** contador compile-time de residuos (`rt_residue` monótono: cada match completado aporta sus slots stale conocidos → altura real = base+1+residuo, haciendo derivables pad/cierre/receptor), **(ii)** slot dinámico en runtime (opcode que guarda el target en un índice calculado por la VM), **(iii)** eliminar residuos en origen (reclamar el alto de los slots stale al terminar cada match — requiere (i) o (ii) para medirlo). |
+| 4.7 | ✅ | `emitter.c` `NODE_MATCH`/`NODE_IF` + nuevo contador `Emitter.rt` (`priv.h`), `codegen.c` (`SET_LOCAL` con pad, `sp = local_count`), espejo `emitter.zig` (**dossier completo con evidencia, intentos y resolución: `Documentacion/research/022_TAREA_fix_47_match_inline_frame.md` §11 — nombre de delegación `TAREA-4.7-match-inline-frame`**) | **Descubierto al implementar §3.8:** un `match` **inline como argumento de llamada** (y, descubierto al arreglarlo, un `if` con `let` en rama) corrompía el frame en **los dos VMs**: `fn main() { let x = 5; print(match x { 1 => 10, _ => 20 }) }` → `runtime error: cannot call non-function value`. Causa raíz: los slots de locales y los valores de expresión comparten coordenadas del stack de la VM, `add_local` asigna por recuento de declaración, y la frontera real de runtime (los residuos de matches/bloques/bucles previos dejan celdas stale que el VM nunca recorta) no era computable en compile-time — por eso los dos intentos previos con objetivos estáticos fallaban de forma dependiente del camino. | ✅ fix `ed1792e` — dirección (i) del dossier con las piezas que faltaban: (a) contador `rt` de **altura runtime exacta** en paralelo al `sp` viejo (`SET_LOCAL` = `max(rt-1, slot+1)` como `vm.c`; resyncs exactos en `&&`/`||`, brazos, ramas de `if`, fn/lambda); (b) **pad de la tabla de locales hasta la frontera** en la entrada de `match`/`if`; (c) **cierre por camino** (`SET_LOCAL(target)` + `POP` de excedentes) tras cada brazo/rama — elimina además el residuo de los matches en sentencia, con lo que el bloqueador estructural del intento #2 desaparece; (d) stubs de bindings en `guard=false` (parchados más allá de la copia plain duplicada del brazo); (e) ensure de salida de bucle + stubs de reconciliación para `break`; (f) backend C fiel a `vm.c` (pad de nil + `sp = local_count`) para que los closes estáticos signifiquen lo mismo en ambos backends; (g) `NEW_ENUM` corrigiendo también `rt`. Tests: `expressions/match_inline_{call,if_let,after_statement}`, `loops/loop_residue_inline`, `codegen/match_inline_arg` |
+| 4.8 | 🟠 | `emitter.c` armada bind con guardia (`break` tras `NODE_PATTERN_BIND`), espejo probable en `emitter.zig` (candidato reportado en el dossier 022 §1.4, abierto al cerrar §4.7) | Tras un brazo binding **con guardia** hay un `break` incondicional (*"binding makes later arms unreachable"*) que solo es cierto sin guardia: los brazos posteriores **nunca se emiten** aunque el typechecker sí los procesa, así que el programa compila y en runtime cae al backstop de §3.8 — `fn main() { let x = 5; print(match x { n if n > 9 => 1, _ => 2 }) }` con x=5 debería imprimir 2 y hoy aborta `no match arm matched`. | ⚠️ diferido con repro (registrado el 2026-10-15 al cerrar §4.7; dossier 022 §11): fix probable = quitar el `break` cuando hay guardia y parchear `guard_false` al brazo siguiente con los bindings extraídos ya poppeados — el stub POP que `ed1792e` añadió para variantes/builtins es el patrón a reutilizar |
 
 ### Notas de higiene (§4, sin acción)
 
@@ -426,7 +427,7 @@ quedó diferido con repro más abajo.
 
 | # | Criterio | Estado |
 |:-:|:---------|:-------|
-| 1 | Cero hallazgos 🔴 abiertos; 🟠 cerrados o diferidos con repro | ✅ Los 9 🔴 (arena OOB, NUL, INT64_MIN/−1, overflow UB, cadenas planas, unwrap UAF, receiver-nil, stack-imbalance de bucles) están cerrados con test. 3.8 y 7.15 se resolvieron el 2026-10-15 (`3c2b81a`, `d66370a`, decisión en `research/021`). El único 🟠 post-cierre, **4.7** (match inline corrompe el frame en los VMs), queda **diferido con repro y fix acotado** — ver §9. |
+| 1 | Cero hallazgos 🔴 abiertos; 🟠 cerrados o diferidos con repro | ✅ Los 9 🔴 (arena OOB, NUL, INT64_MIN/−1, overflow UB, cadenas planas, unwrap UAF, receiver-nil, stack-imbalance de bucles) están cerrados con test. 3.8 y 7.15 se resolvieron el 2026-10-15 (`3c2b81a`, `d66370a`, decisión en `research/021`). El único 🟠 post-cierre, **4.7** (match inline corrompe el frame en los VMs), se cerró el 2026-10-15 (`ed1792e`); al cerrarlo apareció **4.8** (binding con guardia no emite los brazos posteriores), **diferido con repro** — ver filas §4 y dossier 022 §11. |
 | 2 | Los tres barridos de §1 como gate en CI | ✅ `sweep_emit_c.sh` (job seed), `ui_message_parity.sh` (job parity, `STRICT=1`), replay de fuzz `-runs=0` (job seed) — todos en `.github/workflows/ci.yml` y verdes en los 29 commits. |
 | 3 | Cada feature con `EXPECT`/`EXPECT-ERROR`; sin `checked > N` sueltos | ✅ §7 añadió los pines que faltaban (guards, inmutable, escapes, runtime errors, constructos rechazados) y §6.2 sustituyó `checked > 40/15` por invariantes seen-vs-procesados en `conformance.zig`. Residuales documentados: `--dump-bytecode`/`--dump-operators` sin gate propio (🔴-bajo valor, el segundo lo vigila `--check-constructs`). |
 | 4 | §4 (emitter/VM) cerrado: semántica verificada y fijada con tests | ✅ Invariantes 1-5 de `AGENTS.md` verificados con probes; 6 hallazgos cerrados; tests `integer_wrap`, `int_min_div_neg1`, `match_binding_reclaim`, `toplevel_return`, `expr_chain_deep`, `enum_payload_print`. |
@@ -439,7 +440,7 @@ quedó diferido con repro más abajo.
 | §1 barridos | 1.1-1.4, 1.6 (+gates) | `b3136d1`, `a72d4a7`, `6437aa0`, `123809d`, `ac987ca`, `2d2722f` |
 | §2 frontend | 2.1-2.14 + return-EOF | `8832fc9`, `5435722`, `b3c798b`, `2364a2c`, `179d138`, `97f8909`, `e5376a4`, `74a90b4` |
 | §3 semántica | 3.1-3.7, 3.10, 3.13(=1.6) | `ac987ca`, `213cc35`, `61b2e30`, `99759d5`, `74a90b4` |
-| §4 emitter/VM | 4.1-4.6 | `e88d925` |
+| §4 emitter/VM | 4.1-4.7 (4.8 diferido con repro) | `e88d925`, `ed1792e` |
 | §5 backend C | 5.1-5.6, 5.8 | `6961005` |
 | §6 zig | 6.1-6.4, 6.6, 2 wins | `492f6e4` |
 | §7 suite | 7.1-7.14 | `6e2a4e1` |
@@ -481,14 +482,15 @@ escalar → `nil` bajo promesa) y **§7.15** (`while`/`for` como expresión)
 — quedaron resueltas el 2026-10-15 con su investigación y regla
 definitiva en `research/021` (`3c2b81a`, `d66370a`), y la documentación
 que decía lo contrario (ARCH §11.3/§29.6, research/010 §3.2) fue
-corregida. **La Fase 2.6 puede empezar** sobre esta base. Un último 🟠
-apareció al implementar §3.8 y queda **diferido con repro y fix acotado:
-§4.7** (match inline como argumento corrompe el frame en los dos VMs —
-el C backend es correcto, la posición de sentencia no se ve afectada y
-el root cause está diagnosticado con el fix diseñado: rellenar el techo
-de locales + cerrar hueco en `NODE_MATCH`). El resto de diferidos
-(3.9, 3.11, 3.12, 3.14, A1–A3, 5.7, 6.5, 7.7, 7.16) son decisiones de
-lenguaje documentadas o deuda de UX, no bloqueos.
+corregida. **La Fase 2.6 puede empezar** sobre esta base. El último
+🟠 post-cierre, **§4.7** (match inline como argumento corrompe el frame
+en los dos VMs), se cerró el 2026-10-15 con `ed1792e` — dirección (i)
+del dossier 022 con altura runtime exacta, pad hasta la frontera y
+cierre por camino, espejo en zig y backend C unificado (resolución
+completa en dossier §11); al cerrarlo apareció **§4.8** (binding con
+guardia no emite los brazos posteriores), **diferido con repro**. El
+resto de diferidos (3.9, 3.11, 3.12, 3.14, A1–A3, 5.7, 6.5, 7.7, 7.16)
+son decisiones de lenguaje documentadas o deuda de UX, no bloqueos.
 
 ### Resueltos tras el cierre (2026-10-15)
 
@@ -512,3 +514,19 @@ Los dos 🟠 que el cierre original dejó pendientes se investigaron
 | `zig build test` | 🟢 73/73 (sin ruido `failed command`) |
 | `ui_message_parity.sh` | 🟢 total=115, accept_fail=0, first_fail=0, known=0, msg_diff_full=22 (informativo) |
 | CI (31 commits + docs) | 🟢 todos los runs `success` |
+
+### Cierre de §4.7 (2026-10-15, `ed1792e`)
+
+Fix del `match`/`if` inline en los dos emitters + backend C (dirección (i)
+del dossier 022; qué funcionó, adyacentes resueltos y el hueco de
+`continue` documentado en dossier §11). Gates tras el cierre:
+
+| Gate | Valor |
+|:-----|:------|
+| seed `run_tests.sh` | 🟢 229/229 (224 previos + 5 tests nuevos) |
+| `sweep_emit_c.sh` | 🟢 88/88, skip=3 |
+| `--check-constructs` | 🟢 OK |
+| `zig build test` | 🟢 73/73 |
+| `dump_parity.sh` | 🟢 117/117, 0 divergent |
+| `ui_message_parity.sh` | 🟢 total=115, first_fail=0, known=0 |
+| Cross-VM probes | 🟢 40/40 byte-idénticos seed↔zig; backend C = VM en los 26 probados |
