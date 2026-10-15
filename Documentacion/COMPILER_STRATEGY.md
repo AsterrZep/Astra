@@ -154,17 +154,17 @@ fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 
-// Structs
+// Structs (campos separados por salto de línea, sin comas — sintaxis Astra-0)
 struct Point {
-    x: f64,
-    y: f64,
+    x: f64
+    y: f64
 }
 
-// Enums
+// Enums (variantes sin comas)
 enum Color {
-    Red,
-    Green,
-    Blue,
+    Red
+    Green
+    Blue
 }
 
 // Pattern matching
@@ -188,19 +188,22 @@ fn factorial(n: i32) -> i32 {
 // Arrays
 let numbers: [i32] = [1, 2, 3, 4, 5];
 
-// Option/Result
-fn divide(a: f64, b: f64) -> Result<f64, string> {
+// Option/Result: Astra-0 hoy no tiene anotaciones estáticas
+// `Result<T, E>` ni constructores `Ok`/`Err` (Tier 2, research/011 §5.2):
+// los valores de resultado son `ok(x)`/`err(e)` sobre el tipo `T?`, y la
+// propagación `?` funciona igual.
+fn divide(a: f64, b: f64) -> f64? {
     if b == 0.0 {
-        Err("division by zero")
+        err("division by zero")
     } else {
-        Ok(a / b)
+        ok(a / b)
     }
 }
 
 // Error propagation
-fn compute() -> Result<f64, string> {
+fn compute() -> f64? {
     let x = divide(10.0, 2.0)?;  // ? propagates errors
-    Ok(x * 3.0)
+    ok(x * 3.0)
 }
 
 // Basic I/O
@@ -213,15 +216,18 @@ fn main() {
 
 | Feature | Why Not Needed for Seed |
 |:--------|:------------------------|
-| Generics | The self-hosting compiler doesn't use generics in its core |
-| Traits | Not needed for bootstrap code |
+| Generics | ~~Not needed~~ — added in Fase 2.4 (monomorphization), now supported |
+| Traits | ~~Not needed~~ — added in Fase 2.3 (static dispatch), now supported |
 | Comptime | Zig has its own comptime |
 | ARC/ORC | The compiler is a batch program, not a server |
 | Green threads | Single-threaded compilation |
 | FFI | The seed doesn't call external libraries |
 | Modules | Single-file or simple `#include` |
-| Closures | Not needed for bootstrap |
+| Closures | ~~Not needed~~ — implemented with capture-by-value (PHASE1 §4bis#16) |
 | Pilas dinámicas | The seed doesn't need dynamic growth |
+
+*(Historical table: Generics, Traits and Closures were "not needed" as
+a bootstrap constraint; Fase 2.3/2.4 implemented them anyway.)*
 
 ### 4.4 Architecture
 
@@ -301,8 +307,7 @@ The seed compiler is tested against:
 ```bash
 # Test the seed
 make clean && make
-./astra-seed --test tests/conformance/
-./astra-seed bootstrap/compiler.zig  # Must succeed
+./tests/run_tests.sh        # registry gate + VM + C-backend round-trip
 ```
 
 ---
@@ -441,7 +446,8 @@ zig build --only-c
 
 ### 5.4 What It Compiles (Astra-1 / Full Astra)
 
-The Zig compiler supports the **full Astra language**:
+Phase 2 will make the Zig compiler support the **full Astra language**;
+today it compiles Astra-0 (see `PHASE2_PROGRESS.md` §1):
 
 ```astra
 // Full Astra (compiled by the Zig compiler)

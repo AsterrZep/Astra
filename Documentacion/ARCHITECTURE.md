@@ -569,19 +569,20 @@ match mensaje {
     Mover(x, y) if x < 0 => "Movimiento negativo"
     _ => "Otro"
 }
-
-# Bindings con @
-match n {
-    n @ 0..=9 => "Dígito: {n}"
-    n @ 10..=99 => "Dos dígitos: {n}"
-    _ => "Otro"
-}
 ```
+
+> **Fuera de Astra-0:** los *bindings con @*, los patrones de rango
+> `0..=9` y `@non_exhaustive` no están implementados en ningún
+> compilador (el único `@` del lexer es la raíz de módulo `@/`); hoy
+> el wildcard `_` es la única forma de cubrir un target escalar.
 
 ### 11.3 Exhaustiveness Checking
 
-- **Compile error por defecto** (como Rust).
-- `@non_exhaustive` para enums de bibliotecas que requieren wildcard.
+- **Compile error por defecto para targets enum y optional** (como
+  Rust); en targets escalares (int/string/bool/float) la exhaustividad
+  hoy no se verifica (`PRE_LLVM_AUDIT.md` §3.8, diferido).
+- `@non_exhaustive` para enums de bibliotecas: **no implementado**
+  (fuera de Astra-0, ver §11.2).
 
 ### 11.4 Option y Result (Built-in)
 
@@ -1661,18 +1662,21 @@ fn process_order(order: Order) -> Result<Receipt, OrderError> {
 ### 29.6 Exhaustive Matching
 
 ```astra
-// #[must_use] automático en Result y Option
-let x = do_work();  // ERROR: Result descartado. Manejar con match, ?, o _ = expr;
+// #[must_use] y la sintaxis "_ = expr" no existen todavía: hoy un
+// Result descartado no genera error (diferido, PRE_LLVM_AUDIT §8)
+let x = do_work();  // hoy sin error
 
-// Match exhaustivo requerido
+// Match exhaustivo requerido (targets enum/optional): el tag de payload
+// y `none` deben estar cubiertos — o `_`
 match do_work() {
-    Ok(v) => ...,
-    Err(e) => ...,
-    // ERROR: patrones no exhaustivos. Faltante: Err(_)
+    ok(v) => ...,
+    err(e) => ...,
+    none => ...,
+    // ERROR si falta none o el payload: non-exhaustive match
 }
 
-// Ignorar explícitamente
-_ = do_work();  // OK, ignorado explícitamente
+// Ignorar explícitamente (sintaxis no implementada aún)
+// _ = do_work();        // no existe: hoy solo se puede descartar con let
 ```
 
 ### 29.7 Niche Optimization (Zero-Cost)
@@ -1710,19 +1714,22 @@ Result<T, ()> con niche = same size as T
     assert(x == 5);        // x original sigue siendo 5
 }
 
-// Redeclaración en mismo scope: ERROR
+// Redeclaración en mismo scope: permitida (shadowing); el último binding gana
 let x = 5;
-let x = 10;               // COMPILE ERROR: x ya declarada
+let x = 10;               // shadowing, sin error (comportamiento actual de ambos compiladores)
 ```
 
-### 30.2 let vs var
+### 30.2 let vs let mut
 
 ```astra
 let x = 5;                // inmutable por defecto
-var y = 5;                // mutable
+let mut y = 5;            // mutable
 y = 10;                   // OK
 // x = 10;                // ERROR
 ```
+
+Ambos compiladores rechazan `var` (token residual, §8.1); el caso está
+fijado en `seed/tests/conformance/ui/var_keyword_rejected.astra`.
 
 ### 30.3 Block Expressions
 
@@ -1999,7 +2006,7 @@ PEG (Parsing Expression Grammar) con parser escrito a mano, como Zig. Razón: co
 | 11 | `&&` (logical AND) | Left |
 | 12 | `\|\|` (logical OR) | Left |
 | 13 | `..` `..=` | Left |
-| 14 | `=` `+=` `-=` etc. | Right |
+| 14 | `=` (los asignadores compuestos `+=` etc. están especificados en research/010 pero no se lexean en ningún compilador) | Right |
 | 15 | `->` (return type) | Left |
 | 16 | `,` | Left |
 
@@ -2016,7 +2023,7 @@ item            = fn_decl | struct_decl | enum_decl | trait_decl
 (* Funciones *)
 fn_decl         = "fn" IDENT [ type_params ] params [ "->" type ] block ;
 params          = "(" [ param { "," param } [ "," ] ] ")" ;
-param           = [ "mut" ] IDENT ":" type ;
+param           = IDENT ":" type ;   (* sin "mut": los parámetros son inmutables en Astra-0 *)
 
 (* Tipos *)
 type            = type_atom { type_suffix } ;

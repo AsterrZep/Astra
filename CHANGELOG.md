@@ -103,7 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lecturas `m.x`, y adelanta también los registros de tipos. Lo que §10.5
   pinta como re-export del nombre de un módulo (`utils.Logger`) queda como
   pregunta abierta (App. B #13), igual que la importación de variantes de
-  enums (#14); las raíces `@/`/`std/` siguen fuera (#10, reafirmado).
+  enums (#14); la raíz `@/` se resuelve desde `astra.toml` (App. B #10,
+  cerrado más abajo) y `std/` sigue rechazado hasta que exista stdlib.
   Fijado por los fixtures `zig/tests/link/foreign/` y
   `zig/tests/link/reexport/` (62 pruebas Zig, 104 seed).
 - **`break` con valor es error de compilación (seed + Zig)**: la gramática de
@@ -151,8 +152,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a private name is a compile error), module globals are mangled (`m0.add`)
   into the VM's flat namespace, and modules execute in dependency order on
   one VM — the root's `main` runs last. A bare `import a.b` binds the last
-  segment (decision App. B #11); `use` (re-exports) and cross-module
-  struct/enum *values* are not supported yet and say so. E2E fixtures in
+  segment (decision App. B #11); at the time of this entry `use`
+  re-exports and cross-module struct/enum *values* were unsupported — both
+  were delivered later in [Unreleased] (see above). E2E fixtures in
   `zig/tests/link/`, tests in `zig/src/link.zig`. The seed CLI still
   compiles one file and ignores imports (the conformance suite is unaffected:
   it uses its own single-file pipeline)
@@ -173,7 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ASan/UBSan/LSan and runs the full suite against that binary, checks the
   release build, and runs `zig build test` (unit tests + seed conformance)
   with Zig 0.16.0 on every push and PR (Linux; macOS/Windows are a follow-up)
-- Complete architecture specification (41 sections)
+- Complete architecture specification (40 sections, numbered 1-41)
 - Design philosophy documentation
 - Comparative analysis with Mojo, Nim, Zig, Julia, Vale, Swift
 - Cross-platform research (Linux, macOS, Windows, Android, iOS, visionOS)
@@ -189,7 +191,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Seed compiler design
 - Compiler testing methodologies
 - Governance and RFC process
-- Evolution demo scripts (01_basics through 06_advanced) in `scripts/evolution/`
+- Evolution demo scripts (01_basics through 07_lowlevel_phase2) in `scripts/evolution/`
 - Terminal status dashboard (`scripts/status.sh`)
 - Phase 2 kickoff document (`Documentacion/PHASE2_KICKOFF.md`)
 - **Module declarations in the Zig compiler (Phase 2.2, step 1)**: `use`/`import`/`from` are lexed and parsed into `use_decl`/`import_decl`/`from_decl`/`import_item` nodes, with dot-separated `ImportPath` (`zig/src/`). No module resolution yet

@@ -781,7 +781,9 @@ TypeAlias       ::= "type" Identifier ("=" | "<" GenericParams ">") Type
 
 Statement       ::= Declaration | ExprStatement | ReturnStmt
                    | BreakStmt | ContinueStmt | ComptimeStmt
-Declaration     ::= ("val" | "mut" | "let") Pattern (":" Type)? "=" Expression
+Declaration     ::= "let" ("mut")? Pattern (":" Type)? "=" Expression
+                   (* "val"/"mut" como introductor: descartados 2026-09-16;
+                      ver ARCHITECTURE §8.1 *)
 ExprStatement   ::= Expression ";"
 ReturnStmt      ::= "return" Expression?
 BreakStmt       ::= "break" Expression?
@@ -794,10 +796,9 @@ ComptimeStmt    ::= ComptimeBlock
 
 Expression      ::= Assignment
 
-(* Assignment (right-assoc) *)
-Assignment      ::= LValue ("=" | "+=" | "-=" | "*=" | "/=" | "%="
-                            | "&=" | "|=" | "^=" | "<<=" | ">>=" | "**=")
-                     Assignment
+(* Assignment (right-assoc). Los asignadores compuestos "+=" etc. están
+   especificados pero no se lexean en ningún compilador (audit §3.9). *)
+Assignment      ::= LValue ("=" ) Assignment
                  | LogicOr
 
 (* Binary operators (precedence low to high) *)
@@ -842,7 +843,7 @@ Primary         ::= Literal
 
 (* --- Literals --- *)
 Literal         ::= IntegerLiteral | FloatLiteral | StringLiteral
-                   | CharLiteral | BoolLiteral | "null" | "none"
+                   | CharLiteral | BoolLiteral | "none"
                    | ArrayLiteral | TupleLiteral | StructLiteral
 
 IntegerLiteral  ::= DecimalLiteral | HexLiteral | OctalLiteral | BinaryLiteral
@@ -934,7 +935,8 @@ Keyword         ::= "fn" | "struct" | "enum" | "trait" | "impl" | "for"
                    | "pub" | "import" | "from" | "use" | "as"
                    | "where" | "type" | "comptime" | "unsafe"
                    | "spawn" | "async" | "extern"
-                   | "true" | "false" | "null" | "none"
+                   | "true" | "false" | "none"
+                   (* "null" eliminado del lexer: PHASE1 §4bis#4; "none" es canónico *)
 
 (* Operators *)
 Operator        ::= "." | "->" | "=>" | "::"
@@ -943,9 +945,8 @@ Operator        ::= "." | "->" | "=>" | "::"
                    | "<<" | ">>"
                    | "&" | "|" | "^" | "~"
                    | "&&" | "||" | "!"
-                   | "?" | "++" | "--"
-                   | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
-                   | "&=" | "|=" | "^=" | "<<=" | ">>="
+                   | "?" (* "++"/"--" y "&=" etc.: especificados, no
+                            implementados — el lexer no tiene esos tokens *)
 
 (* Delimiters *)
 Delimiter       ::= "(" | ")" | "{" | "}" | "[" | "]" | ";" | "," | ":"
@@ -977,8 +978,8 @@ Newline         ::= "\n" | "\r\n" | "\r"
 | 9 | `*`, `/`, `%` | Left | Binary |
 | 10 | `**` | Right | Binary |
 | 11 | `-`, `!`, `~`, `*`, `&` | Right (prefix) | Unary |
-| 12 | `.`, `[]`, `()`, `?`, `++`, `--` | Left | Postfix |
-| 13 (highest) | `=` `+=` `-=` ... | Right | Assignment |
+| 12 | `.`, `[]`, `()`, `?` | Left | Postfix (* `++`/`--` no existen *) |
+| 13 (highest) | `=` ... | Right | Assignment (* los asignadores compuestos `+=` no se lexean *) |
 
 ---
 

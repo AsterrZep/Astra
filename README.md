@@ -16,7 +16,7 @@
 
 ---
 
-> **Status: Pre-implementation** — Astra is in the design and specification phase. There is no working compiler, runtime, or standard library yet. The repository contains the complete language architecture and research documentation.
+> **Status: Phase 1 complete, Phase 2 in progress** — the seed compiler (`seed/`, C) compiles and runs Astra-0 (suite in green on the VM, the C backend and Zig); the self-hosting Zig compiler (`zig/`) implements the Astra-0 frontend plus the module system. The standard library and the LLVM backend (Phase 2.6) do not exist yet.
 
 **Astra** is a compiled programming language that aims to unify the ergonomics of Python/TypeScript with the native speed of C/Rust — without the complexity of Rust's Borrow Checker or GC pauses.
 
@@ -74,18 +74,21 @@ Astra/
 ├── GOVERNANCE.md                # Decision-making process
 ├── CODE_OF_CONDUCT.md           # Community standards
 ├── CHANGELOG.md                 # Version history
+├── AGENTS.md                    # Knowledge for coding agents
 ├── .gitignore
+├── seed/                        # Phase 1: C seed compiler (Astra-0)
+├── zig/                         # Phase 2: self-hosting Zig compiler
 ├── assets/
 │   └── astra-logo.svg           # Project logo
 └── Documentacion/
-    ├── ARCHITECTURE.md           # Complete language specification (41 sections)
+    ├── ARCHITECTURE.md           # Complete language specification (40 sections)
     ├── PHILOSOPHY.md             # Design philosophy and principles
     ├── COMPARATIVE_ANALYSIS.md   # Comparison with other languages
     ├── original/                 # Source PDFs and extracted text
     │   ├── Arquitectura Lenguaje Astra.pdf
     │   ├── Diseño de un Lenguaje Híbrido.pdf
     │   └── ...
-    └── research/                 # Deep-dive research reports (19 files)
+    └── research/                 # Deep-dive research reports (20 files)
         ├── go-internals-report.md
         ├── cpython-internals-report.md
         ├── julia_internals_research.md
@@ -101,12 +104,12 @@ Astra/
 
 All documentation lives in `Documentacion/`:
 
-- **[Architecture Specification](Documentacion/ARCHITECTURE.md)** — The complete technical specification (41 sections, ~85KB)
+- **[Architecture Specification](Documentacion/ARCHITECTURE.md)** — The complete technical specification (40 sections, ~86KB)
 - **[Compiler Strategy](Documentacion/COMPILER_STRATEGY.md)** — Why C and Zig, the bootstrap process, every decision explained
 - **[Compiler Toolchain](Documentacion/COMPILER_TOOLCHAIN.md)** — Tools, libraries, and workflows for building the compiler
 - **[Design Philosophy](Documentacion/PHILOSOPHY.md)** — Why Astra exists and the principles behind it
 - **[Comparative Analysis](Documentacion/COMPARATIVE_ANALYSIS.md)** — How Astra compares to Mojo, Nim, Zig, Julia, Vale, Swift
-- **[Research Reports](Documentacion/research/)** — 19 deep-dive reports on compilers, runtimes, and language design
+- **[Research Reports](Documentacion/research/)** — 20 deep-dive reports on compilers, runtimes, and language design
 
 ## Roadmap
 
@@ -122,8 +125,8 @@ All documentation lives in `Documentacion/`:
 - [x] Compiler strategy (C → Zig → Astra bootstrapping)
 
 ### Implementation
-- [ ] **Phase 1**: Seed compiler in C (Astra-0) — compiles minimal subset
-- [ ] **Phase 2**: Self-hosting compiler in Zig — compiles full Astra
+- [x] **Phase 1**: Seed compiler in C (Astra-0) — compiles, runs, C backend, fuzzed
+- [ ] **Phase 2**: Self-hosting compiler in Zig — Astra-0 frontend + modules done, LLVM backend pending
 - [ ] **Phase 3**: Astra compiles itself — the proof
 
 ## Contributing
