@@ -454,6 +454,14 @@ pub const Parser = struct {
         while (!self.check(.rbrace) and !self.check(.eof) and !self.aborted) {
             const stmt = try self.parseStatement();
             if (stmt) |s| {
+                // Newlines between the last statement and `}` do not discard
+                // its value — only `;` does (research/010 §4.2). Compound
+                // statements (`match`, `if`, a nested block) never run
+                // optional_semi, so the newline was still in front of `}` here
+                // and they were never promoted: a lambda/void fn silently
+                // returned nil (audit §4.9, mirrored from seed/src/parser.c
+                // parse_block_impl).
+                self.skipNewlines();
                 if (!self.last_stmt_semi and (self.check(.rbrace) or self.check(.eof))) {
                     if (isTailCandidate(self.tree.node(s))) {
                         tail = s;

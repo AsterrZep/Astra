@@ -587,6 +587,14 @@ static Node *parse_block_impl(Parser *p) {
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !p->aborted) {
         Node *stmt = parse_statement(p);
         if (stmt) {
+            /* Newlines between the last statement and `}` do not discard its
+             * value — only `;` does (research/010 §4.2: `Expression ";"` is a
+             * statement, `Expression` is the tail). Compound statements
+             * (`match`, `if`, a nested block) never run optional_semi, so the
+             * newline was still in front of `}` here and they were never
+             * promoted: a lambda/void fn silently returned nil and a typed fn
+             * got the misleading "produces no value" error (audit §4.9). */
+            skip_newlines(p);
             /* This is the block's tail expression only when it is the last item
              * in the block AND was not terminated by a `;`. A `;` discards the
              * value, which is what makes `{ 7; }` void and `{ 7 }` an i32. */

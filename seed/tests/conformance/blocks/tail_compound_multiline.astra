@@ -1,0 +1,40 @@
+// A compound statement (match / if / nested block) as the last
+// newline-terminated item of a block IS the block's tail expression: only a
+// trailing `;` discards the value (research/010 §4.2, `Block ::= "{"
+// Statement* Expression? "}"`). Compound statements never run optional_semi,
+// so the newline still sat in front of `}` and promotion never happened —
+// a typed fn got the misleading "produces no value" error and a lambda
+// silently returned nil (audit §4.9).
+// EXPECT: 9
+// EXPECT: 42
+// EXPECT: 20
+// EXPECT: 40
+// EXPECT: 40
+enum E { X(i32) Y }
+
+fn tail_match(v: i32) -> i32 {
+    let e2 = X(v)
+    match e2 { E.X(n) => n, E.Y => 0 }
+}
+
+fn tail_if(v: i32) -> i32 {
+    let e2 = v + 1
+    if e2 > 5 { e2 * 7 } else { 0 }
+}
+
+fn main() {
+    print(tail_match(9))
+    print(tail_if(5))
+    let g = |v: i32| -> i32 {
+        let e2 = v + 1
+        match e2 { _ => e2 * 2 }
+    }
+    print(g(9))
+    let b = {
+        40
+    }
+    print(b)
+    print(if true {
+        match 5 { _ => 40 }
+    } else { 0 })
+}
