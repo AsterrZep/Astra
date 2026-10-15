@@ -157,9 +157,8 @@ ya rechazados; no promovido).
 ## §3 — Semántica seed (`typechecker.c`) y espejo zig
 
 Catorce hallazgos numerados (3.1–3.14) más tres accesorios (A1–A3).
-Cerrados: 3.1–3.7, 3.10 y (absorbido) 3.13/§1.6. Diferidos con repro a
-§9: 3.8 (🟠, decisión de lenguaje) y 3.9/3.11/3.12/3.14/A1 (🔵/🟡,
-decisiones documentales o de feature).
+Cerrados: 3.1–3.8, 3.10 y (absorbido) 3.13/§1.6. Diferidos con repro a
+§9: 3.9/3.11/3.12/3.14/A1 (🔵/🟡, decisiones documentales o de feature).
 
 | # | Sev | Archivo:línea | Qué pasa | Estado |
 |:-:|:---:|:--------------|:---------|:-------|
@@ -170,7 +169,7 @@ decisiones documentales o de feature).
 | 3.5 | 🟡 | `typechecker.c` (decl y literal de struct), `typechecker.zig` | Un struct con dos campos `a` se pisaba en silencio (ganaba el último) y una clave repetida en el literal reutilizaba el primer valor; además struct/enum de módulo se chequeaban **dos veces** (pase 1 + `default` del pase de bodies), duplicando todo diagnóstico de su cuerpo. | ✅ fix `99759d5` — `duplicate field 'a' in struct 'S'` en la declaración (colecta) y `duplicate field 'a' in struct literal` en el literal; pase 2 de ambos omiten struct/enum ya chequeados; tests `ui/struct_duplicate_field`, `ui/struct_lit_duplicate_key` |
 | 3.6 | 🟠 | `typechecker.c` `typecheck_call` | Un argumento con tipo `unknown` (por el grupo de 3.1/3.2) cruzaba el guard del call y producía crash en vez del diagnóstico degradado. | ✅ fix `ac987ca` — guard NULL, mismo texto que zig |
 | 3.7 | 🟡 | `typechecker.c` `typecheck_enum_decl`, `typechecker.zig` `checkEnumDecl` | Variantes duplicadas (`enum E { A A }`) se aceptaban: `covered[]` tiene un slot por grafía, así que un match correcto reportaba un `non-exhaustive match: missing variant 'E.A'` **imposible de satisfacer**. | ✅ fix `74a90b4` — rechazo con el molde de los campos de struct, ambos lados; test `ui/enum_duplicate_variant.astra` |
-| 3.8 | 🟠 | `typechecker.c:2251-2327`, `typechecker.zig:1399-1455` | El match sobre un target **escalar** (int/string/bool/float) nunca se verifica de exhaustividad: `let r = match x { 1 => 10 }` con `x = 9` devuelve `nil` bajo cualquier promesa, byte-idéntico en VM seed, VM zig y C backend (runtime deliberate: "No arm matched: yield nil"). ARCH §11.3 pide compile error por defecto. | ⚠️ diferido a §9 — repro `/tmp/opencode/sem/match_int_fall.astra` (los tres backends imprimen `nil`; con `-> i32` el `+` revienta en runtime `cannot add nil and int`); decisión pendiente: exigir `_` en targets escalares (estilo Rust) o panic en runtime en vez de `nil` |
+| 3.8 | 🟠 | `typechecker.c:2251-2327`, `typechecker.zig:1399-1455` | El match sobre un target **escalar** (int/string/bool/float) nunca se verifica de exhaustividad: `let r = match x { 1 => 10 }` con `x = 9` devuelve `nil` bajo cualquier promesa, byte-idéntico en VM seed, VM zig y C backend (runtime deliberate: "No arm matched: yield nil"). ARCH §11.3 pide compile error por defecto. | ✅ fix `3c2b81a` (decisión en `research/021`, adoptada 2026-10-15) — espacio finito probado (bool con 2 slots como enums), catch-all obligatorio para el resto (`missing '_' arm`); backstop `OPCODE_MATCH_NONE` con `no match arm matched` para el aliasing Tier-2 (repro que antes imprimía `nil`: `expressions/match_fallthrough_trap.astra`); tests `ui/scalar_match_missing_wildcard`, `ui/bool_match_missing_arm` |
 | 3.9 | 🔵 | ARCH §34.2/§34.3, `research/010`, `constructs/assign.c` | El operador compuesto `+= -= *= /=` está prometido por la precedencia del ARCH y la grammática del registry (`.in_astra0 = true`), pero **no es alcanzable en ningún compilador**: los tokens ni siquiera se lexean y el soporte existente es código muerto en tres capas (desugars del typechecker que no instalan los nodos reescritos, walkers del emitter sin caso de emit). | ⚠️ diferido a §9 — decisión: implementar (lexer+parser; los desugars medio-hechos existen) o borrar `+=` del ARCH/research/`assign.c` y eliminar los brazos muertos |
 | 3.10 | 🟠 | `typechecker.c:3010` (y zig pass 1), `codegen.c:163-166,606-626` | Una `fn` de módulo duplicada se aceptaba: el VM conservaba la **última** definición (el symbol se prepende) y el C backend emitía la **primera** (`fn_map` first-wins + `emit_fn_bodies` corta en el primer par) — `fn main` dos veces imprimía `2` en el VM y `1` en el binario C. | ✅ fix `74a90b4` — `duplicate function 'name'` en ambos chequeadores; test `ui/duplicate_function.astra` |
 | 3.11 | 🔵 | ARCH §30.2 vs §8.1, `parser.c:1093` | La matriz de mutabilidad está en paridad total seed↔zig (`let`/`const`/param/campo-through-immutable/capturada, con tests). El residual: los parámetros son inmutables por diseño de parser en ambos lados (`mut x: i32` se rechaza), pero ARCH §34.3 promete `param = ["mut"] IDENT`, y ARCH §30.2 aún muestra `var y = 5 // mutable`, contradiciendo §8.1. | ⚠️ diferido a §9 — decisión: ¿params `mut` en Astra-0?; y limpiar §30.2 |
@@ -349,15 +348,15 @@ iterativos); formularios EXPECT del runner; deriva de buckets
 ## §7 — Suite de tests (`seed/tests/`, `run_tests.sh`, `conformance.zig`)
 
 Catorce hallazgos del análisis previo (7.1–7.14) más dos nuevos
-detectados al fixear (7.15, 7.16). Cerrados en `6e2a4e1` salvo los dos
-diferidos.
+detectados al fixear (7.15, 7.16). Cerrados todos: 7.1–7.14 en
+`6e2a4e1`, y 7.15/7.16 con sus decisiones (`d66370a` / diferido UX).
 
 | # | Sev | Archivo:línea | Qué pasa | Estado |
 |:-:|:---:|:--------------|:---------|:-------|
 | 7.1 | 🔴 | `parser.c` `parse_block_impl` (~:606), `parser.zig` `isTailCandidate` | La promoción del último statement a expresión de cola excluía FN/STRUCT/ENUM/CONST/VAR/RETURN/BREAK/CONTINUE pero **no WHILE/FOR** (y el guard de peek era un `if` vacío): con las dos llaves en la misma línea, un bucle legal se volvía la cola del bloque y **ambos** emitters reventaban con `internal: stack imbalance in expression Block: expected height 1, emitter computed 0`. Toda la suite estaba formateada con `}` en su propia línea, así que el gate era ciego por construcción. | ✅ fix `6e2a4e1` — WHILE/FOR excluidos en ambos parsers + guard muerto eliminado; tests `loops/while_brace_same_line` y `for_brace_same_line`; caída: el mensaje de void-in-let mentía ("…ends in `;`…" sin `;` ni expresión final) para **todos** los void initializers → texto nuevo idéntico en ambos typecheckers + `ui/void_initializer_loop` |
 | 7.2 | 🟠 | `typechecker.c` `cannot assign to immutable variable` | La regla central de mutabilidad no estaba en ningún fichero de la suite: `let x = 1; x = 2` rechazaba y ningún test lo sabía (solo existía el camino por índice). | ✅ fix `6e2a4e1` — `ui/assign_immutable` + `ui/reassign_function` |
 | 7.3 | 🟠 | `typechecker.c` (familia de guards) | **Cero** asserts sobre la familia de guards: condición if/while no-bool, iterador de for no-array, guard de match no-bool, tipos de brazos/if divergentes, return type, call/index no-fn/no-array, índice no-entero, rango fuera de for, operadores unarios/bitwise/lógicos — doce rechazos alcanzables sin test. | ✅ fix `6e2a4e1` — 11 ficheros `ui/` nuevos con la primera línea sondeada en ambos compilan |
-| 7.4 | 🟠 | `expressions/match_scalar.astra` (nuevo) | El match sobre targets escalares solo tenía un caso negativo: ni el funcional positivo (con `_`) ni el hueco §3.8 tenían repro en la suite. | ✅ fix `6e2a4e1` — test positivo int/string/bool con `_`; el hueco (§3.8) queda diferido y su repro se añadirá con la decisión |
+| 7.4 | 🟠 | `expressions/match_scalar.astra` (nuevo) | El match sobre targets escalares solo tenía un caso negativo: ni el funcional positivo (con `_`) ni el hueco §3.8 tenían repro en la suite. | ✅ fix `6e2a4e1` — test positivo int/string/bool con `_`; el hueco §3.8 se cerró después en `3c2b81a` (con su repro `ui/scalar_match_missing_wildcard` y el caso bool total dentro de este mismo test) |
 | 7.5 | 🟡 | escapes de string | `\n \t \" \\` solo se afirmaban por la ruta del C (`codegen/string_escape`); la VM, el sweep y zig nunca los imprimían. | ✅ fix `6e2a4e1` — `types/string_escapes.astra` (copia verificada, VM = C = zig) |
 | 7.6 | 🟡 | mensajes runtime/lexer sin test | `modulo by zero`, `shift amount out of range`, `invalid escape sequence` — alcanzables, sin ningún assert. | ✅ fix `6e2a4e1` — `expressions/modulo_zero`, `expressions/shift_range`, `ui/invalid_escape` |
 | 7.7 | 🟡 | `;` tras bloque con `}` | `while {…};` es error de parseo en ambos sin que ningún test lo sepa; decisión pendiente (¿sentencia vacía aceptada?). | ✅ comportamiento actual fijado en `ui/trailing_semi_after_loop` (decisión queda para §9) |
@@ -368,7 +367,7 @@ diferidos.
 | 7.12 | 🔵 | `run_tests.sh` / ficheros raíz | Los 5 `tests/{hello,simple,…}.astra` no los ejecuta nada; `--dump-bytecode`/`--dump-operators` sin gate. | ✅ parcial `6e2a4e1` — EXPECT honestos en los 3 que compilan (anotados como seeds de fuzz); `--dump-bytecode`/`--dump-operators` quedan como 🔵 sin gate (bajo valor: el primero ya tiene paridad por conformance, el segundo es la tabla del registry que `--check-constructs` vigila) |
 | 7.13 | 🔵 | constructos sin pin de rechazo | `comptime`, `type_alias`, tuple, shorthand de struct, rango fuera de for, `+=`, `as` — declarados rechazados en sus `.note` pero nada lo fijaba (§0.3). | ✅ fix `6e2a4e1` — 7 ficheros `ui/*_rejected` con primera línea idéntica en ambos |
 | 7.14 | 🔵 | `constructs/{impl,trait,generic_params}.c` | `.in_astra0 = false` con nota "Excluded from Astra-0" mientras `conformance/traits/*` y `generics/*` (9 ficheros) lo prueban implementado. | ✅ fix `6e2a4e1` — flags a `true` + notas y cabeceras corregidas; `--check-constructs` verde (el único check sobre el flag solo relaja) |
-| 7.15 | 🟠 | `parser.zig` expression vs `parser.c` | **Nuevo, al fixear 7.13:** zig acepta `while`/`for` en posición de expresión (el seed los rechaza en el parser) y el emitter zig muere con `internal: stack imbalance in expression call_expr` en `print(while …)` — un error interno en vez de un rechazo limpio; `let x = while …` pasa al typechecker zig. | ⚠️ diferido a §9 — decisión de lenguaje (¿bucles como expresión?) + bug latente de zig; repro en el informe de §7 (w1/w2/w3) |
+| 7.15 | 🟠 | `parser.zig` expression vs `parser.c` | **Nuevo, al fixear 7.13:** zig aceptaba `while`/`for` en posición de expresión (el seed los rechaza en el parser) y el emitter zig moría con `internal: stack imbalance in expression call_expr` en `print(while …)` — un error interno en vez de un rechazo limpio; `let x = while …` pasaba al typechecker zig. | ✅ fix `d66370a` (decisión en `research/021`) — los bucles son sentencias en Astra-0: parsePrefix de zig deja de tener los casos; tests `ui/while_as_expression` y `ui/for_as_expression` con primera línea idéntica; `research/010` §3.2 y su gramática enmendados |
 | 7.16 | 🔵 | `tests/hello.astra`, `tests/simple_test.astra` | No compilan en ningún compilador: usan `result` como nombre de variable y `result` es keyword desde Option/Result. Hoy son seeds de fuzz que solo aportan inputs de parse-error. | ⚠️ diferido a §9 — decidir: renombrar y plegar a conformance, o dropearlos |
 
 ### Estado de los gates al cierre de §7
@@ -414,8 +413,9 @@ artefactos, pero los targets existen y CI los corre).
 
 ## §9 — Síntesis: cerrado, diferido y criterios de entrada a la Fase 2.6
 
-**29 commits** (`c1ee107`…`5a6b358`, todos con CI verde) entre el plan
-y este cierre. Nueve partes, **122 hallazgos** analizados (7 + 16 +
+**31 commits** (`c1ee107`…`d66370a` + el cierre documental, todos con
+CI verde) entre el plan y este cierre. Nueve partes, **122 hallazgos**
+analizados (7 + 16 +
 17 + 8 + 8 + 8 + 16 + 31 + los accesorios), de los cuales se fixearon
 en código/docs **todo lo que era bug o fraude documental** y el resto
 quedó diferido con repro más abajo.
@@ -424,7 +424,7 @@ quedó diferido con repro más abajo.
 
 | # | Criterio | Estado |
 |:-:|:---------|:-------|
-| 1 | Cero hallazgos 🔴 abiertos; 🟠 cerrados o diferidos con repro | ✅ Los 9 🔴 (arena OOB, NUL, INT64_MIN/−1, overflow UB, cadenas planas, unwrap UAF, receiver-nil, stack-imbalance de bucles) están cerrados con test. Los 🟠 restantes (3.8, 7.15) están diferidos **con repro y opciones de decisión** abajo. |
+| 1 | Cero hallazgos 🔴 abiertos; 🟠 cerrados o diferidos con repro | ✅ Los 9 🔴 (arena OOB, NUL, INT64_MIN/−1, overflow UB, cadenas planas, unwrap UAF, receiver-nil, stack-imbalance de bucles) están cerrados con test. Los dos 🟠 que quedaban (3.8 y 7.15) se resolvieron el 2026-10-15 con su decisión documentada en `research/021` (`3c2b81a`, `d66370a`) — **cero 🟠 abiertos**. |
 | 2 | Los tres barridos de §1 como gate en CI | ✅ `sweep_emit_c.sh` (job seed), `ui_message_parity.sh` (job parity, `STRICT=1`), replay de fuzz `-runs=0` (job seed) — todos en `.github/workflows/ci.yml` y verdes en los 29 commits. |
 | 3 | Cada feature con `EXPECT`/`EXPECT-ERROR`; sin `checked > N` sueltos | ✅ §7 añadió los pines que faltaban (guards, inmutable, escapes, runtime errors, constructos rechazados) y §6.2 sustituyó `checked > 40/15` por invariantes seen-vs-procesados en `conformance.zig`. Residuales documentados: `--dump-bytecode`/`--dump-operators` sin gate propio (🔴-bajo valor, el segundo lo vigila `--check-constructs`). |
 | 4 | §4 (emitter/VM) cerrado: semántica verificada y fijada con tests | ✅ Invariantes 1-5 de `AGENTS.md` verificados con probes; 6 hallazgos cerrados; tests `integer_wrap`, `int_min_div_neg1`, `match_binding_reclaim`, `toplevel_return`, `expr_chain_deep`, `enum_payload_print`. |
@@ -450,8 +450,6 @@ quedó diferido con repro más abajo.
 
 | # | Diferido | Razón / opciones | Repro |
 |:-:|:---------|:-----------------|:------|
-| 3.8 | 🟠 Match sobre targets escalares sin exhaustividad → `nil` bajo promesa | Indecidible automáticamente: (a) exigir `_`/bind como Rust (compile error), o (b) panic en runtime en vez de `nil`. **Recomendado antes de Fase 2.6**: LLVM replicaría el hueco. | `sem/match_int_fall.astra` — los 3 backends imprimen `nil`; con `-> i32` el `+` revienta en runtime |
-| 7.15 | 🟠 `while`/`for` como expresión: seed rechaza en parser, zig acepta y su emitter muere con `internal: stack imbalance` | Decidir si Astra-0 los permite como expresión; en cualquier caso el error *internal* de zig es bug latente. | informe §7: w1/w2/w3 |
 | 3.9 | `+=` y asignadores compuestos | Dos opciones: implementar (lexer+parser; los desugars a medias existen en ambos typecheckers) o borrar de `research/010`/`ARCH §34.2`/`assign.c` y eliminar los brazos muertos. Docs ya anotados como no implementados. | `sem/compound.astra` |
 | 3.11 | Parámetros `mut` | Implementar (ARCH §34.3 ya lo retiró de la gramática) o fijar que los params son inmutables. Hoy la matriz de mutabilidad restante está en paridad total. | `sem/mut_param.astra` |
 | 3.12 | Redeclaración en mismo scope | Imponer la regla Rust (ARCH §30.1 original) o bendecir el shadowing actual (ya documentado en §30.1). | `sem/shadow_same.astra` |
@@ -473,25 +471,37 @@ quedó diferido con repro más abajo.
 
 ### Veredicto
 
-La auditoría **cierra sus criterios de salida**: cero 🔴 abiertos, los
-gates diferenciales en CI, cobertura mínima cumplida, §4 verificado y
-mensajes con paridad `known=0`. **La Fase 2.6 (backend LLVM) puede
-empezar** sobre esta base; las dos salvedades que se recomienda
-resolver *antes* de que el backend nuevo replique semántica son
-**§3.8** (el `nil` de match escalar sería un comportamiento heredado
-por diseño) y **§7.15** (la semántica de `while`/`for` como expresión
-debe estar decidida para que seed, zig y LLVM coincidan). El resto de
-diferidos son decisiones de lenguaje documentadas o deuda de UX, no
-bloqueos.
+La auditoría **cierra sus criterios de salida**: cero 🔴 abiertos, gates
+diferenciales en CI, cobertura mínima cumplida, §4 verificado y paridad
+de mensajes `known=0`. Las dos salvedades que exigían decisión antes de
+que la Fase 2.6 (backend LLVM) replique semántica — **§3.8** (match
+escalar → `nil` bajo promesa) y **§7.15** (`while`/`for` como expresión)
+— quedaron resueltas el 2026-10-15 con su investigación y regla
+definitiva en `research/021` (`3c2b81a`, `d66370a`), y la documentación
+que decía lo contrario (ARCH §11.3/§29.6, research/010 §3.2) fue
+corregida. **La Fase 2.6 puede empezar** sobre esta base: los diferidos
+restantes (3.9, 3.11, 3.12, 3.14, A1–A3, 5.7, 6.5, 7.7, 7.16) son
+decisiones de lenguaje documentadas o deuda de UX, no bloqueos.
 
-### Gates finales (2026-10-15)
+### Resueltos tras el cierre (2026-10-15)
+
+Los dos 🟠 que el cierre original dejó pendientes se investigaron
+(con filosofía del proyecto + práctica de la industria en
+`research/021`) y se resolvieron con decisión documentada:
+
+| # | Decisión | Implementación |
+|:-:|:---------|:---------------|
+| 3.8 | **Todo `match` debe ser total**: espacio finito probado (enum/optional/bool), catch-all `_` obligatorio para el resto; backstop `no match arm matched` en runtime para el aliasing Tier-2 | `3c2b81a` + `research/021` + ARCH §11.3/§29.6 actualizados |
+| 7.15 | **Los bucles son sentencias** en Astra-0 (no producen valor); enmienda a `research/010` §3.2/gramática; el valor de bucle futuro, si quiere, será `loop { break expr }` | `d66370a` + tests `ui/while_as_expression`, `ui/for_as_expression` |
+
+### Gates finales (2026-10-15, tras 3.8 y 7.15)
 
 | Gate | Valor |
 |:-----|:------|
-| seed `run_tests.sh` | 🟢 219/219 |
+| seed `run_tests.sh` | 🟢 224/224 (conformance no-UI + ui + codegen) |
 | `--check-constructs` | 🟢 OK (47 constructs, 14 sub-constructs, 27 operadores) |
-| `sweep_emit_c.sh` | 🟢 83/83, skip=3, gcc `-Wall -Wextra` limpio |
-| `dump_parity.sh` | 🟢 111/111 |
+| `sweep_emit_c.sh` | 🟢 84/84, skip=3, gcc `-Wall -Wextra` limpio |
+| `dump_parity.sh` | 🟢 112/112 |
 | `zig build test` | 🟢 73/73 (sin ruido `failed command`) |
-| `ui_message_parity.sh` | 🟢 total=111, accept_fail=0, first_fail=0, known=0, msg_diff_full=20 (informativo) |
-| CI (29 commits) | 🟢 todos los runs `success` |
+| `ui_message_parity.sh` | 🟢 total=115, accept_fail=0, first_fail=0, known=0, msg_diff_full=22 (informativo) |
+| CI (31 commits + docs) | 🟢 todos los runs `success` |

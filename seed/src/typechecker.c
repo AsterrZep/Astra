@@ -2316,11 +2316,14 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
         symbol_table_pop_scope(tc->symbols);
     }
 
-    /* Exhaustiveness: an enum match without a wildcard must cover every
-     * variant (research/04 §9 and ARCHITECTURE.md §11.3). An optional
-     * match must cover the payload tag (some/ok/err) and none — otherwise
-     * the match can fall through and yield nil under whatever type the
-     * context promised (audit §3.4). */
+    /* Exhaustiveness (research/04 §9, ARCHITECTURE.md §11.3): an enum
+     * match without a wildcard covers every variant; an optional match
+     * must cover the payload tag (some/ok/err) and none; bool is proven
+     * with its two literals; every other target needs a catch-all `_`
+     * (audit §3.4 + §3.8). The run-time backstop for whatever still
+     * slips through — Tier-2 optional aliasing — is OPCODE_MATCH_NONE:
+     * a match that reaches the end without a hit aborts instead of
+     * yielding a nil that lies under the promised type. */
     if (!has_wildcard && target->kind == TYPE_ENUM) {
         for (size_t v = 0; v < covered_n; v++) {
             if (!covered[v]) {

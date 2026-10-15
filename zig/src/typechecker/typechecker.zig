@@ -1457,11 +1457,12 @@ pub const TypeChecker = struct {
             self.popScope();
         }
 
-        // Exhaustiveness (mirror of the seed): an enum match without a
-        // wildcard covers every variant; an optional match must cover the
-        // payload tag (some/ok/err) and none — otherwise the match can
-        // fall through and yield nil under whatever type the context
-        // promised (audit §3.4).
+        // Exhaustiveness (mirror of the seed; research/04 §9, ARCH
+        // §11.3): enums prove their variants, optionals payload+none,
+        // bool its two literals; every other target needs a catch-all `_`
+        // (audit §3.4 + §3.8). What still slips through at run time
+        // (Tier-2 optional aliasing) hits the .match_none backstop
+        // instead of yielding a lying nil.
         if (!has_wildcard and target.kind == .enum_) {
             for (covered[0..covered_n], 0..) |c, v| {
                 if (!c) {

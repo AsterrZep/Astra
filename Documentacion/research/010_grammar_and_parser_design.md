@@ -167,7 +167,17 @@ OPERATORS = {
 - `return`, `break`, `continue` (statements)
 
 **What counts as an expression:**
-- Everything else: literals, variables, binary ops, function calls, `if`, `match`, `while`, `for`, blocks, closures
+- Everything else: literals, variables, binary ops, function calls, `if`,
+  `match`, blocks, closures
+
+**Loops are statements, not expressions** (decisión 2026-10-15, audit
+§7.15 / `research/021`): `while`/`for` never produce a value in Astra-0
+(`break` with a value is rejected — `ui/break_value.astra`), so as
+expressions they could only ever be void and compose with nothing. The
+original text of this section listed them as expressions; both compilers
+now reject them in expression position, and if Astra ever wants
+value-producing loops it will be the Rust route (`loop { break EXPR }`
+/ labeled blocks), not `while`/`for`-as-expression.
 
 ### 3.3 Grammar Fragment
 
@@ -869,10 +879,11 @@ StructFieldInit ::= Identifier ("=" Expression)?
 (* --- Block Expression --- *)
 Block           ::= "{" Statement* Expression? "}"
 
-(* --- Control Flow Expressions --- *)
+(* --- Control Flow Expressions (if y match; los bucles son
+     sentencias, ver §3.2 — audit §7.15) --- *)
 IfExpr          ::= "if" Expression Block ("else" (IfExpr | Block))?
-WhileExpr       ::= "while" Expression Block
-ForExpr         ::= "for" (Pattern | Identifier) "in" Expression Block
+WhileExpr       ::= "while" Expression Block    (* statement *)
+ForExpr         ::= "for" (Pattern | Identifier) "in" Expression Block  (* statement *)
 MatchExpr       ::= "match" Expression "{" MatchArm+ "}"
 MatchArm        ::= Pattern ("if" Expression)? "=>" (Expression | Block) ","?
 

@@ -578,9 +578,15 @@ match mensaje {
 
 ### 11.3 Exhaustiveness Checking
 
-- **Compile error por defecto para targets enum y optional** (como
-  Rust); en targets escalares (int/string/bool/float) la exhaustividad
-  hoy no se verifica (`PRE_LLVM_AUDIT.md` §3.8, diferido).
+- **Compile error por defecto** (como Rust, `research/04`): todo
+  `match` debe ser total o llevar `_` (o un binding irrefutable) en
+  posición de armada. El espacio se **prueba** cuando es finito y
+  enumerable — variantes de enum, `payload + none` de optional,
+  `true/false` de bool — y **exige catch-all** cuando es infinito
+  (int, float, string y cualquier otro target no enumerable; Astra-0
+  no tiene patrones de rango). Implementado en ambos compiladores el
+  2026-10-15 (audit §3.8); el backstop de runtime
+  `no match arm matched` cubre el aliasing Tier-2 de optionals.
 - `@non_exhaustive` para enums de bibliotecas: **no implementado**
   (fuera de Astra-0, ver §11.2).
 
@@ -1666,8 +1672,8 @@ fn process_order(order: Order) -> Result<Receipt, OrderError> {
 // Result descartado no genera error (diferido, PRE_LLVM_AUDIT §8)
 let x = do_work();  // hoy sin error
 
-// Match exhaustivo requerido (targets enum/optional): el tag de payload
-// y `none` deben estar cubiertos — o `_`
+// Match exhaustivo requerido: enum = variantes, optional = payload +
+// none, bool = true + false, escalares = catch-all `_` (§11.3)
 match do_work() {
     ok(v) => ...,
     err(e) => ...,
