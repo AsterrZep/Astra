@@ -346,5 +346,70 @@ iterativos); formularios EXPECT del runner; deriva de buckets
 
 ---
 
-*(Las secciones siguientes se van añadiendo conforme avanza la
-auditoría; cada una cierra con su commit.)*
+## §7 — Suite de tests (`seed/tests/`, `run_tests.sh`, `conformance.zig`)
+
+Catorce hallazgos del análisis previo (7.1–7.14) más dos nuevos
+detectados al fixear (7.15, 7.16). Cerrados en `6e2a4e1` salvo los dos
+diferidos.
+
+| # | Sev | Archivo:línea | Qué pasa | Estado |
+|:-:|:---:|:--------------|:---------|:-------|
+| 7.1 | 🔴 | `parser.c` `parse_block_impl` (~:606), `parser.zig` `isTailCandidate` | La promoción del último statement a expresión de cola excluía FN/STRUCT/ENUM/CONST/VAR/RETURN/BREAK/CONTINUE pero **no WHILE/FOR** (y el guard de peek era un `if` vacío): con las dos llaves en la misma línea, un bucle legal se volvía la cola del bloque y **ambos** emitters reventaban con `internal: stack imbalance in expression Block: expected height 1, emitter computed 0`. Toda la suite estaba formateada con `}` en su propia línea, así que el gate era ciego por construcción. | ✅ fix `6e2a4e1` — WHILE/FOR excluidos en ambos parsers + guard muerto eliminado; tests `loops/while_brace_same_line` y `for_brace_same_line`; caída: el mensaje de void-in-let mentía ("…ends in `;`…" sin `;` ni expresión final) para **todos** los void initializers → texto nuevo idéntico en ambos typecheckers + `ui/void_initializer_loop` |
+| 7.2 | 🟠 | `typechecker.c` `cannot assign to immutable variable` | La regla central de mutabilidad no estaba en ningún fichero de la suite: `let x = 1; x = 2` rechazaba y ningún test lo sabía (solo existía el camino por índice). | ✅ fix `6e2a4e1` — `ui/assign_immutable` + `ui/reassign_function` |
+| 7.3 | 🟠 | `typechecker.c` (familia de guards) | **Cero** asserts sobre la familia de guards: condición if/while no-bool, iterador de for no-array, guard de match no-bool, tipos de brazos/if divergentes, return type, call/index no-fn/no-array, índice no-entero, rango fuera de for, operadores unarios/bitwise/lógicos — doce rechazos alcanzables sin test. | ✅ fix `6e2a4e1` — 11 ficheros `ui/` nuevos con la primera línea sondeada en ambos compilan |
+| 7.4 | 🟠 | `expressions/match_scalar.astra` (nuevo) | El match sobre targets escalares solo tenía un caso negativo: ni el funcional positivo (con `_`) ni el hueco §3.8 tenían repro en la suite. | ✅ fix `6e2a4e1` — test positivo int/string/bool con `_`; el hueco (§3.8) queda diferido y su repro se añadirá con la decisión |
+| 7.5 | 🟡 | escapes de string | `\n \t \" \\` solo se afirmaban por la ruta del C (`codegen/string_escape`); la VM, el sweep y zig nunca los imprimían. | ✅ fix `6e2a4e1` — `types/string_escapes.astra` (copia verificada, VM = C = zig) |
+| 7.6 | 🟡 | mensajes runtime/lexer sin test | `modulo by zero`, `shift amount out of range`, `invalid escape sequence` — alcanzables, sin ningún assert. | ✅ fix `6e2a4e1` — `expressions/modulo_zero`, `expressions/shift_range`, `ui/invalid_escape` |
+| 7.7 | 🟡 | `;` tras bloque con `}` | `while {…};` es error de parseo en ambos sin que ningún test lo sepa; decisión pendiente (¿sentencia vacía aceptada?). | ✅ comportamiento actual fijado en `ui/trailing_semi_after_loop` (decisión queda para §9) |
+| 7.8 | 🟡 | `run_tests.sh` | Ningún `EXPECT-ERROR` de la suite afirmaba la **posición** (`file:line:col`): el substr match vivía en cualquier parte de la salida, y la paridad solo prueba que seed y zig fallen igual — no que el sitio sea correcto. | ✅ fix `6e2a4e1` — directiva aditiva `EXPECT-ERROR-FIRST` (substring en la primera línea) + pins de posición en 6 ui + guarda que falla con >1 directiva por fichero (`head -1` las ignoraba en silencio) |
+| 7.9 | 🟡 | 11 `EXPECT-ERROR` débiles | Substrings de 7 caracteres (`expects`, `does not match`, `type mismatch`) que casarían con cualquier otro diagnóstico. | ✅ fix `6e2a4e1` — reemplazados por el texto completo de la primera línea (sondado) |
+| 7.10 | 🟡 | `run_tests.sh` `cg_compile` | Los 22 fixtures codegen se compilaban con `gcc -w … 2>/dev/null`: ningún warning del C generado podía fallar ni siquiera mostrarse, contra la disciplina `-Wall -Wextra` del AGENTS y del sweep. | ✅ fix `6e2a4e1` — política espejada al sweep: `-Wall -Wextra`, stderr surfaced, fallo si gcc avisa (verificado con un warning inyectado) |
+| 7.11 | 🟡 | 4 aserciones más débiles que su comentario | `many_instances` imprimía `done` incondicionalmente; `integer_types` no llamaba sus funciones; `fuzz_field_access_null_type` llevaba 4 `EXPECT:` muertos; `closures` no distinguía captura por valor de referencia. | ✅ fix `6e2a4e1` — valores reales por instancia (7..13), u32/u64 llamados (43/7/9), muertos retirados, y el caso `n=5 → captura → n=10 → f(1)=6` |
+| 7.12 | 🔵 | `run_tests.sh` / ficheros raíz | Los 5 `tests/{hello,simple,…}.astra` no los ejecuta nada; `--dump-bytecode`/`--dump-operators` sin gate. | ✅ parcial `6e2a4e1` — EXPECT honestos en los 3 que compilan (anotados como seeds de fuzz); `--dump-bytecode`/`--dump-operators` quedan como 🔵 sin gate (bajo valor: el primero ya tiene paridad por conformance, el segundo es la tabla del registry que `--check-constructs` vigila) |
+| 7.13 | 🔵 | constructos sin pin de rechazo | `comptime`, `type_alias`, tuple, shorthand de struct, rango fuera de for, `+=`, `as` — declarados rechazados en sus `.note` pero nada lo fijaba (§0.3). | ✅ fix `6e2a4e1` — 7 ficheros `ui/*_rejected` con primera línea idéntica en ambos |
+| 7.14 | 🔵 | `constructs/{impl,trait,generic_params}.c` | `.in_astra0 = false` con nota "Excluded from Astra-0" mientras `conformance/traits/*` y `generics/*` (9 ficheros) lo prueban implementado. | ✅ fix `6e2a4e1` — flags a `true` + notas y cabeceras corregidas; `--check-constructs` verde (el único check sobre el flag solo relaja) |
+| 7.15 | 🟠 | `parser.zig` expression vs `parser.c` | **Nuevo, al fixear 7.13:** zig acepta `while`/`for` en posición de expresión (el seed los rechaza en el parser) y el emitter zig muere con `internal: stack imbalance in expression call_expr` en `print(while …)` — un error interno en vez de un rechazo limpio; `let x = while …` pasa al typechecker zig. | ⚠️ diferido a §9 — decisión de lenguaje (¿bucles como expresión?) + bug latente de zig; repro en el informe de §7 (w1/w2/w3) |
+| 7.16 | 🔵 | `tests/hello.astra`, `tests/simple_test.astra` | No compilan en ningún compilador: usan `result` como nombre de variable y `result` es keyword desde Option/Result. Hoy son seeds de fuzz que solo aportan inputs de parse-error. | ⚠️ diferido a §9 — decidir: renombrar y plegar a conformance, o dropearlos |
+
+### Estado de los gates al cierre de §7
+
+| Gate | Valor |
+|:-----|:------|
+| seed `run_tests.sh` | 🟢 219/219 (83 no-UI + 111 ui + 22 codegen) |
+| `--check-constructs` | 🟢 OK (47 constructs / 14 sub / 27 operadores) |
+| `sweep_emit_c.sh` | 🟢 83/83, skip=3, fail=0, gcc `-Wall -Wextra` limpio |
+| `dump_parity.sh` | 🟢 111/111 |
+| `zig build test` | 🟢 73/73 |
+| `ui_message_parity.sh` | 🟢 total=111, accept_fail=0, first_fail=0, **known=0**; msg_diff_full=20 (cascadas §1.5, informativo) |
+
+---
+
+## §8 — Docs ↔ código
+
+Treinta y un hallazgos (8.1–8.31) sobre `ARCHITECTURE.md`, `AGENTS.md`,
+los dos `PHASE*_PROGRESS`, `PHASE2_GAP_ANALYSIS`, `CHANGELOG.md`,
+`README.md`, `CONSTRUCT_REGISTRY.md`, `COMPILER_STRATEGY.md`,
+`COMPILER_TOOLCHAIN.md` y `research/010`. Cerrados en `bf37069`
+(contenido, sin conteos) y `dd54c86` (conteos y tablas).
+
+| # | Sev | Archivo | Qué pasa | Estado |
+|:-:|:---:|:---------|:---------|:-------|
+| 8.1–8.6 | 🟠 | `ARCHITECTURE.md` | Seis promesas incumplidas: §30.2 presenta `var` como sintaxis mutable (rechazada por ambos); §30.1 dice que redeclarar en mismo scope es error (ambos la aceptan); §34.3 gramática de params con `mut` (ningún parser); §11.2/@-bindings y rangos + `@non_exhaustive` (no implementados); §34.2/research `+=` (no se lexea); §29.6 `must_use`/`_ = expr`/ejemplo Ok-Err sin `none` (no existen / ya no). | ✅ fix `bf37069` — escrito a lo que existe hoy, con las decisiones 3.9/3.12/3.14/§3.8 apuntando a `PRE_LLVM_AUDIT` |
+| 8.7–8.9 | 🟡/✅ | `AGENTS.md` | 19→22 casos codegen, 46→47 constructs; invariantes y comandos **verificados** (todos ejecutados, todos funcionan; invariante 9 del codegen real y testeado). La tabla "What remains" tenía una sola fila Done. | ✅ fixes `bf37069` + `dd54c86` |
+| 8.10–8.11 | 🟡 | `PHASE1_PROGRESS.md` | 94→219 casos; "42 no-UI del runner" → sweep con 83; genéricos/traits marcados `[ ] Fase 2` con Fase 2.3/2.4 entregada; fila C Codegen 🟡 con todo funcionando. | ✅ fix `dd54c86` |
+| 8.12–8.14 | 🟡 | `PHASE2_PROGRESS.md` | Conteos de §1 (67/65/152/92/78) con tres tests más; dos filas "faltan raíces `@/`/`std/`" que contradicen §7.3 del mismo fichero (`@/` resuelto vía `astra.toml`, App. B #10 cerrado); 46→47 constructs. | ✅ fix `dd54c86` |
+| 8.15–8.18 | 🟠/🟡 | `PHASE2_GAP_ANALYSIS.md` | Baseline 44→47/89→219; 32→36 keywords; builtins `len/push/pop` inexistentes; `and/or/not` y spread no usados; "not implemented in Phase 1" con Traits/Generics/Methods ya entregados; tabla de excluidos desactualizada. | ✅ fix `dd54c86` |
+| 8.19–8.22 | 🟠/🟡 | `COMPILER_STRATEGY.md` | El ejemplo Astra-0 **no compilaba** (comas en structs/enums, `Result<T,E>`/`Ok`/`Err` Tier 2); tabla 4.3 con "not needed" de una era ya superada; comandos muertos `--test` y `bootstrap/compiler.zig`; §5.4 en presente sobre lenguaje completo. | ✅ fix `bf37069` |
+| 8.23–8.24 | 🟡/🔵 | `CHANGELOG.md` | Dos entradas contradichas por la misma sección (`@/`/`std/` y `use` re-exports); conteos 41→40 secciones y 06→07 scripts. | ✅ fix `bf37069` |
+| 8.25–8.27 | 🟠/🟡 | `README.md` | "Pre-implementation, no working compiler" con dos compiladores funcionando; Phase 1 sin marcar; árbol sin `seed/`/`zig/`; conteos 41→40 y 19→20. | ✅ fix `bf37069` |
+| 8.28–8.29 | 🟡 | `CONSTRUCT_REGISTRY.md` | 46→47 y sub 13→14 en seis sitios; §9 presentaba como pendientes los ítems 1-4 (bindings, payload, guards, `?`) que están implementados. | ✅ fix `dd54c86` |
+| 8.30 | 🟡 | `research/010` | Tres líneas de spec no implementadas: `("val"/"mut")` como introductor, literal `null`, operadores `++/--` y asignadores compuestos. | ✅ fix `bf37069` |
+| 8.31 | 🔵 | `COMPILER_TOOLCHAIN.md` | La muestra etiquetada `# ci.yml` no es el CI real (3 jobs Linux); el Summary recomienda CMake/Unity/AFL++ no adoptados. | ✅ fix `dd54c86` — etiquetas de ejemplo + nota de adopción real (Makefile + build.zig + libFuzzer) |
+
+Comandos ejecutados por el agente §8: los diez gates/verificaciones
+de `AGENTS.md` (todos en verde; `make fuzz` no ejecutado — escribe
+artefactos, pero los targets existen y CI los corre).
+
+---
+
+*(La sección siguiente (§9) cierra la auditoría.)*
