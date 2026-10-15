@@ -20,6 +20,8 @@
 
 **Astra** is a compiled programming language that aims to unify the ergonomics of Python/TypeScript with the native speed of C/Rust — without the complexity of Rust's Borrow Checker or GC pauses.
 
+![Alt](https://repobeats.axiom.co/api/embed/60f9b8ead8a187207feef11bacda3145c47d9c87.svg "Repobeats analytics image")
+
 ## Design Goals
 
 | Goal | Description |
