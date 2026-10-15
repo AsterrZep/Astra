@@ -267,5 +267,84 @@ frames anidados; switches de depuración `ASTRA_DUMP_VM`/`ASTRA_TRACE`.
 
 ---
 
+## §5 — C backend (`codegen.c`, `codegen_runtime.h`)
+
+Ocho hallazgos (5.1–5.8). Cerrados 5.1–5.6 y 5.8 en `6961005`; 5.7
+diferido a §9 con repro. Correcciones verificadas contra los tres
+caminos (VM seed, `--emit-c`+gcc con `-fsanitize=address` donde
+aplica, y zig como referencia).
+
+| # | Sev | Archivo:línea | Qué pasa | Estado |
+|:-:|:---:|:--------------|:---------|:-------|
+| 5.1 | 🔴 | `codegen_runtime.h` `astra_unwrap` | El unwrap hacía `free()` de la celda envolvente sobre una **copia** del valor: dos `match` sobre el mismo `ok` producían double free (`free(): double free detected in tcache 2`, exit 134) e imprimir el scrutinee tras un match era heap-use-after-free (ASan). El VM libera nada (arena). | ✅ fix `6961005` — sin `free()`: el modelo de este runtime es vida de proceso (como el arena del VM); comentario en el sitio citando el hallazgo |
+| 5.2 | 🟠 | `codegen_runtime.h` `astra_runtime_error`, `codegen.c` próloga de fn con try | Con un try-context armado, `astra_runtime_error` **longjmp-eaba para toda falla runtime** (div cero, OOB, …) y la próloga devolvía un `astra_error_value` viejo: el binario C imprimía el mensaje, luego `nil`, **exit 0**, mientras VM y zig abortaban con exit 1. `ASTRA_TRY_UNWRAP`'s rama por defecto ni siquiera seteaba el valor. | ✅ fix `6961005` — solo el unwrap de `?` longjmp-ea (`astra_try_unwind`, único punto de entrada, con guarda de `astra_error_active`); `astra_runtime_error` termina con `file:line: runtime error:` + exit(1) incondicional; los `try*` de `codegen/` (incluido `try_nested_frames`) verdes |
+| 5.3 | 🔴 | `codegen.c` INDEX/SET_INDEX/LEN/GET_FIELD/SET_FIELD, `astra_array_bounds` | Los handlers dereferenciaban `_arr.as.array_val` / `_s->def` sin comprobar tag ni NULL: un receptor nil producía **SIGSEGV sin diagnóstico** (exit 139) donde el VM daba `cannot index nil` / `cannot access field on nil` / `cannot take length of nil`. | ✅ fix `6961005` — guards espejados con la redacción exacta de `vm.c`; LEN/GET_FIELD/SET_FIELD añadidos a `opcode_is_fallible` (si no, la línea reportada era vieja); test `codegen/nil_receiver.astra` (EXPECT-RUNTIME-ERROR, exit 1 — descarta el 139) |
+| 5.4 | 🟡 | `codegen.c` `cg_set_line` | El dedup por función (`last_line`) comparaba contra un shadow local mientras el callee sobreescribía el global `astra_line`: una operación fallible tras una **call en la misma línea** reportaba la línea del callee (`:1:` en vez de `:4:`). | ✅ fix `6961005` — `OPCODE_CALL` invalida el dedup (`CG_NO_LINE`); repro `line_after_call` con la línea del caller en los tres backends |
+| 5.5 | 🟠 | `codegen.c` `scan_struct_defs`/`scan_enum_defs` | Los scanners solo seguían `OPCODE_CONST`; un struct/enum usado **solo dentro de un cuerpo de lambda** se registraba tarde (tras los forward declarations) → gcc rechazaba `'g_structdef_0' undeclared` en el C generado, con `--emit-c` "exitoso". | ✅ fix `6961005` — siguen `OPCODE_CLOSURE` (`arg.index >> 8`) y recursan en las constantes de la fn (incluidos `VAL_FN` anidados); repros lambda-struct y lambda-enum limpios con `-Wall -Wextra` |
+| 5.6 | 🟠 | `codegen.c` dispatch de `OPCODE_CALL` | `param_count == 255` bastaba para tomar el camino de builtin; el VM exige además `code == NULL` (`vm.c:1393`). Una **closure de exactamente 255 parámetros** usaba el frame equivocado e imprimía `nil` (VM/zig: `254`). Los fns nombrados lo esquivaban porque codegen los emite con aridad 0 hardcodeada. | ✅ fix `6961005` — conjunto `param_count == 255 && code == NULL`; `AstraFn` gana el campo `code` (NULL solo en builtins vía `astra_builtin_fn_new`) |
+| 5.7 | 🟡 | `codegen.c` `GET_GLOBAL` de un global no inicializado | El C no tiene tracking de definidez: leer `compute()` antes de declararla da `cannot call non-function value` donde el VM da `undefined global variable 'compute'` (misma línea, mismo exit 1). | ⚠️ diferido a §9 — repro `sem5/e6_fwd.astra`; implica `static uint8_t g_defined_*` o aceptar la divergencia de texto en §6 |
+| 5.8 | 🔵 | `codegen_runtime.h` `astra_ptr`, `sweep_emit_c.sh` | Toda literal de struct/enum generaba `-Wdiscarded-qualifiers` en el C (el sweep lo ocultaba con `gcc -w`). | ✅ fix `6961005` — `astra_ptr(const void*)` + el sweep pasa a `-Wall -Wextra` con **fallo explícito si gcc avisa** (el `-w` ya no puede esconder nada); 0 warnings en 74 conformance + 21 codegen |
+
+### Familias exploradas y limpias (§5)
+
+Modelo de memoria (los únicos `free()`s eran el 5.1 y un buffer
+temporal de `astra_add`; ASan+LSan en los 21 fixtures: solo fugas de
+vida-de-proceso, sin UAF/double-free); cadenas setjmp/longjmp de `?`
+(aneados, en match dentro de fn con try — byte-idénticos en los tres;
+ningún puntero colgante tras el unwind); posiciones de línea (INDEX en
+match en loop, ADD en inicializador de campo, INDEX en lambda —
+`file:line:` byte-idénticos); orden de statements de módulo y pool de
+constantes; layout de campos de struct (orden de declaración, aliasing,
+struct-anidado, métodos); closures (captura por valor, mutación de la
+capturada tras crear, recursión mutua y aridad — rechazos idénticos);
+los 3 tests de módulos que el sweep salta **sí** generan C válido y
+casan con la VM (el salto es precavido, no esconde nada); escapes y
+modelo de string (§2.14 re-verificado, sin ruta de inyección).
+
+---
+
+## §6 — Zig (`parser/`, `typechecker/`, `emitter/`, `vm/`, `modules/`, `conformance.zig`, `diagnostics.zig`)
+
+Seis hallazgos (6.1–6.6) más tres *cheap wins* de cascada. Cerrados
+6.1–6.4 y 6.6 más los wins en `492f6e4`; 6.5 es higiene documentada.
+La paridad de mensajes ya era gate (§1); esta parte ataca lo que el
+gate **no veía**.
+
+| # | Sev | Archivo:línea | Qué pasa | Estado |
+|:-:|:---:|:--------------|:---------|:-------|
+| 6.1 | 🟡 | `parser.zig` `expect(tag)` + ~25 sitios | `expect(tag)` caía al nombre crudo del token (`expected )`, `expected :,`) donde el seed **siempre** pasa descripción (`expected ')'`, `expected ':'`, `function name`, `loop variable name`, `struct name`, `alias`, …). Unas 12 divergencias de **primera línea** latentes: el gate es por-fichero y ningún `ui/` existente activaba esos expects como primer error. | ✅ fix `492f6e4` — tabla `seedExpectName` (grafías entrecomilladas de la puntuación + `import`), ~25 sitios a `expectMsg` con la frase exacta del seed (leída call-site a call-site), `parseTypeImpl` deja de morir en `unreachable` y replica `expected type` no fatal; 8 pares repro byte-idénticos + 4 tests `ui/expect_*` que fijan la familia; 23 sitios bare quedan cubiertos por la tabla |
+| 6.2 | 🟡 | `conformance.zig` | `expect(checked > 40)` / `> 15`: un fallo del walker que soltara 36/67 ficheros seguía verde (§0.3 prohíbe `checked > N` sueltos); y `EXPECT-RUNTIME-ERROR` con varias directivas tomaba la **última** mientras `run_tests.sh` toma la primera. | ✅ fix `492f6e4` — invariantes seen-vs-procesados (`expectEqual(seen - seen_ui, checked)` y su twin de ui; suelos derivados `> 0`, no mágicos) y primera directiva como el seed; verificado que el fallo sigue propagándose (robo intencional → rc≠0 nombrando el test) |
+| 6.3 | 🟡 | `emitter.c` `add_local`/guard de bucles + `emitter.zig` | El seed imprimía `error: too many locals (max 256)` **sin archivo** y `error: loop nesting too deep (max 32)` **sin posición**; zig sí imprimía `file:` y `file:line:col`. Era el hermano no descubierto del KNOWN `too_many_locals` — el gate lo aceptaba. | ✅ fix `492f6e4` — `Emitter.filename` (derivado de `module->loc` en `emitter_emit`, sin tocar `driver/main/fuzz`) + `file:line:col` desde el loc del nodo, espejado en zig (`errLoc`); byte-idénticos ambos pares; **`KNOWN_FIRST_LINE` eliminado del gate → known=0**; tests `ui/loop_nesting_deep.astra` (33 bucles) y el existente `too_many_locals` ahora verificado en serio |
+| 6.4 | 🟡 | `sweep_emit_c.sh` (saltos de módulo) | Los 3 tests de módulos que el sweep salta no tenían documentada la razón: el seed descarta `import`/`use` (driver de fichero único) mientras zig resuelve el grafo. | ✅ fix `492f6e4` — comentario en el punto de salto nombra los 3 ficheros y el porqué (comportamiento **por diseño**, no una brecha) |
+| 6.5 | 🔵 | `diagnostics`/driver/CLI | (a) con `2>&1` fusionado, el seed imprime la línea de error antes que la salida del programa (stdout block-buffered) y zig al revés — bytes por stream idénticos; (b) `unknown option '--bogus'` vs `unknown flag --bogus`; (c) los resúmenes seed (`error: parse failed`…) no existen en zig (el gate ya los filtra); (d) ~70 `catch @panic("OOM")` de lado compilador y `unreachable`s revisados: todos defensivos. | 📋 documentado — sin acción; (c) es UX deliberada, (a)/(b) no tiene gate que compare streams fusionados |
+| 6.6 | 🔵 | `conformance.zig` runner + `diagnostics.zig` | Todo `zig build test` —incluso verde— imprimía una línea engañosa `failed command: … --listen=-`: los runners no cableaban `diagnostics.Sink` y el build-runner zig formatea como fallo cualquier paso con stderr no vacío. Podía enterrar un fallo real en la arqueología de CI. | ✅ fix `492f6e4` — Sink con `echo=false` en el runner de conformance + `quiet_in_tests` en `diagnostics.zig` (solo `builtin.is_test`; el CLI no cambia); verificado que la propagación de fallo sigue viva (rc≠0 y noma el test); salida final 73/73 con **0** líneas `failed command` |
+| 6.w1 | 🟡 | `parser.zig` `parseEnumDecl` | `ui/enum_comma_body`: la cascada de zig difería en línea ≥2 (sin el `aborting enum body after parse error` del seed). | ✅ fix `492f6e4` — `expectOr` + mismo `aborting` + salto a `}`: salidas **completas** byte-idénticas (2 líneas) |
+| 6.w2 | 🟡 | `parser.zig` loop de campos de struct | `ui/struct_comma_body`: 4 líneas del seed no reproducidas (`expected ':', got ,` → `expected type` → `aborting struct body after parse error` + guarda de progreso). | ✅ fix `492f6e4` — secuencia espejada byte-idéntica, sin cuelgues (guarda de progreso al fondo del loop) |
+
+### Familias exploradas y limpias (§6)
+
+Cap de cadena del parser (idéntico en `a[0][0]…` y `1+1+…`, 256);
+profundidad de llamada y stack de operandos (`countdown(300)` y
+`stack_overflow_limit` byte-idénticos); impresión de valores VM (8
+formas anidadas de ok/err/some/none, arrays, escapes, floats, strings
+— idénticas); `--debug` arranca y sale limpio; sink único de
+diagnósticos (ninguna fase escribe stderr directo); recurrencia sin
+cota en typechecker/emitter (5000-arm match y 2000-campo literal
+iterativos); formularios EXPECT del runner; deriva de buckets
+(KNOWN=0, los 10 full-diffs restantes son recuperación §1.5).
+
+### Estado de los gates al cierre de §6
+
+| Gate | Valor |
+|:-----|:------|
+| seed `run_tests.sh` | 🟢 190/190 |
+| `--check-constructs` | 🟢 OK (47 constructs, 27 operadores) |
+| `sweep_emit_c.sh` | 🟢 77/77, skip=3 (módulos), fail=0, gcc `-Wall -Wextra` sin warnings |
+| `dump_parity.sh` | 🟢 105/105 |
+| `zig build test` | 🟢 73/73, 0 líneas `failed command` |
+| `ui_message_parity.sh` | 🟢 total=88, accept_fail=0, first_fail=0, **known=0**; msg_diff_full=13 (10 recuperación §1.5 + 3 informativos de los nuevos pins) |
+
+---
+
 *(Las secciones siguientes se van añadiendo conforme avanza la
 auditoría; cada una cierra con su commit.)*
