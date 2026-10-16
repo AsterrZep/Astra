@@ -522,15 +522,25 @@ parchear `guard_false` al brazo siguiente con los bindings ya extraídos
 (el stub POP ya existe para variantes/builtins — el fix probable es
 reutilizarlo).
 
-**Hueco conocido documentado (no cubierto por gates):** la altura de
-*iteración* vía `continue` que salta declaraciones queda por debajo del
-modelo: un `match`/`if` con receptor pending *dentro* de un loop cuyo
-camino anterior ejecutó un `continue` que se saltó un `let` calcularía
-`rt0` alto y dejaría un hueco nil entre receptor y resultado. Los 40
-probes (incluido `q21_continue`) lo pasan; si algún día aparece, el
-tratamiento es un stub de reconciliación en `continue_target` con el
-mismo patrón que el de `break`, excluyendo las celdas de estado vivo
-del loop (`for_i`/`for_arr`/variable).
+**Hueco conocido → CERRADO como §4.10 (`4cc9ca2`, 2026-10-16):** el
+"por debajo del modelo" resultó ser **más ancho** que el escenario
+`continue`-que-salta-declaraciones de aquí arriba: la normalización
+faltaba en el **back-edge** (el cuerpo de la iteración ≥2 corría a la
+altura del fin del cuerpo mientras el código asumía la de entrada) y en
+`continue` (saltaba al objetivo sin reconciliar). El repro mínimo no
+llevaba `continue`: `for i in 0..3 { let e = B(s); print(match e { … });
+let z = 0 }` trapeaba `cannot call non-function value` en la iteración 2
+— el close del match pisaba la celda del receptor de `print` y el
+`CALL` leía una celda stale vía `sp-1-argc`. El tratamiento prescrito
+aquí (stub de reconciliación con patrón `break`) se aplicó a los dos
+sitios: drenaje POP en el back-edge hasta `head_rt` y stubs por
+`continue` hasta `continue_rt` (POP si la ruta llega alta, `CONST nil`
+si llega baja). Descubierto con una batería diferencial
+`continue`-vs-guarda (150 pares → 2 divergencias; tras el fix, 750
+pares a 5 semillas, 0 divergencias) y pineado en
+`conformance/loops/iter_height_norm.astra` + gemelo
+`codegen/loop_iter_height.astra`. El detalle del cierre está en el
+audit §4.10.
 
 **Trampas nuevas aprendidas (añadir a §8):** los brazos
 variant/builtin caen en una **copia plain duplicada** del mismo brazo

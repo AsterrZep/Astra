@@ -231,6 +231,8 @@ Cerrados los seis en `e88d925`.
 | 4.8 | 🟠 | `emitter.c` armada bind con guardia (`break` tras `NODE_PATTERN_BIND`), espejo probable en `emitter.zig` (candidato reportado en el dossier 022 §1.4, abierto al cerrar §4.7) | Tras un brazo binding **con guardia** hay un `break` incondicional (*"binding makes later arms unreachable"*) que solo es cierto sin guardia: los brazos posteriores **nunca se emiten** aunque el typechecker sí los procesa, así que el programa compila y en runtime cae al backstop de §3.8 — `fn main() { let x = 5; print(match x { n if n > 9 => 1, _ => 2 }) }` con x=5 debería imprimir 2 y hoy aborta `no match arm matched`. | ⚠️ diferido con repro (registrado el 2026-10-15 al cerrar §4.7; dossier 022 §11): fix probable = quitar el `break` cuando hay guardia y parchear `guard_false` al brazo siguiente con los bindings extraídos ya poppeados — el stub POP que `ed1792e` añadió para variantes/builtins es el patrón a reutilizar |
 | 4.9 | 🔴 | `parser.c` `parse_block_impl` (chequeo de cola ANTES de `skip_newlines`), `parser.zig` `parseBlock`; efectos en typechecker (`produces no value`, `void vs …`) y en runtime (nil silencioso) | El último ítem de un bloque solo se promovía a expresión de cola si el token siguiente a la sentencia era `}` **sin newlines de por medio**: `match`, `if` y bloque anidado no ejecutan `optional_semi`, el newline quedaba delante de `}` y se violaba `Block ::= "{" Statement* Expression? "}"` (research/010 §4.2/§4.3). Vectores: una **lambda/fn void terminada en compuesto multilinea devolvía nil EN SILENCIO**; una fn tipada recibía el error engañoso `produces no value` (aconsejaba no poner `;` final, que ya no había); una rama de `if` multilinea se tipeaba `void vs integer`. Descubierto el 2026-10-15 al verificar la lista de fixes de este audit; **preexistente en ambos compilers** (idéntico en `ddc97d2`, no regresión de §4.7); la suite no tenía ningún shape así. | ✅ fix `87aaaf1` — `skip_newlines` antes del chequeo de cola en ambos parsers (solo `;` descarta el valor: `ui/missing_return_value` sigue rechazando `let …;`); test `blocks/tail_compound_multiline.astra` (fn tipada, lambda, rama de `if`, inicializador de bloque) verificado también en el C backend |
 
+| 4.10 | 🔴 | `emitter.c` `emit_back_edge_reconcile` + stubs de `continue` en `loop_leave` (`LoopPatch.head_rt`/`continue_rt` en `priv.h`), espejo `emitter.zig` (`emitBackEdgeReconcile`) | El hueco de `continue` documentado en dossier 022 §11 era real **y más ancho**: la normalización de altura faltaba en dos sitios. (a) El **back-edge no reconciliaba** — las alturas del cuerpo se modelan en la entrada del bucle, pero el salto de vuelta lleva el runtime a la altura del fin del cuerpo, así que desde la iteración 2 el cuerpo corría N celdas alto y un constructo de valor cuyo slot oculto/close target caía entre las dos alturas sobrescribía celdas vivas; repro mínimo **sin `continue`**: `for i in 0..3 { let e = B(s); print(match e { E.B(n) => n }); let z = 0 }` → iteración 2 trap `cannot call non-function value` (el close del match pisaba la celda del receptor `print` y el `CALL` marcaba una celda stale). (b) `continue` saltaba al objetivo sin reconciliar (el stub que el dossier prescribía): sus celdas vivas llegaban de más, o de menos cuando se saltaba declaraciones. Descubierto el 2026-10-16 al implementar el hueco §11 con una batería diferencial `continue`-vs-guarda (150 pares → 2 divergencias; 72 de los "pases" iniciales eran enmascaramiento de mi generador); **preexistente en ambos compilers** (el bug no es de `continue` sino de cualquier iteración ≥2 con declaraciones + constructo de valor en args de call — la suite no tenía ningún shape así). | ✅ fix `4cc9ca2` — drenaje POP en el back-edge hasta `head_rt` y stubs por `continue` hasta `continue_rt` (POP si la ruta llega alta, `CONST nil` si llega baja: la siguiente iteración reescribe cada celda antes de leerla); espejo zig idéntico; el C backend traduce los stubs sin cambios. Tests `conformance/loops/iter_height_norm.astra` (repro sin continue, continue que salta decls, continue que llega baja) + gemelo `codegen/loop_iter_height.astra`; batería diferencial 750 pares a 5 semillas, 0 divergencias |
+
 ### Notas de higiene (§4, sin acción)
 
 - 33+ bucles anidados: ambos compilan rechazan con `loop nesting too
@@ -428,7 +430,11 @@ quedó diferido con repro más abajo.
 
 | # | Criterio | Estado |
 |:-:|:---------|:-------|
-| 1 | Cero hallazgos 🔴 abiertos; 🟠 cerrados o diferidos con repro | ✅ Los 9 🔴 (arena OOB, NUL, INT64_MIN/−1, overflow UB, cadenas planas, unwrap UAF, receiver-nil, stack-imbalance de bucles) están cerrados con test. 3.8 y 7.15 se resolvieron el 2026-10-15 (`3c2b81a`, `d66370a`, decisión en `research/021`). El único 🟠 post-cierre, **4.7** (match inline corrompe el frame en los VMs), se cerró el 2026-10-15 (`ed1792e`); al cerrarlo apareció **4.8** (binding con guardia no emite los brazos posteriores), **diferido con repro**, y de la verificación posterior de la lista de fixes salió **4.9** (cola multilinea → nil silencioso), cerrada el mismo día (`87aaaf1`), más el amend de §1.2 (`f3751d9`) — ver filas §4 y dossier 022 §11. |
+| 1 | Cero hallazgos 🔴 abiertos; 🟠 cerrados o diferidos con repro | ✅ Los 9 🔴 (arena OOB, NUL, INT64_MIN/−1, overflow UB, cadenas planas, unwrap UAF, receiver-nil, stack-imbalance de bucles) están cerrados con test. 3.8 y 7.15 se resolvieron el 2026-10-15 (`3c2b81a`, `d66370a`, decisión en `research/021`). El único 🟠 post-cierre, **4.7** (match inline corrompe el frame en los VMs), se cerró el 2026-10-15 (`ed1792e`); al cerrarlo apareció **4.8** (binding con guardia no emite los brazos posteriores), **diferido con repro**, y de la verificación posterior de la lista de fixes salió **4.9** (cola multilinea → nil silencioso), cerrada el mismo día (`87aaaf1`), más el amend de §1.2 (`f3751d9`) — ver filas §4 y dossier 022 §11. Al implementar
+después el hueco de `continue` del dossier §11 apareció **4.10** (alturas de
+iteración de bucle: back-edge sin reconciliar + `continue` sin stub), **más ancho
+que el hueco documentado** — el repro mínimo no llevaba `continue` — y cerrada el
+mismo día (`4cc9ca2`). |
 | 2 | Los tres barridos de §1 como gate en CI | ✅ `sweep_emit_c.sh` (job seed), `ui_message_parity.sh` (job parity, `STRICT=1`), replay de fuzz `-runs=0` (job seed) — todos en `.github/workflows/ci.yml` y verdes en los 29 commits. |
 | 3 | Cada feature con `EXPECT`/`EXPECT-ERROR`; sin `checked > N` sueltos | ✅ §7 añadió los pines que faltaban (guards, inmutable, escapes, runtime errors, constructos rechazados) y §6.2 sustituyó `checked > 40/15` por invariantes seen-vs-procesados en `conformance.zig`. Residuales documentados: `--dump-bytecode`/`--dump-operators` sin gate propio (🔴-bajo valor, el segundo lo vigila `--check-constructs`). |
 | 4 | §4 (emitter/VM) cerrado: semántica verificada y fijada con tests | ✅ Invariantes 1-5 de `AGENTS.md` verificados con probes; 6 hallazgos cerrados; tests `integer_wrap`, `int_min_div_neg1`, `match_binding_reclaim`, `toplevel_return`, `expr_chain_deep`, `enum_payload_print`. |
@@ -441,7 +447,7 @@ quedó diferido con repro más abajo.
 | §1 barridos | 1.1-1.4, 1.6 (+gates) | `b3136d1`, `a72d4a7`, `6437aa0`, `123809d`, `ac987ca`, `2d2722f` |
 | §2 frontend | 2.1-2.14 + return-EOF | `8832fc9`, `5435722`, `b3c798b`, `2364a2c`, `179d138`, `97f8909`, `e5376a4`, `74a90b4` |
 | §3 semántica | 3.1-3.7, 3.10, 3.13(=1.6) | `ac987ca`, `213cc35`, `61b2e30`, `99759d5`, `74a90b4` |
-| §4 emitter/VM | 4.1-4.7 + 4.9 (4.8 diferido con repro) | `e88d925`, `ed1792e`, `87aaaf1` |
+| §4 emitter/VM | 4.1-4.7 + 4.9 + 4.10 (4.8 diferido con repro) | `e88d925`, `ed1792e`, `87aaaf1`, `4cc9ca2` |
 | §5 backend C | 5.1-5.6, 5.8 | `6961005` |
 | §6 zig | 6.1-6.4, 6.6, 2 wins | `492f6e4` |
 | §7 suite | 7.1-7.14 | `6e2a4e1` |
@@ -540,3 +546,26 @@ citados en filas ✅ existen) → dos hallazgos: **§4.9** (cola multilinea, cer
 sweep 89/89 skip=3, `--check-constructs` OK, `zig build test` 73/73,
 `dump_parity` 118/118, `ui_message_parity` total=116 first_fail=0 known=0,
 cross-VM 51 probes sin divergencias reales (las2 del resumen seed-only, §6.5).
+
+### Hueco de `continue` → §4.10, alturas de iteración (2026-10-16, `4cc9ca2`)
+
+El "hueco conocido" del dossier 022 §11 (la altura de iteración vía `continue`
+que salta declaraciones queda fuera del modelo) se implementó con la metodología
+§4.7: repros primero. La batería diferencial `continue`-vs-guarda (`if COND {
+continue }` ≡ `if !(COND) { … }`, mismos ítems renderizados de la misma lista) lo
+rompió en 2 de 150 pares — y la reducción mostró que **el repro mínimo no llevaba
+`continue`**: `for i in 0..3 { let e = B(s); print(match e { E.B(n) => n }); let z
+= 0 }` ya trapeaba `cannot call non-function value` en la iteración 2 (el close
+del match escribía el resultado encima de la celda del receptor `print`; `CALL`
+leía `sp-1-argc` y encontraba una celda stale). O sea: (a) el back-edge no
+reconciliaba la altura del cuerpo, y (b) `continue` saltaba al objetivo sin el
+stub que el dossier prescribía. Fix: `emit_back_edge_reconcile` (POP hasta
+`head_rt`) + stubs por `continue` hasta `continue_rt` (POP / `CONST nil`), en
+ambos compilers. Gates: seed 233/233, sweep 90/90 skip=3, `--check-constructs`
+OK, `zig build test` 73/73, `dump_parity` 120/120, `ui_message_parity`
+total=116 first_fail=0; la batería diferencial pasó a 750 pares (5 semillas) con
+0 divergencias. Nota de proceso: la primera tanda del fuzzer daba 49
+"divergencias" — eran bug del generador (listas desincronizadas → brazos if
+vacíos no-equivalentes) y 72/150 pares ni compilaban (ids indefinidos) dando
+"falso pase": sin el paso de verificar que los pares realmente compilan, la
+evidencia no vale.
