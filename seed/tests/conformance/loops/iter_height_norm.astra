@@ -1,0 +1,47 @@
+// Iteration-height normalisation (audit §4.10). The back-edge drains the
+// body's declaration cells to the head height, and every `continue` is
+// reconciled to the height its target runs at, so from the second
+// iteration on a value construct still finds its receiver where the model
+// put it. Without that, `print(match ...)` inside a loop with declarations
+// dialed a stale cell from the previous iteration and trapped
+// "cannot call non-function value" — with or without `continue`.
+//
+// A: for + declarations + value construct in call args (the no-continue repro)
+// EXPECT: 0
+// EXPECT: 0
+// EXPECT: 0
+// B: while + continue skipping a later declaration
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 3
+// C: continue arriving below the target height (nil-fill path)
+// EXPECT: 10
+// EXPECT: 12
+// EXPECT: 22
+enum E { B(i32) }
+
+fn main() {
+    let mut s = 0
+    for i in 0..3 {
+        let e1 = B(s)
+        print(match e1 { E.B(n) => n })
+        let z = 0
+    }
+    let mut i = 0
+    while i < 3 {
+        i = i + 1
+        let e2 = B(i)
+        print(match e2 { E.B(n) => n })
+        if i == 1 { continue }
+        let w = 0
+    }
+    let mut t = 0
+    for j in 0..3 {
+        if j == 1 { continue }
+        let y = j + 10
+        let e3 = B(y)
+        print(match e3 { E.B(n) => n })
+        t = t + y
+    }
+    print(t)
+}

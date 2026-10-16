@@ -126,6 +126,13 @@ typedef struct {
     size_t  cont_len;
     size_t  cont_cap;
     size_t  continue_target;
+    /* Model height at the loop head (audit §4.10): the back-edge drains the
+     * body's declaration cells to it, so every iteration enters the head at
+     * the height the emitted code assumes. */
+    int32_t head_rt;
+    /* Model height the continue target runs at (the head for `while`, the
+     * increment for `for`): each `continue` path is reconciled to it. */
+    int32_t continue_rt;
 } LoopPatch;
 
 struct Emitter {

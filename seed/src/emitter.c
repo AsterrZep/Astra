@@ -785,6 +785,47 @@ static size_t loop_leave(Emitter *e, LoopPatch *lp) {
             stub_jumps[i] = e->code_len - 1;
         }
     }
+    /* Continue reconcile stubs (audit §4.10). A `continue` jumps straight to
+     * the loop head (while) or the increment (for), skipping the back-edge
+     * drain, so its path must arrive at the height the target runs at: above
+     * it, drop the cells whose close the jump skips; below it (a continue
+     * before declarations the target's natural path executed), re-create them
+     * as nil — the next iteration overwrites each before any read. NODE_CONTINUE
+     * stashed its model height in the placeholder offset, like NODE_BREAK. */
+    size_t nc = lp->cont_len;
+    int32_t *c_heights = NULL;
+    size_t *c_stub_jumps = NULL;
+    if (nc > 0) {
+        c_heights = arena_alloc(e->arena, sizeof(int32_t) * nc, _Alignof(int32_t));
+        c_stub_jumps = arena_alloc(e->arena, sizeof(size_t) * nc, _Alignof(size_t));
+    }
+    for (size_t i = 0; i < nc; i++) {
+        c_heights[i] = e->code[lp->conts[i]].arg.offset;
+        c_stub_jumps[i] = 0;
+    }
+    for (size_t i = 0; i < nc; i++) {
+        int32_t extra = (c_heights ? c_heights[i] : 0) - lp->continue_rt;
+        if (!c_heights || !c_stub_jumps || extra == 0) continue;
+        size_t site = lp->conts[i];
+        uint32_t cline = e->code[site].line;
+        /* The stub only runs on this continue's path; keep the linear model
+         * untouched, like the break stubs above. */
+        int32_t sp_save = e->sp;
+        int32_t rt_save = e->rt;
+        e->code[site].arg.offset = (int32_t)(e->code_len - site);
+        if (extra > 0) {
+            emit_inst(e, OPCODE_POP, cline);
+            sp_set_index(e, e->code_len - 1, (uint32_t)extra);
+        } else {
+            uint32_t z = add_constant(e, value_nil());
+            for (int32_t k = 0; k < -extra; k++)
+                emit_inst_index(e, OPCODE_CONST, z, cline);
+        }
+        emit_inst_offset(e, OPCODE_JUMP, 0, cline);
+        c_stub_jumps[i] = e->code_len - 1;
+        e->sp = sp_save;
+        e->rt = rt_save;
+    }
     size_t join = e->code_len;
     for (size_t i = 0; i < n; i++) {
         bool stubbed = stub_jumps && stub_jumps[i] != 0;
@@ -799,9 +840,14 @@ static size_t loop_leave(Emitter *e, LoopPatch *lp) {
                 (int32_t)(join - stub_jumps[i]);
         }
     }
-    for (size_t i = 0; i < lp->cont_len; i++) {
-        e->code[lp->conts[i]].arg.offset =
-            (int32_t)(lp->continue_target - lp->conts[i]);
+    for (size_t i = 0; i < nc; i++) {
+        if (c_stub_jumps && c_stub_jumps[i] != 0) {
+            e->code[c_stub_jumps[i]].arg.offset =
+                (int32_t)(lp->continue_target - c_stub_jumps[i]);
+        } else {
+            e->code[lp->conts[i]].arg.offset =
+                (int32_t)(lp->continue_target - lp->conts[i]);
+        }
     }
     e->loop_depth--;
     return join;
@@ -1033,6 +1079,28 @@ static void emit_loop_exit_ensure(Emitter *e, int32_t entry_rt, uint32_t line) {
         emit_inst_index(e, OPCODE_CONST, z, line);
         emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)s, line);
     }
+}
+
+/* Back-edge reconcile (audit §4.10). The body's model heights are computed
+ * at loop entry, but the natural back-edge carries the runtime to the
+ * body-end height: from the second iteration on, the body would run one
+ * (or more) cells high, and a value construct whose hidden slot or close
+ * target sits between the two heights overwrites live cells — a call's
+ * receiver among them (`print(match …)` then dials a stale cell and traps
+ * "cannot call non-function value"). Drain the difference before jumping
+ * back, so every iteration enters the head at head_rt and re-creates its
+ * own declaration cells. The stub only runs on the back-edge path, so the
+ * linear model (and loop_leave's exit height) stays untouched. */
+static void emit_back_edge_reconcile(Emitter *e, LoopPatch *lp, uint32_t line) {
+    if (!lp) return;
+    int32_t discard = e->rt - lp->head_rt;
+    if (discard <= 0) return;
+    int32_t sp_save = e->sp;
+    int32_t rt_save = e->rt;
+    emit_inst(e, OPCODE_POP, line);
+    sp_set_index(e, e->code_len - 1, (uint32_t)discard);
+    e->sp = sp_save;
+    e->rt = rt_save;
 }
 
 /* -----------------------------------------------------------
@@ -1883,11 +1951,16 @@ static void emit_expr(Emitter *e, Node *node) {
         int32_t entry_rt = e->rt;
         size_t loop_start = e->code_len;
         LoopPatch *lp = loop_enter(e, node->loc);
-        if (lp) lp->continue_target = loop_start;
+        if (lp) {
+            lp->continue_target = loop_start;
+            lp->head_rt = e->rt;
+            lp->continue_rt = e->rt;
+        }
         emit_expr(e, node->as.while_expr.cond);
         emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
         size_t patch_exit = e->code_len - 1;
         emit_loop_body(e, node->as.while_expr.body);
+        emit_back_edge_reconcile(e, lp, line);
         emit_inst_offset(e, OPCODE_JUMP,
             (int32_t)((int64_t)loop_start - (int64_t)e->code_len), line);
         size_t join = loop_leave(e, lp);
@@ -1934,6 +2007,7 @@ static void emit_expr(Emitter *e, Node *node) {
 
             loop_start = e->code_len;
             lp = loop_enter(e, node->loc);
+            if (lp) lp->head_rt = e->rt;
 
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_end, line);
@@ -1947,7 +2021,10 @@ static void emit_expr(Emitter *e, Node *node) {
 
             emit_loop_body(e, node->as.for_expr.body);
 
-            if (lp) lp->continue_target = e->code_len;
+            if (lp) {
+                lp->continue_target = e->code_len;
+                lp->continue_rt = e->rt;
+            }
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
             uint32_t one = add_constant(e, value_int(1));
             emit_inst_index(e, OPCODE_CONST, one, line);
@@ -1965,6 +2042,7 @@ static void emit_expr(Emitter *e, Node *node) {
 
             loop_start = e->code_len;
             lp = loop_enter(e, node->loc);
+            if (lp) lp->head_rt = e->rt;
 
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_arr, line);
@@ -1981,7 +2059,10 @@ static void emit_expr(Emitter *e, Node *node) {
 
             emit_loop_body(e, node->as.for_expr.body);
 
-            if (lp) lp->continue_target = e->code_len;
+            if (lp) {
+                lp->continue_target = e->code_len;
+                lp->continue_rt = e->rt;
+            }
             emit_inst_index(e, OPCODE_GET_LOCAL, slot_idx, line);
             uint32_t one = add_constant(e, value_int(1));
             emit_inst_index(e, OPCODE_CONST, one, line);
@@ -1989,6 +2070,7 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_inst_index(e, OPCODE_SET_LOCAL, slot_idx, line);
         }
 
+        emit_back_edge_reconcile(e, lp, line);
         emit_inst_offset(e, OPCODE_JUMP,
             (int32_t)((int64_t)loop_start - (int64_t)e->code_len), line);
         size_t join = loop_leave(e, lp);
@@ -2096,6 +2178,10 @@ static void emit_expr(Emitter *e, Node *node) {
         }
         emit_inst_offset(e, OPCODE_JUMP, 0, node->loc.line);
         LoopPatch *lp = &e->loops[e->loop_depth - 1];
+        /* Stash this continue's model height in the still-unused offset:
+         * loop_leave reconciles the path to the height the continue target
+         * runs at (audit §4.10), like NODE_BREAK does for the exit. */
+        e->code[e->code_len - 1].arg.offset = e->rt;
         patch_push(e, &lp->conts, &lp->cont_len, &lp->cont_cap, e->code_len - 1);
     } break;
 

@@ -92,6 +92,13 @@ const LoopPatch = struct {
     breaks: std.ArrayListUnmanaged(usize) = .empty,
     conts: std.ArrayListUnmanaged(usize) = .empty,
     continue_target: usize = 0,
+    /// Model height at the loop head (audit §4.10): the back-edge drains the
+    /// body's declaration cells to it, so every iteration enters the head at
+    /// the height the emitted code assumes.
+    head_rt: i32 = 0,
+    /// Model height the continue target runs at (the head for `while`, the
+    /// increment for `for`): each `continue` path is reconciled to it.
+    continue_rt: i32 = 0,
 };
 
 /// Phase 2.4 step 2b: one callee-ident node of a generic body renamed to a
@@ -495,6 +502,29 @@ pub const Emitter = struct {
             self.emitInstIndex(.const_, z, ln);
             self.emitInstIndex(.set_local, @intCast(s), ln);
         }
+    }
+
+    /// Back-edge reconcile (audit §4.10). The body's model heights are
+    /// computed at loop entry, but the natural back-edge carries the runtime
+    /// to the body-end height: from the second iteration on, the body would
+    /// run one (or more) cells high, and a value construct whose hidden slot
+    /// or close target sits between the two heights overwrites live cells —
+    /// a call's receiver among them (`print(match …)` then dials a stale
+    /// cell and traps "cannot call non-function value"). Drain the
+    /// difference before jumping back, so every iteration enters the head at
+    /// head_rt and re-creates its own declaration cells. The stub only runs
+    /// on the back-edge path, so the linear model (and loopLeave's exit
+    /// height) stays untouched.
+    fn emitBackEdgeReconcile(self: *Emitter, lp: ?*LoopPatch, ln: u32) void {
+        const p = lp orelse return;
+        const discard = self.rt - p.head_rt;
+        if (discard <= 0) return;
+        const sp_save = self.sp;
+        const rt_save = self.rt;
+        self.emitInst(.pop, ln);
+        self.spSetIndex(self.code.items.len - 1, @intCast(discard));
+        self.sp = sp_save;
+        self.rt = rt_save;
     }
 
     // ── Free-variable analysis (closures) ───────────────────────
@@ -916,6 +946,48 @@ pub const Emitter = struct {
                 stub_jumps[i] = self.code.items.len - 1;
             }
         }
+        // Continue reconcile stubs (audit §4.10). A `continue` jumps straight
+        // to the loop head (while) or the increment (for), skipping the
+        // back-edge drain, so its path must arrive at the height the target
+        // runs at: above it, drop the cells whose close the jump skips; below
+        // it (a continue before declarations the target's natural path
+        // executed), re-create them as nil — the next iteration overwrites
+        // each before any read. continue_stmt stashed its model height in the
+        // placeholder offset, like break_stmt.
+        const nc = p.conts.items.len;
+        const c_heights = self.a.alloc(i32, nc) catch @panic("OOM");
+        const c_stub_jumps = self.a.alloc(usize, nc) catch @panic("OOM");
+        for (p.conts.items, 0..) |c, i| {
+            c_heights[i] = switch (self.code.items[c].arg) {
+                .offset => |v| v,
+                else => 0,
+            };
+            c_stub_jumps[i] = 0;
+        }
+        for (p.conts.items, 0..) |c, i| {
+            const extra = c_heights[i] - p.continue_rt;
+            if (extra == 0) continue;
+            const site = c;
+            const cline = self.code.items[site].line;
+            // The stub only runs on this continue's path; keep the linear
+            // model untouched, like the break stubs above.
+            const sp_save = self.sp;
+            const rt_save = self.rt;
+            const site_off: i32 = @intCast(@as(i64, @intCast(self.code.items.len)) - @as(i64, @intCast(site)));
+            self.code.items[site].arg = .{ .offset = site_off };
+            if (extra > 0) {
+                self.emitInst(.pop, cline);
+                self.spSetIndex(self.code.items.len - 1, @intCast(extra));
+            } else {
+                const z = self.addNil();
+                var k: i32 = 0;
+                while (k < -extra) : (k += 1) self.emitInstIndex(.const_, z, cline);
+            }
+            self.emitInstOffset(.jump, 0, cline);
+            c_stub_jumps[i] = self.code.items.len - 1;
+            self.sp = sp_save;
+            self.rt = rt_save;
+        }
         const join = self.code.items.len;
         for (p.breaks.items, 0..) |b, i| {
             const stubbed = stub_jumps[i] != 0;
@@ -934,9 +1006,10 @@ pub const Emitter = struct {
         }
         // `continue` jumps *back* to the continue target, so the offset is
         // negative; compute it signed rather than wrapping unsigned arithmetic.
-        for (p.conts.items) |c| {
-            const off: i32 = @intCast(@as(i64, @intCast(p.continue_target)) - @as(i64, @intCast(c)));
-            self.code.items[c].arg = .{ .offset = off };
+        for (p.conts.items, 0..) |c, i| {
+            const landing = if (c_stub_jumps[i] != 0) c_stub_jumps[i] else c;
+            const off: i32 = @intCast(@as(i64, @intCast(p.continue_target)) - @as(i64, @intCast(landing)));
+            self.code.items[landing].arg = .{ .offset = off };
         }
         self.loop_depth -= 1;
         return join;
@@ -1571,11 +1644,16 @@ pub const Emitter = struct {
                 const entry_rt = self.rt;
                 const loop_start = self.code.items.len;
                 const lp = self.loopEnter(self.tree.loc(idx));
-                if (lp) |p| p.continue_target = loop_start;
+                if (lp) |p| {
+                    p.continue_target = loop_start;
+                    p.head_rt = self.rt;
+                    p.continue_rt = self.rt;
+                }
                 self.emitExpr(w.cond);
                 self.emitInstOffset(.jump_if_false, 0, ln);
                 const patch_exit = self.code.items.len - 1;
                 self.emitLoopBody(w.body);
+                self.emitBackEdgeReconcile(lp, ln);
                 const back: i32 = @intCast(@as(i64, @intCast(loop_start)) - @as(i64, @intCast(self.code.items.len)));
                 self.emitInstOffset(.jump, back, ln);
                 const join = self.loopLeave(lp);
@@ -1617,6 +1695,10 @@ pub const Emitter = struct {
                 } else {
                     self.emitInstOffset(.jump, 0, ln);
                     const lp = &self.loops[self.loop_depth - 1];
+                    // Stash this continue's model height in the still-unused
+                    // offset: loopLeave reconciles the path to the height the
+                    // continue target runs at (audit §4.10), like break_stmt.
+                    self.code.items[self.code.items.len - 1].arg = .{ .offset = @intCast(self.rt) };
                     self.patchPush(&lp.conts, self.code.items.len - 1);
                 }
             },
@@ -2062,6 +2144,7 @@ pub const Emitter = struct {
 
             loop_start = self.code.items.len;
             lp = self.loopEnter(loc);
+            if (lp) |p| p.head_rt = self.rt;
             self.emitInstIndex(.get_local, slot_idx, ln);
             self.emitInstIndex(.get_local, slot_end, ln);
             self.emitInst(if (r.inclusive) .le else .lt, ln);
@@ -2072,7 +2155,10 @@ pub const Emitter = struct {
             self.emitInstIndex(.get_local, slot_idx, ln);
             self.emitInstIndex(.set_local, var_slot, ln);
             self.emitLoopBody(f.body);
-            if (lp) |p| p.continue_target = self.code.items.len;
+            if (lp) |p| {
+                p.continue_target = self.code.items.len;
+                p.continue_rt = self.rt;
+            }
             self.emitInstIndex(.get_local, slot_idx, ln);
             const one = self.addConstant(bc.vInt(1));
             self.emitInstIndex(.const_, one, ln);
@@ -2088,6 +2174,7 @@ pub const Emitter = struct {
 
             loop_start = self.code.items.len;
             lp = self.loopEnter(loc);
+            if (lp) |p| p.head_rt = self.rt;
             self.emitInstIndex(.get_local, slot_idx, ln);
             self.emitInstIndex(.get_local, slot_arr, ln);
             self.emitInst(.len, ln);
@@ -2101,7 +2188,10 @@ pub const Emitter = struct {
             self.emitInst(.index, ln);
             self.emitInstIndex(.set_local, var_slot, ln);
             self.emitLoopBody(f.body);
-            if (lp) |p| p.continue_target = self.code.items.len;
+            if (lp) |p| {
+                p.continue_target = self.code.items.len;
+                p.continue_rt = self.rt;
+            }
             self.emitInstIndex(.get_local, slot_idx, ln);
             const one = self.addConstant(bc.vInt(1));
             self.emitInstIndex(.const_, one, ln);
@@ -2109,6 +2199,7 @@ pub const Emitter = struct {
             self.emitInstIndex(.set_local, slot_idx, ln);
         }
 
+        self.emitBackEdgeReconcile(lp, ln);
         const back: i32 = @intCast(@as(i64, @intCast(loop_start)) - @as(i64, @intCast(self.code.items.len)));
         self.emitInstOffset(.jump, back, ln);
         const join = self.loopLeave(lp);
