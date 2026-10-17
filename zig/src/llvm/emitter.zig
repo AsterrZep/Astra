@@ -114,6 +114,11 @@ const EnumLayout = struct { name: []const u8, variants: []EnumVariantLayout, def
 /// find_enum_by_variant —, así que guardamos sólo la primera aparición).
 const VariantRef = struct { enum_name: []const u8, index: usize };
 
+/// Contexto de loop activo para break/continue (M2.d): la salida y el
+/// objetivo de `continue` (el incremento de un `for`, la condición de un
+/// `while` — el seed: loop_start en NODE_WHILE, post-del-cuerpo en NODE_FOR).
+const LoopCtx = struct { break_bb: c.LLVMBasicBlockRef, continue_bb: c.LLVMBasicBlockRef };
+
 /// Análisis de variables libres para closures (réplica de collect_free_vars
 /// del seed, emitter.c §347): recorre un cuerpo de lambda y recolecta los
 /// nombres que resuelven al scope ENCLOSING (locales o capturas actuales) y
@@ -380,6 +385,8 @@ pub const Emitter = struct {
     enums: std.StringHashMap(EnumLayout),
     /// Nombre de variante → enum + índice (constructores pelones `Circle(x)`).
     variant_map: std.StringHashMap(VariantRef),
+    /// Contextos de loop activos (break/continue).
+    loops: std.ArrayListUnmanaged(LoopCtx) = .empty,
     scopes: std.ArrayListUnmanaged(std.StringHashMap(Local)) = .empty,
     /// Pila de scopes de capturas: una entrada por lambda en cuyo cuerpo se
     /// esté compilando. Los nombres de un cuerpo se resuelven primero como
@@ -1239,9 +1246,11 @@ pub const Emitter = struct {
             .var_decl, .const_decl => self.emitLocalDecl(idx),
             .if_expr => _ = self.emitIf(idx),
             .while_expr => self.emitWhile(idx),
+            .for_expr => self.emitFor(idx),
+            .break_stmt => self.emitBreak(idx),
+            .continue_stmt => self.emitContinue(idx),
             .return_stmt => self.emitReturn(idx),
             .block => _ = self.emitBlockValue(idx),
-            .for_expr => self.unsupported(idx, "this expression form"),
             .match_expr => _ = self.emitMatch(idx),
             .struct_decl, .enum_decl => {}, // sin efecto en runtime; sólo se registran layouts de nivel superior
             else => _ = self.emitExpr(idx),
@@ -1288,9 +1297,116 @@ pub const Emitter = struct {
         const cond = self.emitExpr(we.cond) orelse return;
         _ = c.LLVMBuildCondBr(self.builder, self.truthyI1(cond), body_bb, exit_bb);
         c.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+        // `continue` re-evalúa la condición (loop_start del seed es el
+        // continue_target de NODE_WHILE); `break` sale directo al join.
+        self.loops.append(self.a, .{ .break_bb = exit_bb, .continue_bb = cond_bb }) catch @panic("OOM");
         _ = self.emitBlockValue(we.body);
+        _ = self.loops.pop();
         if (!self.isTerminated()) _ = c.LLVMBuildBr(self.builder, cond_bb);
         c.LLVMPositionBuilderAtEnd(self.builder, exit_bb);
+    }
+
+    /// `for x in 0..n` / `for x in 1..=n` / `for x in arr` — replica el
+    /// lowering del seed (NODE_FOR): almacen oculto de índice + límite/arr
+    /// (los hidden_local del seed), la condición al frente, `x = i` al entrar
+    /// al cuerpo y el incremento como objetivo de `continue`. El iterador se
+    /// evalúa una sola vez y el alcance del loop (índice, límite y `x`) es
+    /// propio.
+    fn emitFor(self: *Emitter, idx: u32) void {
+        const fe = self.tree.node(idx).for_expr;
+        const is_range = std.meta.activeTag(self.tree.node(fe.iter)) == .range_expr;
+        var inclusive = false;
+
+        const cond_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "for_cond");
+        const body_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "for_body");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "for_next");
+        const exit_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "for_exit");
+
+        self.pushScope();
+        defer self.popScope();
+        const i_alloca = self.buildAlloca(self.t_i64);
+        var bound_alloca: c.LLVMValueRef = undefined; // for_end (i64) o for_arr (ptr)
+        var elem_ty: Ty = .i64_; // tipo de la variable del loop
+
+        if (is_range) {
+            const rg = self.tree.node(fe.iter).range_expr;
+            inclusive = rg.inclusive;
+            const sv = if (rg.start_node) |sn| (self.emitExpr(sn) orelse return) else Val{ .ref = c.LLVMConstInt(self.t_i64, 0, 0), .ty = .i64_ };
+            const en = rg.end_node orelse return self.unsupported(idx, "open-ended range is not supported in Astra-0");
+            const ev = self.emitExpr(en) orelse return;
+            if (sv.ty != .i64_ or ev.ty != .i64_) {
+                self.unsupported(idx, "range bounds must be integers");
+                return;
+            }
+            bound_alloca = self.buildAlloca(self.t_i64);
+            _ = c.LLVMBuildStore(self.builder, sv.ref, i_alloca);
+            _ = c.LLVMBuildStore(self.builder, ev.ref, bound_alloca);
+        } else {
+            const av = self.emitExpr(fe.iter) orelse return;
+            if (av.ty != .arr_) {
+                self.unsupported(idx, "for..in expects an array or a range");
+                return;
+            }
+            // `Val.payload_ty` del array es su tipo de elemento (M2.a): la
+            // variable del loop se tipa con él (`for s in strs`, enums, …).
+            const ety = av.payload_ty orelse return self.unsupported(idx, "array without an element type");
+            elem_ty = ety;
+            bound_alloca = self.buildAlloca(self.t_ptr);
+            _ = c.LLVMBuildStore(self.builder, av.ref, bound_alloca);
+            _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i64, 0, 0), i_alloca);
+        }
+        _ = c.LLVMBuildBr(self.builder, cond_bb);
+
+        // Condición: `i < end` (`<=` en rangos inclusivos) o `i < len(arr)`
+        // — el len vive en el offset 0 del objeto (M2.a).
+        c.LLVMPositionBuilderAtEnd(self.builder, cond_bb);
+        const iv = c.LLVMBuildLoad2(self.builder, self.t_i64, i_alloca, "");
+        const cmp = if (is_range) blk: {
+            const bv = c.LLVMBuildLoad2(self.builder, self.t_i64, bound_alloca, "");
+            break :blk c.LLVMBuildICmp(self.builder, if (inclusive) c.LLVMIntSLE else c.LLVMIntSLT, iv, bv, "");
+        } else blk: {
+            const ap = c.LLVMBuildLoad2(self.builder, self.t_ptr, bound_alloca, "");
+            var lidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+            const lp = c.LLVMBuildGEP2(self.builder, self.t_i8, ap, &lidxs, 1, "");
+            const len = c.LLVMBuildLoad2(self.builder, self.t_i64, lp, "");
+            break :blk c.LLVMBuildICmp(self.builder, c.LLVMIntSLT, iv, len, "");
+        };
+        _ = c.LLVMBuildCondBr(self.builder, cmp, body_bb, exit_bb);
+
+        // Cuerpo: la variable del loop toma el elemento actual (índice en
+        // rangos, `arr[i]` sin bounds check en arrays — la condición ya
+        // garantiza el rango).
+        c.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+        const cur = if (is_range) iv else blk: {
+            const ap = c.LLVMBuildLoad2(self.builder, self.t_ptr, bound_alloca, "");
+            const ep = self.elemSlotAddr(ap, iv, elem_ty);
+            break :blk c.LLVMBuildLoad2(self.builder, self.llvmTy(elem_ty), ep, "");
+        };
+        const var_alloca = self.buildAlloca(self.llvmTy(elem_ty));
+        _ = c.LLVMBuildStore(self.builder, cur, var_alloca);
+        self.addLocal(fe.var_name, var_alloca, elem_ty, null, null);
+        self.loops.append(self.a, .{ .break_bb = exit_bb, .continue_bb = cont_bb }) catch @panic("OOM");
+        _ = self.emitBlockValue(fe.body);
+        _ = self.loops.pop();
+        if (!self.isTerminated()) _ = c.LLVMBuildBr(self.builder, cont_bb);
+
+        // Incremento (objetivo de `continue`) → de vuelta a la condición.
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+        const inxt = c.LLVMBuildAdd(self.builder, iv, c.LLVMConstInt(self.t_i64, 1, 0), "");
+        _ = c.LLVMBuildStore(self.builder, inxt, i_alloca);
+        _ = c.LLVMBuildBr(self.builder, cond_bb);
+
+        c.LLVMPositionBuilderAtEnd(self.builder, exit_bb);
+    }
+
+    fn emitBreak(self: *Emitter, idx: u32) void {
+        if (self.loops.items.len == 0) return self.unsupported(idx, "`break` outside a loop");
+        _ = c.LLVMBuildBr(self.builder, self.loops.items[self.loops.items.len - 1].break_bb);
+    }
+
+    fn emitContinue(self: *Emitter, idx: u32) void {
+        if (self.loops.items.len == 0) return self.unsupported(idx, "`continue` outside a loop");
+        _ = c.LLVMBuildBr(self.builder, self.loops.items[self.loops.items.len - 1].continue_bb);
     }
 
     fn emitIf(self: *Emitter, idx: u32) ?Val {
@@ -3224,4 +3340,55 @@ test "emite enums: descriptor + constantes kind-0, constructor y match con paylo
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "\"Color") != null); // c"Color\00"
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_print_enum") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_enum_eq") != null);
+}
+
+test "emite for..in con break/continue: cond al frente e incremento en continue" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\fn main() {
+        \\    let mut acc = 0
+        \\    for i in 0..10 {
+        \\        if i == 3 { continue }
+        \\        if i > 7 { break }
+        \\        acc = acc + i
+        \\    }
+        \\    let xs = [1, 2, 3]
+        \\    for x in xs {
+        \\        acc = acc + x
+        \\    }
+        \\    while acc < 0 { break }
+        \\    print(acc)
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "loop.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "loop.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "loop.astra");
+    defer em.deinit();
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+    // Los bloques del for (cond al frente, incremento como objetivo de
+    // continue, salida para break) y del while (cond como continue).
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "for_cond") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "for_next") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "for_exit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "wh_cond") != null);
 }
