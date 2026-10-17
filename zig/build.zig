@@ -10,6 +10,13 @@ const LlvmInfo = struct {
     config: []const u8,
     /// Versión completa reportada por `llvm-config --version` (p. ej. "19.1.7").
     version: []const u8,
+    /// Directorio de headers (`llvm-c/Core.h` vive aquí).
+    includedir: []const u8,
+    /// Directorio de librerías (para addLibraryPath).
+    libdir: []const u8,
+    /// Flags de librerías compartidas (`llvm-config --libs --link-shared`),
+    /// p. ej. "-lLLVM-19": se parsean los nombres en build().
+    libs: []const u8,
 };
 
 /// Descubre LLVM para el backend opt-in (§2.3 del plan, patrón Odin).
@@ -46,13 +53,27 @@ fn discoverLlvm(b: *std.Build) LlvmInfo {
     );
 }
 
-/// Ejecuta `<config> --version` y valida el rango. Devuelve null si el binario
-/// no existe o no es un llvm-config; fatal si existe pero la versión no está
-/// soportada (error explícito > fallback silencioso).
+/// Ejecuta `<config> --version --includedir --libdir --libs --link-shared`
+/// (una sola invocación: llvm-config imprime una línea por flag) y valida el
+/// rango. Devuelve null si el binario no existe o no es un llvm-config; fatal
+/// si existe pero la versión no está soportada (error explícito > fallback
+/// silencioso).
 fn probeLlvmConfig(b: *std.Build, config: []const u8) ?LlvmInfo {
     var code: u8 = undefined;
-    const stdout = b.runAllowFail(&.{ config, "--version" }, &code, .ignore) catch return null;
-    const version = std.mem.trim(u8, stdout, &std.ascii.whitespace);
+    const stdout = b.runAllowFail(
+        &.{ config, "--version", "--includedir", "--libdir", "--libs", "--link-shared" },
+        &code,
+        .ignore,
+    ) catch return null;
+    var lines = std.mem.splitScalar(
+        u8,
+        std.mem.trim(u8, stdout, &std.ascii.whitespace),
+        '\n',
+    );
+    const version = lines.next() orelse return null;
+    const includedir = lines.next() orelse return null;
+    const libdir = lines.next() orelse return null;
+    const libs = lines.next() orelse return null;
     var it = std.mem.splitScalar(u8, version, '.');
     const major_s = it.next() orelse return null;
     const major = std.fmt.parseInt(u32, major_s, 10) catch return null;
@@ -62,7 +83,13 @@ fn probeLlvmConfig(b: *std.Build, config: []const u8) ?LlvmInfo {
             .{ config, version, llvm_min_major, llvm_max_major },
         );
     }
-    return .{ .config = b.dupe(config), .version = b.dupe(version) };
+    return .{
+        .config = b.dupe(config),
+        .version = b.dupe(version),
+        .includedir = b.dupe(includedir),
+        .libdir = b.dupe(libdir),
+        .libs = b.dupe(libs),
+    };
 }
 
 pub fn build(b: *std.Build) void {
@@ -77,10 +104,11 @@ pub fn build(b: *std.Build) void {
         "llvm",
         "Enable the LLVM backend (requires LLVM 19..23 discovered via llvm-config)",
     ) orelse false;
-    if (llvm_enabled) {
+    const llvm_info: ?LlvmInfo = if (llvm_enabled) blk: {
         const info = discoverLlvm(b);
         std.debug.print("llvm: usando LLVM {s} ({s})\n", .{ info.version, info.config });
-    }
+        break :blk info;
+    } else null;
 
     // ── Astra compiler executable ──
     const exe = b.addExecutable(.{
@@ -108,6 +136,25 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // Las fuentes condicionales (el binding llvm-c, M0.2) se cuelgan de este
+    // flag de build: sin -Dllvm la rama muerta no se analiza y la suite no
+    // crece ninguna dependencia de LLVM.
+    const llvm_opts = b.addOptions();
+    llvm_opts.addOption(bool, "llvm_enabled", llvm_enabled);
+    unit_mod.addOptions("build_options", llvm_opts);
+    if (llvm_info) |info| {
+        unit_mod.addIncludePath(.{ .cwd_relative = info.includedir });
+        unit_mod.addLibraryPath(.{ .cwd_relative = info.libdir });
+        // -lc antes que libLLVM: linkar libLLVM sin libc segfaultea dentro de
+        // LLVM en runtime (verificado, 023 §4.3 — gotcha documentado en AGENTS.md).
+        unit_mod.linkSystemLibrary("c", .{});
+        var lib_it = std.mem.splitScalar(u8, info.libs, ' ');
+        while (lib_it.next()) |lib| {
+            if (lib.len > 2 and std.mem.startsWith(u8, lib, "-l")) {
+                unit_mod.linkSystemLibrary(lib[2..], .{});
+            }
+        }
+    }
     const unit_tests = b.addTest(.{
         .root_module = unit_mod,
     });
