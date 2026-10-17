@@ -18,6 +18,9 @@ pub const diagnostics = @import("diagnostics.zig");
 /// comptime, así que sin el flag esta rama no se analiza y el `@cImport` de
 /// llvm-c jamás se traduce — `zig build test` sin LLVM sigue funcionando.
 pub const llvm_c_api = if (build_options.llvm_enabled) @import("llvm/c_api.zig") else void;
+/// Fachata + emisor LLVM (Fase LLVM M0.3): igual gating comptime que arriba.
+pub const llvm = if (build_options.llvm_enabled) @import("llvm.zig") else void;
+pub const llvm_emitter = if (build_options.llvm_enabled) @import("llvm/emitter.zig") else void;
 
 test {
     _ = lexer;
@@ -32,4 +35,6 @@ test {
     _ = link;
     _ = diagnostics;
     _ = llvm_c_api;
+    _ = llvm;
+    _ = llvm_emitter;
 }

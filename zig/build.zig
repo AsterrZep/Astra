@@ -110,6 +110,12 @@ pub fn build(b: *std.Build) void {
         break :blk info;
     } else null;
 
+    // build_options compartido: main.zig solo importa el emisor LLVM cuando la
+    // opción está activa (comptime), así sin -Dllvm el `@cImport` de llvm-c no
+    // se analiza nunca.
+    const llvm_opts = b.addOptions();
+    llvm_opts.addOption(bool, "llvm_enabled", llvm_enabled);
+
     // ── Astra compiler executable ──
     const exe = b.addExecutable(.{
         .name = "astra-zig",
@@ -119,6 +125,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addOptions("build_options", llvm_opts);
+    if (llvm_info) |info| linkLlvm(exe.root_module, info);
     b.installArtifact(exe);
 
     // ── Run command ──
@@ -136,29 +144,28 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    // Las fuentes condicionales (el binding llvm-c, M0.2) se cuelgan de este
-    // flag de build: sin -Dllvm la rama muerta no se analiza y la suite no
-    // crece ninguna dependencia de LLVM.
-    const llvm_opts = b.addOptions();
-    llvm_opts.addOption(bool, "llvm_enabled", llvm_enabled);
     unit_mod.addOptions("build_options", llvm_opts);
-    if (llvm_info) |info| {
-        unit_mod.addIncludePath(.{ .cwd_relative = info.includedir });
-        unit_mod.addLibraryPath(.{ .cwd_relative = info.libdir });
-        // -lc antes que libLLVM: linkar libLLVM sin libc segfaultea dentro de
-        // LLVM en runtime (verificado, 023 §4.3 — gotcha documentado en AGENTS.md).
-        unit_mod.linkSystemLibrary("c", .{});
-        var lib_it = std.mem.splitScalar(u8, info.libs, ' ');
-        while (lib_it.next()) |lib| {
-            if (lib.len > 2 and std.mem.startsWith(u8, lib, "-l")) {
-                unit_mod.linkSystemLibrary(lib[2..], .{});
-            }
-        }
-    }
+    if (llvm_info) |info| linkLlvm(unit_mod, info);
     const unit_tests = b.addTest(.{
         .root_module = unit_mod,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+}
+
+/// Aplica las dependencias de LLVM a un módulo: include/lib paths, y `-lc`
+/// antes que libLLVM (linkar libLLVM sin libc segfaultea dentro de LLVM en
+/// runtime — 023 §4.3). Compartido entre el exe y los tests unitarios para que
+/// ambos vean el mismo binding llvm-c.
+fn linkLlvm(mod: *std.Build.Module, info: LlvmInfo) void {
+    mod.addIncludePath(.{ .cwd_relative = info.includedir });
+    mod.addLibraryPath(.{ .cwd_relative = info.libdir });
+    mod.linkSystemLibrary("c", .{});
+    var lib_it = std.mem.splitScalar(u8, info.libs, ' ');
+    while (lib_it.next()) |lib| {
+        if (lib.len > 2 and std.mem.startsWith(u8, lib, "-l")) {
+            mod.linkSystemLibrary(lib[2..], .{});
+        }
+    }
 }

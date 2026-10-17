@@ -9,6 +9,10 @@
 pub const c = @cImport({
     @cInclude("llvm-c/Core.h");
     @cInclude("llvm-c/Analysis.h");
+    // TargetMachine.h trae LLVMGetDefaultTargetTriple (M0.3): todo módulo debe
+    // llevar triple y datalayout (024 §2), y el triple del host se obtiene aquí
+    // sin construir un TargetMachine.
+    @cInclude("llvm-c/TargetMachine.h");
 });
 
 test "smoke: módulo i64 add(i64,i64) verifica e imprime IR" {

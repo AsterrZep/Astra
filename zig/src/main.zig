@@ -6,6 +6,7 @@
 //! parse check that exits non-zero on a syntax error.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const lexer = @import("lexer/lexer.zig");
 const ast = @import("ast/ast.zig");
 const parser = @import("parser/parser.zig");
@@ -16,18 +17,24 @@ const vm_mod = @import("vm/vm.zig");
 const modules_mod = @import("modules/modules.zig");
 const diagnostics = @import("diagnostics.zig");
 const dump_mod = @import("dump.zig");
+// Fachata del backend LLVM (M0.3): solo existe bajo `-Dllvm`. La condición es
+// comptime, así que sin el flag esta rama no se analiza y el `@cImport` de
+// llvm-c jamás se traduce — `astra-zig` sin LLVM sigue compilando igual.
+const llvm = if (build_options.llvm_enabled) @import("llvm.zig") else void;
 
-const Mode = enum { parse, tokens, ast_dump, bytecode, modules };
+const Mode = enum { parse, tokens, ast_dump, bytecode, modules, emit_llvm, emit_llvm_stdout };
 
 const usage =
-    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --debug] <file.astra>
+    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --debug] <file.astra>
     \\
-    \\  (no flag)        compile and run, exit 1 on a compile or runtime error
-    \\  --dump-tokens    print the token stream
-    \\  --dump-ast       print the parsed AST
-    \\  --dump-modules   load and print the module graph (files reached, cycles reported)
-    \\  --dump-bytecode  print the emitted bytecode
-    \\  --debug          run under the interactive bytecode debugger (stdin)
+    \\  (no flag)              compile and run, exit 1 on a compile or runtime error
+    \\  --dump-tokens          print the token stream
+    \\  --dump-ast             print the parsed AST
+    \\  --dump-modules         load and print the module graph (files reached, cycles reported)
+    \\  --dump-bytecode        print the emitted bytecode
+    \\  --emit-llvm            write LLVM IR to <file>.ll (requires -Dllvm)
+    \\  --emit-llvm-stdout     print LLVM IR to stdout (requires -Dllvm)
+    \\  --debug                run under the interactive bytecode debugger (stdin)
     \\
 ;
 
@@ -48,6 +55,10 @@ pub fn main(init: std.process.Init) !void {
             mode = .modules;
         } else if (std.mem.eql(u8, arg, "--dump-bytecode")) {
             mode = .bytecode;
+        } else if (std.mem.eql(u8, arg, "--emit-llvm")) {
+            mode = .emit_llvm;
+        } else if (std.mem.eql(u8, arg, "--emit-llvm-stdout")) {
+            mode = .emit_llvm_stdout;
         } else if (std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -167,6 +178,13 @@ pub fn main(init: std.process.Init) !void {
     tc.check(root);
     if (tc.error_count > 0) std.process.exit(1);
 
+    // Backend LLVM (opt-in, M0.3): tras el typecheck, genera IR y sale. No
+    // necesita el emisor de bytecode ni la VM — el emisor LLVM camina el AST.
+    if (mode == .emit_llvm or mode == .emit_llvm_stdout) {
+        emitLlvm(a, io, file, &tree, root, mode, &diag);
+        return;
+    }
+
     var em = emitter.Emitter.init(a, &tree, file);
     em.diag = &diag;
     // Phase 2.4 step 2b: hand the materialized generic instances to the
@@ -223,6 +241,50 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// Genera LLVM IR para el subconjunto M0 (Fase LLVM M0.3). Requiere el build
+/// `-Dllvm`; sin él sale con un error accionable. Con él, emite, verifica el
+/// módulo y escribe `<file>.ll` (o lo imprime por stdout con la variante
+/// `--emit-llvm-stdout`). Todo lo fuera de M0 lo rechaza el emisor con un
+/// diagnóstico limpio (exit 1) sin escribir IR.
+fn emitLlvm(
+    a: std.mem.Allocator,
+    io: std.Io,
+    file: []const u8,
+    tree: *ast.Tree,
+    root: u32,
+    mode: Mode,
+    diag: *diagnostics.Sink,
+) void {
+    // `build_options.llvm_enabled` es comptime: sin -Dllvm solo se analiza esta
+    // rama y `llvm.Emitter` (que sería `void`) jamás se referencia.
+    if (build_options.llvm_enabled) {
+        var em = llvm.Emitter.init(a, tree, file);
+        defer em.deinit();
+        em.diag = diag;
+        em.emit(root);
+        if (em.error_count > 0) std.process.exit(1);
+        if (!llvm.verify(em.mod, diag, file)) std.process.exit(1);
+        if (mode == .emit_llvm_stdout) {
+            const ir = llvm.printToString(a, em.mod);
+            var stdout_buf: [4096]u8 = undefined;
+            const stdout_file = std.Io.File.stdout();
+            var stdout_writer = stdout_file.writer(io, &stdout_buf);
+            stdout_writer.interface.writeAll(ir) catch {};
+            stdout_writer.interface.flush() catch {};
+        } else {
+            const base = if (std.mem.endsWith(u8, file, ".astra")) file[0 .. file.len - ".astra".len] else file;
+            const out_path = std.fmt.allocPrintSentinel(a, "{s}.ll", .{base}, 0) catch @panic("OOM");
+            llvm.writeToFile(em.mod, out_path) catch std.process.exit(1);
+        }
+    } else {
+        std.debug.print(
+            "error: --emit-llvm requires the compiler to be built with `-Dllvm` (LLVM 19..23 via llvm-config)\n",
+            .{},
+        );
+        std.process.exit(2);
+    }
+}
+
 /// Last segment of an import path: `import geometry.mesh` (no `as`) binds
 /// `mesh`, `import @/utils/logger` binds `logger` — both separators of
 /// `ImportPath` count (decision recorded in `PHASE2_GAP_ANALYSIS.md` App. B
@@ -250,6 +312,12 @@ fn compileAndRunMulti(
     init: std.process.Init,
     diag: *diagnostics.Sink,
 ) !void {
+    // M0.3: el emisor LLVM aún no resuelve varios módulos. Se rechaza limpio
+    // (como cualquier otra limitación de M0) en vez de emitir IR incompleto.
+    if (mode == .emit_llvm or mode == .emit_llvm_stdout) {
+        std.debug.print("error: --emit-llvm does not yet support multi-module programs (LLVM M0)\n", .{});
+        std.process.exit(2);
+    }
     var loader = modules_mod.Loader.init(a, io, dir);
     defer loader.deinit();
     loader.diag = diag;
