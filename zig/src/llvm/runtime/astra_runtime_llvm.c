@@ -156,6 +156,9 @@ void *astra_llvm_wrap(unsigned line, int32_t tag, int32_t ptype, int64_t payload
 
 /* Defined with the arrays below (M2.a): `some([1, 2])` prints through it. */
 static void astra_llvm_array_body(const void *p);
+/* Defined with the structs (M2.b): `some(P { … })` prints/compares through them. */
+static void astra_llvm_struct_body(const void *p);
+int32_t astra_llvm_struct_eq(const void *pa, const void *pb);
 
 static void astra_llvm_boxed_body(const void *p) {
     if (!p) { fputs("nil", stdout); return; }
@@ -169,6 +172,7 @@ static void astra_llvm_boxed_body(const void *p) {
                   fwrite(s->data, 1, (size_t)s->len, stdout); break; }
         case 5: astra_llvm_boxed_body((const void *)b->payload); break;
         case 6: astra_llvm_array_body((const void *)b->payload); break;
+        case 7: astra_llvm_struct_body((const void *)b->payload); break;
         default: fputc('?', stdout); break;
     }
     fputc(')', stdout);
@@ -196,6 +200,7 @@ int32_t astra_llvm_boxed_eq(const void *pa, const void *pb) {
         case 4: return astra_llvm_str_eq((const void *)a->payload, (const void *)b->payload) ? 1 : 0;
         case 5: return astra_llvm_boxed_eq((const void *)a->payload, (const void *)b->payload);
         case 6: return (a->payload == b->payload) ? 1 : 0; /* array = identity */
+        case 7: return astra_llvm_struct_eq((const void *)a->payload, (const void *)b->payload);
         default: return a->payload == b->payload;
     }
 }
@@ -261,6 +266,7 @@ static void astra_llvm_elem_print(int32_t pty, const char *slot) {
                   fwrite(s->data, 1, (size_t)s->len, stdout); break; }
         case 5: { const void *b; memcpy(&b, slot, sizeof b); astra_llvm_boxed_body(b); break; }
         case 6: { const void *a; memcpy(&a, slot, sizeof a); astra_llvm_array_body(a); break; }
+        case 7: { const void *s; memcpy(&s, slot, sizeof s); astra_llvm_struct_body(s); break; }
         default: fputc('?', stdout); break;
     }
 }
@@ -278,4 +284,91 @@ void astra_llvm_index_fail(unsigned line, int64_t idx, int64_t len) {
     snprintf(buf, sizeof buf, "index %ld out of bounds (len %ld)",
              (long)idx, (long)len);
     astra_llvm_fail(line, buf);
+}
+
+/* ---- structs (M2.b) ----------------------------------------------------- */
+
+/* Structs are heap handles like arrays (aliasing, Hallazgo G) but printed and
+ * compared STRUCTURALLY: the object starts with a pointer to a static layout
+ * descriptor the emitter emits per declaration, so print and equality need no
+ * static type at the call site (the VM reads s->def the same way):
+ *   object: { const AstraLLVMStructDef *def; f0@8; f1@16; … }
+ * Every field lives in an 8-byte slot (bool stored as i8 at the slot start),
+ * in DECLARATION order — a literal's field order is irrelevant because the
+ * emitter stores by declaration index. Descriptor ptypes use the elem codes
+ * (1=bool 2=i64 3=f64 4=str 5=boxed 6=array 7=struct). */
+typedef struct {
+    const char *name;
+    int32_t nfields;
+    const int32_t *ptypes;
+    const char *const *fields;
+} AstraLLVMStructDef;
+
+/* VM value_print's struct arm: `Name { f: v, f: v }` (def is always present
+ * for objects the emitter builds; the NULL branch mirrors `<struct>`). */
+static void astra_llvm_struct_body(const void *p) {
+    const AstraLLVMStructDef *def;
+    memcpy(&def, p, sizeof def);
+    if (!def) { fputs("<struct>", stdout); return; }
+    printf("%s { ", def->name);
+    const char *base = (const char *)p;
+    for (int32_t i = 0; i < def->nfields; i++) {
+        if (i > 0) fputs(", ", stdout);
+        printf("%s: ", def->fields[i]);
+        astra_llvm_elem_print(def->ptypes[i], base + 8 + 8 * (size_t)i);
+    }
+    fputs(" }", stdout);
+}
+
+void astra_llvm_print_struct(const void *p) {
+    if (astra_llvm_printed_any++) putchar(' ');
+    astra_llvm_struct_body(p);
+}
+
+/* Per-slot equality by ptype, shared by struct fields and boxed payloads:
+ * floats by value (NaN != NaN, like VM value_eq), strings by content, boxes
+ * recursively, arrays by handle identity (value_eq: pointer), structs by the
+ * structural recursion below. */
+static int32_t astra_llvm_value_eq_pty(int32_t pty, const char *a, const char *b) {
+    switch (pty) {
+        case 1: return *(const int8_t *)a == *(const int8_t *)b;
+        case 3: { double x, y;
+                  memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                  return x == y; }
+        case 4: { const AstraLLVMStr *x, *y;
+                  memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                  return astra_llvm_str_eq(x, y) ? 1 : 0; }
+        case 5: { const void *x, *y;
+                  memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                  return astra_llvm_boxed_eq(x, y); }
+        case 6: { const void *x, *y;
+                  memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                  return x == y ? 1 : 0; }
+        case 7: { const void *x, *y;
+                  memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                  return astra_llvm_struct_eq(x, y); }
+        default: { int64_t x, y;
+                   memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                   return x == y; }
+    }
+}
+
+/* VM value_eq's struct arm: same def name + field-by-field value_eq (two
+ * distinct objects with equal fields are ==, structs/… — a real VM
+ * behaviour, not identity). */
+int32_t astra_llvm_struct_eq(const void *pa, const void *pb) {
+    if (pa == pb) return 1;
+    if (!pa || !pb) return 0;
+    const AstraLLVMStructDef *da, *db;
+    memcpy(&da, pa, sizeof da);
+    memcpy(&db, pb, sizeof db);
+    if (!da || !db) return 0;
+    if (strcmp(da->name, db->name) != 0 || da->nfields != db->nfields) return 0;
+    for (int32_t i = 0; i < da->nfields; i++) {
+        if (!astra_llvm_value_eq_pty(da->ptypes[i],
+                (const char *)pa + 8 + 8 * (size_t)i,
+                (const char *)pb + 8 + 8 * (size_t)i))
+            return 0;
+    }
+    return 1;
 }

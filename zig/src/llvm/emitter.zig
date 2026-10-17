@@ -41,10 +41,11 @@ const c = @import("c_api.zig").c;
 /// `i8` 0/1, `f64` para floats, `str_` como puntero al bloque
 /// `{ i64 len; [len+1 x i8] data }`, `boxed_` (Option/Result) como puntero a
 /// `{ i32 tag; i32 ptype; i64 payload }` (M1), `fn_` (funciones de primer
-/// orden, M1.d) como puntero al objeto `{ ptr code; ptr env }` y `arr_`
+/// orden, M1.d) como puntero al objeto `{ ptr code; ptr env }`, `arr_`
 /// (M2.a) como puntero al objeto `{ i64 len; i32 elem_pty; i32 pad; <elems> }`
-/// — identidad compartida, igual que el handle del VM.
-const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_, arr_ };
+/// — identidad compartida, igual que el handle del VM — y `struct_` (M2.b)
+/// como puntero al objeto `{ ptr def; <campos en slots de 8 bytes> }`.
+const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_, arr_, struct_ };
 
 /// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
@@ -52,7 +53,13 @@ const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_, arr_ };
 /// de `T?`/`some(x)` (bindings de `match`, `?`); para un `fn_` el tipo de
 /// retorno (null = void, lo que la llamada dinámica arma en el sitio); para
 /// un `arr_` el tipo de sus elementos (índices, bounds y print).
-const Val = struct { ref: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
+/// `sname` es el nombre del struct cuando el valor es un `struct_` (también
+/// cuando un `boxed_`/`fn_`/`arr_` lo transporta como payload/retorno): los
+/// campos se resuelven contra el layout con ese nombre. Límite documentado:
+/// los literales de array de structs y las lambdas con retorno struct anotado
+/// sólo propagan el `Ty` (sin nombre), así que el acceso a campo sobre ellos
+/// se rechaza honestamente.
+const Val = struct { ref: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
 
 const FnInfo = struct {
     val: c.LLVMValueRef,
@@ -63,10 +70,13 @@ const FnInfo = struct {
     ret_ty: ?Ty,
     /// Payload del retorno `T?` (el `T`), para `?` y match sobre su resultado.
     ret_payload: ?Ty = null,
+    /// Nombre de struct si el retorno es `struct_` (resultado de una
+    /// llamada dinámica vía `fn_` conserva su forma para el acceso a campo).
+    ret_sname: ?[]const u8 = null,
 };
 
-const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
-const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
+const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
+const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
 
 /// Una captura de closure: su nombre, el tipo estático con el que se lee del
 /// env (i64 bits) y su índice en el env de la lambda. Los closures capturan
@@ -74,8 +84,18 @@ const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
 /// snapshota los valores actuales en un array heap que sobrevive al frame
 /// que los produjo — ni el reasignar la variable después alcanza al closure,
 /// ni la salida del frame rompe el env.
-const CapSlot = struct { name: []const u8, ty: Ty, payload_ty: ?Ty = null, index: u32 = 0 };
+const CapSlot = struct { name: []const u8, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null, index: u32 = 0 };
 const CaptureScope = std.ArrayListUnmanaged(CapSlot);
+
+/// Un campo en el layout de un struct.
+const StructField = struct { name: []const u8, ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
+
+/// Layout de un struct (M2.b): campos en ORDEN DE DECLARACIÓN, cada uno en un
+/// slot de 8 bytes desde offset 8 — offset 0 del objeto = puntero al
+/// descriptor estático `AstraLLVMStructDef` del runtime, que es lo que
+/// print/eq leen del propio objeto (como s->def en el VM). `def` es el
+/// global LLVM del descriptor, emitido al registrar el layout.
+const StructLayout = struct { fields: []StructField, def: c.LLVMValueRef, size: i64 };
 
 /// Análisis de variables libres para closures (réplica de collect_free_vars
 /// del seed, emitter.c §347): recorre un cuerpo de lambda y recolecta los
@@ -125,12 +145,15 @@ const FreeVars = struct {
         const em = fv.em;
         var ty: ?Ty = null;
         var pty: ?Ty = null;
+        var sn: ?[]const u8 = null;
         if (em.lookupLocal(name)) |l| {
             ty = l.ty;
             pty = l.payload_ty;
+            sn = l.sname;
         } else if (em.lookupCapture(name)) |cp| {
             ty = cp.ty;
             pty = cp.payload_ty;
+            sn = cp.sname;
         } else return;
         for (fv.caps.items) |cp2| {
             if (std.mem.eql(u8, cp2.name, name)) return;
@@ -139,7 +162,7 @@ const FreeVars = struct {
             fv.overflow = true;
             return;
         }
-        fv.caps.append(em.a, .{ .name = name, .ty = ty.?, .payload_ty = pty }) catch @panic("OOM");
+        fv.caps.append(em.a, .{ .name = name, .ty = ty.?, .payload_ty = pty, .sname = sn }) catch @panic("OOM");
     }
 
     fn walk(fv: *FreeVars, idx: u32) void {
@@ -262,8 +285,10 @@ const PTY_F64: u32 = 3;
 const PTY_STR: u32 = 4;
 const PTY_BOXED: u32 = 5;
 /// Elemento/contenido de array dentro de una caja o del header de otro array
-/// (contrato con el runtime: 1=bool 2=i64 3=f64 4=str 5=boxed 6=array).
+/// (contrato con el runtime: 1=bool 2=i64 3=f64 4=str 5=boxed 6=array
+/// 7=struct).
 const PTY_ARRAY: u32 = 6;
+const PTY_STRUCT: u32 = 7;
 
 /// Offset de los elementos inline en un objeto array (`{ i64 len; i32
 /// elem_pty; i32 pad; <elems> }`, M2.a).
@@ -320,9 +345,14 @@ pub const Emitter = struct {
     r_malloc: c.LLVMValueRef,
     r_print_array: c.LLVMValueRef,
     r_index_fail: c.LLVMValueRef,
+    r_print_struct: c.LLVMValueRef,
+    r_struct_eq: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
+    /// Layouts de structs registrados (nivel superior; pasada previa al
+    /// emit). Las anotaciones y los accesos a campo se resuelven aquí.
+    structs: std.StringHashMap(StructLayout),
     scopes: std.ArrayListUnmanaged(std.StringHashMap(Local)) = .empty,
     /// Pila de scopes de capturas: una entrada por lambda en cuyo cuerpo se
     /// esté compilando. Los nombres de un cuerpo se resuelven primero como
@@ -369,6 +399,7 @@ pub const Emitter = struct {
             .t_void = t_void,
             .fns = std.StringHashMap(FnInfo).init(a),
             .globals = std.StringHashMap(GlobalInfo).init(a),
+            .structs = std.StringHashMap(StructLayout).init(a),
             .r_set_file = undefined,
             .r_init = undefined,
             .r_cleanup = undefined,
@@ -388,6 +419,8 @@ pub const Emitter = struct {
             .r_malloc = undefined,
             .r_print_array = undefined,
             .r_index_fail = undefined,
+            .r_print_struct = undefined,
+            .r_struct_eq = undefined,
         };
         self.declareRuntime();
         return self;
@@ -426,6 +459,8 @@ pub const Emitter = struct {
         self.r_malloc = self.declRet(self.t_ptr, "malloc", &.{self.t_i64});
         self.r_print_array = self.declVoid("astra_llvm_print_array", &.{self.t_ptr});
         self.r_index_fail = self.declVoid("astra_llvm_index_fail", &.{ self.t_i32, self.t_i64, self.t_i64 });
+        self.r_print_struct = self.declVoid("astra_llvm_print_struct", &.{self.t_ptr});
+        self.r_struct_eq = self.declRet(self.t_i32, "astra_llvm_struct_eq", &.{ self.t_ptr, self.t_ptr });
     }
 
     fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
@@ -443,6 +478,11 @@ pub const Emitter = struct {
 
     pub fn emit(self: *Emitter, root: u32) void {
         const items = self.tree.extraSlice(self.tree.node(root).source_file);
+        // 0: registra los layouts de structs (los annotations y accesos a
+        // campo se resuelven contra este mapa, y los descriptores del runtime
+        // se emiten aquí como constantes).
+        self.registerStructs(items);
+        if (self.error_count > 0) return;
         // 1: declara todas las funciones (recursión y mutua recursión).
         for (items) |it| {
             switch (self.tree.node(it)) {
@@ -498,17 +538,19 @@ pub const Emitter = struct {
         var ret_ty: c.LLVMTypeRef = self.t_void;
         var ret_m0: ?Ty = null;
         var ret_payload: ?Ty = null;
+        var ret_sname: ?[]const u8 = null;
         if (fd.ret) |ri| {
             const at = self.annotTy(ri) orelse
                 return self.unsupported(ri, "non-scalar return type");
             ret_ty = self.llvmTy(at.ty);
             ret_m0 = at.ty;
             ret_payload = at.payload;
+            ret_sname = at.sname;
         }
         const fty = c.LLVMFunctionType(ret_ty, &pbuf, @intCast(param_items.len + 1), 0);
         const mangled = std.fmt.allocPrintSentinel(self.a, "astra_fn_{s}", .{fd.name}, 0) catch @panic("OOM");
         const fnv = c.LLVMAddFunction(self.mod, mangled, fty);
-        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload }) catch @panic("OOM");
+        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload, .ret_sname = ret_sname }) catch @panic("OOM");
     }
 
     fn declareGlobal(self: *Emitter, idx: u32) void {
@@ -519,10 +561,11 @@ pub const Emitter = struct {
         else
             return self.unsupported(idx, "top-level binding without an initializer");
         const payload: ?Ty = if (ann) |at| at.payload else if (vd.value) |vi| self.inferBoxPayload(vi) else null;
+        const sname: ?[]const u8 = if (ann) |at| at.sname else if (vd.value) |vi| self.inferStaticSName(vi) else null;
         const gname = std.fmt.allocPrintSentinel(self.a, "astra_g_{s}", .{vd.name}, 0) catch @panic("OOM");
         const gv = c.LLVMAddGlobal(self.mod, self.llvmTy(ty), gname);
         c.LLVMSetInitializer(gv, self.zeroInit(ty));
-        self.globals.put(vd.name, .{ .val = gv, .ty = ty, .payload_ty = payload }) catch @panic("OOM");
+        self.globals.put(vd.name, .{ .val = gv, .ty = ty, .payload_ty = payload, .sname = sname }) catch @panic("OOM");
     }
 
     fn emitFn(self: *Emitter, idx: u32) void {
@@ -540,7 +583,7 @@ pub const Emitter = struct {
             const at = self.annotTy(p.type_node) orelse return;
             const alloca = self.buildAlloca(self.llvmTy(at.ty));
             _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(info.val, @intCast(i + 1)), alloca);
-            self.addLocal(p.name, alloca, at.ty, at.payload);
+            self.addLocal(p.name, alloca, at.ty, at.payload, at.sname);
         }
         const body_val = self.emitBlockValue(fd.body);
         if (!self.isTerminated()) {
@@ -646,7 +689,7 @@ pub const Emitter = struct {
             const at = self.annotTy(p.type_node) orelse return null;
             const alloca = self.buildAlloca(self.llvmTy(at.ty));
             _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(fnv, @intCast(i + 1)), alloca);
-            self.addLocal(p.name, alloca, at.ty, at.payload);
+            self.addLocal(p.name, alloca, at.ty, at.payload, at.sname);
         }
         const body_val = self.emitBlockValue(l.body);
         if (!self.isTerminated()) {
@@ -702,11 +745,11 @@ pub const Emitter = struct {
     /// frame (alloca) o un slot del env de la lambda que lo contiene.
     fn captureValue(self: *Emitter, cap: CapSlot, idx: u32) ?Val {
         if (self.lookupLocal(cap.name)) |l|
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty, .sname = l.sname };
         if (self.lookupCapture(cap.name)) |cp| {
             const env = c.LLVMGetParam(self.cur_fn, 0);
             const bits = self.loadEnvSlot(env, cp.index);
-            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty };
+            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty, .sname = cp.sname };
         }
         self.unsupported(idx, "capture of a variable that no longer resolves");
         return null;
@@ -876,6 +919,135 @@ pub const Emitter = struct {
         return val;
     }
 
+    // ── Structs (M2.b) ─────────────────────────────────────────────────────
+
+    /// `P { x: 1, y: 2 }` → objeto heap `{ ptr def; x@8; y@16; … }`. Los
+    /// campos se guardan en ORDEN DE DECLARACIÓN (el orden del literal es
+    /// irrelevante — busca por nombre) y todos en slots de 8 bytes, que es
+    /// lo que el descriptor del runtime espera al recorrerlos. Manejo como
+    /// el handle del VM (aliasing, Hallazgo G): `let mut q = p` copia el
+    /// puntero.
+    fn emitStructLit(self: *Emitter, idx: u32) ?Val {
+        const sl = self.tree.node(idx).struct_literal;
+        const layout = self.structs.get(sl.name) orelse {
+            self.unsupported(idx, "struct literal of an undeclared struct");
+            return null;
+        };
+        if (layout.def == null) { // placeholder sin registrar (inconsistencia interna)
+            self.unsupported(idx, "struct literal of an unregistered struct");
+            return null;
+        }
+        const init_items = self.tree.extraSlice(sl.fields);
+        var margs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, @intCast(layout.size), 0)};
+        const obj = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_malloc), self.r_malloc, &margs, 1, "");
+        // offset 0: puntero al descriptor (lo que print/eq leen del objeto).
+        var didxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+        const dp = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &didxs, 1, "");
+        _ = c.LLVMBuildStore(self.builder, layout.def, dp);
+        // Campos inicializados, en orden de evaluación del literal.
+        for (init_items) |fi| {
+            const f = self.tree.node(fi).struct_init_field;
+            var slot: ?usize = null;
+            for (layout.fields, 0..) |lf, i| {
+                if (std.mem.eql(u8, lf.name, f.name)) slot = i;
+            }
+            const si = slot orelse {
+                self.unsupported(idx, "struct literal field not in the declaration");
+                return null;
+            };
+            const fv = self.emitExpr(f.value) orelse return null;
+            if (fv.ty != layout.fields[si].ty) {
+                self.unsupported(idx, "struct literal field type mismatch");
+                return null;
+            }
+            var eidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8 + 8 * si, 0)};
+            const fp = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &eidxs, 1, "");
+            _ = c.LLVMBuildStore(self.builder, fv.ref, fp);
+        }
+        // Campos sin inicializar quedan en cero (el typechecker ya exige la
+        // lista completa; esto sólo evita basura si alguien relaja esa regla).
+        for (layout.fields, 0..) |lf, i| {
+            var seen = false;
+            for (init_items) |fi| {
+                if (std.mem.eql(u8, self.tree.node(fi).struct_init_field.name, lf.name)) seen = true;
+            }
+            if (seen) continue;
+            var zidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8 + 8 * i, 0)};
+            const zp = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &zidxs, 1, "");
+            _ = c.LLVMBuildStore(self.builder, self.zeroInit(lf.ty), zp);
+        }
+        return .{ .ref = obj, .ty = .struct_, .sname = sl.name };
+    }
+
+    /// Dirección del slot de un campo: `obj + 8 + 8 * índice`.
+    fn fieldSlotAddr(self: *Emitter, obj: c.LLVMValueRef, fi: usize) c.LLVMValueRef {
+        var idxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8 + 8 * fi, 0)};
+        return c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &idxs, 1, "");
+    }
+
+    /// `p.x` — lectura de campo contra el layout del struct (cadena anidada
+    /// `p.n.x` funciona: el objeto del campo es otro struct handle).
+    fn emitFieldRead(self: *Emitter, idx: u32) ?Val {
+        const fa = self.tree.node(idx).field_access;
+        const ov = self.emitExpr(fa.object) orelse return null;
+        if (ov.ty != .struct_ or ov.sname == null) {
+            self.unsupported(idx, "field access on a non-struct value");
+            return null;
+        }
+        const layout = self.structs.get(ov.sname.?) orelse {
+            self.unsupported(idx, "field access on an unknown struct");
+            return null;
+        };
+        var slot: ?usize = null;
+        for (layout.fields, 0..) |lf, i| {
+            if (std.mem.eql(u8, lf.name, fa.field)) slot = i;
+        }
+        const si = slot orelse {
+            self.unsupported(idx, "unknown struct field");
+            return null;
+        };
+        const fty = layout.fields[si].ty;
+        const fp = self.fieldSlotAddr(ov.ref, si);
+        return .{
+            .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(fty), fp, ""),
+            .ty = fty,
+            .payload_ty = layout.fields[si].payload,
+            .sname = layout.fields[si].sname, // struct field: cadena `p.q.x`
+        };
+    }
+
+    /// `p.x = v` — escritura de campo; el objeto comparte identidad, así que
+    /// la escritura se ve a través de todos los bindings (aliasing).
+    fn emitFieldAssign(self: *Emitter, idx: u32) ?Val {
+        const as = self.tree.node(idx).assignment;
+        const val = self.emitExpr(as.value) orelse return null;
+        const fa = self.tree.node(as.target).field_access;
+        const ov = self.emitExpr(fa.object) orelse return null;
+        if (ov.ty != .struct_ or ov.sname == null) {
+            self.unsupported(idx, "field assignment on a non-struct value");
+            return null;
+        }
+        const layout = self.structs.get(ov.sname.?) orelse {
+            self.unsupported(idx, "field assignment on an unknown struct");
+            return null;
+        };
+        var slot: ?usize = null;
+        for (layout.fields, 0..) |lf, i| {
+            if (std.mem.eql(u8, lf.name, fa.field)) slot = i;
+        }
+        const si = slot orelse {
+            self.unsupported(idx, "unknown struct field");
+            return null;
+        };
+        if (val.ty != layout.fields[si].ty) {
+            self.unsupported(idx, "struct field type mismatch");
+            return null;
+        }
+        const fp = self.fieldSlotAddr(ov.ref, si);
+        _ = c.LLVMBuildStore(self.builder, val.ref, fp);
+        return val;
+    }
+
     fn emitModuleMain(self: *Emitter, items: []const u32) void {
         const mty = c.LLVMFunctionType(self.t_void, null, 0, 0);
         const mm = c.LLVMAddFunction(self.mod, "astra_module_main", mty);
@@ -893,7 +1065,8 @@ pub const Emitter = struct {
                     self.ensureOpenBlock();
                     self.emitGlobalDecl(it);
                 },
-                .use_decl, .import_decl, .from_decl, .struct_decl, .enum_decl, .trait_decl, .impl_decl => {
+                .struct_decl => {}, // layout ya registrado en la pasada 0 (M2.b)
+                .enum_decl, .trait_decl, .impl_decl, .use_decl, .import_decl, .from_decl => {
                     self.unsupported(it, "module-level declaration");
                     return;
                 },
@@ -968,6 +1141,7 @@ pub const Emitter = struct {
             .block => _ = self.emitBlockValue(idx),
             .for_expr => self.unsupported(idx, "this expression form"),
             .match_expr => _ = self.emitMatch(idx),
+            .struct_decl => {}, // sin efecto en runtime; sólo se registran layouts de nivel superior
             else => _ = self.emitExpr(idx),
         }
     }
@@ -984,9 +1158,10 @@ pub const Emitter = struct {
         const ann = self.annotTy(vd.type_node);
         const ty = if (ann) |at| at.ty else val.ty;
         const payload = if (ann) |at| (at.payload orelse val.payload_ty) else val.payload_ty;
+        const sname = if (ann) |at| (at.sname orelse val.sname) else val.sname;
         const alloca = self.buildAlloca(self.llvmTy(ty));
         _ = c.LLVMBuildStore(self.builder, val.ref, alloca);
-        self.addLocal(vd.name, alloca, ty, payload);
+        self.addLocal(vd.name, alloca, ty, payload, sname);
     }
 
     fn emitReturn(self: *Emitter, idx: u32) void {
@@ -1087,6 +1262,8 @@ pub const Emitter = struct {
             .lambda_expr => return self.emitLambda(idx),
             .array_literal => return self.emitArrayLit(idx),
             .index_expr => return self.emitIndex(idx),
+            .struct_literal => return self.emitStructLit(idx),
+            .field_access => return self.emitFieldRead(idx),
             .identifier => |name| return self.emitIdent(idx, name),
             .binary_expr => return self.emitBinary(idx),
             .unary_expr => return self.emitUnary(idx),
@@ -1166,7 +1343,7 @@ pub const Emitter = struct {
         }
 
         c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
-        return .{ .ref = self.loadBoxPayload(v.ref, pty), .ty = pty };
+        return .{ .ref = self.loadBoxPayload(v.ref, pty), .ty = pty, .payload_ty = null, .sname = v.sname };
     }
 
     /// Llama a `astra_llvm_fail` sin condición y deja el bloque abierto tras
@@ -1295,7 +1472,7 @@ pub const Emitter = struct {
             .pattern_bind => |name| {
                 const alloca = self.buildAlloca(self.llvmTy(tv.ty));
                 _ = c.LLVMBuildStore(self.builder, tv.ref, alloca);
-                self.addLocal(name, alloca, tv.ty, tv.payload_ty);
+                self.addLocal(name, alloca, tv.ty, tv.payload_ty, tv.sname);
             },
             .pattern_wildcard => {},
             .pattern_builtin_variant => |bv| {
@@ -1313,7 +1490,7 @@ pub const Emitter = struct {
                         };
                         const alloca = self.buildAlloca(self.llvmTy(pty));
                         _ = c.LLVMBuildStore(self.builder, self.loadBoxPayload(tv.ref, pty), alloca);
-                        self.addLocal(name, alloca, pty, null);
+                        self.addLocal(name, alloca, pty, null, tv.sname);
                     },
                     else => self.unsupported(pi, "nested payload pattern"),
                 }
@@ -1404,6 +1581,14 @@ pub const Emitter = struct {
             .i64_, .bool_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
             // VM value_eq de arrays: identidad de puntero (mismo handle).
             .arr_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
+            // VM value_eq de structs: estructural por def + campos (dos
+            // objetos distintos con campos iguales son ==) — en runtime,
+            // porque recorre los slots por ptype.
+            .struct_ => blk: {
+                var sargs = [_]c.LLVMValueRef{ a.ref, b.ref };
+                const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_struct_eq), self.r_struct_eq, &sargs, 2, "");
+                break :blk c.LLVMBuildTrunc(self.builder, r, self.t_i1, "");
+            },
             .fn_ => {
                 self.unsupported(idx, "cannot compare function values");
                 return null;
@@ -1412,23 +1597,23 @@ pub const Emitter = struct {
     }
     fn emitIdent(self: *Emitter, idx: u32, name: []const u8) ?Val {
         if (self.lookupLocal(name)) |l| {
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty, .sname = l.sname };
         }
         // Captura de closure: los parámetros siempre sombrean (el scope de
         // locales se busca primero), luego la pila de envs de las lambdas.
         if (self.lookupCapture(name)) |cp| {
             const env = c.LLVMGetParam(self.cur_fn, 0);
             const bits = self.loadEnvSlot(env, cp.index);
-            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty };
+            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty, .sname = cp.sname };
         }
         if (self.globals.get(name)) |g| {
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, ""), .ty = g.ty, .payload_ty = g.payload_ty };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, ""), .ty = g.ty, .payload_ty = g.payload_ty, .sname = g.sname };
         }
         // Función nombrada usada como valor (argumento, asignación…): se
         // empaqueta en el mismo objeto { code, env = NULL } que una lambda.
         if (self.fns.get(name)) |fi| {
             const obj = self.buildFnObject(fi.val, c.LLVMConstPointerNull(self.t_ptr));
-            return .{ .ref = obj, .ty = .fn_, .payload_ty = fi.ret_ty };
+            return .{ .ref = obj, .ty = .fn_, .payload_ty = fi.ret_ty, .sname = fi.ret_sname };
         }
         self.unsupported(idx, "unknown identifier");
         return null;
@@ -1459,13 +1644,14 @@ pub const Emitter = struct {
                     self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot compare string and string");
                     return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ }; // inalcanzable: fail es noreturn
                 }
-                if (lhs.ty == .arr_ or lhs.ty == .fn_) {
+                if (lhs.ty == .arr_ or lhs.ty == .fn_ or lhs.ty == .struct_) {
                     // VM value_lt: aggregates no se ordenan, message con el
                     // nombre del tipo vía type_name (vm.c:933).
-                    const msg: [*:0]const u8 = if (lhs.ty == .arr_)
-                        "cannot compare array and array"
-                    else
-                        "cannot compare function and function";
+                    const msg: [*:0]const u8 = switch (lhs.ty) {
+                        .arr_ => "cannot compare array and array",
+                        .struct_ => "cannot compare struct and struct",
+                        else => "cannot compare function and function",
+                    };
                     self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, msg);
                     return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ };
                 }
@@ -1642,10 +1828,11 @@ pub const Emitter = struct {
 
     fn emitAssign(self: *Emitter, idx: u32) ?Val {
         const as = self.tree.node(idx).assignment;
-        // Escritura en elemento de array: `xs[i] = v` (LValue más allá de los
-        // identificadores, Hallazgo B).
+        // Escritura en LValue más allá de los identificadores: elementos de
+        // array (Hallazgo B) y campos de struct.
         switch (self.tree.node(as.target)) {
             .index_expr => return self.emitElemAssign(idx),
+            .field_access => return self.emitFieldAssign(idx),
             else => {},
         }
         const val = self.emitExpr(as.value) orelse return null;
@@ -1698,7 +1885,7 @@ pub const Emitter = struct {
                     abuf[i + 1] = av.ref;
                 }
                 const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, &abuf, @intCast(args.len + 1), "");
-                if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload };
+                if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
                 return null;
             },
             else => return self.emitDynamicCall(idx, call.callee),
@@ -1741,7 +1928,7 @@ pub const Emitter = struct {
         const ret_lty = if (fv.payload_ty) |rt| self.llvmTy(rt) else self.t_void;
         const fty = c.LLVMFunctionType(ret_lty, &fbuf, @intCast(args.len + 1), 0);
         const rv = c.LLVMBuildCall2(self.builder, fty, code, &abuf, @intCast(args.len + 1), "");
-        if (fv.payload_ty) |rt| return .{ .ref = rv, .ty = rt };
+        if (fv.payload_ty) |rt| return .{ .ref = rv, .ty = rt, .sname = fv.sname };
         return null;
     }
 
@@ -1783,6 +1970,10 @@ pub const Emitter = struct {
                 .arr_ => {
                     var xargs = [_]c.LLVMValueRef{av.ref};
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_array), self.r_print_array, &xargs, 1, "");
+                },
+                .struct_ => {
+                    var xargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_struct), self.r_print_struct, &xargs, 1, "");
                 },
             }
         }
@@ -1887,6 +2078,9 @@ pub const Emitter = struct {
                 const len = c.LLVMBuildLoad2(self.builder, self.t_i64, pp, "");
                 return c.LLVMBuildICmp(self.builder, c.LLVMIntSGT, len, c.LLVMConstInt(self.t_i64, 0, 0), "");
             },
+            // VAL_STRUCT es truthy iff el objeto existe — y todo objeto que
+            // el emisor construye existe (vm.c value_truthy: struct_val != NULL).
+            .struct_ => return c.LLVMConstInt(self.t_i1, 1, 0),
             .f64_, .str_, .boxed_, .fn_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
@@ -1925,8 +2119,8 @@ pub const Emitter = struct {
         return null;
     }
 
-    fn addLocal(self: *Emitter, name: []const u8, alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty) void {
-        self.scopes.items[self.scopes.items.len - 1].put(name, .{ .alloca = alloca, .ty = ty, .payload_ty = payload_ty }) catch @panic("OOM");
+    fn addLocal(self: *Emitter, name: []const u8, alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty, sname: ?[]const u8) void {
+        self.scopes.items[self.scopes.items.len - 1].put(name, .{ .alloca = alloca, .ty = ty, .payload_ty = payload_ty, .sname = sname }) catch @panic("OOM");
     }
 
     fn varDeclOf(self: *Emitter, idx: u32) ast.VarDecl {
@@ -1942,7 +2136,7 @@ pub const Emitter = struct {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
             .f64_ => self.t_f64,
-            .str_, .boxed_, .fn_, .arr_ => self.t_ptr,
+            .str_, .boxed_, .fn_, .arr_, .struct_ => self.t_ptr,
         };
     }
 
@@ -1954,7 +2148,7 @@ pub const Emitter = struct {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
             .f64_ => c.LLVMConstReal(self.t_f64, 0.0),
-            .str_, .boxed_, .fn_, .arr_ => c.LLVMConstPointerNull(self.t_ptr),
+            .str_, .boxed_, .fn_, .arr_, .struct_ => c.LLVMConstPointerNull(self.t_ptr),
         };
     }
 
@@ -1969,6 +2163,7 @@ pub const Emitter = struct {
             .str_ => PTY_STR,
             .boxed_ => PTY_BOXED,
             .arr_ => PTY_ARRAY,
+            .struct_ => PTY_STRUCT,
             .fn_ => null,
         };
     }
@@ -1979,7 +2174,7 @@ pub const Emitter = struct {
             .i64_ => ref,
             .bool_ => c.LLVMBuildZExt(self.builder, ref, self.t_i64, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, ref, self.t_i64, ""),
-            .str_, .boxed_, .fn_, .arr_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
+            .str_, .boxed_, .fn_, .arr_, .struct_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
         };
     }
 
@@ -1989,7 +2184,7 @@ pub const Emitter = struct {
             .i64_ => bits,
             .bool_ => c.LLVMBuildTrunc(self.builder, bits, self.t_i8, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, bits, self.t_f64, ""),
-            .str_, .boxed_, .fn_, .arr_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
+            .str_, .boxed_, .fn_, .arr_, .struct_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
         };
     }
 
@@ -2028,7 +2223,7 @@ pub const Emitter = struct {
             bits,
         };
         const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_wrap), self.r_wrap, &args, 4, "");
-        return .{ .ref = r, .ty = .boxed_, .payload_ty = inner.ty };
+        return .{ .ref = r, .ty = .boxed_, .payload_ty = inner.ty, .sname = inner.sname };
     }
 
     fn unsupportedBox(self: *Emitter, idx: u32) ?Val {
@@ -2051,26 +2246,41 @@ pub const Emitter = struct {
         }
     }
 
-    const Annot = struct { ty: Ty, payload: ?Ty };
+    const Annot = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
 
     /// Anotación de un opcional `T?` → (`boxed_`, payload T). Es la única forma
     /// de anotar Option/Result: `fn increment(x: i32?) -> i32?` (try_operator).
+    /// El `T` se resuelve completo (scalars, structs, arrays…) para conservar
+    /// el `sname` cuando el payload es un struct.
     fn boxedM0Ty(self: *Emitter, node: ?u32) ?Annot {
         const ni = node orelse return null;
         switch (self.tree.node(ni)) {
-            .type_optional => |inner| return .{ .ty = .boxed_, .payload = self.scalarM0Ty(inner) },
+            .type_optional => |inner| {
+                if (self.scalarM0Ty(inner)) |t| return .{ .ty = .boxed_, .payload = t };
+                const ia = self.annotTy(inner) orelse return null;
+                return .{ .ty = .boxed_, .payload = ia.ty, .sname = ia.sname };
+            },
             else => return null,
         }
     }
 
-    /// Anotación de parámetro/retorno/let: escalar, `T?` o `fn(T, ...) -> T`.
-    /// En un `fn(...)` el payload es el tipo de retorno (lo que la llamada
-    /// dinámica necesita); los parámetros del tipo sólo validan la forma y
-    /// los reales salen del sitio de llamada.
+    /// Anotación de parámetro/retorno/let: escalar, `T?`, `fn(T, ...) -> T`,
+    /// `[T]` o el nombre de un struct declarado. En un `fn(...)` el payload es
+    /// el tipo de retorno (lo que la llamada dinámica necesita); los
+    /// parámetros del tipo sólo validan la forma y los reales salen del sitio
+    /// de llamada.
     fn annotTy(self: *Emitter, node: ?u32) ?Annot {
         if (self.scalarM0Ty(node)) |t| return .{ .ty = t, .payload = null };
         const ni = node orelse return null;
         switch (self.tree.node(ni)) {
+            .type_ident => |t| {
+                // Nombre de un struct declarado → su layout (M2.b). Nombres
+                // desconocidos caen a boxedM0Ty → null → unsupported honesto
+                // (enums/traits/struct sin declarar ya rechazó el checker).
+                if (self.structs.contains(t.name))
+                    return .{ .ty = .struct_, .sname = t.name };
+                return null;
+            },
             .type_fn => |tf| return .{
                 .ty = .fn_,
                 .payload = if (tf.ret) |r| (self.annotTy(r) orelse return null).ty else null,
@@ -2126,6 +2336,7 @@ pub const Emitter = struct {
             .none_expr, .nil_literal, .some_expr, .ok_expr, .err_expr => return .boxed_,
             .lambda_expr => return .fn_,
             .array_literal => return .arr_,
+            .struct_literal => return .struct_,
             .try_expr => |inner| return self.inferBoxPayload(inner),
             .match_expr => |mm| {
                 // El valor del match: el tail del último brazo (el typechecker
@@ -2183,6 +2394,130 @@ pub const Emitter = struct {
             },
             else => return null,
         }
+    }
+
+    /// Nombre del struct que transporta un valor, cuando se conoce en tiempo
+    /// de compilación: los literales (`P { … }`) y los identificadores (una
+    /// local/global/parámetro ya tipada) lo llevan. Las cajas y los `?`
+    /// conservan el del payload vía emitWrap/emitTry/bindArmBinding.
+    fn inferStaticSName(self: *Emitter, idx: u32) ?[]const u8 {
+        switch (self.tree.node(idx)) {
+            .struct_literal => |sl| return sl.name,
+            .identifier => |nm| {
+                if (self.lookupLocal(nm)) |l| return l.sname;
+                if (self.globals.get(nm)) |g| return g.sname;
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    /// Registra los layouts de los structs de nivel superior (M2.b), en dos
+    /// subpasadas: primero todos los NOMBRES (un campo puede referenciar a un
+    /// struct declarado más abajo), luego los offsets de cada campo y el
+    /// descriptor `AstraLLVMStructDef` del runtime — global constante, así
+    /// que print/eq leen el def del propio objeto igual que en el VM
+    /// (s->def) y el igualar structs no necesita estado compilado.
+    fn registerStructs(self: *Emitter, items: []const u32) void {
+        // 0a: nombres — placeholder para que annotTy resuelva referencias
+        // cruzadas entre structs (P { q: Q } con Q declarada después).
+        for (items) |it| {
+            const sd = switch (self.tree.node(it)) {
+                .struct_decl => |sd| sd,
+                else => continue,
+            };
+            if (sd.generics.len > 0) {
+                self.unsupported(it, "generic struct");
+                return;
+            }
+            self.structs.put(sd.name, .{ .fields = &.{}, .def = null, .size = 8 }) catch @panic("OOM");
+        }
+        // 0b: campos + descriptor por cada layout.
+        var it = self.structs.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            // Recupera el decl correspondiente por nombre (mismo nombre de
+            // campo `name` en StructDecl). Re-ejecutar la scan es barato.
+            var decl_idx: ?u32 = null;
+            for (items) |sit| {
+                const n = self.tree.node(sit);
+                if (std.meta.activeTag(n) != .struct_decl) continue;
+                if (std.mem.eql(u8, n.struct_decl.name, name)) decl_idx = sit;
+            }
+            const sd = self.tree.node(decl_idx.?).struct_decl;
+            const field_items = self.tree.extraSlice(sd.fields);
+            if (field_items.len > 64) { // el buffer de ptypes/nombres del descriptor
+                self.unsupported(decl_idx.?, "too many struct fields");
+                return;
+            }
+            var fields = self.a.alloc(StructField, field_items.len) catch @panic("OOM");
+            var ptypes = self.a.alloc(u32, field_items.len) catch @panic("OOM");
+            var off: i64 = 8; // offset 0 = puntero al descriptor
+            for (field_items, 0..) |fi, i| {
+                const f = self.tree.node(fi).field_decl;
+                const at = self.annotTy(f.type_node) orelse {
+                    self.unsupported(fi, "struct field without a supported type");
+                    return;
+                };
+                fields[i] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .sname = at.sname };
+                ptypes[i] = boxPTy(at.ty) orelse PTY_BOOL; // inalcanzable: fn ya rechazó el checker
+                off += 8; // slots de 8 bytes: el bool vive como i8 en el inicio del slot
+            }
+            entry.value_ptr.* = .{
+                .fields = fields,
+                .def = self.emitStructDefGlobal(name, field_items.len, fields, ptypes),
+                .size = off,
+            };
+        }
+    }
+
+    /// Global constante `AstraLLVMStructDef { name, nfields, ptypes, fields }`
+    /// que el runtime lee para print/eq estructural. Los arrays de ptypes y
+    /// de nombres son globales privados; los nombres de campo son strings
+    /// con terminador (opaque pointers: el global ES su propio puntero).
+    fn emitStructDefGlobal(
+        self: *Emitter,
+        name: []const u8,
+        nfields: usize,
+        fields: []const StructField,
+        ptypes: []const u32,
+    ) c.LLVMValueRef {
+        // Array de ptypes [N x i32].
+        const pty_ty = c.LLVMArrayType(self.t_i32, @intCast(nfields));
+        const pty_arr = c.LLVMAddGlobal(self.mod, pty_ty, "");
+        var pty_vals: [64]c.LLVMValueRef = undefined;
+        for (ptypes, 0..) |p, i| pty_vals[i] = c.LLVMConstInt(self.t_i32, p, 0);
+        c.LLVMSetInitializer(pty_arr, c.LLVMConstArray(self.t_i32, &pty_vals, @intCast(nfields)));
+        c.LLVMSetLinkage(pty_arr, c.LLVMPrivateLinkage);
+        // Array de punteros a nombres de campo [N x ptr].
+        const fnm_ty = c.LLVMArrayType(self.t_ptr, @intCast(nfields));
+        const fnm_arr = c.LLVMAddGlobal(self.mod, fnm_ty, "");
+        var fnm_vals: [64]c.LLVMValueRef = undefined;
+        for (fields, 0..) |f, i| {
+            const sv = c.LLVMAddGlobal(self.mod, c.LLVMArrayType(self.t_i8, @intCast(f.name.len + 1)), "");
+            c.LLVMSetInitializer(sv, c.LLVMConstStringInContext2(self.ctx, f.name.ptr, f.name.len, 0));
+            c.LLVMSetLinkage(sv, c.LLVMPrivateLinkage);
+            c.LLVMSetUnnamedAddress(sv, c.LLVMGlobalUnnamedAddr);
+            fnm_vals[i] = sv;
+        }
+        c.LLVMSetInitializer(fnm_arr, c.LLVMConstArray(self.t_ptr, &fnm_vals, @intCast(nfields)));
+        c.LLVMSetLinkage(fnm_arr, c.LLVMPrivateLinkage);
+        // El nombre del struct.
+        const nm = c.LLVMAddGlobal(self.mod, c.LLVMArrayType(self.t_i8, @intCast(name.len + 1)), "");
+        c.LLVMSetInitializer(nm, c.LLVMConstStringInContext2(self.ctx, name.ptr, name.len, 0));
+        c.LLVMSetLinkage(nm, c.LLVMPrivateLinkage);
+        c.LLVMSetUnnamedAddress(nm, c.LLVMGlobalUnnamedAddr);
+        // El descriptor: { ptr, i32, ptr, ptr } (el i32 nfields sigue con pad
+        // hasta el ptr siguiente, igual que el layout del C del runtime).
+        const def_ty = blk: {
+            var def_fields = [_]c.LLVMTypeRef{ self.t_ptr, self.t_i32, self.t_ptr, self.t_ptr };
+            break :blk c.LLVMStructTypeInContext(self.ctx, &def_fields, 4, 0);
+        };
+        const def = c.LLVMAddGlobal(self.mod, def_ty, "");
+        var fvals = [_]c.LLVMValueRef{ nm, c.LLVMConstInt(self.t_i32, @intCast(nfields), 0), pty_arr, fnm_arr };
+        c.LLVMSetInitializer(def, c.LLVMConstNamedStruct(def_ty, &fvals, 4));
+        c.LLVMSetLinkage(def, c.LLVMPrivateLinkage);
+        return def;
     }
 
     fn setTarget(self: *Emitter) void {
@@ -2451,4 +2786,52 @@ test "emite arrays: objeto {len, elem_pty, elems} con bounds check y print" {
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "idx_fail") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_index_fail") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_print_array") != null);
+}
+
+test "emite structs: descriptor global, lectura/escritura de campo y print/eq en runtime" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\struct Punto {
+        \\    x: i32
+        \\    y: i32
+        \\}
+        \\fn main() {
+        \\    let p = Punto { x: 3, y: 4 }
+        \\    let mut q = p
+        \\    q.y = 9
+        \\    print(p)
+        \\    print(p == q)
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "struct.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "struct.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "struct.astra");
+    defer em.deinit();
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+    // El descriptor constante con el nombre del struct (print/eq estructural
+    // leen el def del propio objeto), el dispatch de print y la igualdad
+    // estructural pasada por el truncado a i1.
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "\"Punto") != null); // c"Punto\00"
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_print_struct") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_struct_eq") != null);
 }
