@@ -159,6 +159,17 @@ static void astra_llvm_array_body(const void *p);
 /* Defined with the structs (M2.b): `some(P { … })` prints/compares through them. */
 static void astra_llvm_struct_body(const void *p);
 int32_t astra_llvm_struct_eq(const void *pa, const void *pb);
+/* Defined with the enums (M2.c): `some(Color.Rojo)` prints/compares through it. */
+static void astra_llvm_enum_body(const void *p);
+int32_t astra_llvm_enum_eq(const void *pa, const void *pb);
+/* VM value_eq: arrays compare ELEMENT-WISE and recurse (vm.c value_eq's
+ * early array case; the identity arm in the switch is dead for two arrays) —
+ * so `some([1, 2]) == some([1, 2])` and struct fields with arrays are
+ * structural too. */
+int32_t astra_llvm_array_eq(const void *pa, const void *pb);
+/* Payload recursion shared by structs/enums/arrays (defined below, with the
+ * struct eq — array_eq calls it for elements, so it needs the decl here). */
+static int32_t astra_llvm_value_eq_pty(int32_t pty, const char *a, const char *b);
 
 static void astra_llvm_boxed_body(const void *p) {
     if (!p) { fputs("nil", stdout); return; }
@@ -173,6 +184,7 @@ static void astra_llvm_boxed_body(const void *p) {
         case 5: astra_llvm_boxed_body((const void *)b->payload); break;
         case 6: astra_llvm_array_body((const void *)b->payload); break;
         case 7: astra_llvm_struct_body((const void *)b->payload); break;
+        case 8: astra_llvm_enum_body((const void *)b->payload); break;
         default: fputc('?', stdout); break;
     }
     fputc(')', stdout);
@@ -199,8 +211,9 @@ int32_t astra_llvm_boxed_eq(const void *pa, const void *pb) {
                   return x == y; }
         case 4: return astra_llvm_str_eq((const void *)a->payload, (const void *)b->payload) ? 1 : 0;
         case 5: return astra_llvm_boxed_eq((const void *)a->payload, (const void *)b->payload);
-        case 6: return (a->payload == b->payload) ? 1 : 0; /* array = identity */
+        case 6: return astra_llvm_array_eq((const void *)a->payload, (const void *)b->payload);
         case 7: return astra_llvm_struct_eq((const void *)a->payload, (const void *)b->payload);
+        case 8: return astra_llvm_enum_eq((const void *)a->payload, (const void *)b->payload);
         default: return a->payload == b->payload;
     }
 }
@@ -267,6 +280,7 @@ static void astra_llvm_elem_print(int32_t pty, const char *slot) {
         case 5: { const void *b; memcpy(&b, slot, sizeof b); astra_llvm_boxed_body(b); break; }
         case 6: { const void *a; memcpy(&a, slot, sizeof a); astra_llvm_array_body(a); break; }
         case 7: { const void *s; memcpy(&s, slot, sizeof s); astra_llvm_struct_body(s); break; }
+        case 8: { const void *e; memcpy(&e, slot, sizeof e); astra_llvm_enum_body(e); break; }
         default: fputc('?', stdout); break;
     }
 }
@@ -274,6 +288,28 @@ static void astra_llvm_elem_print(int32_t pty, const char *slot) {
 void astra_llvm_print_array(const void *p) {
     if (astra_llvm_printed_any++) putchar(' ');
     astra_llvm_array_body(p);
+}
+
+/* VM value_eq structural de arrays: identidad como atajo, luego longitud,
+ * luego elemento a elemento con el ptype del propio objeto — recursivo a
+ * través de arrays anidados, structs y enums (igual que value_eq del VM). */
+int32_t astra_llvm_array_eq(const void *pa, const void *pb) {
+    if (pa == pb) return 1;
+    if (!pa || !pb) return 0;
+    int64_t la, lb;
+    int32_t ea, eb;
+    memcpy(&la, pa, sizeof la);
+    memcpy(&lb, pb, sizeof lb);
+    memcpy(&ea, (const char *)pa + 8, sizeof ea);
+    memcpy(&eb, (const char *)pb + 8, sizeof eb);
+    if (la != lb || ea != eb) return 0;
+    for (int64_t i = 0; i < la; i++) {
+        if (!astra_llvm_value_eq_pty(ea,
+                (const char *)pa + 16 + 8 * (size_t)i,
+                (const char *)pb + 16 + 8 * (size_t)i))
+            return 0;
+    }
+    return 1;
 }
 
 /* Bounds check (VM OPCODE_INDEX & OPCODE_INDEX_SET): fatal
@@ -343,10 +379,13 @@ static int32_t astra_llvm_value_eq_pty(int32_t pty, const char *a, const char *b
                   return astra_llvm_boxed_eq(x, y); }
         case 6: { const void *x, *y;
                   memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
-                  return x == y ? 1 : 0; }
+                  return astra_llvm_array_eq(x, y); }
         case 7: { const void *x, *y;
                   memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
                   return astra_llvm_struct_eq(x, y); }
+        case 8: { const void *x, *y;
+                  memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                  return astra_llvm_enum_eq(x, y); }
         default: { int64_t x, y;
                    memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
                    return x == y; }
@@ -368,6 +407,84 @@ int32_t astra_llvm_struct_eq(const void *pa, const void *pb) {
         if (!astra_llvm_value_eq_pty(da->ptypes[i],
                 (const char *)pa + 8 + 8 * (size_t)i,
                 (const char *)pb + 8 + 8 * (size_t)i))
+            return 0;
+    }
+    return 1;
+}
+
+/* ---- enums (M2.c) ------------------------------------------------------- */
+
+/* Like structs, enum values are heap handles with a static descriptor the
+ * emitter emits per declaration — but with a `kind` that mirrors the VM's
+ * two kinds (vm.c value_eq): the emitter's `Enum.Variant` value access and
+ * match patterns are VAL_ENUM (names only, no payload), while `Variant(x)`
+ * builds VAL_ENUM_DATA (structural, payloads compared). The object is
+ *   { const AstraLLVMEnumDef *def; int32 variant; int32 kind; <payload@16> }
+ * kind 0 = payload-less name object (eq by names), kind 1 = data object (eq
+ * by names + payload slots by ptype). Payload slots are 8 bytes, from 16. */
+typedef struct {
+    const char *name;
+    int32_t npayload;
+    const int32_t *ptypes; /* [npayload]; read only when npayload > 0 */
+} AstraLLVMVariantDef;
+
+typedef struct {
+    const char *name;
+    int32_t nvariants;
+    const AstraLLVMVariantDef *variants;
+} AstraLLVMEnumDef;
+
+/* VM value_print: VAL_ENUM → `Enum.Variant`; VAL_ENUM_DATA → the same plus
+ * `(p)` / `(p1, p2)` when the variant carries payload. */
+static void astra_llvm_enum_body(const void *p) {
+    if (!p) { fputs("?", stdout); return; }
+    const AstraLLVMEnumDef *def;
+    int32_t vi, kind;
+    memcpy(&def, p, sizeof def);
+    memcpy(&vi, (const char *)p + 8, sizeof vi);
+    memcpy(&kind, (const char *)p + 12, sizeof kind);
+    if (!def || vi < 0 || vi >= def->nvariants) { fputs("?", stdout); return; }
+    printf("%s.%s", def->name, def->variants[vi].name);
+    const int32_t np = def->variants[vi].npayload;
+    if (kind == 1 && np > 0) {
+        const char *base = (const char *)p;
+        fputc('(', stdout);
+        for (int32_t i = 0; i < np; i++) {
+            if (i > 0) fputs(", ", stdout);
+            astra_llvm_elem_print(def->variants[vi].ptypes[i], base + 16 + 8 * (size_t)i);
+        }
+        fputc(')', stdout);
+    }
+}
+
+void astra_llvm_print_enum(const void *p) {
+    if (astra_llvm_printed_any++) putchar(' ');
+    astra_llvm_enum_body(p);
+}
+
+/* VM value_eq across the two kinds: same enum name + same variant name;
+ * payload comparison only when BOTH sides are data (kind 1). A kind-0 side
+ * has no payload to compare — this is what makes a pattern constant match
+ * any data value of its variant and `Shape.Circle == Circle(2.5)` true. */
+int32_t astra_llvm_enum_eq(const void *pa, const void *pb) {
+    if (pa == pb) return 1;
+    if (!pa || !pb) return 0;
+    const AstraLLVMEnumDef *da, *db;
+    int32_t va, vb, ka, kb;
+    memcpy(&da, pa, sizeof da);
+    memcpy(&db, pb, sizeof db);
+    memcpy(&va, (const char *)pa + 8, sizeof va);
+    memcpy(&vb, (const char *)pb + 8, sizeof vb);
+    memcpy(&ka, (const char *)pa + 12, sizeof ka);
+    memcpy(&kb, (const char *)pb + 12, sizeof kb);
+    if (!da || !db || va != vb) return 0;
+    if (strcmp(da->name, db->name) != 0) return 0;
+    if (ka == 0 || kb == 0) return 1; /* cross-kind: names only */
+    const AstraLLVMVariantDef *v = &da->variants[va];
+    for (int32_t i = 0; i < v->npayload; i++) {
+        if (!astra_llvm_value_eq_pty(v->ptypes[i],
+                (const char *)pa + 16 + 8 * (size_t)i,
+                (const char *)pb + 16 + 8 * (size_t)i))
             return 0;
     }
     return 1;

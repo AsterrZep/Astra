@@ -44,8 +44,11 @@ const c = @import("c_api.zig").c;
 /// orden, M1.d) como puntero al objeto `{ ptr code; ptr env }`, `arr_`
 /// (M2.a) como puntero al objeto `{ i64 len; i32 elem_pty; i32 pad; <elems> }`
 /// — identidad compartida, igual que el handle del VM — y `struct_` (M2.b)
-/// como puntero al objeto `{ ptr def; <campos en slots de 8 bytes> }`.
-const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_, arr_, struct_ };
+/// como puntero al objeto `{ ptr def; <campos en slots de 8 bytes> }` y
+/// `enum_` (M2.c) como puntero al objeto
+/// `{ ptr def; i32 variant; i32 kind; <payload@16> }` (kind 0 = nombre sin
+/// payload / patrón, kind 1 = data construido — los dos kinds del VM).
+const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_, arr_, struct_, enum_ };
 
 /// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
@@ -96,6 +99,20 @@ const StructField = struct { name: []const u8, ty: Ty, payload: ?Ty = null, snam
 /// print/eq leen del propio objeto (como s->def en el VM). `def` es el
 /// global LLVM del descriptor, emitido al registrar el layout.
 const StructLayout = struct { fields: []StructField, def: c.LLVMValueRef, size: i64 };
+
+/// Una variante de enum: nombre, sus slots de payload (tipos de la
+/// anotación de la declaración) y la constante kind-0 de
+/// `Enum.Variant` (objeto estático `{ def, idx, kind=0 }` — el VAL_ENUM del
+/// VM para accesos unit y patrones de match).
+const EnumVariantLayout = struct { name: []const u8, fields: []StructField, unit_const: c.LLVMValueRef };
+
+/// Layout de un enum (M2.c): descriptor `AstraLLVMEnumDef` + variantes.
+const EnumLayout = struct { name: []const u8, variants: []EnumVariantLayout, def: c.LLVMValueRef };
+
+/// Dónde vive un nombre de variante (para el constructor pelón `Circle(x)`:
+/// el seed busca en TODOS los enums y devuelve el primero — emitter.c
+/// find_enum_by_variant —, así que guardamos sólo la primera aparición).
+const VariantRef = struct { enum_name: []const u8, index: usize };
 
 /// Análisis de variables libres para closures (réplica de collect_free_vars
 /// del seed, emitter.c §347): recorre un cuerpo de lambda y recolecta los
@@ -289,6 +306,9 @@ const PTY_BOXED: u32 = 5;
 /// 7=struct).
 const PTY_ARRAY: u32 = 6;
 const PTY_STRUCT: u32 = 7;
+/// Valor de enum (payload dentro de cajas, slots de payload y elementos de
+/// array) — contrato con el runtime (M2.c).
+const PTY_ENUM: u32 = 8;
 
 /// Offset de los elementos inline en un objeto array (`{ i64 len; i32
 /// elem_pty; i32 pad; <elems> }`, M2.a).
@@ -347,12 +367,19 @@ pub const Emitter = struct {
     r_index_fail: c.LLVMValueRef,
     r_print_struct: c.LLVMValueRef,
     r_struct_eq: c.LLVMValueRef,
+    r_print_enum: c.LLVMValueRef,
+    r_enum_eq: c.LLVMValueRef,
+    r_array_eq: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
     /// Layouts de structs registrados (nivel superior; pasada previa al
     /// emit). Las anotaciones y los accesos a campo se resuelven aquí.
     structs: std.StringHashMap(StructLayout),
+    /// Layouts de enums de usuario (M2.c): variantes, payloads y descriptores.
+    enums: std.StringHashMap(EnumLayout),
+    /// Nombre de variante → enum + índice (constructores pelones `Circle(x)`).
+    variant_map: std.StringHashMap(VariantRef),
     scopes: std.ArrayListUnmanaged(std.StringHashMap(Local)) = .empty,
     /// Pila de scopes de capturas: una entrada por lambda en cuyo cuerpo se
     /// esté compilando. Los nombres de un cuerpo se resuelven primero como
@@ -400,6 +427,8 @@ pub const Emitter = struct {
             .fns = std.StringHashMap(FnInfo).init(a),
             .globals = std.StringHashMap(GlobalInfo).init(a),
             .structs = std.StringHashMap(StructLayout).init(a),
+            .enums = std.StringHashMap(EnumLayout).init(a),
+            .variant_map = std.StringHashMap(VariantRef).init(a),
             .r_set_file = undefined,
             .r_init = undefined,
             .r_cleanup = undefined,
@@ -421,6 +450,9 @@ pub const Emitter = struct {
             .r_index_fail = undefined,
             .r_print_struct = undefined,
             .r_struct_eq = undefined,
+            .r_print_enum = undefined,
+            .r_enum_eq = undefined,
+            .r_array_eq = undefined,
         };
         self.declareRuntime();
         return self;
@@ -461,6 +493,9 @@ pub const Emitter = struct {
         self.r_index_fail = self.declVoid("astra_llvm_index_fail", &.{ self.t_i32, self.t_i64, self.t_i64 });
         self.r_print_struct = self.declVoid("astra_llvm_print_struct", &.{self.t_ptr});
         self.r_struct_eq = self.declRet(self.t_i32, "astra_llvm_struct_eq", &.{ self.t_ptr, self.t_ptr });
+        self.r_print_enum = self.declVoid("astra_llvm_print_enum", &.{self.t_ptr});
+        self.r_enum_eq = self.declRet(self.t_i32, "astra_llvm_enum_eq", &.{ self.t_ptr, self.t_ptr });
+        self.r_array_eq = self.declRet(self.t_i32, "astra_llvm_array_eq", &.{ self.t_ptr, self.t_ptr });
     }
 
     fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
@@ -478,10 +513,11 @@ pub const Emitter = struct {
 
     pub fn emit(self: *Emitter, root: u32) void {
         const items = self.tree.extraSlice(self.tree.node(root).source_file);
-        // 0: registra los layouts de structs (los annotations y accesos a
-        // campo se resuelven contra este mapa, y los descriptores del runtime
-        // se emiten aquí como constantes).
-        self.registerStructs(items);
+        // 0: registra los layouts de structs y enums (los annotations, los
+        // accesos a campo y los constructores de variantes se resuelven
+        // contra estos mapas, y los descriptores del runtime se emiten aquí
+        // como constantes).
+        self.registerDecls(items);
         if (self.error_count > 0) return;
         // 1: declara todas las funciones (recursión y mutua recursión).
         for (items) |it| {
@@ -979,16 +1015,47 @@ pub const Emitter = struct {
         return .{ .ref = obj, .ty = .struct_, .sname = sl.name };
     }
 
-    /// Dirección del slot de un campo: `obj + 8 + 8 * índice`.
-    fn fieldSlotAddr(self: *Emitter, obj: c.LLVMValueRef, fi: usize) c.LLVMValueRef {
-        var idxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8 + 8 * fi, 0)};
+    /// Dirección de un slot a byte offset fijo (campos de struct: `obj + 8 +
+    /// 8 * i`; payload de enum: `obj + 16 + 8 * i`).
+    fn fieldSlotAddr(self: *Emitter, obj: c.LLVMValueRef, byte_off: usize) c.LLVMValueRef {
+        var idxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, byte_off, 0)};
         return c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &idxs, 1, "");
+    }
+
+    /// `Enum.Variant` → (enum, índice de variante) si el objeto es un
+    /// identificador que nombra un enum declarado.
+    fn resolveVariantPath(self: *Emitter, path: u32) ?VariantRef {
+        const fa = self.tree.node(path).field_access;
+        switch (self.tree.node(fa.object)) {
+            .identifier => |enm| {
+                const el = self.enums.get(enm) orelse return null;
+                for (el.variants, 0..) |v, i| {
+                    if (std.mem.eql(u8, v.name, fa.field)) return .{ .enum_name = enm, .index = i };
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    /// El valor `Enum.Variant` (constante kind-0) — el VAL_ENUM del VM.
+    fn variantConstVal(self: *Emitter, path: u32) ?Val {
+        const vr = self.resolveVariantPath(path) orelse {
+            self.unsupported(path, "pattern must be a literal, `_` or Enum.Variant");
+            return null;
+        };
+        const el = self.enums.get(vr.enum_name).?;
+        return .{ .ref = el.variants[vr.index].unit_const, .ty = .enum_ };
     }
 
     /// `p.x` — lectura de campo contra el layout del struct (cadena anidada
     /// `p.n.x` funciona: el objeto del campo es otro struct handle).
     fn emitFieldRead(self: *Emitter, idx: u32) ?Val {
         const fa = self.tree.node(idx).field_access;
+        // `Enum.Variant` como valor → constante kind-0 (el VAL_ENUM del VM:
+        // nombres sin payload, sirve tanto para accesos unit como para el
+        // acceso pelón de una variante con payload).
+        if (self.resolveVariantPath(idx)) |_| return self.variantConstVal(idx);
         const ov = self.emitExpr(fa.object) orelse return null;
         if (ov.ty != .struct_ or ov.sname == null) {
             self.unsupported(idx, "field access on a non-struct value");
@@ -1007,7 +1074,7 @@ pub const Emitter = struct {
             return null;
         };
         const fty = layout.fields[si].ty;
-        const fp = self.fieldSlotAddr(ov.ref, si);
+        const fp = self.fieldSlotAddr(ov.ref, 8 + 8 * si);
         return .{
             .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(fty), fp, ""),
             .ty = fty,
@@ -1043,9 +1110,44 @@ pub const Emitter = struct {
             self.unsupported(idx, "struct field type mismatch");
             return null;
         }
-        const fp = self.fieldSlotAddr(ov.ref, si);
+        const fp = self.fieldSlotAddr(ov.ref, 8 + 8 * si);
         _ = c.LLVMBuildStore(self.builder, val.ref, fp);
         return val;
+    }
+
+    /// `Circle(2.5)` — construcción de variante con payload (constructor
+    /// pelón, como el seed): objeto data (kind 1)
+    /// `{ def; variant; kind=1; <payload@16> }`. Una variante sin payload
+    /// construida con `()` devuelve la constante kind-0 (el VM sólo tiene
+    /// VAL_ENUM para las unitarias).
+    fn emitEnumConstruct(self: *Emitter, idx: u32, vr: VariantRef) ?Val {
+        const el = self.enums.get(vr.enum_name) orelse return null; // registro falló
+        const vl = el.variants[vr.index];
+        const args = self.tree.extraSlice(self.tree.node(idx).call_expr.args);
+        if (args.len != vl.fields.len) {
+            self.unsupported(idx, "wrong number of payload arguments");
+            return null;
+        }
+        if (args.len == 0) return .{ .ref = vl.unit_const, .ty = .enum_ };
+        const size: i64 = 16 + 8 * @as(i64, @intCast(args.len));
+        var margs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, @intCast(size), 0)};
+        const obj = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_malloc), self.r_malloc, &margs, 1, "");
+        var didxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+        _ = c.LLVMBuildStore(self.builder, el.def, c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &didxs, 1, ""));
+        var vidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8, 0)};
+        _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i32, @intCast(vr.index), 0), c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &vidxs, 1, ""));
+        var kidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 12, 0)};
+        _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i32, 1, 0), c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &kidxs, 1, ""));
+        for (args, 0..) |ai, i| {
+            const av = self.emitExpr(ai) orelse return null;
+            if (av.ty != vl.fields[i].ty) {
+                self.unsupported(idx, "enum payload type mismatch");
+                return null;
+            }
+            const sp = self.fieldSlotAddr(obj, 16 + 8 * i);
+            _ = c.LLVMBuildStore(self.builder, av.ref, sp);
+        }
+        return .{ .ref = obj, .ty = .enum_ };
     }
 
     fn emitModuleMain(self: *Emitter, items: []const u32) void {
@@ -1065,8 +1167,8 @@ pub const Emitter = struct {
                     self.ensureOpenBlock();
                     self.emitGlobalDecl(it);
                 },
-                .struct_decl => {}, // layout ya registrado en la pasada 0 (M2.b)
-                .enum_decl, .trait_decl, .impl_decl, .use_decl, .import_decl, .from_decl => {
+                .struct_decl, .enum_decl => {}, // layout ya registrado en la pasada 0 (M2.b/M2.c)
+                .trait_decl, .impl_decl, .use_decl, .import_decl, .from_decl => {
                     self.unsupported(it, "module-level declaration");
                     return;
                 },
@@ -1141,7 +1243,7 @@ pub const Emitter = struct {
             .block => _ = self.emitBlockValue(idx),
             .for_expr => self.unsupported(idx, "this expression form"),
             .match_expr => _ = self.emitMatch(idx),
-            .struct_decl => {}, // sin efecto en runtime; sólo se registran layouts de nivel superior
+            .struct_decl, .enum_decl => {}, // sin efecto en runtime; sólo se registran layouts de nivel superior
             else => _ = self.emitExpr(idx),
         }
     }
@@ -1492,7 +1594,45 @@ pub const Emitter = struct {
                         _ = c.LLVMBuildStore(self.builder, self.loadBoxPayload(tv.ref, pty), alloca);
                         self.addLocal(name, alloca, pty, null, tv.sname);
                     },
-                    else => self.unsupported(pi, "nested payload pattern"),
+                    // Literal (`some(1)`): no vincula nada — el test ya
+                    // comparó el payload. Anidados siguen sin soporte.
+                    else => if (!self.isLiteralPat(pi)) self.unsupported(pi, "nested payload pattern"),
+                }
+            },
+            // Vínculos de variante de enum: slots de payload del objetivo
+            // (posiciónales, como la declaración) — sólo en el camino
+            // coincidente, tras el test.
+            .pattern_variant_bind => |vb| {
+                if (tv.ty != .enum_) {
+                    self.unsupported(pat, "variant pattern requires an enum target");
+                    return;
+                }
+                const vr = self.resolveVariantPath(vb.variant) orelse {
+                    self.unsupported(pat, "pattern must be Enum.Variant");
+                    return;
+                };
+                const vl = self.enums.get(vr.enum_name).?.variants[vr.index];
+                const binds = self.tree.extraSlice(vb.bindings);
+                if (binds.len != vl.fields.len) {
+                    self.unsupported(pat, "wrong number of payload bindings");
+                    return;
+                }
+                for (binds, 0..) |bn, i| {
+                    switch (self.tree.node(bn)) {
+                        .pattern_wildcard => {},
+                        .pattern_bind => |name| {
+                            const ft = vl.fields[i].ty;
+                            const sp = self.fieldSlotAddr(tv.ref, 16 + 8 * i);
+                            const pv = c.LLVMBuildLoad2(self.builder, self.llvmTy(ft), sp, "");
+                            const alloca = self.buildAlloca(self.llvmTy(ft));
+                            _ = c.LLVMBuildStore(self.builder, pv, alloca);
+                            self.addLocal(name, alloca, ft, vl.fields[i].payload, vl.fields[i].sname);
+                        },
+                        else => {
+                            self.unsupported(bn, "nested payload pattern");
+                            return;
+                        },
+                    }
                 }
             },
             else => {},
@@ -1529,12 +1669,29 @@ pub const Emitter = struct {
                 _ = c.LLVMBuildCondBr(self.builder, isnull, null_bb, tag_bb);
                 c.LLVMPositionBuilderAtEnd(self.builder, tag_bb);
                 const isk = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, self.loadBoxTag(tv.ref), c.LLVMConstInt(self.t_i32, kind, 0), "");
+                // Payload literal (`some(1)`): el test exige también la
+                // igualdad del payload — SÓLO aquí, en tag_bb, el único
+                // camino no-NULL (en null_bb la caja es NULL y leer el
+                // payload sería OOB).
+                var test_v = isk;
+                if (bv.payload) |pl| {
+                    if (self.isLiteralPat(pl)) {
+                        const pty = tv.payload_ty orelse {
+                            self.unsupported(pat, "literal payload pattern without a known payload type");
+                            return null;
+                        };
+                        const pv = Val{ .ref = self.loadBoxPayload(tv.ref, pty), .ty = pty };
+                        const lit = self.emitExpr(pl) orelse return null;
+                        const peq = self.emitEqI1(pl, pv, lit) orelse return null;
+                        test_v = c.LLVMBuildAnd(self.builder, isk, peq, "");
+                    }
+                }
                 _ = c.LLVMBuildBr(self.builder, join_bb);
                 c.LLVMPositionBuilderAtEnd(self.builder, null_bb);
                 _ = c.LLVMBuildBr(self.builder, join_bb);
                 c.LLVMPositionBuilderAtEnd(self.builder, join_bb);
                 const phi = c.LLVMBuildPhi(self.builder, self.t_i1, "");
-                var vals = [_]c.LLVMValueRef{ isk, c.LLVMConstInt(self.t_i1, 0, 0) };
+                var vals = [_]c.LLVMValueRef{ test_v, c.LLVMConstInt(self.t_i1, 0, 0) };
                 var bbs = [_]c.LLVMBasicBlockRef{ tag_bb, null_bb };
                 c.LLVMAddIncoming(phi, &vals, &bbs, 2);
                 return phi;
@@ -1547,17 +1704,31 @@ pub const Emitter = struct {
                 }
                 return acc orelse c.LLVMConstInt(self.t_i1, 1, 0);
             },
-            .pattern_variant_bind => {
-                self.unsupported(pat, "user enum patterns");
-                return null;
+            .pattern_variant_bind => |vb| {
+                // Mismo test que el patrón unit: la constante kind-0 contra
+                // el objetivo — enum_eq con un lado kind-0 compara SÓLO por
+                // nombres (el OPCODE_EQ del VM entre VAL_ENUM y
+                // VAL_ENUM_DATA), así que el payload no participa en el test.
+                const cv = self.variantConstVal(vb.variant) orelse return null;
+                return self.emitEqI1(pat, tv, cv);
             },
             else => {
-                // Literales (int/float/string/bool/nil): igualdad con el
-                // objetivo, la misma máquina que `==`.
+                // Literales (int/float/string/bool/nil) y `Enum.Variant` unit
+                // (field_access): igualdad con el objetivo, la misma máquina
+                // que `==` — para enums, consciente de los kinds del VM.
                 const lit = self.emitExpr(pat) orelse return null;
                 return self.emitEqI1(pat, tv, lit);
             },
         }
+    }
+
+    /// ¿El nodo de un payload de patrón es un literal (`some(1)`)? El test
+    /// compara el payload y el binding no vincula nada en ese caso.
+    fn isLiteralPat(self: *Emitter, n: u32) bool {
+        return switch (std.meta.activeTag(self.tree.node(n))) {
+            .int_literal, .float_literal, .string_literal, .bool_literal, .nil_literal, .unary_expr => true,
+            else => false,
+        };
     }
 
     /// `==`/`!=` como i1, compartido con los tests de patrón del match.
@@ -1579,14 +1750,29 @@ pub const Emitter = struct {
             },
             .f64_ => c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, a.ref, b.ref, ""),
             .i64_, .bool_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
-            // VM value_eq de arrays: identidad de puntero (mismo handle).
-            .arr_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
+            // VM value_eq: estructural por elemento con el ptype del objeto
+            // (la rama identidad del switch de vm.c es código muerto para dos
+            // arrays; la temprana de value_eq compara elemento a elemento) —
+            // en runtime, porque recursa por ptype.
+            .arr_ => blk: {
+                var aargs = [_]c.LLVMValueRef{ a.ref, b.ref };
+                const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_array_eq), self.r_array_eq, &aargs, 2, "");
+                break :blk c.LLVMBuildTrunc(self.builder, r, self.t_i1, "");
+            },
             // VM value_eq de structs: estructural por def + campos (dos
             // objetos distintos con campos iguales son ==) — en runtime,
             // porque recorre los slots por ptype.
             .struct_ => blk: {
                 var sargs = [_]c.LLVMValueRef{ a.ref, b.ref };
                 const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_struct_eq), self.r_struct_eq, &sargs, 2, "");
+                break :blk c.LLVMBuildTrunc(self.builder, r, self.t_i1, "");
+            },
+            // VM value_eq de enums: consciente de los dos kinds del VM
+            // (VAL_ENUM por nombres, VAL_ENUM_DATA estructural) — el runtime
+            // decide según el `kind` de cada objeto.
+            .enum_ => blk: {
+                var eargs = [_]c.LLVMValueRef{ a.ref, b.ref };
+                const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_enum_eq), self.r_enum_eq, &eargs, 2, "");
                 break :blk c.LLVMBuildTrunc(self.builder, r, self.t_i1, "");
             },
             .fn_ => {
@@ -1644,12 +1830,13 @@ pub const Emitter = struct {
                     self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot compare string and string");
                     return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ }; // inalcanzable: fail es noreturn
                 }
-                if (lhs.ty == .arr_ or lhs.ty == .fn_ or lhs.ty == .struct_) {
+                if (lhs.ty == .arr_ or lhs.ty == .fn_ or lhs.ty == .struct_ or lhs.ty == .enum_) {
                     // VM value_lt: aggregates no se ordenan, message con el
                     // nombre del tipo vía type_name (vm.c:933).
                     const msg: [*:0]const u8 = switch (lhs.ty) {
                         .arr_ => "cannot compare array and array",
                         .struct_ => "cannot compare struct and struct",
+                        .enum_ => "cannot compare enum and enum",
                         else => "cannot compare function and function",
                     };
                     self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, msg);
@@ -1866,6 +2053,9 @@ pub const Emitter = struct {
             .identifier => |name| {
                 if (std.mem.eql(u8, name, "print")) return self.emitPrint(idx);
                 const info = self.fns.get(name) orelse {
+                    // Constructor pelón de variante de enum: `Circle(x)`
+                    // (el seed resuelve la variante en cualquier enum).
+                    if (self.variant_map.get(name)) |vr| return self.emitEnumConstruct(idx, vr);
                     // No es una fn nombrada: puede ser un valor de función en
                     // un local/global (lambda o referencia a fn) — llamada
                     // dinámica vía el objeto { code, env }.
@@ -1975,6 +2165,10 @@ pub const Emitter = struct {
                     var xargs = [_]c.LLVMValueRef{av.ref};
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_struct), self.r_print_struct, &xargs, 1, "");
                 },
+                .enum_ => {
+                    var xargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_enum), self.r_print_enum, &xargs, 1, "");
+                },
             }
         }
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_end), self.r_print_end, null, 0, "");
@@ -2080,7 +2274,8 @@ pub const Emitter = struct {
             },
             // VAL_STRUCT es truthy iff el objeto existe — y todo objeto que
             // el emisor construye existe (vm.c value_truthy: struct_val != NULL).
-            .struct_ => return c.LLVMConstInt(self.t_i1, 1, 0),
+            // VAL_ENUM/VAL_ENUM_DATA son truthy incondicionalmente.
+            .struct_, .enum_ => return c.LLVMConstInt(self.t_i1, 1, 0),
             .f64_, .str_, .boxed_, .fn_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
@@ -2136,7 +2331,7 @@ pub const Emitter = struct {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
             .f64_ => self.t_f64,
-            .str_, .boxed_, .fn_, .arr_, .struct_ => self.t_ptr,
+            .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => self.t_ptr,
         };
     }
 
@@ -2148,7 +2343,7 @@ pub const Emitter = struct {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
             .f64_ => c.LLVMConstReal(self.t_f64, 0.0),
-            .str_, .boxed_, .fn_, .arr_, .struct_ => c.LLVMConstPointerNull(self.t_ptr),
+            .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => c.LLVMConstPointerNull(self.t_ptr),
         };
     }
 
@@ -2164,6 +2359,7 @@ pub const Emitter = struct {
             .boxed_ => PTY_BOXED,
             .arr_ => PTY_ARRAY,
             .struct_ => PTY_STRUCT,
+            .enum_ => PTY_ENUM,
             .fn_ => null,
         };
     }
@@ -2174,7 +2370,7 @@ pub const Emitter = struct {
             .i64_ => ref,
             .bool_ => c.LLVMBuildZExt(self.builder, ref, self.t_i64, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, ref, self.t_i64, ""),
-            .str_, .boxed_, .fn_, .arr_, .struct_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
+            .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
         };
     }
 
@@ -2184,7 +2380,7 @@ pub const Emitter = struct {
             .i64_ => bits,
             .bool_ => c.LLVMBuildTrunc(self.builder, bits, self.t_i8, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, bits, self.t_f64, ""),
-            .str_, .boxed_, .fn_, .arr_, .struct_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
+            .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
         };
     }
 
@@ -2274,11 +2470,14 @@ pub const Emitter = struct {
         const ni = node orelse return null;
         switch (self.tree.node(ni)) {
             .type_ident => |t| {
-                // Nombre de un struct declarado → su layout (M2.b). Nombres
-                // desconocidos caen a boxedM0Ty → null → unsupported honesto
-                // (enums/traits/struct sin declarar ya rechazó el checker).
+                // Nombre de un struct declarado → su layout (M2.b); de un
+                // enum declarado → valor de enum (M2.c). Nombres desconocidos
+                // caen a boxedM0Ty → null → unsupported honesto (traits/struct
+                // sin declarar ya rechazó el checker).
                 if (self.structs.contains(t.name))
                     return .{ .ty = .struct_, .sname = t.name };
+                if (self.enums.contains(t.name))
+                    return .{ .ty = .enum_ };
                 return null;
             },
             .type_fn => |tf| return .{
@@ -2337,6 +2536,21 @@ pub const Emitter = struct {
             .lambda_expr => return .fn_,
             .array_literal => return .arr_,
             .struct_literal => return .struct_,
+            // `Enum.Variant` (acceso) o `Variant(args)` (constructor pelón):
+            // el valor es de tipo enum (M2.c).
+            .field_access => {
+                if (self.resolveVariantPath(idx)) |_| return .enum_;
+                return null;
+            },
+            .call_expr => |call| switch (self.tree.node(call.callee)) {
+                .identifier => |nm| {
+                    if (std.mem.eql(u8, nm, "print")) return null;
+                    if (self.fns.get(nm)) |fi| return fi.ret_ty;
+                    if (self.variant_map.contains(nm)) return .enum_;
+                    return null;
+                },
+                else => return null,
+            },
             .try_expr => |inner| return self.inferBoxPayload(inner),
             .match_expr => |mm| {
                 // El valor del match: el tail del último brazo (el typechecker
@@ -2379,14 +2593,6 @@ pub const Emitter = struct {
                     return .i64_;
                 },
             },
-            .call_expr => |call| switch (self.tree.node(call.callee)) {
-                .identifier => |nm| {
-                    if (std.mem.eql(u8, nm, "print")) return null;
-                    if (self.fns.get(nm)) |fi| return fi.ret_ty;
-                    return null;
-                },
-                else => return null,
-            },
             .if_expr => |ie| {
                 const tb = self.tree.node(ie.then_block).block;
                 if (tb.tail) |t| return self.inferStaticTy(t);
@@ -2412,13 +2618,14 @@ pub const Emitter = struct {
         }
     }
 
-    /// Registra los layouts de los structs de nivel superior (M2.b), en dos
-    /// subpasadas: primero todos los NOMBRES (un campo puede referenciar a un
-    /// struct declarado más abajo), luego los offsets de cada campo y el
-    /// descriptor `AstraLLVMStructDef` del runtime — global constante, así
-    /// que print/eq leen el def del propio objeto igual que en el VM
-    /// (s->def) y el igualar structs no necesita estado compilado.
-    fn registerStructs(self: *Emitter, items: []const u32) void {
+    /// Registra las decls de nivel superior (M2.b/M2.c) en tres subpasadas:
+    /// primero los NOMBRES de structs (un campo puede referenciar a un struct
+    /// declarado más abajo), luego los enums completos (sus payloads de anotación
+    /// ya resuelven structs y enums por nombre) y por último los offsets de
+    /// los campos de struct y sus descriptores — globales constantes, así que
+    /// print/eq leen el def del propio objeto igual que en el VM (s->def) y
+    /// no necesita estado compilado.
+    fn registerDecls(self: *Emitter, items: []const u32) void {
         // 0a: nombres — placeholder para que annotTy resuelva referencias
         // cruzadas entre structs (P { q: Q } con Q declarada después).
         for (items) |it| {
@@ -2432,7 +2639,10 @@ pub const Emitter = struct {
             }
             self.structs.put(sd.name, .{ .fields = &.{}, .def = null, .size = 8 }) catch @panic("OOM");
         }
-        // 0b: campos + descriptor por cada layout.
+        // 0b: enums (variantes + payloads + descriptores + constantes kind-0).
+        self.registerEnums(items);
+        if (self.error_count > 0) return;
+        // 0c: campos + descriptor por cada layout de struct.
         var it = self.structs.iterator();
         while (it.next()) |entry| {
             const name = entry.key_ptr.*;
@@ -2518,6 +2728,137 @@ pub const Emitter = struct {
         c.LLVMSetInitializer(def, c.LLVMConstNamedStruct(def_ty, &fvals, 4));
         c.LLVMSetLinkage(def, c.LLVMPrivateLinkage);
         return def;
+    }
+
+    /// Enums de nivel superior (M2.c): por cada uno, el descriptor
+    /// `AstraLLVMEnumDef` + una constante kind-0 por variante (el VAL_ENUM
+    /// del VM para `Enum.Variant` como valor y para los patrones de match) +
+    /// el índice que resuelve el constructor pelón `Circle(x)` (el seed
+    /// busca la variante en CUALQUIER enum — find_enum_by_variant — y queda
+    /// con la PRIMERA aparición).
+    fn registerEnums(self: *Emitter, items: []const u32) void {
+        // Nombres primero: los payloads anotados pueden referenciar a otros
+        // enums o structs declarados más abajo.
+        for (items) |it| {
+            const ed = switch (self.tree.node(it)) {
+                .enum_decl => |ed| ed,
+                else => continue,
+            };
+            if (ed.generics.len > 0) {
+                self.unsupported(it, "generic enum");
+                return;
+            }
+            self.enums.put(ed.name, .{ .name = ed.name, .variants = &.{}, .def = null }) catch @panic("OOM");
+        }
+        for (items) |it| {
+            const ed = switch (self.tree.node(it)) {
+                .enum_decl => |ed| ed,
+                else => continue,
+            };
+            const variant_items = self.tree.extraSlice(ed.variants);
+            if (variant_items.len == 0 or variant_items.len > 64) {
+                self.unsupported(it, "enum without variants or too many variants");
+                return;
+            }
+            var variants = self.a.alloc(EnumVariantLayout, variant_items.len) catch @panic("OOM");
+            var vdef_vals = self.a.alloc(c.LLVMValueRef, variant_items.len) catch @panic("OOM");
+            const vdef_ty = blk: {
+                var vf = [_]c.LLVMTypeRef{ self.t_ptr, self.t_i32, self.t_ptr };
+                break :blk c.LLVMStructTypeInContext(self.ctx, &vf, 3, 0);
+            };
+            for (variant_items, 0..) |vip, i| {
+                const v = self.tree.node(vip).enum_variant;
+                var fields: []StructField = &.{};
+                if (v.payload) |pl| {
+                    const payload_items = self.tree.extraSlice(self.tree.node(pl).payload);
+                    if (payload_items.len > 64) {
+                        self.unsupported(vip, "too many payload fields");
+                        return;
+                    }
+                    fields = self.a.alloc(StructField, payload_items.len) catch @panic("OOM");
+                    for (payload_items, 0..) |pi, j| {
+                        const f = self.tree.node(pi).field_decl;
+                        const at = self.annotTy(f.type_node) orelse {
+                            self.unsupported(pi, "enum payload without a supported type");
+                            return;
+                        };
+                        fields[j] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .sname = at.sname };
+                    }
+                }
+                // ptypes del payload: [N x i32], NULL constante sin payload.
+                var ptypes_ptr: c.LLVMValueRef = c.LLVMConstPointerNull(self.t_ptr);
+                if (fields.len > 0) {
+                    const pty_arr = c.LLVMAddGlobal(self.mod, c.LLVMArrayType(self.t_i32, @intCast(fields.len)), "");
+                    const pv = self.a.alloc(c.LLVMValueRef, fields.len) catch @panic("OOM");
+                    for (fields, 0..) |f, j| pv[j] = c.LLVMConstInt(self.t_i32, boxPTy(f.ty) orelse PTY_BOOL, 0);
+                    c.LLVMSetInitializer(pty_arr, c.LLVMConstArray(self.t_i32, pv.ptr, @intCast(fields.len)));
+                    c.LLVMSetLinkage(pty_arr, c.LLVMPrivateLinkage);
+                    ptypes_ptr = pty_arr;
+                }
+                // Nombre de la variante.
+                const vn = c.LLVMAddGlobal(self.mod, c.LLVMArrayType(self.t_i8, @intCast(v.name.len + 1)), "");
+                c.LLVMSetInitializer(vn, c.LLVMConstStringInContext2(self.ctx, v.name.ptr, v.name.len, 0));
+                c.LLVMSetLinkage(vn, c.LLVMPrivateLinkage);
+                c.LLVMSetUnnamedAddress(vn, c.LLVMGlobalUnnamedAddr);
+                var vv = [_]c.LLVMValueRef{ vn, c.LLVMConstInt(self.t_i32, @intCast(fields.len), 0), ptypes_ptr };
+                vdef_vals[i] = c.LLVMConstNamedStruct(vdef_ty, &vv, 3);
+                variants[i] = .{ .name = v.name, .fields = fields, .unit_const = undefined };
+                const gop = self.variant_map.getOrPut(v.name) catch @panic("OOM");
+                if (!gop.found_existing) gop.value_ptr.* = .{ .enum_name = ed.name, .index = i };
+            }
+            // El descriptor: { name, nvariants, variants[] }.
+            const en = c.LLVMAddGlobal(self.mod, c.LLVMArrayType(self.t_i8, @intCast(ed.name.len + 1)), "");
+            c.LLVMSetInitializer(en, c.LLVMConstStringInContext2(self.ctx, ed.name.ptr, ed.name.len, 0));
+            c.LLVMSetLinkage(en, c.LLVMPrivateLinkage);
+            c.LLVMSetUnnamedAddress(en, c.LLVMGlobalUnnamedAddr);
+            const varr = c.LLVMAddGlobal(self.mod, c.LLVMArrayType(vdef_ty, @intCast(variant_items.len)), "");
+            c.LLVMSetInitializer(varr, c.LLVMConstArray(vdef_ty, vdef_vals.ptr, @intCast(variant_items.len)));
+            c.LLVMSetLinkage(varr, c.LLVMPrivateLinkage);
+            const def_ty = blk: {
+                var df = [_]c.LLVMTypeRef{ self.t_ptr, self.t_i32, self.t_ptr };
+                break :blk c.LLVMStructTypeInContext(self.ctx, &df, 3, 0);
+            };
+            const def = c.LLVMAddGlobal(self.mod, def_ty, "");
+            var dv = [_]c.LLVMValueRef{ en, c.LLVMConstInt(self.t_i32, @intCast(variant_items.len), 0), varr };
+            c.LLVMSetInitializer(def, c.LLVMConstNamedStruct(def_ty, &dv, 3));
+            c.LLVMSetLinkage(def, c.LLVMPrivateLinkage);
+            // Constantes kind-0: { def, índice, kind=0 } — lo que el runtime
+            // lee (def@0, variant@8, kind@12). Para TODAS las variantes:
+            // `Enum.Variant` es un valor del tipo enum incluso cuando la
+            // variante lleva payload (el acceso pelón del VM). El objeto se
+            // emite TAMBIÉN con sus slots de payload a cero del tamaño de la
+            // variante: si un match con bindings cae sobre un valor kind-0
+            // (el test sólo mira nombres), leer el payload da 0 en vez de
+            // basura fuera del objeto.
+            for (variants, 0..) |*vl, i| {
+                const np: usize = vl.fields.len;
+                const obj_ty = blk: {
+                    var of: [4]c.LLVMTypeRef = undefined;
+                    of[0] = self.t_ptr;
+                    of[1] = self.t_i32;
+                    of[2] = self.t_i32;
+                    if (np > 0) {
+                        of[3] = c.LLVMArrayType(self.t_i64, @intCast(np));
+                        break :blk c.LLVMStructTypeInContext(self.ctx, &of, 4, 0);
+                    }
+                    break :blk c.LLVMStructTypeInContext(self.ctx, &of, 3, 0);
+                };
+                const cv = c.LLVMAddGlobal(self.mod, obj_ty, "");
+                var ov: [4]c.LLVMValueRef = undefined;
+                ov[0] = def;
+                ov[1] = c.LLVMConstInt(self.t_i32, @intCast(i), 0);
+                ov[2] = c.LLVMConstInt(self.t_i32, 0, 0);
+                var n_init: c_uint = 3;
+                if (np > 0) {
+                    ov[3] = c.LLVMConstNull(c.LLVMArrayType(self.t_i64, @intCast(np)));
+                    n_init = 4;
+                }
+                c.LLVMSetInitializer(cv, c.LLVMConstNamedStruct(obj_ty, &ov, n_init));
+                c.LLVMSetLinkage(cv, c.LLVMPrivateLinkage);
+                vl.unit_const = cv;
+            }
+            self.enums.put(ed.name, .{ .name = ed.name, .variants = variants, .def = def }) catch @panic("OOM");
+        }
     }
 
     fn setTarget(self: *Emitter) void {
@@ -2834,4 +3175,53 @@ test "emite structs: descriptor global, lectura/escritura de campo y print/eq en
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "\"Punto") != null); // c"Punto\00"
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_print_struct") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_struct_eq") != null);
+}
+
+test "emite enums: descriptor + constantes kind-0, constructor y match con payload" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\enum Color {
+        \\    Rojo
+        \\    Verde(i32)
+        \\}
+        \\fn main() {
+        \\    let c = Color.Rojo
+        \\    let v = Verde(7)
+        \\    match v {
+        \\        Color.Verde(n) => print(n),
+        \\        Color.Rojo => print("rojo"),
+        \\    }
+        \\    print(c == v)
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "enum.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "enum.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "enum.astra");
+    defer em.deinit();
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+    // Descriptor del enum (print/eq por def del objeto) y dispatch por
+    // kind — la igualdad consciente de los dos kinds del VM.
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "\"Color") != null); // c"Color\00"
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_print_enum") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_enum_eq") != null);
 }
