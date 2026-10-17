@@ -7,8 +7,10 @@
 //! comparaciones, `&&`/`||`/`!`, `if` (sentencia y expresión vía phi), `while`,
 //! funciones con recursión, `return`, `print`, Option/Result (`some`/`none`/
 //! `ok`/`err`, `match` sobre variantes builtin/literales, `?`), `match` como
-//! expresión (phi de brazos) y closures (M1.d): lambdas `|x: i32| -> i32 { }`
-//! como valores de primer orden con captura por valor.
+//! expresión (phi de brazos), closures (M1.d): lambdas `|x: i32| -> i32 { }`
+//! como valores de primer orden con captura por valor, y arrays (M2.a) como
+//! objetos homogéneos `{ i64 len; i32 elem_pty; i32 pad; <elems> }` con
+//! identidad compartida, bounds check y lectura/escritura por índice.
 //!
 //! Modelo de valores: escalares sin boxing — `i64` para todos los tipos enteros
 //! de Astra (el VM almacena int64 completo), `i8` 0/1 para bool, `f64` para
@@ -38,17 +40,18 @@ const c = @import("c_api.zig").c;
 /// tipos con heap: `i64` para todos los tipos enteros de Astra, `bool` como
 /// `i8` 0/1, `f64` para floats, `str_` como puntero al bloque
 /// `{ i64 len; [len+1 x i8] data }`, `boxed_` (Option/Result) como puntero a
-/// `{ i32 tag; i32 ptype; i64 payload }` (M1) y `fn_` (funciones de primer
-/// orden, M1.d) como puntero al objeto `{ ptr code; ptr env }`.
-const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_ };
+/// `{ i32 tag; i32 ptype; i64 payload }` (M1), `fn_` (funciones de primer
+/// orden, M1.d) como puntero al objeto `{ ptr code; ptr env }` y `arr_`
+/// (M2.a) como puntero al objeto `{ i64 len; i32 elem_pty; i32 pad; <elems> }`
+/// — identidad compartida, igual que el handle del VM.
+const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_, arr_ };
 
 /// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
-/// `payload_ty` es el tipo estático del contenido de un `boxed_` (el `T` de
-/// `T?` o el inferido de `some(x)`/`ok(x)`/`err(x)`): los bindings de un
-/// `match` y el resultado de `?` lo necesitan para releer los bits del payload.
-/// En un `fn_` es el tipo de RETORNO de la función (null = void), que es lo
-/// que la llamada dinámica necesita para armar su firma LLVM.
+/// `payload_ty` es el tipo estático del contenido: para un `boxed_` es el `T`
+/// de `T?`/`some(x)` (bindings de `match`, `?`); para un `fn_` el tipo de
+/// retorno (null = void, lo que la llamada dinámica arma en el sitio); para
+/// un `arr_` el tipo de sus elementos (índices, bounds y print).
 const Val = struct { ref: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
 
 const FnInfo = struct {
@@ -258,6 +261,18 @@ const PTY_I64: u32 = 2;
 const PTY_F64: u32 = 3;
 const PTY_STR: u32 = 4;
 const PTY_BOXED: u32 = 5;
+/// Elemento/contenido de array dentro de una caja o del header de otro array
+/// (contrato con el runtime: 1=bool 2=i64 3=f64 4=str 5=boxed 6=array).
+const PTY_ARRAY: u32 = 6;
+
+/// Offset de los elementos inline en un objeto array (`{ i64 len; i32
+/// elem_pty; i32 pad; <elems> }`, M2.a).
+const ARR_HDR: i64 = 16;
+
+/// Espejo de VM_STACK_SIZE (vm.c) / ASTRA_FRAME_SIZE (codegen_runtime.h): el
+/// operand stack de la VM es único (1024 slots compartidos entre frames) y
+/// un literal con más elementos que el presupuesto lo desborda.
+const VM_STACK_SIZE: usize = 1024;
 
 pub const Emitter = struct {
     a: std.mem.Allocator,
@@ -303,6 +318,8 @@ pub const Emitter = struct {
     // libc malloc: los objetos de closure (env + {code, env}) y las cajas
     // viven en heap con lifetime de proceso, como el backend C.
     r_malloc: c.LLVMValueRef,
+    r_print_array: c.LLVMValueRef,
+    r_index_fail: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
@@ -369,6 +386,8 @@ pub const Emitter = struct {
             .r_boxed_eq = undefined,
             .r_boxed_order_fail = undefined,
             .r_malloc = undefined,
+            .r_print_array = undefined,
+            .r_index_fail = undefined,
         };
         self.declareRuntime();
         return self;
@@ -405,6 +424,8 @@ pub const Emitter = struct {
         self.r_boxed_eq = self.declRet(self.t_i32, "astra_llvm_boxed_eq", &.{ self.t_ptr, self.t_ptr });
         self.r_boxed_order_fail = self.declVoid("astra_llvm_boxed_order_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr });
         self.r_malloc = self.declRet(self.t_ptr, "malloc", &.{self.t_i64});
+        self.r_print_array = self.declVoid("astra_llvm_print_array", &.{self.t_ptr});
+        self.r_index_fail = self.declVoid("astra_llvm_index_fail", &.{ self.t_i32, self.t_i64, self.t_i64 });
     }
 
     fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
@@ -718,6 +739,143 @@ pub const Emitter = struct {
         return null;
     }
 
+    // ── Arrays (M2.a) ──────────────────────────────────────────────────────
+
+    /// Literal `[a, b, c]` → objeto heap `{ i64 len; i32 elem_pty; i32 pad;
+    /// <elems> }` con elementos en su tipo LLVM estático. Homogéneo por el
+    /// typechecker ("array element 2 has type string, expected …"), así que
+    /// el tipo del primer elemento es el del array entero (payload_ty).
+    /// Comparte identidad como el handle del VM: `let mut b = a` copia el
+    /// puntero y una escritura a través de `b` se ve en `a`
+    /// (arrays/alias_write — la semántica ARC/ORC de Hallazgo G).
+    fn emitArrayLit(self: *Emitter, idx: u32) ?Val {
+        const list = self.tree.node(idx).array_literal;
+        const elems = self.tree.extraSlice(list);
+        if (elems.len == 0) {
+            self.unsupported(idx, "empty array literal (element type unknown)");
+            return null;
+        }
+        // Presupuesto del operand stack (VM_STACK_SIZE / ASTRA_FRAME_SIZE,
+        // 1024 compartidos): vm_push falla con `sp >= 1024` ANTES de pushar,
+        // o sea en el elemento 1025 → "stack overflow" en la línea 0
+        // (expressions/stack_overflow_limit, que pinza el ASTRA_PUSH del
+        // backend C). El emisor no modela el sp global de la VM, así que este
+        // guard es exacto en profundidad de expresión 0 — la forma que el
+        // caso pinza — y no dispara en profundidades exóticas (presupuesto
+        // conservador: la VM fallaría antes con menos elementos). La
+        // emisión posterior sigue en el bloque inalcanzable y es IR válido.
+        if (elems.len >= VM_STACK_SIZE + 1) self.emitFailMsg(0, "stack overflow");
+        const ev = self.emitExpr(elems[0]) orelse return null;
+        const ety = ev.ty;
+        const pty = boxPTy(ety) orelse {
+            self.unsupported(idx, "array of function values");
+            return null;
+        };
+        const slot = elemSlotSize(ety);
+        var margs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, @intCast(ARR_HDR + slot * @as(i64, @intCast(elems.len))), 0)};
+        const obj = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_malloc), self.r_malloc, &margs, 1, "");
+        // header: len @0, elem_pty @8 (los elementos en @16, 8-alineados).
+        var lidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+        const lp = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &lidxs, 1, "");
+        _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i64, elems.len, 0), lp);
+        var hidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8, 0)};
+        const hp = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &hidxs, 1, "");
+        _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i32, pty, 0), hp);
+        // elementos, en orden de evaluación del literal
+        for (elems, 0..) |ei, i| {
+            const v = if (i == 0) ev else (self.emitExpr(ei) orelse return null);
+            if (v.ty != ety) {
+                self.unsupported(idx, "heterogeneous array literal");
+                return null;
+            }
+            const ep = self.elemSlotAddr(obj, c.LLVMConstInt(self.t_i64, i, 0), ety);
+            _ = c.LLVMBuildStore(self.builder, v.ref, ep);
+        }
+        return .{ .ref = obj, .ty = .arr_, .payload_ty = ety };
+    }
+
+    /// Dirección del elemento i: `arr + ARR_HDR + i * slot_size`.
+    fn elemSlotAddr(self: *Emitter, arr: c.LLVMValueRef, i: c.LLVMValueRef, ety: Ty) c.LLVMValueRef {
+        const slot = elemSlotSize(ety);
+        var off = i;
+        if (slot != 1) off = c.LLVMBuildMul(self.builder, i, c.LLVMConstInt(self.t_i64, @intCast(slot), 0), "");
+        off = c.LLVMBuildAdd(self.builder, off, c.LLVMConstInt(self.t_i64, @intCast(ARR_HDR), 0), "");
+        var idxs = [_]c.LLVMValueRef{off};
+        return c.LLVMBuildGEP2(self.builder, self.t_i8, arr, &idxs, 1, "");
+    }
+
+    /// `0 <= i && i < len`: el arm de fallo llama a `astra_llvm_index_fail`
+    /// (noreturn — mensaje del VM OPCODE_INDEX: `index i out of bounds (len
+    /// n)`) y el arm ok queda abierto para el load/store siguiente.
+    fn emitBoundsCheck(self: *Emitter, i: c.LLVMValueRef, arr: c.LLVMValueRef, line: u32) void {
+        var lidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+        const lp = c.LLVMBuildGEP2(self.builder, self.t_i8, arr, &lidxs, 1, "");
+        const len = c.LLVMBuildLoad2(self.builder, self.t_i64, lp, "");
+        const ge = c.LLVMBuildICmp(self.builder, c.LLVMIntSGE, i, c.LLVMConstInt(self.t_i64, 0, 0), "");
+        const lt = c.LLVMBuildICmp(self.builder, c.LLVMIntSLT, i, len, "");
+        const inb = c.LLVMBuildAnd(self.builder, ge, lt, "");
+        const ok_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_ok");
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_fail");
+        _ = c.LLVMBuildCondBr(self.builder, inb, ok_bb, fail_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), i, len };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_index_fail), self.r_index_fail, &fargs, 3, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+    }
+
+    /// `xs[i]` — bounds check + carga GEP con el tipo del elemento.
+    fn emitIndex(self: *Emitter, idx: u32) ?Val {
+        const ix = self.tree.node(idx).index_expr;
+        const ov = self.emitExpr(ix.object) orelse return null;
+        if (ov.ty != .arr_) {
+            self.unsupported(idx, "indexing a non-array value");
+            return null;
+        }
+        const ety = ov.payload_ty orelse {
+            self.unsupported(idx, "array without an element type");
+            return null;
+        };
+        const iv = self.emitExpr(ix.index) orelse return null;
+        if (iv.ty != .i64_) {
+            self.unsupported(idx, "array index must be an integer");
+            return null;
+        }
+        self.emitBoundsCheck(iv.ref, ov.ref, self.tree.loc(idx).line);
+        const ep = self.elemSlotAddr(ov.ref, iv.ref, ety);
+        return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(ety), ep, ""), .ty = ety, .payload_ty = null };
+    }
+
+    /// `xs[i] = v` — mismo bounds check que la lectura, luego store; la
+    /// asignación produce su valor (es expresión: `let y = { xs[1] = 42 }`).
+    fn emitElemAssign(self: *Emitter, idx: u32) ?Val {
+        const as = self.tree.node(idx).assignment;
+        const val = self.emitExpr(as.value) orelse return null;
+        const ix = self.tree.node(as.target).index_expr;
+        const ov = self.emitExpr(ix.object) orelse return null;
+        if (ov.ty != .arr_) {
+            self.unsupported(idx, "assignment into a non-array value");
+            return null;
+        }
+        const ety = ov.payload_ty orelse {
+            self.unsupported(idx, "array without an element type");
+            return null;
+        };
+        if (val.ty != ety) {
+            self.unsupported(idx, "array element type mismatch");
+            return null;
+        }
+        const iv = self.emitExpr(ix.index) orelse return null;
+        if (iv.ty != .i64_) {
+            self.unsupported(idx, "array index must be an integer");
+            return null;
+        }
+        self.emitBoundsCheck(iv.ref, ov.ref, self.tree.loc(idx).line);
+        const ep = self.elemSlotAddr(ov.ref, iv.ref, ety);
+        _ = c.LLVMBuildStore(self.builder, val.ref, ep);
+        return val;
+    }
+
     fn emitModuleMain(self: *Emitter, items: []const u32) void {
         const mty = c.LLVMFunctionType(self.t_void, null, 0, 0);
         const mm = c.LLVMAddFunction(self.mod, "astra_module_main", mty);
@@ -927,6 +1085,8 @@ pub const Emitter = struct {
             .try_expr => return self.emitTry(idx),
             .match_expr => return self.emitMatch(idx),
             .lambda_expr => return self.emitLambda(idx),
+            .array_literal => return self.emitArrayLit(idx),
+            .index_expr => return self.emitIndex(idx),
             .identifier => |name| return self.emitIdent(idx, name),
             .binary_expr => return self.emitBinary(idx),
             .unary_expr => return self.emitUnary(idx),
@@ -1242,6 +1402,8 @@ pub const Emitter = struct {
             },
             .f64_ => c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, a.ref, b.ref, ""),
             .i64_, .bool_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
+            // VM value_eq de arrays: identidad de puntero (mismo handle).
+            .arr_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
             .fn_ => {
                 self.unsupported(idx, "cannot compare function values");
                 return null;
@@ -1296,6 +1458,16 @@ pub const Emitter = struct {
                     // y el runtime dice no (types/string_order_rejected).
                     self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot compare string and string");
                     return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ }; // inalcanzable: fail es noreturn
+                }
+                if (lhs.ty == .arr_ or lhs.ty == .fn_) {
+                    // VM value_lt: aggregates no se ordenan, message con el
+                    // nombre del tipo vía type_name (vm.c:933).
+                    const msg: [*:0]const u8 = if (lhs.ty == .arr_)
+                        "cannot compare array and array"
+                    else
+                        "cannot compare function and function";
+                    self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, msg);
+                    return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ };
                 }
                 if (lhs.ty == .boxed_) {
                     // Igual que con strings, pero los nombres de tipo salen de
@@ -1470,6 +1642,12 @@ pub const Emitter = struct {
 
     fn emitAssign(self: *Emitter, idx: u32) ?Val {
         const as = self.tree.node(idx).assignment;
+        // Escritura en elemento de array: `xs[i] = v` (LValue más allá de los
+        // identificadores, Hallazgo B).
+        switch (self.tree.node(as.target)) {
+            .index_expr => return self.emitElemAssign(idx),
+            else => {},
+        }
         const val = self.emitExpr(as.value) orelse return null;
         const target_name = switch (self.tree.node(as.target)) {
             .identifier => |nm| nm,
@@ -1602,6 +1780,10 @@ pub const Emitter = struct {
                     self.unsupported(idx, "print of a function value");
                     return null;
                 },
+                .arr_ => {
+                    var xargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_array), self.r_print_array, &xargs, 1, "");
+                },
             }
         }
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_end), self.r_print_end, null, 0, "");
@@ -1697,6 +1879,14 @@ pub const Emitter = struct {
         const zero = switch (v.ty) {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
+            // VM truthy de VAL_ARRAY: len > 0 (vm.c value_truthy); los demás
+            // heap types son un puntero y el typechecker no deja testearlos.
+            .arr_ => {
+                var idxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+                const pp = c.LLVMBuildGEP2(self.builder, self.t_i8, v.ref, &idxs, 1, "");
+                const len = c.LLVMBuildLoad2(self.builder, self.t_i64, pp, "");
+                return c.LLVMBuildICmp(self.builder, c.LLVMIntSGT, len, c.LLVMConstInt(self.t_i64, 0, 0), "");
+            },
             .f64_, .str_, .boxed_, .fn_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
@@ -1752,7 +1942,7 @@ pub const Emitter = struct {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
             .f64_ => self.t_f64,
-            .str_, .boxed_, .fn_ => self.t_ptr,
+            .str_, .boxed_, .fn_, .arr_ => self.t_ptr,
         };
     }
 
@@ -1764,7 +1954,7 @@ pub const Emitter = struct {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
             .f64_ => c.LLVMConstReal(self.t_f64, 0.0),
-            .str_, .boxed_, .fn_ => c.LLVMConstPointerNull(self.t_ptr),
+            .str_, .boxed_, .fn_, .arr_ => c.LLVMConstPointerNull(self.t_ptr),
         };
     }
 
@@ -1778,6 +1968,7 @@ pub const Emitter = struct {
             .f64_ => PTY_F64,
             .str_ => PTY_STR,
             .boxed_ => PTY_BOXED,
+            .arr_ => PTY_ARRAY,
             .fn_ => null,
         };
     }
@@ -1788,7 +1979,7 @@ pub const Emitter = struct {
             .i64_ => ref,
             .bool_ => c.LLVMBuildZExt(self.builder, ref, self.t_i64, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, ref, self.t_i64, ""),
-            .str_, .boxed_, .fn_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
+            .str_, .boxed_, .fn_, .arr_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
         };
     }
 
@@ -1798,7 +1989,17 @@ pub const Emitter = struct {
             .i64_ => bits,
             .bool_ => c.LLVMBuildTrunc(self.builder, bits, self.t_i8, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, bits, self.t_f64, ""),
-            .str_, .boxed_, .fn_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
+            .str_, .boxed_, .fn_, .arr_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
+        };
+    }
+
+    /// Tamaño (en bytes) que ocupa un elemento de ese tipo dentro del objeto
+    /// array: los escalares de 8 bytes y el bool 1 (su slot en el header es
+    /// i32 ptype/align 8, así que los offsets 8-byte quedan alineados).
+    fn elemSlotSize(ty: Ty) i64 {
+        return switch (ty) {
+            .bool_ => 1,
+            else => 8,
         };
     }
 
@@ -1874,6 +2075,13 @@ pub const Emitter = struct {
                 .ty = .fn_,
                 .payload = if (tf.ret) |r| (self.annotTy(r) orelse return null).ty else null,
             },
+            // `[T]` — el tamaño del literal no cambia la representación
+            // (objetos de longitud variable con el elem type fijo), sólo se
+            // propaga el tipo de elemento para índices/bounds/print.
+            .type_array => |ta| return .{
+                .ty = .arr_,
+                .payload = (self.annotTy(ta.elem) orelse return null).ty,
+            },
             else => {},
         }
         return self.boxedM0Ty(node);
@@ -1886,6 +2094,11 @@ pub const Emitter = struct {
         switch (self.tree.node(idx)) {
             .some_expr, .ok_expr, .err_expr => |inner| return self.inferStaticTy(inner),
             .lambda_expr => |lm| return self.lambdaRetTy(lm),
+            .array_literal => |list| {
+                const elems = self.tree.extraSlice(list);
+                if (elems.len == 0) return null;
+                return self.inferStaticTy(elems[0]);
+            },
             .identifier => |name| {
                 if (self.lookupLocal(name)) |l| return l.payload_ty;
                 if (self.globals.get(name)) |g| return g.payload_ty;
@@ -1912,6 +2125,7 @@ pub const Emitter = struct {
             .bool_literal => return .bool_,
             .none_expr, .nil_literal, .some_expr, .ok_expr, .err_expr => return .boxed_,
             .lambda_expr => return .fn_,
+            .array_literal => return .arr_,
             .try_expr => |inner| return self.inferBoxPayload(inner),
             .match_expr => |mm| {
                 // El valor del match: el tail del último brazo (el typechecker
@@ -2194,4 +2408,47 @@ test "emite closure: objeto {code, env} por valor y env que sobrevive al frame" 
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_lambda_0") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_lambda_1") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "define i64 @astra_lambda_1(ptr") != null);
+}
+
+test "emite arrays: objeto {len, elem_pty, elems} con bounds check y print" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\let xs = [1, 2, 3]
+        \\fn main() {
+        \\    let mut ys = [10, 20]
+        \\    ys[0] = 9
+        \\    print(ys[1])
+        \\    print(xs[0])
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "arr.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "arr.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "arr.astra");
+    defer em.deinit();
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+    // Lectura y escritura con bounds check (arm idx_fail → index_fail), el
+    // print dispatchando por elem_pty en runtime y el store del elemento.
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "idx_fail") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_index_fail") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_print_array") != null);
 }

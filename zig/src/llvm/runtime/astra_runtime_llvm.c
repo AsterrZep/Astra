@@ -154,6 +154,9 @@ void *astra_llvm_wrap(unsigned line, int32_t tag, int32_t ptype, int64_t payload
     return b;
 }
 
+/* Defined with the arrays below (M2.a): `some([1, 2])` prints through it. */
+static void astra_llvm_array_body(const void *p);
+
 static void astra_llvm_boxed_body(const void *p) {
     if (!p) { fputs("nil", stdout); return; }
     const AstraLLVMBox *b = (const AstraLLVMBox *)p;
@@ -165,6 +168,7 @@ static void astra_llvm_boxed_body(const void *p) {
         case 4: { const AstraLLVMStr *s = (const AstraLLVMStr *)b->payload;
                   fwrite(s->data, 1, (size_t)s->len, stdout); break; }
         case 5: astra_llvm_boxed_body((const void *)b->payload); break;
+        case 6: astra_llvm_array_body((const void *)b->payload); break;
         default: fputc('?', stdout); break;
     }
     fputc(')', stdout);
@@ -191,6 +195,7 @@ int32_t astra_llvm_boxed_eq(const void *pa, const void *pb) {
                   return x == y; }
         case 4: return astra_llvm_str_eq((const void *)a->payload, (const void *)b->payload) ? 1 : 0;
         case 5: return astra_llvm_boxed_eq((const void *)a->payload, (const void *)b->payload);
+        case 6: return (a->payload == b->payload) ? 1 : 0; /* array = identity */
         default: return a->payload == b->payload;
     }
 }
@@ -210,5 +215,67 @@ void astra_llvm_boxed_order_fail(unsigned line, const void *pa, const void *pb) 
     char buf[96];
     snprintf(buf, sizeof buf, "cannot compare %s and %s",
              astra_llvm_boxed_name(pa), astra_llvm_boxed_name(pb));
+    astra_llvm_fail(line, buf);
+}
+
+/* ---- arrays (M2.a) ------------------------------------------------------ */
+
+/* Arrays are homogeneous heap objects with SHARED identity: `let mut b = a`
+ * aliases, so a write through `b` is visible through `a` (conformance
+ * arrays/alias_write) — the pointer *is* the seed's handle. Layout:
+ *   { int64 len; int32 elem_pty; int32 pad; <inline elements> }
+ * with elements at offset 16 in their static LLVM type (8 bytes for
+ * i64/f64/pointers, 1 byte for bool). `elem_pty` lets print dispatch when the
+ * static type is gone (an array inside an array, a boxed payload):
+ * 1=bool 2=i64 3=f64 4=str 5=boxed 6=array. `==` is pointer identity (VM
+ * value_eq: a.as.array_val == b.as.array_val) and ordering is rejected by the
+ * emitter ("cannot compare array and array"), so no cmp lives here. */
+#define ASTRA_LLVM_ARR_HDR 16
+
+static int astra_llvm_arr_slot(int32_t pty) { return pty == 1 ? 1 : 8; }
+
+static void astra_llvm_elem_print(int32_t pty, const char *slot);
+
+static void astra_llvm_array_body(const void *p) {
+    if (!p) { fputs("[]", stdout); return; } /* VM prints a NULL array as [] */
+    const char *base = (const char *)p;
+    int64_t len;
+    int32_t pty;
+    memcpy(&len, base, sizeof len);
+    memcpy(&pty, base + 8, sizeof pty);
+    fputc('[', stdout);
+    int slot = astra_llvm_arr_slot(pty);
+    for (int64_t i = 0; i < len; i++) {
+        if (i > 0) fputs(", ", stdout);
+        astra_llvm_elem_print(pty, base + ASTRA_LLVM_ARR_HDR + i * slot);
+    }
+    fputc(']', stdout);
+}
+
+static void astra_llvm_elem_print(int32_t pty, const char *slot) {
+    switch (pty) {
+        case 1: fputs(*(const int8_t *)slot ? "true" : "false", stdout); break;
+        case 2: { int64_t v; memcpy(&v, slot, sizeof v); printf("%ld", (long)v); break; }
+        case 3: { double d; memcpy(&d, slot, sizeof d); printf("%g", d); break; }
+        case 4: { const AstraLLVMStr *s; memcpy(&s, slot, sizeof s);
+                  fwrite(s->data, 1, (size_t)s->len, stdout); break; }
+        case 5: { const void *b; memcpy(&b, slot, sizeof b); astra_llvm_boxed_body(b); break; }
+        case 6: { const void *a; memcpy(&a, slot, sizeof a); astra_llvm_array_body(a); break; }
+        default: fputc('?', stdout); break;
+    }
+}
+
+void astra_llvm_print_array(const void *p) {
+    if (astra_llvm_printed_any++) putchar(' ');
+    astra_llvm_array_body(p);
+}
+
+/* Bounds check (VM OPCODE_INDEX & OPCODE_INDEX_SET): fatal
+ * `index i out of bounds (len n)` with file:line. The happy path is an inline
+ * icmp + load/store in the IR; only the failing arm calls here. */
+void astra_llvm_index_fail(unsigned line, int64_t idx, int64_t len) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "index %ld out of bounds (len %ld)",
+             (long)idx, (long)len);
     astra_llvm_fail(line, buf);
 }
