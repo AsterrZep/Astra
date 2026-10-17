@@ -131,3 +131,84 @@ int32_t astra_llvm_str_eq(const void *pa, const void *pb) {
     if (a->len != b->len) return 0;
     return memcmp(a->data, b->data, (size_t)a->len) == 0;
 }
+
+/* ---- Option/Result (boxed) --------------------------------------------- */
+
+/* Option/Result values are boxed: `{ int32 tag; int32 ptype; int64 payload }`
+ * on the heap (process lifetime, like the VM's arena and the C backend's
+ * wrapped pointer). `tag` uses the VM's TAG_IS numbering — 0=ok 1=err
+ * 2=some — and `none` is the NULL pointer, because the VM types `none` as
+ * nil (print(none) prints "nil"). `ptype` tells print/eq how to read the
+ * payload when the static type has been lost to Tier-2 aliasing: 1=bool
+ * 2=i64 3=f64 4=str 5=boxed (nested). The emitter reads tag/payload inline
+ * through this fixed layout; only construction, print and equality route
+ * through the runtime. */
+typedef struct { int32_t tag; int32_t ptype; int64_t payload; } AstraLLVMBox;
+
+void *astra_llvm_wrap(unsigned line, int32_t tag, int32_t ptype, int64_t payload) {
+    AstraLLVMBox *b = (AstraLLVMBox *)malloc(sizeof *b);
+    if (!b) astra_llvm_fail(line, "out of memory");
+    b->tag = tag;
+    b->ptype = ptype;
+    b->payload = payload;
+    return b;
+}
+
+static void astra_llvm_boxed_body(const void *p) {
+    if (!p) { fputs("nil", stdout); return; }
+    const AstraLLVMBox *b = (const AstraLLVMBox *)p;
+    fputs(b->tag == 0 ? "ok(" : b->tag == 1 ? "err(" : "some(", stdout);
+    switch (b->ptype) {
+        case 1: fputs(b->payload ? "true" : "false", stdout); break;
+        case 2: printf("%ld", (long)b->payload); break;
+        case 3: { double d; memcpy(&d, &b->payload, sizeof d); printf("%g", d); break; }
+        case 4: { const AstraLLVMStr *s = (const AstraLLVMStr *)b->payload;
+                  fwrite(s->data, 1, (size_t)s->len, stdout); break; }
+        case 5: astra_llvm_boxed_body((const void *)b->payload); break;
+        default: fputc('?', stdout); break;
+    }
+    fputc(')', stdout);
+}
+
+void astra_llvm_print_boxed(const void *p) {
+    if (astra_llvm_printed_any++) putchar(' ');
+    astra_llvm_boxed_body(p);
+}
+
+/* Structural equality — VM value_eq's ok/err/some arms (inner compared with
+ * value_eq) and NIL==NIL. Floats compare by value (NaN != NaN, like the VM's
+ * `==`), strings by content, nested boxes recursively. */
+int32_t astra_llvm_boxed_eq(const void *pa, const void *pb) {
+    if (pa == pb) return 1;
+    if (!pa || !pb) return 0;
+    const AstraLLVMBox *a = (const AstraLLVMBox *)pa;
+    const AstraLLVMBox *b = (const AstraLLVMBox *)pb;
+    if (a->tag != b->tag || a->ptype != b->ptype) return 0;
+    switch (a->ptype) {
+        case 3: { double x, y;
+                  memcpy(&x, &a->payload, sizeof x);
+                  memcpy(&y, &b->payload, sizeof y);
+                  return x == y; }
+        case 4: return astra_llvm_str_eq((const void *)a->payload, (const void *)b->payload) ? 1 : 0;
+        case 5: return astra_llvm_boxed_eq((const void *)a->payload, (const void *)b->payload);
+        default: return a->payload == b->payload;
+    }
+}
+
+/* Ordering is numeric-only in the VM: OPCODE_LT & co. on ok/err/some/nil
+ * abort with "cannot compare <type> and <type>", and the type names come from
+ * the runtime tags ("cannot compare some and some"). This always fails; the
+ * emitter calls it unconditionally and yields a dead dummy bool. */
+static const char *astra_llvm_boxed_name(const void *p) {
+    static const char *names[] = { "ok", "err", "some" };
+    if (!p) return "nil";
+    const AstraLLVMBox *b = (const AstraLLVMBox *)p;
+    return b->tag < 3 ? names[b->tag] : "nil";
+}
+
+void astra_llvm_boxed_order_fail(unsigned line, const void *pa, const void *pb) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "cannot compare %s and %s",
+             astra_llvm_boxed_name(pa), astra_llvm_boxed_name(pb));
+    astra_llvm_fail(line, buf);
+}

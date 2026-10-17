@@ -5,20 +5,25 @@
 //! `let`/`const` (locales y de módulo), asignación, aritmética i64 y f64 con
 //! los mismos guards que el VM, `+` de strings (concat por contenido),
 //! comparaciones, `&&`/`||`/`!`, `if` (sentencia y expresión vía phi), `while`,
-//! funciones con recursión, `return` y `print`.
+//! funciones con recursión, `return`, `print`, Option/Result (`some`/`none`/
+//! `ok`/`err`, `match` sobre variantes builtin/literales, `?`) y `match` como
+//! expresión (phi de brazos).
 //!
 //! Modelo de valores: escalares sin boxing — `i64` para todos los tipos enteros
 //! de Astra (el VM almacena int64 completo), `i8` 0/1 para bool, `f64` para
-//! floats — más `str_`, el primer tipo con heap: puntero al bloque
-//! `{ i64 len; [len+1 x i8] data }` que el runtime lee directamente (longitud
-//! explícita como el par (str, len) del VM, soporta NULs intercalados, §2.14).
+//! floats — más dos tipos con heap: `str_`, puntero al bloque
+//! `{ i64 len; [len+1 x i8] data }` (longitud explícita como el par (str, len)
+//! del VM, soporta NULs intercalados, §2.14), y `boxed_` (Option/Result),
+//! puntero a `{ i32 tag; i32 ptype; i64 payload }` con `none` como NULL: tag y
+//! payload se leen dinámicamente como en el VM, porque el typechecker admite
+//! aliasing Tier-2 (ok/err donde se esperaba some/none).
 //! El typechecker exige tipos de operandos idénticos (`type_eq`) en
 //! aritmética/comparación/asignación/argumentos, así que el emisor no necesita
 //! coerción int↔float: si ve operandos de distinto tipo es un bug del checker.
-//! El boxing de Option/Result/arrays llega con M1–M2. Los guards de div/mod/shift
-//! se emiten en línea y delegan el error en `astra_llvm_fail`, que reimprime
-//! `file:line: runtime error: msg` con el runtime compartido del seed — así la
-//! ruta LLVM no deriva en un tercer formato de error.
+//! El boxing de arrays/structs/enums de usuario llega con M2. Los guards de
+//! div/mod/shift se emiten en línea y delegan el error en `astra_llvm_fail`,
+//! que reimprime `file:line: runtime error: msg` con el runtime compartido del
+//! seed — así la ruta LLVM no deriva en un tercer formato de error.
 //!
 //! Todo lo que está fuera de alcance se rechaza con `diagnostics.emit` y sale
 //! limpio (exit 1) sin escribir IR: el emisor nunca produce un módulo a medias.
@@ -28,15 +33,19 @@ const ast = @import("../ast/ast.zig");
 const diagnostics = @import("../diagnostics.zig");
 const c = @import("c_api.zig").c;
 
-/// Tipos escalares que el subconjunto actual representa sin boxing, más el
-/// primer tipo con representación en heap: `i64` para todos los tipos enteros
-/// de Astra, `bool` como `i8` 0/1, `f64` para floats y `str_` como puntero al
-/// bloque `{ i64 len; [len+1 x i8] data }` del runtime (M1).
-const Ty = enum { i64_, bool_, f64_, str_ };
+/// Tipos escalares que el subconjunto actual representa sin boxing, más los
+/// tipos con heap: `i64` para todos los tipos enteros de Astra, `bool` como
+/// `i8` 0/1, `f64` para floats, `str_` como puntero al bloque
+/// `{ i64 len; [len+1 x i8] data }` y `boxed_` (Option/Result) como puntero a
+/// `{ i32 tag; i32 ptype; i64 payload }` (M1).
+const Ty = enum { i64_, bool_, f64_, str_, boxed_ };
 
 /// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
-const Val = struct { ref: c.LLVMValueRef, ty: Ty };
+/// `payload_ty` es el tipo estático del contenido de un `boxed_` (el `T` de
+/// `T?` o el inferido de `some(x)`/`ok(x)`/`err(x)`): los bindings de un
+/// `match` y el resultado de `?` lo necesitan para releer los bits del payload.
+const Val = struct { ref: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
 
 const FnInfo = struct {
     val: c.LLVMValueRef,
@@ -45,10 +54,23 @@ const FnInfo = struct {
     /// `true` cuando la función devuelve un escalar (falso = void).
     returns_value: bool,
     ret_ty: ?Ty,
+    /// Payload del retorno `T?` (el `T`), para `?` y match sobre su resultado.
+    ret_payload: ?Ty = null,
 };
 
-const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty };
-const Local = struct { alloca: c.LLVMValueRef, ty: Ty };
+const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
+const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
+
+/// Números de tag/ptype del contrato emisor↔runtime (astra_runtime_llvm.c):
+/// el tag sigue la numeración de TAG_IS del VM y el `none` es NULL.
+const TAG_OK: u32 = 0;
+const TAG_ERR: u32 = 1;
+const TAG_SOME: u32 = 2;
+const PTY_BOOL: u32 = 1;
+const PTY_I64: u32 = 2;
+const PTY_F64: u32 = 3;
+const PTY_STR: u32 = 4;
+const PTY_BOXED: u32 = 5;
 
 pub const Emitter = struct {
     a: std.mem.Allocator,
@@ -85,6 +107,12 @@ pub const Emitter = struct {
     // Operaciones de string (M1): concat con `+` e igualdad por contenido.
     r_str_concat: c.LLVMValueRef,
     r_str_eq: c.LLVMValueRef,
+    // Option/Result boxed (M1): construcción, print, igualdad y el fallo
+    // dinámico de ordenación ("cannot compare some and some").
+    r_wrap: c.LLVMValueRef,
+    r_print_boxed: c.LLVMValueRef,
+    r_boxed_eq: c.LLVMValueRef,
+    r_boxed_order_fail: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
@@ -141,6 +169,10 @@ pub const Emitter = struct {
             .r_print_end = undefined,
             .r_str_concat = undefined,
             .r_str_eq = undefined,
+            .r_wrap = undefined,
+            .r_print_boxed = undefined,
+            .r_boxed_eq = undefined,
+            .r_boxed_order_fail = undefined,
         };
         self.declareRuntime();
         return self;
@@ -170,6 +202,12 @@ pub const Emitter = struct {
         // concat(line, a, b) devuelve el bloque nuevo; eq(a, b) → i32 0/1.
         self.r_str_concat = self.declRet(self.t_ptr, "astra_llvm_str_concat", &.{ self.t_i32, self.t_ptr, self.t_ptr });
         self.r_str_eq = self.declRet(self.t_i32, "astra_llvm_str_eq", &.{ self.t_ptr, self.t_ptr });
+        // wrap(line, tag, ptype, payload) → caja; eq por contenido; el fallo
+        // de ordenación lleva ambos operandos para nombrarlos dinámicamente.
+        self.r_wrap = self.declRet(self.t_ptr, "astra_llvm_wrap", &.{ self.t_i32, self.t_i32, self.t_i32, self.t_i64 });
+        self.r_print_boxed = self.declVoid("astra_llvm_print_boxed", &.{self.t_ptr});
+        self.r_boxed_eq = self.declRet(self.t_i32, "astra_llvm_boxed_eq", &.{ self.t_ptr, self.t_ptr });
+        self.r_boxed_order_fail = self.declVoid("astra_llvm_boxed_order_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr });
     }
 
     fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
@@ -230,36 +268,38 @@ pub const Emitter = struct {
         if (param_items.len > pbuf.len) return self.unsupported(idx, "too many parameters");
         for (param_items, 0..) |pi, i| {
             const p = self.tree.node(pi).param;
-            const mt = self.scalarM0Ty(p.type_node) orelse
-                return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool/string)");
-            pbuf[i] = self.llvmTy(mt);
+            const at = self.annotTy(p.type_node) orelse
+                return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool/string/T?)");
+            pbuf[i] = self.llvmTy(at.ty);
         }
         var ret_ty: c.LLVMTypeRef = self.t_void;
         var ret_m0: ?Ty = null;
+        var ret_payload: ?Ty = null;
         if (fd.ret) |ri| {
-            const mt = self.scalarM0Ty(ri) orelse
+            const at = self.annotTy(ri) orelse
                 return self.unsupported(ri, "non-scalar return type");
-            ret_ty = self.llvmTy(mt);
-            ret_m0 = mt;
+            ret_ty = self.llvmTy(at.ty);
+            ret_m0 = at.ty;
+            ret_payload = at.payload;
         }
         const fty = c.LLVMFunctionType(ret_ty, if (param_items.len > 0) &pbuf else null, @intCast(param_items.len), 0);
         const mangled = std.fmt.allocPrintSentinel(self.a, "astra_fn_{s}", .{fd.name}, 0) catch @panic("OOM");
         const fnv = c.LLVMAddFunction(self.mod, mangled, fty);
-        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0 }) catch @panic("OOM");
+        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload }) catch @panic("OOM");
     }
 
     fn declareGlobal(self: *Emitter, idx: u32) void {
         const vd = self.varDeclOf(idx);
-        const ty = if (self.scalarM0Ty(vd.type_node)) |mt|
-            mt
-        else if (vd.value) |vi|
+        const ann = self.annotTy(vd.type_node);
+        const ty: Ty = if (ann) |at| at.ty else if (vd.value) |vi|
             self.inferStaticTy(vi) orelse return self.unsupported(idx, "cannot infer the scalar type of a top-level binding")
         else
             return self.unsupported(idx, "top-level binding without an initializer");
+        const payload: ?Ty = if (ann) |at| at.payload else if (vd.value) |vi| self.inferBoxPayload(vi) else null;
         const gname = std.fmt.allocPrintSentinel(self.a, "astra_g_{s}", .{vd.name}, 0) catch @panic("OOM");
         const gv = c.LLVMAddGlobal(self.mod, self.llvmTy(ty), gname);
         c.LLVMSetInitializer(gv, self.zeroInit(ty));
-        self.globals.put(vd.name, .{ .val = gv, .ty = ty }) catch @panic("OOM");
+        self.globals.put(vd.name, .{ .val = gv, .ty = ty, .payload_ty = payload }) catch @panic("OOM");
     }
 
     fn emitFn(self: *Emitter, idx: u32) void {
@@ -274,10 +314,10 @@ pub const Emitter = struct {
         const param_items = self.tree.extraSlice(fd.params);
         for (param_items, 0..) |pi, i| {
             const p = self.tree.node(pi).param;
-            const mt = self.scalarM0Ty(p.type_node) orelse return;
-            const alloca = self.buildAlloca(self.llvmTy(mt));
+            const at = self.annotTy(p.type_node) orelse return;
+            const alloca = self.buildAlloca(self.llvmTy(at.ty));
             _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(info.val, @intCast(i)), alloca);
-            self.addLocal(p.name, alloca, mt);
+            self.addLocal(p.name, alloca, at.ty, at.payload);
         }
         const body_val = self.emitBlockValue(fd.body);
         if (!self.isTerminated()) {
@@ -382,7 +422,8 @@ pub const Emitter = struct {
             .while_expr => self.emitWhile(idx),
             .return_stmt => self.emitReturn(idx),
             .block => _ = self.emitBlockValue(idx),
-            .for_expr, .match_expr => self.unsupported(idx, "this expression form"),
+            .for_expr => self.unsupported(idx, "this expression form"),
+            .match_expr => _ = self.emitMatch(idx),
             else => _ = self.emitExpr(idx),
         }
     }
@@ -394,10 +435,14 @@ pub const Emitter = struct {
             if (self.error_count == 0) self.unsupported(idx, "initializer produces no value");
             return;
         };
-        const ty = if (self.scalarM0Ty(vd.type_node)) |mt| mt else val.ty;
+        // La anotación `T?` fija el tipo y su payload; sin anotación, el del
+        // valor inferido (un `some(x)` lleva el tipo de x).
+        const ann = self.annotTy(vd.type_node);
+        const ty = if (ann) |at| at.ty else val.ty;
+        const payload = if (ann) |at| (at.payload orelse val.payload_ty) else val.payload_ty;
         const alloca = self.buildAlloca(self.llvmTy(ty));
         _ = c.LLVMBuildStore(self.builder, val.ref, alloca);
-        self.addLocal(vd.name, alloca, ty);
+        self.addLocal(vd.name, alloca, ty, payload);
     }
 
     fn emitReturn(self: *Emitter, idx: u32) void {
@@ -478,6 +523,23 @@ pub const Emitter = struct {
             .float_literal => |v| return .{ .ref = c.LLVMConstReal(self.t_f64, v), .ty = .f64_ },
             .string_literal => |s| return self.emitStringLit(s),
             .bool_literal => |b| return .{ .ref = c.LLVMConstInt(self.t_i8, @intFromBool(b), 0), .ty = .bool_ },
+            // none y nil son el mismo VAL_NIL del VM: la caja NULL, que
+            // imprime "nil" (types/…, enums/option_basic).
+            .none_expr, .nil_literal => return .{ .ref = c.LLVMConstPointerNull(self.t_ptr), .ty = .boxed_ },
+            .some_expr => |inner| {
+                const v = self.emitExpr(inner) orelse return null;
+                return self.emitWrap(idx, TAG_SOME, v);
+            },
+            .ok_expr => |inner| {
+                const v = self.emitExpr(inner) orelse return null;
+                return self.emitWrap(idx, TAG_OK, v);
+            },
+            .err_expr => |inner| {
+                const v = self.emitExpr(inner) orelse return null;
+                return self.emitWrap(idx, TAG_ERR, v);
+            },
+            .try_expr => return self.emitTry(idx),
+            .match_expr => return self.emitMatch(idx),
             .identifier => |name| return self.emitIdent(idx, name),
             .binary_expr => return self.emitBinary(idx),
             .unary_expr => return self.emitUnary(idx),
@@ -517,12 +579,290 @@ pub const Emitter = struct {
         return .{ .ref = g, .ty = .str_ };
     }
 
+    /// `expr?` — con `ok`/`some` produce el payload; con `err` o `none` (NULL)
+    /// devuelve la propia caja desde la función actual. El typechecker exige
+    /// que la función devuelva un opcional, así que la propagación es un `ret`
+    /// local con el mismo efecto que el frame-pop del TRY_UNWRAP del VM, sin
+    /// setjmp/longjmp: cada `?` cruza exactamente un nivel de marco, y el
+    /// caller ve la caja como resultado de la llamada — igual que el VM.
+    fn emitTry(self: *Emitter, idx: u32) ?Val {
+        const v = self.emitExpr(self.tree.node(idx).try_expr) orelse return null;
+        if (v.ty != .boxed_ or v.payload_ty == null) {
+            self.unsupported(idx, "? operator requires a value with a known payload");
+            return null;
+        }
+        const pty = v.payload_ty.?;
+        const line = self.tree.loc(idx).line;
+        const err_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_err");
+        const tag_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_tag");
+        const ok_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_ok");
+        const isnull = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, v.ref, c.LLVMConstPointerNull(self.t_ptr), "");
+        _ = c.LLVMBuildCondBr(self.builder, isnull, err_bb, tag_bb);
+
+        // none (NULL) o err (tag 1) → propagar; ok/some → payload.
+        c.LLVMPositionBuilderAtEnd(self.builder, tag_bb);
+        const tag = self.loadBoxTag(v.ref);
+        const iserr = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tag, c.LLVMConstInt(self.t_i32, TAG_ERR, 0), "");
+        _ = c.LLVMBuildCondBr(self.builder, iserr, err_bb, ok_bb);
+
+        c.LLVMPositionBuilderAtEnd(self.builder, err_bb);
+        const ret_lty = c.LLVMGetReturnType(c.LLVMGlobalGetValueType(self.cur_fn));
+        if (self.cur_returns_value and ret_lty == self.t_ptr) {
+            _ = c.LLVMBuildRet(self.builder, v.ref);
+        } else if (!self.cur_returns_value) {
+            // Módulo: el VM dice "try operator outside function" (frame_count
+            // == 0); el typechecker zig lo rechaza antes, defensivo igual.
+            self.emitFailMsg(line, "try operator outside function");
+        } else {
+            self.unsupported(idx, "? operator in a function that does not return an optional");
+            return null;
+        }
+
+        c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+        return .{ .ref = self.loadBoxPayload(v.ref, pty), .ty = pty };
+    }
+
+    /// Llama a `astra_llvm_fail` sin condición y deja el bloque abierto tras
+    /// él (la llamada no retorna; el bloque siguiente es el camino vivo).
+    fn emitFailMsg(self: *Emitter, line: u32, msg: [*:0]const u8) void {
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "fail");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "fail_cont");
+        _ = c.LLVMBuildBr(self.builder, fail_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        const linev = c.LLVMConstInt(self.t_i32, line, 0);
+        const msgp = c.LLVMBuildGlobalStringPtr(self.builder, msg, "");
+        var fargs = [_]c.LLVMValueRef{ linev, msgp };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+    }
+
+    /// `match` sobre Option/Result, literales y booleanos (los enums de usuario
+    /// llegan en M2). Réplica la bajada del emitter del seed: por brazo, test
+    /// de patrón → bindings en el scope del brazo → guard → cuerpo; un guard
+    /// que falla sale del scope (el binding se reclama, audit §4.3) y sigue el
+    /// brazo siguiente. Sin brazo total (`_`/bind a secas), el backstop es el
+    /// runtime error "no match arm matched" (OPCODE_MATCH_NONE).
+    fn emitMatch(self: *Emitter, idx: u32) ?Val {
+        const m = self.tree.node(idx).match_expr;
+        const tv = self.emitExpr(m.target) orelse return null;
+        const line = self.tree.loc(idx).line;
+        const arms = self.tree.extraSlice(m.arms);
+        if (arms.len > 32) {
+            self.unsupported(idx, "more than 32 match arms");
+            return null;
+        }
+
+        const merge_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "match_merge");
+        const nomatch_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "match_none");
+
+        var end_bbs: [32]c.LLVMBasicBlockRef = undefined;
+        var end_vals: [32]c.LLVMValueRef = undefined;
+        var n_ends: usize = 0; // brazos que caen en merge (no terminados)
+        var all_valued = true; // todos esos brazos aportan valor
+        var value_ty: ?Ty = null;
+
+        for (arms) |ai| {
+            const arm = self.tree.node(ai).match_arm;
+            // Total sin guard: `_` o un bind a secas (el test no puede fallar).
+            const total = if (arm.guard != null) false else switch (self.tree.node(arm.pattern)) {
+                .pattern_wildcard, .pattern_bind => true,
+                else => false,
+            };
+
+            var next_bb: ?c.LLVMBasicBlockRef = null;
+            self.pushScope();
+            if (total) {
+                self.bindArmBinding(arm.pattern, tv);
+                if (self.error_count > 0) return null;
+            } else {
+                // Brazo refutable: test → bind (sólo si coincide) → guard.
+                const matched = self.patternTest(arm.pattern, tv) orelse return null;
+                next_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "arm_next");
+                const bind_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "arm_bind");
+                const body_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "arm_body");
+                _ = c.LLVMBuildCondBr(self.builder, matched, bind_bb, next_bb.?);
+
+                c.LLVMPositionBuilderAtEnd(self.builder, bind_bb);
+                self.bindArmBinding(arm.pattern, tv);
+                if (self.error_count > 0) return null;
+
+                if (arm.guard) |gi| {
+                    const g = self.emitExpr(gi) orelse return null;
+                    _ = c.LLVMBuildCondBr(self.builder, self.truthyI1(g), body_bb, next_bb.?);
+                } else {
+                    _ = c.LLVMBuildBr(self.builder, body_bb);
+                }
+                c.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+            }
+
+            const av = self.emitExpr(arm.body);
+            if (!self.isTerminated()) {
+                end_bbs[n_ends] = c.LLVMGetInsertBlock(self.builder);
+                _ = c.LLVMBuildBr(self.builder, merge_bb);
+                if (av) |v| {
+                    if (value_ty) |vt| {
+                        if (vt != v.ty) {
+                            self.unsupported(idx, "match arms have different types");
+                            return null;
+                        }
+                    } else value_ty = v.ty;
+                    end_vals[n_ends] = v.ref;
+                } else {
+                    all_valued = false;
+                }
+                n_ends += 1;
+            }
+            self.popScope();
+            if (total) break; // los brazos siguientes son inalcanzables
+            c.LLVMPositionBuilderAtEnd(self.builder, next_bb.?);
+        }
+
+        // El `next_bb` del último brazo refutable cae aquí (y un match sin
+        // brazos entra directo): este es el backstop MATCH_NONE del VM.
+        if (!self.isTerminated()) _ = c.LLVMBuildBr(self.builder, nomatch_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, nomatch_bb);
+        const linev = c.LLVMConstInt(self.t_i32, line, 0);
+        const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "no match arm matched", "");
+        var fargs = [_]c.LLVMValueRef{ linev, msgp };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+
+        c.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
+        if (n_ends > 0 and all_valued) {
+            if (value_ty) |vt| {
+                const phi = c.LLVMBuildPhi(self.builder, self.llvmTy(vt), "");
+                c.LLVMAddIncoming(phi, &end_vals, &end_bbs, @intCast(n_ends));
+                return .{ .ref = phi, .ty = vt };
+            }
+        }
+        return null;
+    }
+
+    /// Vínculos del patrón en el scope del brazo: el nombre a secas (cualquier
+    /// valor), o el payload de una variante builtin — `some(v)` carga los bits
+    /// con el tipo estático del objetivo (sólo en el camino coincidente: la
+    /// caja puede ser NULL). `_` no vincula nada; los literales no vinculan.
+    fn bindArmBinding(self: *Emitter, pat: u32, tv: Val) void {
+        switch (self.tree.node(pat)) {
+            .pattern_bind => |name| {
+                const alloca = self.buildAlloca(self.llvmTy(tv.ty));
+                _ = c.LLVMBuildStore(self.builder, tv.ref, alloca);
+                self.addLocal(name, alloca, tv.ty, tv.payload_ty);
+            },
+            .pattern_wildcard => {},
+            .pattern_builtin_variant => |bv| {
+                const pi = bv.payload orelse return;
+                switch (self.tree.node(pi)) {
+                    .pattern_wildcard => {},
+                    .pattern_bind => |name| {
+                        if (tv.ty != .boxed_) {
+                            self.unsupported(pi, "payload pattern requires an Option/Result target");
+                            return;
+                        }
+                        const pty = tv.payload_ty orelse {
+                            self.unsupported(pi, "cannot infer the payload type of this pattern");
+                            return;
+                        };
+                        const alloca = self.buildAlloca(self.llvmTy(pty));
+                        _ = c.LLVMBuildStore(self.builder, self.loadBoxPayload(tv.ref, pty), alloca);
+                        self.addLocal(name, alloca, pty, null);
+                    },
+                    else => self.unsupported(pi, "nested payload pattern"),
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Test de patrón puro → i1 (los bindings los hace bindArmBinding, que
+    /// corre sólo en el camino coincidente). Puede partir bloques — el test de
+    /// tag carga de la caja y NULL no es dereferenceable —; el i1 devuelto es
+    /// válido en la posición actual del builder.
+    fn patternTest(self: *Emitter, pat: u32, tv: Val) ?c.LLVMValueRef {
+        switch (self.tree.node(pat)) {
+            // `_` y el bind a secas siempre coinciden (el guard refina luego).
+            .pattern_wildcard, .pattern_bind => return c.LLVMConstInt(self.t_i1, 1, 0),
+            .pattern_builtin_variant => |bv| {
+                if (tv.ty != .boxed_) {
+                    self.unsupported(pat, "variant pattern requires an Option/Result target");
+                    return null;
+                }
+                const kind: u32 = switch (bv.kind) {
+                    .ok => TAG_OK,
+                    .err => TAG_ERR,
+                    .some => TAG_SOME,
+                    .none => 3, // none es nil en el VM: la caja NULL
+                };
+                if (kind == 3) {
+                    return c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tv.ref, c.LLVMConstPointerNull(self.t_ptr), "");
+                }
+                // non-NULL && tag == k; el load del tag sólo en el camino no-NULL.
+                const isnull = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tv.ref, c.LLVMConstPointerNull(self.t_ptr), "");
+                const tag_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "pat_tag");
+                const null_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "pat_null");
+                const join_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "pat_join");
+                _ = c.LLVMBuildCondBr(self.builder, isnull, null_bb, tag_bb);
+                c.LLVMPositionBuilderAtEnd(self.builder, tag_bb);
+                const isk = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, self.loadBoxTag(tv.ref), c.LLVMConstInt(self.t_i32, kind, 0), "");
+                _ = c.LLVMBuildBr(self.builder, join_bb);
+                c.LLVMPositionBuilderAtEnd(self.builder, null_bb);
+                _ = c.LLVMBuildBr(self.builder, join_bb);
+                c.LLVMPositionBuilderAtEnd(self.builder, join_bb);
+                const phi = c.LLVMBuildPhi(self.builder, self.t_i1, "");
+                var vals = [_]c.LLVMValueRef{ isk, c.LLVMConstInt(self.t_i1, 0, 0) };
+                var bbs = [_]c.LLVMBasicBlockRef{ tag_bb, null_bb };
+                c.LLVMAddIncoming(phi, &vals, &bbs, 2);
+                return phi;
+            },
+            .pattern_or => |list| {
+                var acc: ?c.LLVMValueRef = null;
+                for (self.tree.extraSlice(list)) |sp| {
+                    const t = self.patternTest(sp, tv) orelse return null;
+                    acc = if (acc) |a| c.LLVMBuildOr(self.builder, a, t, "") else t;
+                }
+                return acc orelse c.LLVMConstInt(self.t_i1, 1, 0);
+            },
+            .pattern_variant_bind => {
+                self.unsupported(pat, "user enum patterns");
+                return null;
+            },
+            else => {
+                // Literales (int/float/string/bool/nil): igualdad con el
+                // objetivo, la misma máquina que `==`.
+                const lit = self.emitExpr(pat) orelse return null;
+                return self.emitEqI1(pat, tv, lit);
+            },
+        }
+    }
+
+    /// `==`/`!=` como i1, compartido con los tests de patrón del match.
+    fn emitEqI1(self: *Emitter, idx: u32, a: Val, b: Val) ?c.LLVMValueRef {
+        if (a.ty != b.ty) {
+            self.unsupported(idx, "comparison of mixed types");
+            return null;
+        }
+        return switch (a.ty) {
+            .str_ => blk: {
+                var sargs = [_]c.LLVMValueRef{ a.ref, b.ref };
+                const eqv = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_eq), self.r_str_eq, &sargs, 2, "");
+                break :blk c.LLVMBuildTrunc(self.builder, eqv, self.t_i1, "");
+            },
+            .boxed_ => blk: {
+                var sargs = [_]c.LLVMValueRef{ a.ref, b.ref };
+                const eqv = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_boxed_eq), self.r_boxed_eq, &sargs, 2, "");
+                break :blk c.LLVMBuildTrunc(self.builder, eqv, self.t_i1, "");
+            },
+            .f64_ => c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, a.ref, b.ref, ""),
+            .i64_, .bool_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
+        };
+    }
     fn emitIdent(self: *Emitter, idx: u32, name: []const u8) ?Val {
         if (self.lookupLocal(name)) |l| {
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty };
         }
         if (self.globals.get(name)) |g| {
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, ""), .ty = g.ty };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, ""), .ty = g.ty, .payload_ty = g.payload_ty };
         }
         self.unsupported(idx, "reference to a function as a value");
         return null;
@@ -537,24 +877,10 @@ pub const Emitter = struct {
         const line = self.tree.loc(idx).line;
         switch (b.op) {
             .eq_eq, .neq => {
-                if (lhs.ty != rhs.ty) {
-                    self.unsupported(idx, "comparison of mixed types");
-                    return null;
-                }
-                if (lhs.ty == .str_) {
-                    // Igualdad por contenido (value_eq del VM): len + memcmp,
-                    // que es lo que resuelve los NULs intercalados (§2.14).
-                    var sargs = [_]c.LLVMValueRef{ lhs.ref, rhs.ref };
-                    const eqv = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_eq), self.r_str_eq, &sargs, 2, "");
-                    var e8 = c.LLVMBuildTrunc(self.builder, eqv, self.t_i8, ""); // i32 0/1 → i8 0/1
-                    if (b.op == .neq) e8 = c.LLVMBuildXor(self.builder, e8, c.LLVMConstInt(self.t_i8, 1, 0), "");
-                    return .{ .ref = e8, .ty = .bool_ };
-                }
-                const cmp = if (lhs.ty == .f64_)
-                    c.LLVMBuildFCmp(self.builder, if (b.op == .eq_eq) c.LLVMRealOEQ else c.LLVMRealUNE, lhs.ref, rhs.ref, "")
-                else
-                    c.LLVMBuildICmp(self.builder, if (b.op == .eq_eq) c.LLVMIntEQ else c.LLVMIntNE, lhs.ref, rhs.ref, "");
-                return .{ .ref = c.LLVMBuildZExt(self.builder, cmp, self.t_i8, ""), .ty = .bool_ };
+                const e1 = self.emitEqI1(idx, lhs, rhs) orelse return null;
+                var e8 = c.LLVMBuildZExt(self.builder, e1, self.t_i8, "");
+                if (b.op == .neq) e8 = c.LLVMBuildXor(self.builder, e8, c.LLVMConstInt(self.t_i8, 1, 0), "");
+                return .{ .ref = e8, .ty = .bool_ };
             },
             .lt, .gt, .le, .ge => {
                 if (lhs.ty != rhs.ty) {
@@ -566,6 +892,19 @@ pub const Emitter = struct {
                     // y el runtime dice no (types/string_order_rejected).
                     self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot compare string and string");
                     return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ }; // inalcanzable: fail es noreturn
+                }
+                if (lhs.ty == .boxed_) {
+                    // Igual que con strings, pero los nombres de tipo salen de
+                    // los tags en runtime: "cannot compare some and some".
+                    const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "cmp_fail");
+                    const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "cmp_cont");
+                    _ = c.LLVMBuildBr(self.builder, fail_bb);
+                    c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+                    var sargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), lhs.ref, rhs.ref };
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_boxed_order_fail), self.r_boxed_order_fail, &sargs, 3, "");
+                    _ = c.LLVMBuildUnreachable(self.builder);
+                    c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+                    return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ }; // inalcanzable
                 }
                 if (lhs.ty == .f64_) {
                     const pred: c.LLVMRealPredicate = switch (b.op) {
@@ -766,7 +1105,7 @@ pub const Emitter = struct {
                     abuf[i] = av.ref;
                 }
                 const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, if (args.len > 0) &abuf else null, @intCast(args.len), "");
-                if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.? };
+                if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload };
                 return null;
             },
             else => {
@@ -802,6 +1141,10 @@ pub const Emitter = struct {
                 .str_ => {
                     var sargs = [_]c.LLVMValueRef{av.ref};
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_str), self.r_print_str, &sargs, 1, "");
+                },
+                .boxed_ => {
+                    var xargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_boxed), self.r_print_boxed, &xargs, 1, "");
                 },
             }
         }
@@ -890,10 +1233,15 @@ pub const Emitter = struct {
             const len = c.LLVMBuildLoad2(self.builder, self.t_i64, v.ref, "");
             return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, len, c.LLVMConstInt(self.t_i64, 0, 0), "");
         }
+        if (v.ty == .boxed_) {
+            // `if some(x)` es legal (el typechecker admite opcional en `if`):
+            // some/ok/err (no NULL) → true, none (NULL) → false.
+            return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, c.LLVMConstPointerNull(self.t_ptr), "");
+        }
         const zero = switch (v.ty) {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
-            .f64_, .str_ => unreachable,
+            .f64_, .str_, .boxed_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
     }
@@ -931,8 +1279,8 @@ pub const Emitter = struct {
         return null;
     }
 
-    fn addLocal(self: *Emitter, name: []const u8, alloca: c.LLVMValueRef, ty: Ty) void {
-        self.scopes.items[self.scopes.items.len - 1].put(name, .{ .alloca = alloca, .ty = ty }) catch @panic("OOM");
+    fn addLocal(self: *Emitter, name: []const u8, alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty) void {
+        self.scopes.items[self.scopes.items.len - 1].put(name, .{ .alloca = alloca, .ty = ty, .payload_ty = payload_ty }) catch @panic("OOM");
     }
 
     fn varDeclOf(self: *Emitter, idx: u32) ast.VarDecl {
@@ -948,7 +1296,7 @@ pub const Emitter = struct {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
             .f64_ => self.t_f64,
-            .str_ => self.t_ptr,
+            .str_, .boxed_ => self.t_ptr,
         };
     }
 
@@ -960,8 +1308,73 @@ pub const Emitter = struct {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
             .f64_ => c.LLVMConstReal(self.t_f64, 0.0),
-            .str_ => c.LLVMConstPointerNull(self.t_ptr),
+            .str_, .boxed_ => c.LLVMConstPointerNull(self.t_ptr),
         };
+    }
+
+    /// Código ptype de un payload, para guardarlo en la caja (contrato con el
+    /// runtime). `null` si el tipo no puede vivir dentro de una caja.
+    fn boxPTy(ty: Ty) ?u32 {
+        return switch (ty) {
+            .bool_ => PTY_BOOL,
+            .i64_ => PTY_I64,
+            .f64_ => PTY_F64,
+            .str_ => PTY_STR,
+            .boxed_ => PTY_BOXED,
+        };
+    }
+
+    /// Payload → bits i64 para `wrap` (los scalares caben todos en 8 bytes).
+    fn toBits(self: *Emitter, ref: c.LLVMValueRef, ty: Ty) c.LLVMValueRef {
+        return switch (ty) {
+            .i64_ => ref,
+            .bool_ => c.LLVMBuildZExt(self.builder, ref, self.t_i64, ""),
+            .f64_ => c.LLVMBuildBitCast(self.builder, ref, self.t_i64, ""),
+            .str_, .boxed_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
+        };
+    }
+
+    /// Bits i64 del payload → valor con su tipo estático (inverse de toBits).
+    fn fromBits(self: *Emitter, bits: c.LLVMValueRef, ty: Ty) c.LLVMValueRef {
+        return switch (ty) {
+            .i64_ => bits,
+            .bool_ => c.LLVMBuildTrunc(self.builder, bits, self.t_i8, ""),
+            .f64_ => c.LLVMBuildBitCast(self.builder, bits, self.t_f64, ""),
+            .str_, .boxed_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
+        };
+    }
+
+    /// Carga el tag (i32 en el offset 0 de la caja).
+    fn loadBoxTag(self: *Emitter, box: c.LLVMValueRef) c.LLVMValueRef {
+        return c.LLVMBuildLoad2(self.builder, self.t_i32, box, "");
+    }
+
+    /// Carga el payload (i64 en el offset 8) y lo devuelve con su tipo.
+    fn loadBoxPayload(self: *Emitter, box: c.LLVMValueRef, pty: Ty) c.LLVMValueRef {
+        var idxs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i64, 8, 0) };
+        const pp = c.LLVMBuildGEP2(self.builder, self.t_i8, box, &idxs, 1, "");
+        const bits = c.LLVMBuildLoad2(self.builder, self.t_i64, pp, "");
+        return self.fromBits(bits, pty);
+    }
+
+    /// `some(x)`/`ok(x)`/`err(x)`: caja con tag, ptype y payload por valor.
+    fn emitWrap(self: *Emitter, idx: u32, tag: u32, inner: Val) ?Val {
+        const pty = boxPTy(inner.ty) orelse return self.unsupportedBox(idx);
+        const bits = self.toBits(inner.ref, inner.ty);
+        const line = self.tree.loc(idx).line;
+        var args = [_]c.LLVMValueRef{
+            c.LLVMConstInt(self.t_i32, line, 0),
+            c.LLVMConstInt(self.t_i32, tag, 0),
+            c.LLVMConstInt(self.t_i32, pty, 0),
+            bits,
+        };
+        const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_wrap), self.r_wrap, &args, 4, "");
+        return .{ .ref = r, .ty = .boxed_, .payload_ty = inner.ty };
+    }
+
+    fn unsupportedBox(self: *Emitter, idx: u32) ?Val {
+        self.unsupported(idx, "payload type not representable in an Option/Result box");
+        return null;
     }
 
     fn scalarM0Ty(self: *Emitter, node: ?u32) ?Ty {
@@ -979,6 +1392,46 @@ pub const Emitter = struct {
         }
     }
 
+    const Annot = struct { ty: Ty, payload: ?Ty };
+
+    /// Anotación de un opcional `T?` → (`boxed_`, payload T). Es la única forma
+    /// de anotar Option/Result: `fn increment(x: i32?) -> i32?` (try_operator).
+    fn boxedM0Ty(self: *Emitter, node: ?u32) ?Annot {
+        const ni = node orelse return null;
+        switch (self.tree.node(ni)) {
+            .type_optional => |inner| return .{ .ty = .boxed_, .payload = self.scalarM0Ty(inner) },
+            else => return null,
+        }
+    }
+
+    /// Anotación de parámetro/retorno/let: escalar o `T?`.
+    fn annotTy(self: *Emitter, node: ?u32) ?Annot {
+        if (self.scalarM0Ty(node)) |t| return .{ .ty = t, .payload = null };
+        return self.boxedM0Ty(node);
+    }
+
+    /// Tipo del payload de un `boxed_` inferido estructuralmente (los `T?`
+    /// anotados pasan por annotTy; aquí sólo constructores y referencia a un
+    /// valor ya tipado).
+    fn inferBoxPayload(self: *Emitter, idx: u32) ?Ty {
+        switch (self.tree.node(idx)) {
+            .some_expr, .ok_expr, .err_expr => |inner| return self.inferStaticTy(inner),
+            .identifier => |name| {
+                if (self.lookupLocal(name)) |l| return l.payload_ty;
+                if (self.globals.get(name)) |g| return g.payload_ty;
+                return null;
+            },
+            .call_expr => |call| switch (self.tree.node(call.callee)) {
+                .identifier => |nm| {
+                    if (self.fns.get(nm)) |fi| return fi.ret_payload;
+                },
+                else => {},
+            },
+            else => {},
+        }
+        return null;
+    }
+
     /// Inferencia de tipo M0 para inicializadores de globales (donde aún no hay
     /// valor emitido del cual leer el tipo). Suficiente para el subconjunto M0.
     fn inferStaticTy(self: *Emitter, idx: u32) ?Ty {
@@ -987,6 +1440,19 @@ pub const Emitter = struct {
             .float_literal => return .f64_,
             .string_literal => return .str_,
             .bool_literal => return .bool_,
+            .none_expr, .nil_literal, .some_expr, .ok_expr, .err_expr => return .boxed_,
+            .try_expr => |inner| return self.inferBoxPayload(inner),
+            .match_expr => |mm| {
+                // El valor del match: el tail del último brazo (el typechecker
+                // iguala los tipos de todos los brazos).
+                const arms = self.tree.extraSlice(mm.arms);
+                if (arms.len == 0) return null;
+                const last = self.tree.node(arms[arms.len - 1]).match_arm;
+                return switch (self.tree.node(last.body)) {
+                    .block => |blk| if (blk.tail) |t| self.inferStaticTy(t) else null,
+                    else => self.inferStaticTy(last.body),
+                };
+            },
             .identifier => |name| {
                 if (self.lookupLocal(name)) |l| return l.ty;
                 if (self.globals.get(name)) |g| return g.ty;
@@ -1127,4 +1593,89 @@ test "emite el guard de división entre cero con astra_llvm_fail" {
     const ir_str = std.mem.span(ir);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_fail") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "division by zero") != null);
+}
+
+test "emite match de Option: TAG_IS inline, bindings y backstop MATCH_NONE" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\fn half(x: i32?) -> i32? {
+        \\    return match x {
+        \\        some(v) if v > 0 => some(v / 2),
+        \\        some(v) => some(v),
+        \\        none => none,
+        \\    }
+        \\}
+        \\fn main() {
+        \\    print(half(some(8)))
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "match.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "match.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "match.astra");
+    defer em.deinit();
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+    // El backstop de los brazos refutables y la construcción de la caja.
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "no match arm matched") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_wrap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_llvm_print_boxed") != null);
+}
+
+test "emite ?: payload en ok/some y ret temprano del boxed en err/none" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\fn inc(x: i32?) -> i32? {
+        \\    let v = x?
+        \\    return some(v + 1)
+        \\}
+        \\fn main() {
+        \\    print(inc(none))
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "try.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "try.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "try.astra");
+    defer em.deinit();
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir_s = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir_s);
+    const ir_str = std.mem.span(ir_s);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "try_err") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "try_ok") != null);
 }
