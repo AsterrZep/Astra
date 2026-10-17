@@ -300,7 +300,7 @@ typedef struct {
     Type          *enum_type;
 } VariantEntry;
 
-/* One entry per method declared in an `impl` block (research/010 §12). The
+/* One entry per method declared in an `impl` block (research/001 §12). The
  * registry is keyed by the receiver's *nominal* type name plus the method
  * name — there is no vtable: `x.m()` resolves at compile time to the mangled
  * global `Type.method` (static dispatch, Phase 2.3 step 3-4). `fn_type`
@@ -319,7 +319,7 @@ typedef struct {
 } MethodEntry;
 
 /* Trait signature registry (Phase 2.3 step 5): a trait declaration is a list
- * of required method signatures (research/010 §12). Signatures are collected
+ * of required method signatures (research/001 §12). Signatures are collected
  * in their own pre-pass so an `impl T for X` may appear before `trait T`,
  * and a body on a trait item is rejected there — default methods are a later
  * phase. */
@@ -1610,7 +1610,7 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
     Node *callee_node = node->as.call.callee;
 
     /* A bare identifier callee may name a data-carrying enum variant:
-     * `Paso(x)` / `PasoDoble(1, 2)` (research/04 §9.2). The grammar cannot
+     * `Paso(x)` / `PasoDoble(1, 2)` (research/004 §9.2). The grammar cannot
      * tell it from a function call, so resolution is by name: the variant
      * registry wins unless the name also binds a function. */
     if (callee_node->kind == NODE_IDENT) {
@@ -1947,7 +1947,7 @@ static Type *typecheck_field_access(TypeChecker *tc, Node *node) {
 }
 
 /* A block's value is its trailing expression
- * (`Block ::= "{" Statement* Expression? "}"`, research/010 §12.1 and §4.2).
+ * (`Block ::= "{" Statement* Expression? "}"`, research/001 §12.1 and §4.2).
  * A block that ends in a statement — including an expression statement
  * terminated by `;`, which is how §4.2 says a value is discarded — has no
  * value at all, so its type is void and it cannot be bound. Tracking the type
@@ -2316,7 +2316,7 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
         symbol_table_pop_scope(tc->symbols);
     }
 
-    /* Exhaustiveness (research/04 §9, ARCHITECTURE.md §11.3): an enum
+    /* Exhaustiveness (research/004 §9, ARCHITECTURE.md §11.3): an enum
      * match without a wildcard covers every variant; an optional match
      * must cover the payload tag (some/ok/err) and none; bool is proven
      * with its two literals; every other target needs a catch-all `_`
@@ -2354,7 +2354,7 @@ static Type *typecheck_match(TypeChecker *tc, Node *node) {
          * infinite or non-pattern-enumerable space and Astra-0 has no
          * range patterns, so a catch-all is mandatory — matching the
          * `compile error por defecto` of ARCHITECTURE.md §11.3 and the
-         * strict model chosen by research/04 (audit §3.8). Without this
+         * strict model chosen by research/004 (audit §3.8). Without this
          * the match fell through at run time and yielded a nil that lied
          * under whatever type the context promised. */
         tc_error(tc, node->loc,
@@ -2407,7 +2407,7 @@ static Type *typecheck_continue(TypeChecker *tc, Node *node) {
  * declared mutable — `let xs = ...; xs[0] = 9` is rejected.
  * `LValue ::= Identifier | LValue "." Identifier | LValue "[" Expression "]"`
  * (see constructs/assign.c, which owns the Assignment production;
- * research/010 §12.1 uses LValue without defining it). */
+ * research/001 §12.1 uses LValue without defining it). */
 static Node *lvalue_root(Node *n) {
     while (n) {
         if (n->kind == NODE_FIELD_ACCESS)  { n = n->as.field_access.object; continue; }
@@ -2748,7 +2748,7 @@ static void typecheck_fn_body(TypeChecker *tc, Node *fn_node) {
         if (!body_type) body_type = type_new(tc->arena, TYPE_ERROR);
 
         /* The body's value must satisfy the declared return type, whether it
-         * arrives through the tail expression (research/010 §4.2) or through an
+         * arrives through the tail expression (research/001 §4.2) or through an
          * explicit `return`. Without this `fn f() -> i32 { }` compiled cleanly
          * and returned nil at run time — the declared type simply lied. */
         Type *declared = tc->current_fn_return;
@@ -3335,7 +3335,7 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
      * which made the operator unusable. The VM agrees: OPCODE_TRY_UNWRAP errors
      * out with "? requires Result or Option" when the value carries no tag.
      * Static Result typing (a distinct TYPE_RESULT, so `err` cannot be confused
-     * with a present value) is Tier 2 per research/011 §5.2; here both OK/ERR
+     * with a present value) is Tier 2 per research/002 §5.2; here both OK/ERR
      * carry the payload type and the distinction lives in the runtime tag. */
     case NODE_SOME_EXPR: {
         Type *inner = typecheck_node(tc, node->as.some_expr.value);
@@ -3487,7 +3487,7 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
                                 "variant payload outside an enum declaration");
 
     /* `use` is parsed and then discarded: the driver compiles a single file, so
-     * module resolution is deliberately not the seed's job (research/011 §5.2).
+     * module resolution is deliberately not the seed's job (research/002 §5.2).
      * It is still an Astra-0 construct (constructs/use.c sets in_astra0), but
      * this dispatch had no case for it, so every `use` fell through to the
      * "unhandled node kind" error and the construct was unusable. */
@@ -3495,7 +3495,7 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
 
     /* `import` / `from` are parsed and then discarded for the same reason as
      * `use`: the seed compiles a single file, so module resolution is not its
-     * job (research/011 §5.2, ARCHITECTURE.md §10). The item nodes exist only
+     * job (research/002 §5.2, ARCHITECTURE.md §10). The item nodes exist only
      * to record the names a `from` statement would bring into scope. */
     case NODE_IMPORT:
     case NODE_FROM:

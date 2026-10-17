@@ -16,7 +16,7 @@ const ConstructSpec construct_continue = {
     .in_astra0  = true,
     .deps       = NULL,
     .grammar    = "ContinueStmt ::= \"continue\"",
-    .research   = "research/010 §12.1 (statements)",
+    .research   = "research/001 §12.1 (statements)",
     .note       = "Jumps to the loop's update/test point, which differs between "
                   "`while` (re-test the condition) and `for` (advance the index).",
     .parse = NULL, .check = NULL, .emit = NULL,

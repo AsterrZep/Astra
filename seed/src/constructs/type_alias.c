@@ -22,10 +22,10 @@ const ConstructSpec construct_type_alias = {
     .in_astra0 = false,
     .deps      = deps,
     .grammar   = "TypeAlias ::= \"type\" Identifier (\"=\" | \"<\" GenericParams \">\") Type",
-    .research  = "research/010 §12.1 (type aliases)",
+    .research  = "research/001 §12.1 (type aliases)",
     .note      = "Excluded from Astra-0: aliases need the type system to resolve names "
                   "to types before checking, which the seed's flat name lookup does "
-                  "(research/011 §8.4 keeps the seed's environment simple). The "
+                  "(research/002 §8.4 keeps the seed's environment simple). The "
                   "production itself looks malformed — the `\"<\" GenericParams \">\"` "
                   "branch has no `=` and so no target type; the report should be fixed. "
                   "No lexer token for \"type\" exists.",

@@ -23,11 +23,11 @@ const ConstructSpec construct_pattern_enum = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "EnumPattern ::= Path (\"(\" Pattern (\",\" Pattern)* \")\")?",
-    .research  = "research/010 §5.3 (Pattern grammar); research/04 §9.4 (nested patterns), "
+    .research  = "research/001 §5.3 (Pattern grammar); research/004 §9.4 (nested patterns), "
                   "§9.2 (variants with data)",
     .note      = "Unit variants only, lowered to NODE_FIELD_ACCESS + the enum type in the "
                   "checker. Payload patterns (`Color.Rgb(r, g, b) =>`), nested patterns "
-                  "and `Bindings con @` (research/04 §9.4) are specified and not "
+                  "and `Bindings con @` (research/004 §9.4) are specified and not "
                   "implemented; they need pattern_ident to bind values first.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

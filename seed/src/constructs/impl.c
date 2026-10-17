@@ -27,16 +27,16 @@ const ConstructSpec construct_impl = {
     .in_astra0  = true,
     .deps       = deps,
     .grammar    = "ImplBlock ::= \"impl\" GenericParams? Type (\"for\" Type)? WhereClause? \"{\" ImplItem* \"}\"",
-    .research   = "research/010 §12.1 (impl blocks); research/011 §5.2 (simple dispatch only)",
+    .research   = "research/001 §12.1 (impl blocks); research/002 §5.2 (simple dispatch only)",
     .note       = "In Astra-0: conformance/traits/* and conformance/generics/* pass on "
-                  "it (audit §7.14 — research/011 §5.2 deferred it, the implemented "
+                  "it (audit §7.14 — research/002 §5.2 deferred it, the implemented "
                   "language did not). Phase 2.3: parses into NODE_IMPL "
                   "(inherent `impl T` and `impl Tr for T`), the checker registers the "
                   "methods for static dispatch and verifies trait conformance, and the "
                   "emitter compiles them as mangled `Type.method` globals. Static "
-                  "dispatch only for now — vtables and UFCS stay deferred (research/011 "
+                  "dispatch only for now — vtables and UFCS stay deferred (research/002 "
                   "§5.2). Generic parameters parse inert since Phase 2.4 step 1 (the "
-                  "checker skips a block that carries one). Note research/010 §12.1 "
+                  "checker skips a block that carries one). Note research/001 §12.1 "
                   "spells the type parameter list of `impl` as a bare GenericParams, "
                   "which is inconsistent with the other declarations (it would need an "
                   "`<...>`); worth fixing in the report.",

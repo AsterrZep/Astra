@@ -1,4 +1,4 @@
-# CPython Internal Architecture: Comprehensive Technical Report
+# 007 — CPython Internal Architecture: Comprehensive Technical Report
 
 *Research for the Astra Language — Understanding HOW Python Works Internally*
 

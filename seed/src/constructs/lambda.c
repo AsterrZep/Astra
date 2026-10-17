@@ -22,7 +22,7 @@ const ConstructSpec construct_lambda = {
     .deps       = deps,
     .grammar    = "LambdaExpr ::= \"|\" LambdaParams? \"|\" (\"->\" Type)? Block\n"
                   "LambdaParam ::= Identifier (\":\" Type)?",
-    .research   = "research/010 §12.1 (lambda/closure); research/011 §5.2 (Tier 2 of the MVP)",
+    .research   = "research/001 §12.1 (lambda/closure); research/002 §5.2 (Tier 2 of the MVP)",
     .note       = "Lambdas compile to inner FnObj values, like regular functions. "
                   "Closures capture by value (ARCHITECTURE.md §30.5); assigning to "
                   "a captured variable is a compile error. "

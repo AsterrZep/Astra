@@ -21,9 +21,9 @@ const ConstructSpec construct_comptime = {
     .deps       = deps,
     .grammar    = "ComptimeBlock ::= \"comptime\" (Block | \":\" Statement)\n"
                   "ComptimeExpr ::= \"comptime\" Expression",
-    .research   = "research/010 §8 (comptime grammar); research/Comptime_Metaprogramming_Report.md; "
-                  "research/011 §5.3 (explicitly not needed by the seed)",
-    .note       = "Excluded from Astra-0 by explicit decision (research/011 §2.3 and §5.3: "
+    .research   = "research/001 §8 (comptime grammar); research/Comptime_Metaprogramming_Report.md; "
+                  "research/002 §5.3 (explicitly not needed by the seed)",
+    .note       = "Excluded from Astra-0 by explicit decision (research/002 §2.3 and §5.3: "
                   "the seed implements \"only what is needed to compile the self-hosting "
                   "compiler\", and the self-hosting compiler is written in Astra-0 without "
                   "comptime). Lexes to TOKEN_COMPTIME and is rejected by the parser.",

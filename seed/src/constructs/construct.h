@@ -19,10 +19,10 @@
  * Granularity policy — a construct is *one EBNF production*.
  *   `IfExpr ::= "if" Expression Block ("else" (IfExpr | Block))?`
  * mixes two productions, so `if` and `else` are separate files.
- * The eleven binary-operator productions of research/010 §12.1 are
+ * The eleven binary-operator productions of research/001 §12.1 are
  * deliberately NOT split eleven ways: they are mechanically derived
  * from one precedence table, so the table is the single source of
- * truth (see binary_op.c and research/010 §2.4).
+ * truth (see binary_op.c and research/001 §2.4).
  *
  * Adding a construct:
  *   1. cp constructs/binary_op.c constructs/<name>.c and fill it in
@@ -48,7 +48,7 @@ typedef enum {
 
 /* Where the construct is allowed to appear. A construct may occupy more
  * than one position (`if` is both a statement and an expression, per the
- * expression-oriented model of research/010 §3.2). */
+ * expression-oriented model of research/001 §3.2). */
 typedef enum {
     CONSTRUCT_STMT    = 1u << 0,
     CONSTRUCT_EXPR    = 1u << 1,
@@ -96,7 +96,7 @@ struct ConstructSpec {
     bool               has_braces;/* production contains a `{ ... }` body   */
     bool               in_astra0; /* false: specified but out of seed scope */
     const char *const *deps;      /* NULL-terminated sub-construct names    */
-    const char        *grammar;   /* the EBNF production (research/010)     */
+    const char        *grammar;   /* the EBNF production (research/001)     */
     const char        *research;  /* where this construct is specified      */
     const char        *note;      /* decisions, deviations, known gaps      */
     ConstructParseFn   parse;
@@ -105,7 +105,7 @@ struct ConstructSpec {
 };
 
 /* ------------------------------------------------------------
- * Operator table (research/010 §2.4 + §12.2)
+ * Operator table (research/001 §2.4 + §12.2)
  * ------------------------------------------------------------ */
 
 typedef enum {
@@ -136,7 +136,7 @@ typedef struct {
      * unary_op.c). The self-check compares this against the parser's own
      * table whenever it is non-zero and the operator is not a prefix. */
     uint8_t       binding_power;
-    /* The row research/010 §12.2 assigns this operator, or 0 when the
+    /* The row research/001 §12.2 assigns this operator, or 0 when the
      * specification has no entry for it. Kept only so the dump can show
      * where the report and the implementation disagree. */
     uint8_t       doc_precedence;
@@ -147,7 +147,7 @@ typedef struct {
 
 const OperatorSpec *operator_table(size_t *out_count);
 
-/* Rows research/010 §12.2 specifies that Astra-0 does not implement
+/* Rows research/001 §12.2 specifies that Astra-0 does not implement
  * (`**`). Kept out of the main table so the self-check never compares an
  * unimplemented operator against the parser. */
 const OperatorSpec *operator_pending_table(size_t *out_count);

@@ -27,9 +27,9 @@ const ConstructSpec construct_trait = {
     .in_astra0  = true,
     .deps       = deps,
     .grammar    = "TraitDef ::= \"trait\" Identifier GenericParams? WhereClause? \"{\" TraitItem* \"}\"",
-    .research   = "research/010 §12.1 (trait definition)",
+    .research   = "research/001 §12.1 (trait definition)",
     .note       = "In Astra-0: conformance/traits/* passes on it (audit §7.14 — "
-                  "research/011 §5.2 and §2.3 said \"don't implement traits, generics "
+                  "research/002 §5.2 and §2.3 said \"don't implement traits, generics "
                   "or comptime in the seed\", and Phase 2.3 implemented them anyway). "
                   "Parses into NODE_TRAIT, the checker collects the required method "
                   "signatures for conformance and the emitter skips the block (traits "

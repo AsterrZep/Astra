@@ -1,4 +1,4 @@
-// `break` con valor: la gramática de research/010 permite
+// `break` con valor: la gramática de research/001 permite
 // `break Expression?`, pero Astra-0 no tiene `loop` para recibir el valor
 // (constructs/break.c documenta el hueco) y ambos parsers se lo tragaban
 // en silencio: `break 5` compilaba como `break` más una expresión muerta.

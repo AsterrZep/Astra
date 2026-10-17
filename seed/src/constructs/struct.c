@@ -5,7 +5,7 @@
  * `StructFields ::= StructField ("," StructField)* ","?`
  * `StructField  ::= Identifier ":" Type`
  *
- * Product types: research/04 §9.3. The literal form is the separate
+ * Product types: research/004 §9.3. The literal form is the separate
  * struct_lit construct. A struct declaration produces no bytecode of
  * its own — the emitter collects the layout up front so that
  * literals and field access can be resolved by name.
@@ -29,11 +29,11 @@ const ConstructSpec construct_struct = {
     .grammar    = "StructDef ::= StructQualifiers \"struct\" Identifier GenericParams? WhereClause? "
                   "\"{\" StructFields? \"}\"\n"
                   "StructFields ::= StructField (\",\" StructField)* \",\"?",
-    .research  = "research/04 §9.3 (product types), §6.1-6.4 (layouts); research/010 §12.1",
+    .research  = "research/004 §9.3 (product types), §6.1-6.4 (layouts); research/001 §12.1",
     .note      = "Fields are layout-ordered by declaration; the emitter resolves field "
                   "access by name against the StructInfo table. Generic parameters parse "
                   "inert since Phase 2.4 step 1 (the checker skips the declaration); "
-                  "qualifiers and tuple structs (`struct Pair(i32, i32)`, research/04 "
+                  "qualifiers and tuple structs (`struct Pair(i32, i32)`, research/004 "
                   "§9.3) are not implemented. Struct layouts are duplicated into each "
                   "function's constant pool, because every VM function owns its own pool.",
     .parse = NULL, .check = NULL, .emit = NULL,

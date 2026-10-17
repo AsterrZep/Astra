@@ -144,7 +144,7 @@ Detectados en el binario:
 | `file-picker` | Localizar los archivos de constructo y los docs de investigación |
 | `code-searcher` | Rastrear un `switch` de nodos por todo el compilador |
 | `researcher-web` | Comprobar precedencia o semántica contra otros lenguajes |
-| `researcher-docs` | Leer `research/010` §12.1 sin quemar contexto del padre |
+| `researcher-docs` | Leer `research/001` §12.1 sin quemar contexto del padre |
 | `basher` | `make`, `make debug`, `./tests/run_tests.sh` en ciclo cerrado |
 | `code-reviewer-*` | Revisar los invariantes de pila de la VM de forma independiente |
 | `context-pruner` | Comprimir los reportes de investigación leídos |
@@ -196,7 +196,7 @@ codebuff --version
 
 # 3. frentes en paralelo, cada uno con su verificación
 #    - construct:pattern_ident   -> desbloquea variantes con datos
-#    - construct:enum_variant    -> payload + layout (research/04 §9.3, §6)
+#    - construct:enum_variant    -> payload + layout (research/004 §9.3, §6)
 #    - construct:match_arm       -> guards
 #    - basher                    -> make debug && tests/run_tests.sh
 

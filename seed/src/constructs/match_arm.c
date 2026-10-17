@@ -22,7 +22,7 @@ const ConstructSpec construct_match_arm = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "MatchArm ::= Pattern (\"if\" Expression)? \"=>\" (Expression | Block) \",\"?",
-    .research  = "research/010 §5.2-5.3, §12.1; research/04 §9.4 (guards, or-patterns, nesting)",
+    .research  = "research/001 §5.2-5.3, §12.1; research/004 §9.4 (guards, or-patterns, nesting)",
     .note      = "Arms are stored as (pattern, guard, body) triples on NODE_MATCH, "
                   "so this production owns no node. The guard is an optional expression "
                   "node (NULL when absent). The trailing comma is optional.",

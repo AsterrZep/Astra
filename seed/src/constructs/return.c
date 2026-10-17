@@ -16,7 +16,7 @@ const ConstructSpec construct_return = {
     .in_astra0  = true,
     .deps       = NULL,
     .grammar    = "ReturnStmt ::= \"return\" Expression?",
-    .research   = "research/010 §12.1 (statements)",
+    .research   = "research/001 §12.1 (statements)",
     .note       = "`return` with no value is a distinct shape from `return expr`, so "
                   "the emitter must not leave a value on the stack for the bare form.",
     .parse = NULL, .check = NULL, .emit = NULL,

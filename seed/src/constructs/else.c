@@ -25,7 +25,7 @@ const ConstructSpec construct_else = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "\"else\" (IfExpr | Block)",
-    .research  = "research/010 §3.2, §12.1",
+    .research  = "research/001 §3.2, §12.1",
     .note      = "Builds no node of its own: `else { }` is the else-branch Block and "
                  "`else if` is a nested NODE_IF. Owned by `if`.",
     .parse = NULL, .check = NULL, .emit = NULL,

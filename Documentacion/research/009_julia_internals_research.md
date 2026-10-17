@@ -1,4 +1,4 @@
-# Julia Internal Architecture: Deep Research for Astra Language Design
+# 009 — Julia Internal Architecture: Deep Research for Astra Language Design
 
 ## Executive Summary
 

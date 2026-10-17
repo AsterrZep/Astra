@@ -4,7 +4,7 @@
  *
  * Arms are a construct of their own (match_arm.c), so guards,
  * bindings and arm-level lowering (jump table vs. test chain —
- * research/04 §7.1-7.3) can change without touching the match
+ * research/004 §7.1-7.3) can change without touching the match
  * header.
  * ============================================================ */
 
@@ -24,10 +24,10 @@ const ConstructSpec construct_match = {
     .in_astra0  = true,
     .deps       = deps,
     .grammar    = "MatchExpr ::= \"match\" Expression \"{\" MatchArm+ \"}\"",
-    .research   = "research/04 §7 (compilation strategies), §9.4 (pattern matching), "
-                  "§9.7 (exhaustiveness); research/010 §5.2-5.3",
+    .research   = "research/004 §7 (compilation strategies), §9.4 (pattern matching), "
+                  "§9.7 (exhaustiveness); research/001 §5.2-5.3",
     .note       = "The scrutinee is evaluated exactly once into a hidden local. "
                   "Exhaustiveness is checked over unit enums; a wildcard arm "
-                  "discharges the check (research/04 §9.7).",
+                  "discharges the check (research/004 §9.7).",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

@@ -12,7 +12,7 @@
  *
  * This is the file to change when enums gain payloads: the
  * `Enum.Variant(payload)` form needs a real node
- * (research/04 §9.3).
+ * (research/004 §9.3).
  * ============================================================ */
 
 #include "constructs/construct.h"
@@ -30,9 +30,9 @@ const ConstructSpec construct_variant_path = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "Path ::= Identifier (\".\" Identifier)*        (lowered to NODE_FIELD_ACCESS)",
-    .research  = "research/04 §9.2 (enum declaration), §9.4 (patterns); research/010 §12.1",
+    .research  = "research/004 §9.2 (enum declaration), §9.4 (patterns); research/001 §12.1",
     .note      = "Deliberately node-less: `Enum.Variant` is resolved by the type checker "
-                  "out of NODE_FIELD_ACCESS. Payload variants (research/04 §9.3, "
+                  "out of NODE_FIELD_ACCESS. Payload variants (research/004 §9.3, "
                   "`Forma.Circulo(1.0)`) will need a dedicated node and will be the "
                   "point where this construct stops being transparent.",
     .parse = NULL, .check = NULL, .emit = NULL,

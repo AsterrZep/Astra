@@ -189,7 +189,7 @@ fn factorial(n: i32) -> i32 {
 let numbers: [i32] = [1, 2, 3, 4, 5];
 
 // Option/Result: Astra-0 hoy no tiene anotaciones estáticas
-// `Result<T, E>` ni constructores `Ok`/`Err` (Tier 2, research/011 §5.2):
+// `Result<T, E>` ni constructores `Ok`/`Err` (Tier 2, research/002 §5.2):
 // los valores de resultado son `ok(x)`/`err(e)` sobre el tipo `T?`, y la
 // propagación `?` funciona igual.
 fn divide(a: f64, b: f64) -> f64? {

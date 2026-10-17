@@ -42,17 +42,17 @@ struct Parser {
     bool          no_struct_lit;
     /* True when the statement just parsed was terminated by a `;`. A block's
      * trailing expression must NOT be: `Block ::= "{" Statement* Expression?
-     * "}"` is how research/010 §4.2 says a value is discarded. Without this
+     * "}"` is how research/001 §4.2 says a value is discarded. Without this
      * flag an expression statement ending in `;` was indistinguishable from a
      * tail expression, because optional_semi swallows both `;` and newlines. */
     bool          last_stmt_semi;
     /* True while parsing the items of a trait or impl block: a typeless
-     * `self` receiver is legal only there (research/010 §12.1 FunctionParam;
+     * `self` receiver is legal only there (research/001 §12.1 FunctionParam;
      * `self` stays a plain identifier everywhere else, so `let self = 5`
      * keeps compiling). */
     bool          allow_self;
     /* True only inside a trait block: a method may be a signature without a
-     * body (`fn show(self)`), the trait-item form of research/010 §12.1. */
+     * body (`fn show(self)`), the trait-item form of research/001 §12.1. */
     bool          allow_sig_only;
 };
 
@@ -164,7 +164,7 @@ static void synchronize(Parser *p) {
 }
 
 /* Consume optional semicolons and newlines, recording whether a real `;` was
- * seen: a statement terminated by one has no value (research/010 §4.2). */
+ * seen: a statement terminated by one has no value (research/001 §4.2). */
 static void optional_semi(Parser *p) {
     while (check(p, TOKEN_NEWLINE) || check(p, TOKEN_SEMICOLON)) {
         if (check(p, TOKEN_SEMICOLON)) p->last_stmt_semi = true;
@@ -370,7 +370,7 @@ static Node *parse_binary(Parser *p, Node *left, Precedence prec) {
 
 /* `LValue ::= Identifier | LValue "." Identifier | LValue "[" Expression "]"`
  *
- * research/010 §12.1 writes `Assignment ::= LValue "=" Assignment` but never
+ * research/001 §12.1 writes `Assignment ::= LValue "=" Assignment` but never
  * defines LValue anywhere in the report. The shape above is the one the AST can
  * actually represent, and the typechecker enforces the mutability of the root
  * binding. See src/constructs/assign.c, which owns the Assignment production. */
@@ -588,7 +588,7 @@ static Node *parse_block_impl(Parser *p) {
         Node *stmt = parse_statement(p);
         if (stmt) {
             /* Newlines between the last statement and `}` do not discard its
-             * value — only `;` does (research/010 §4.2: `Expression ";"` is a
+             * value — only `;` does (research/001 §4.2: `Expression ";"` is a
              * statement, `Expression` is the tail). Compound statements
              * (`match`, `if`, a nested block) never run optional_semi, so the
              * newline was still in front of `}` here and they were never
@@ -1012,7 +1012,7 @@ static void fn_add_param(Parser *p, Node *fn, InternedString name, Node *type) {
     f->param_types.len++;
 }
 
-/* Generic parameter list: `<T, U: Show + Debug>` (research/010 §12.1
+/* Generic parameter list: `<T, U: Show + Debug>` (research/001 §12.1
  * GenericParams/GenericParam/TraitBounds). A declaration without `<` is the
  * overwhelming majority — the helper consumes nothing then. The list is
  * stored as NODE_TYPE_PARAM nodes in the declaration's `generics`; bounds
@@ -1101,7 +1101,7 @@ static Node *parse_fn_decl(Parser *p, bool is_pub) {
             InternedString pname = p->previous.text;
             /* A typeless `self` receiver: the name stands alone (`,` or `)`
              * follows), so `self: Point` keeps meaning an ordinary parameter
-             * literally named `self` (research/010 §12.1 FunctionParam). */
+             * literally named `self` (research/001 §12.1 FunctionParam). */
             if (is_self_name(pname) && !check(p, TOKEN_COLON)) {
                 if (!p->allow_self) {
                     parser_error(p, "'self' parameter outside a trait or impl");
@@ -1139,7 +1139,7 @@ static Node *parse_fn_decl(Parser *p, bool is_pub) {
     }
 
     /* Body. Inside a trait a method may stop at its signature
-     * (research/010 §12.1 TraitItem); an empty block stands in for the
+     * (research/001 §12.1 TraitItem); an empty block stands in for the
      * missing body so every later phase sees a well-formed function. */
     skip_newlines(p);
     if (p->allow_sig_only && !check(p, TOKEN_LBRACE)) {
@@ -1260,7 +1260,7 @@ static Node *parse_enum_decl(Parser *p, bool is_pub) {
             }
         }
         /* Variant payload: `Paso(i32)` / `PasoDoble(x: i32, y: i32)`
-         * (research/04 §9.2; owned by constructs/enum_variant.c). */
+         * (research/004 §9.2; owned by constructs/enum_variant.c). */
         Node *payload = NULL;
         if (match(p, TOKEN_LPAREN)) {
             payload = node_new(p->arena, NODE_PAYLOAD, p->previous.loc);
@@ -1350,7 +1350,7 @@ static Node *parse_enum_decl(Parser *p, bool is_pub) {
 }
 
 /* -----------------------------------------------------------
- * Trait declaration (research/010 §12.1 TraitDef)
+ * Trait declaration (research/001 §12.1 TraitDef)
  * ----------------------------------------------------------- */
 
 static Node *parse_trait_decl(Parser *p, bool is_pub) {
@@ -1408,7 +1408,7 @@ static Node *parse_trait_decl(Parser *p, bool is_pub) {
 }
 
 /* -----------------------------------------------------------
- * Impl block (research/010 §12.1 ImplBlock)
+ * Impl block (research/001 §12.1 ImplBlock)
  * ----------------------------------------------------------- */
 
 static Node *parse_impl_block(Parser *p) {
@@ -1526,7 +1526,7 @@ static InternedString parse_module_path(Parser *p);
 static Node *parse_use(Parser *p) {
     SrcLoc loc = p->previous.loc;
     /* Path: ImportPath, the shared form of the construct grammar
-     * (constructs/use.c, research/010 §12.1). This used to parse the shape on
+     * (constructs/use.c, research/001 §12.1). This used to parse the shape on
      * its own and matched TOKEN_COLON_COLON, so `use a::b` was accepted here
      * and nowhere else in the language — `::` is not a path separator anywhere
      * else (variant paths are `Color.Rojo`, field access is `s.field`). The
@@ -1535,13 +1535,13 @@ static Node *parse_use(Parser *p) {
     (void)parse_module_path(p);
     optional_semi(p);
     /* Parsed and discarded: the driver compiles a single file, so module
-     * resolution is deliberately not the seed's job (research/011 §5.2). */
+     * resolution is deliberately not the seed's job (research/002 §5.2). */
     Node *n = node_new(p->arena, NODE_USE, loc);
     return n;
 }
 
 /* -----------------------------------------------------------
- * Import / from declarations (research/010 §12.1)
+ * Import / from declarations (research/001 §12.1)
  * ----------------------------------------------------------- */
 
 /* ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)* — the form
@@ -1572,7 +1572,7 @@ static InternedString parse_module_path(Parser *p) {
 }
 
 /* `import a.b as c` — binds a whole module under an optional alias
- * (research/010 §12.1). */
+ * (research/001 §12.1). */
 static Node *parse_import(Parser *p) {
     SrcLoc loc = p->previous.loc; /* the `import` keyword */
     InternedString path = parse_module_path(p);
@@ -1592,7 +1592,7 @@ static Node *parse_import(Parser *p) {
 }
 
 /* `from a.b import x, y as z` — brings selected names into scope
- * (research/010 §12.1). */
+ * (research/001 §12.1). */
 static Node *parse_from(Parser *p) {
     SrcLoc loc = p->previous.loc; /* the `from` keyword */
     InternedString path = parse_module_path(p);
@@ -1778,7 +1778,7 @@ static Node *parse_statement(Parser *p) {
 
     /* `pub` marks a declaration as exported (ARCHITECTURE §10.2). Recorded on
      * the AST node; per-module visibility kicks in with the module system.
-     * research/010 §12.1 allows repeated qualifiers (`pub*`); only the
+     * research/001 §12.1 allows repeated qualifiers (`pub*`); only the
      * exportable kinds take it (`impl` never is — it attaches to a type). */
     bool is_pub = false;
     if (check(p, TOKEN_PUB)) {

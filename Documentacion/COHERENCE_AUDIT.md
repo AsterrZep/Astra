@@ -5,8 +5,8 @@ Fecha: 2026-09-16. Alcance: el compilador semilla (`seed/`) contrastado con
 `Documentacion/research/`.
 
 Método: 14 programas de sondeo ejecutados contra `astra-seed` (con volcado de
-AST y de bytecode para aislar la causa), más lectura dirigida de `research/010`
-§3-§12, `research/011` §2, §5, §7, §8, §11-§15 y `research/04` §6-§9.
+AST y de bytecode para aislar la causa), más lectura dirigida de `research/001`
+§3-§12, `research/002` §2, §5, §7, §8, §11-§15 y `research/004` §6-§9.
 
 > **Segunda pasada — 2026-09-21.** Esta auditoría es de *coherencia*
 > (documento↔código). Una segunda pasada, esta vez **ejecutando** el binario y con
@@ -28,7 +28,7 @@ AST y de bytecode para aislar la causa), más lectura dirigida de `research/010`
 
 Las decisiones estructurales del seed coinciden con lo investigado casi punto
 por punto (§7). Pero falta por completo una de las dos decisiones centrales del
-lenguaje: **Astra es orientado a expresiones** (`research/010` §3.2, "Rust
+lenguaje: **Astra es orientado a expresiones** (`research/001` §3.2, "Rust
 model"; §4.2, "Rust-Style Implicit Tail Expression") y **el valor de un bloque
 no funciona**. No falla con un error: devuelve silenciosamente un valor
 equivocado.
@@ -49,7 +49,7 @@ eso es coherente y está bien elegido.
 
 ## 2. 🔴 Hallazgo A — El valor de un bloque está roto (respuesta incorrecta silenciosa)
 
-`research/010` §4.2 recomienda para Astra la expresión de cola estilo Rust:
+`research/001` §4.2 recomienda para Astra la expresión de cola estilo Rust:
 
 > `Block ::= "{" Statement* Expression? "}"` — el último *expresión*, sin punto y
 > coma, es el valor del bloque.
@@ -91,7 +91,7 @@ basura.
 
 ## 3. 🔴 Hallazgo B — `LValue` restringido a identificadores
 
-`research/010` §12.1 especifica:
+`research/001` §12.1 especifica:
 
 ```
 Assignment ::= LValue ("=" | "+=" | ...) Assignment | LogicOr
@@ -120,7 +120,7 @@ Sondeos:
 Efecto neto: **los arrays y los structs son de solo lectura**. Se pueden
 construir y leer, pero no modificar. Un compilador que no puede actualizar un
 elemento de un array no puede escribir un compilador auto-hospedado — que es el
-criterio con el que `research/011` §5.1 define el alcance del seed ("el seed
+criterio con el que `research/002` §5.1 define el alcance del seed ("el seed
 debe soportar la intersección de características que usa el código del
 compilador auto-hospedado").
 
@@ -139,7 +139,7 @@ elemento hoy es reconstruir el array entero y reasignar el binding.
 
 ## 4. 🟠 Hallazgo C — El retorno implícito de función devuelve `nil`
 
-`research/010` §7.3 y §4.2 hacen que el cuerpo de una función sea una expresión:
+`research/001` §7.3 y §4.2 hacen que el cuerpo de una función sea una expresión:
 
 | Programa | Salida real | Esperada |
 |:---------|:------------|:---------|
@@ -166,8 +166,8 @@ misma clase de fallo que el Hallazgo A: el tipo miente y nadie avisa.
 | Fuente | Introduce variables con |
 |:-------|:------------------------|
 | `ARCHITECTURE.md` §8.1 | `let x = 10` (inmutable), `mut y = 10`, `val z = "constante"` |
-| `research/010` §12.1 | `("val" \| "mut" \| "let")` |
-| `research/011` §5.2 (Tier 1) | **`val`, `mut`** |
+| `research/001` §12.1 | `("val" \| "mut" \| "let")` |
+| `research/002` §5.2 (Tier 1) | **`val`, `mut`** |
 | El seed | `let`, `let mut` |
 
 `val x = 1;` hoy produce `error: undefined variable 'val'`. El lexer tiene
@@ -180,7 +180,7 @@ de los tres documentos.
 
 ## 6. 🟠 Hallazgo E — Faltan tipos enteros de Tier 1
 
-`research/011` §5.2, Tier 1, primera viñeta:
+`research/002` §5.2, Tier 1, primera viñeta:
 
 > Integer types (`i32`, `i64`, `u32`, `u64`)
 
@@ -188,17 +188,17 @@ El seed tiene **solo `i32`** (más `f64`). `let x: i64 = 5;` →
 `error: unknown type 'i64'`.
 
 Y hay una tercera nomenclatura en juego: `ARCHITECTURE` §8.2 escribe sus
-ejemplos con `Int` y `String`, `research/011` Tier 1 usa `i32`/`String`. El seed
+ejemplos con `Int` y `String`, `research/002` Tier 1 usa `i32`/`String`. El seed
 usa `i32`, `f64`, `bool`, `string`. Son tres convenciones para lo mismo.
 
 Un compilador auto-hospedado necesita al menos un entero con signo y otro sin
-signo, y distinguir anchuras, porque el emisor de C de `research/011` §9.2
+signo, y distinguir anchuras, porque el emisor de C de `research/002` §9.2
 depende de ello.
 
 ## 7. 🟠 Hallazgo F — `T?` está especificado, declarado en el registro, y no se parsea
 
-`research/010` §12.1 define `OptionalType ::= PrimaryType "?"`, y
-`research/011` Tier 2 lista `Optional type (T?)`. Sondeo:
+`research/001` §12.1 define `OptionalType ::= PrimaryType "?"`, y
+`research/002` Tier 2 lista `Optional type (T?)`. Sondeo:
 
 ```astra
 let x: i32? = null;
@@ -223,7 +223,7 @@ y `ARCHITECTURE.md` §5.3 también:
 
 > Sin `null`/`None` tradicional. Uso de opcionales explícitos.
 
-`research/010` §12.1, en cambio, incluye `"null" | "none"` en `Literal`. El seed
+`research/001` §12.1, en cambio, incluye `"null" | "none"` en `Literal`. El seed
 implementó `null` y nada más. Eso es exactamente lo peor de los dos mundos: el
 lenguaje tiene el agujero que la filosofía quería evitar, sin la construcción
 que lo compensa.
@@ -232,7 +232,7 @@ que lo compensa.
 
 La pregunta que decide casi todo lo demás: al hacer `let b = a;` con `a` un
 array o un struct, ¿se copia o se comparte? La filosofía dice ARC/ORC
-(conteo de referencias ⇒ compartir con contabilidad), y `research/04` §9.8
+(conteo de referencias ⇒ compartir con contabilidad), y `research/004` §9.8
 describe los incrementos sobre el *payload* de un enum en cada creación.
 
 **Ninguno de los 19 reportes especifica el punto**, y hoy no se puede sondear
@@ -269,15 +269,15 @@ reportes, no contra el seed.
 
 | # | Reportes en conflicto | Detalle |
 |:-:|:----------------------|:--------|
-| 1 | `010` §12.2 ↔ `010` §12.1 | La tabla pone la asignación en la precedencia **más alta**; la gramática la pone como el nivel **más flojo** (`Expression ::= Assignment`). Ya documentado en `CONSTRUCT_REGISTRY.md` |
-| 2 | `010` §12.1 ↔ `011` §5.2 | Sintaxis de array: `010` escribe `"[" Type (";" Expression)? "]"` → `[T]` / `[T; N]` (Rust); `011` Tier 2 escribe **`[N]T` y `[T]`** (Zig). Son sintaxis distintas para el mismo tipo |
-| 3 | `010` §12.1 ↔ `ARCHITECTURE` §8.1 ↔ `011` §5.2 | Keyword de variable: tres conjuntos distintos (`let/mut/val` vs `let/mut/val` vs `val/mut`) — ver Hallazgo D |
-| 4 | `ARCHITECTURE` §5.3 + `PHILOSOPHY` ↔ `010` §12.1 | `null`: prohibido por filosofía y arquitectura, presente en la gramática y en el lexer |
-| 5 | `ARCHITECTURE` §8.2 ↔ `011` §5.2 | Nombres de tipo: `Int`/`String` vs `i32`/`String` |
-| 6 | `010` §12.1 | `TypeAlias ::= "type" Identifier ("=" \| "<" GenericParams ">") Type`: la rama de genéricos no lleva `=` ni, por tanto, tipo destino. La producción parece truncada |
-| 7 | `010` §12.1 | `ImplBlock ::= "impl" GenericParams? Type …`: `GenericParams?` sin ángulos, a diferencia de `FunctionDef`/`StructDef`/`EnumDef`, que lo envuelven en `< >` |
-| 8 | `010` §7.2 ↔ realidad | "~60 tokens" vs 75 |
-| 9 | `ARCHITECTURE` §8.4 ↔ `PHILOSOPHY` §3 | `ARCHITECTURE` usa `spawn fn` para fibras; `PHILOSOPHY` promete "sin colores" y sin `async`. Compatible, pero `spawn` como keyword no aparece en la lista de keywords de `010` §12.1, que sí incluye `"spawn"` y `"async"` — es decir, `010` lista `async` como keyword en un lenguaje que promete no tenerlo |
+| 1 | `001` §12.2 ↔ `001` §12.1 | La tabla pone la asignación en la precedencia **más alta**; la gramática la pone como el nivel **más flojo** (`Expression ::= Assignment`). Ya documentado en `CONSTRUCT_REGISTRY.md` |
+| 2 | `001` §12.1 ↔ `002` §5.2 | Sintaxis de array: `001` escribe `"[" Type (";" Expression)? "]"` → `[T]` / `[T; N]` (Rust); `002` Tier 2 escribe **`[N]T` y `[T]`** (Zig). Son sintaxis distintas para el mismo tipo |
+| 3 | `001` §12.1 ↔ `ARCHITECTURE` §8.1 ↔ `002` §5.2 | Keyword de variable: tres conjuntos distintos (`let/mut/val` vs `let/mut/val` vs `val/mut`) — ver Hallazgo D |
+| 4 | `ARCHITECTURE` §5.3 + `PHILOSOPHY` ↔ `001` §12.1 | `null`: prohibido por filosofía y arquitectura, presente en la gramática y en el lexer |
+| 5 | `ARCHITECTURE` §8.2 ↔ `002` §5.2 | Nombres de tipo: `Int`/`String` vs `i32`/`String` |
+| 6 | `001` §12.1 | `TypeAlias ::= "type" Identifier ("=" \| "<" GenericParams ">") Type`: la rama de genéricos no lleva `=` ni, por tanto, tipo destino. La producción parece truncada |
+| 7 | `001` §12.1 | `ImplBlock ::= "impl" GenericParams? Type …`: `GenericParams?` sin ángulos, a diferencia de `FunctionDef`/`StructDef`/`EnumDef`, que lo envuelven en `< >` |
+| 8 | `001` §7.2 ↔ realidad | "~60 tokens" vs 75 |
+| 9 | `ARCHITECTURE` §8.4 ↔ `PHILOSOPHY` §3 | `ARCHITECTURE` usa `spawn fn` para fibras; `PHILOSOPHY` promete "sin colores" y sin `async`. Compatible, pero `spawn` como keyword no aparece en la lista de keywords de `001` §12.1, que sí incluye `"spawn"` y `"async"` — es decir, `001` lista `async` como keyword en un lenguaje que promete no tenerlo |
 
 ---
 
@@ -287,18 +287,18 @@ Conviene dejarlo escrito, porque no es poco:
 
 | Decisión | Coincide con |
 |:---------|:-------------|
-| Seed en C, sin dependencias, `cc *.c -o astra-seed` | `research/011` §4.2 y Appendix C ("Implementation language: C — minimal deps, auditable, ubiquitous") |
-| Descenso recursivo + Pratt, escrito a mano | `research/010` §10.2 y `research/011` §7.1 ("Recursive descent + Pratt, full control, no generator dep") |
-| VM de pila, bytecode, un solo backend por ahora | `research/011` Appendix C ("Stack-based — simpler than register-based, correctness only") y §3.2 (el backend de C llega en la Fase 4) |
-| Arena allocator, sin `free()` individual | `research/011` Appendix C ("Arena allocator — simple, no individual free, fast") y §15.2 (mitigación del riesgo de memoria) |
-| Interning de strings | `research/011` §7.2 ("all identifiers and strings are interned") y Appendix C |
-| Ubicaciones `archivo:línea:columna` en cada token y en cada error | `research/011` §10.3 |
-| Suite de conformidad con anotaciones `// EXPECT:` dentro del propio `.astra` | `research/011` §11.3, que muestra literalmente `tests/conformance/expressions/arithmetic.astra` con `// EXPECT: 42`. La estructura del repo reproduce el ejemplo del reporte |
-| Estructura de fases y los 5 milestones | `research/011` §6.1, §13, §14 |
-| Fuera del seed: `comptime`, traits, genéricos, hilos verdes, ARC/ORC, unidades de medida, LSP, LLVM | `research/011` §2.3 (anti-patrones) y §5.3, §5.4, literalmente |
-| Structs como tipos producto, enums unitarios, `match` exhaustivo con wildcard | `research/04` §9.2, §9.3, §9.7 |
-| Variantes con datos, guards y patrones anidados **rechazados explícitamente** en vez de aceptados a medias | `research/011` §2.3 ("premature optimization") y §5.4. Los guards se rechazan con mensaje, no se ignoran |
-| Enums/structs comparados estructuralmente y listados como huérfanos en el registro | Coherente con `research/04` §9.7 y con la política de `CONSTRUCT_REGISTRY.md` |
+| Seed en C, sin dependencias, `cc *.c -o astra-seed` | `research/002` §4.2 y Appendix C ("Implementation language: C — minimal deps, auditable, ubiquitous") |
+| Descenso recursivo + Pratt, escrito a mano | `research/001` §10.2 y `research/002` §7.1 ("Recursive descent + Pratt, full control, no generator dep") |
+| VM de pila, bytecode, un solo backend por ahora | `research/002` Appendix C ("Stack-based — simpler than register-based, correctness only") y §3.2 (el backend de C llega en la Fase 4) |
+| Arena allocator, sin `free()` individual | `research/002` Appendix C ("Arena allocator — simple, no individual free, fast") y §15.2 (mitigación del riesgo de memoria) |
+| Interning de strings | `research/002` §7.2 ("all identifiers and strings are interned") y Appendix C |
+| Ubicaciones `archivo:línea:columna` en cada token y en cada error | `research/002` §10.3 |
+| Suite de conformidad con anotaciones `// EXPECT:` dentro del propio `.astra` | `research/002` §11.3, que muestra literalmente `tests/conformance/expressions/arithmetic.astra` con `// EXPECT: 42`. La estructura del repo reproduce el ejemplo del reporte |
+| Estructura de fases y los 5 milestones | `research/002` §6.1, §13, §14 |
+| Fuera del seed: `comptime`, traits, genéricos, hilos verdes, ARC/ORC, unidades de medida, LSP, LLVM | `research/002` §2.3 (anti-patrones) y §5.3, §5.4, literalmente |
+| Structs como tipos producto, enums unitarios, `match` exhaustivo con wildcard | `research/004` §9.2, §9.3, §9.7 |
+| Variantes con datos, guards y patrones anidados **rechazados explícitamente** en vez de aceptados a medias | `research/002` §2.3 ("premature optimization") y §5.4. Los guards se rechazan con mensaje, no se ignoran |
+| Enums/structs comparados estructuralmente y listados como huérfanos en el registro | Coherente con `research/004` §9.7 y con la política de `CONSTRUCT_REGISTRY.md` |
 
 También es coherente el **registro de constructos** en sí: declara los 44
 constructos y valida 14 invariantes sin añadir ni una característica al lenguaje.
@@ -337,14 +337,14 @@ rendimiento disponible ahora mismo, y es un cambio local a `emitter.c`:
    de lo de abajo es fe.
 2. **Hallazgo A**: valor del bloque y expresión de cola, incluida la regla del
    `;` que descarta. Es una decisión central del lenguaje (`PHILOSOPHY` +
-   `010` §3.2) y hoy está mal.
+   `001` §3.2) y hoy está mal.
 3. **Hallazgo C**: retorno implícito de función, y comprobación de que una
    función con tipo de retorno devuelve algo. Depende de (2).
 4. **Hallazgo B**: `LValue` completo (identificador, acceso a campo, indexado) y
    comprobación real de mutabilidad de `let mut`. Sin esto el seed no puede
    apuntar al auto-hosting.
 5. **Hallazgos D/E**: decidir la keyword de variable y los tipos enteros de
-   Tier 1, y **corregir `ARCHITECTURE.md` §8.1 y `research/011` §5.2** para que
+   Tier 1, y **corregir `ARCHITECTURE.md` §8.1 y `research/002` §5.2** para que
    coincidan con la decisión.
 6. **Contradicción 2 de §10** (sintaxis de array `[T; N]` vs `[N]T`): decidirla
    antes de escribir el compilador en Zig.
@@ -355,7 +355,7 @@ rendimiento disponible ahora mismo, y es un cambio local a `emitter.c`:
 
 ## 14. Lo que **no** hay que hacer
 
-`research/011` §2.3 lista cuatro anti-patrones. Al revisar lo construido, el
+`research/002` §2.3 lista cuatro anti-patrones. Al revisar lo construido, el
 riesgo real no está en el registro de constructos (que es declarativo y valida,
 sin añadir conceptos) sino en arreglar los hallazgos por acumulación:
 

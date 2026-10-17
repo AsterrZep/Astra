@@ -20,8 +20,8 @@ const ConstructSpec construct_ident = {
     .in_astra0  = true,
     .deps       = NULL,
     .grammar    = "Identifier ::= [a-zA-Z_] [a-zA-Z0-9_]*",
-    .research   = "research/010 §12.1 (lexical conventions)",
-    .note       = "Identifiers are interned (research/011 Appendix C), so equality is "
+    .research   = "research/001 §12.1 (lexical conventions)",
+    .note       = "Identifiers are interned (research/002 Appendix C), so equality is "
                   "pointer equality. `$` is allowed as an extra character for "
                   "compiler-generated names.",
     .parse = NULL, .check = NULL, .emit = NULL,

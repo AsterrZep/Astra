@@ -1,4 +1,4 @@
-# 012 — Bytecode/IR-to-C Backend Patterns: Cross-Compiler Survey
+# 003 — Bytecode/IR-to-C Backend Patterns: Cross-Compiler Survey
 
 **Date:** 2026-09-18
 **Purpose:** Research how established compilers translate their IR or bytecode into

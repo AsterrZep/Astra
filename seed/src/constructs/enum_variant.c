@@ -7,7 +7,7 @@
  * Split from EnumDef because it is a production of its own and
  * because it is the piece that grows: payloads, mixed named/unnamed
  * variants and recursive variants all land here
- * (research/04 §9.2, §9.9).
+ * (research/004 §9.2, §9.9).
  * ============================================================ */
 
 #include "constructs/construct.h"
@@ -27,13 +27,13 @@ const ConstructSpec construct_enum_variant = {
     .grammar   = "EnumVariant ::= Identifier (\"(\" EnumPayload \")\")?\n"
                  "EnumPayload ::= EnumPayloadField (\",\" EnumPayloadField)*\n"
                  "EnumPayloadField ::= Identifier \":\" Type | Type",
-    .research  = "research/04 §9.2 (variants with and without data), §6.5-6.6 (tag encoding)",
+    .research  = "research/004 §9.2 (variants with and without data), §6.5-6.6 (tag encoding)",
     .note      = "Data-carrying variants are implemented: the payload form "
                   "`Paso(i32)` / `PasoDoble(x: i32, y: i32)` parses to NODE_PAYLOAD "
                   "(this file's node), the checker stores VariantLayout parallel to "
                   "the variants, and construction is positional through the shared "
                   "CallExpr grammar — a bare-identifier callee that resolves to a "
                   "variant packs NEW_ENUM instead of CALL. Pattern bindings over "
-                  "payloads are research/04 §9.4 and still need pattern_ident.",
+                  "payloads are research/004 §9.4 and still need pattern_ident.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

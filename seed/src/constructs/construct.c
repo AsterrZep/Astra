@@ -402,7 +402,7 @@ size_t operator_table_dump(char *buf, size_t cap) {
     size_t pending_count = 0;
     const OperatorSpec *pending = operator_pending_table(&pending_count);
     if (pending_count) {
-        report(&r, "\nspecified by research/010 §12.2 but not implemented:\n");
+        report(&r, "\nspecified by research/001 §12.2 but not implemented:\n");
         for (size_t i = 0; i < pending_count; i++) {
             report(&r, "%-6s %-9s %-8s %-10s %8s %8u  %s\n",
                    pending[i].spelling, "binary",

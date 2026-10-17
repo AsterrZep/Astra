@@ -1,4 +1,4 @@
-// A range is an iterator, never a value (research/010 §6.4): outside a
+// A range is an iterator, never a value (research/001 §6.4): outside a
 // `for` header it has no meaning and is rejected by the typechecker.
 // EXPECT-ERROR: range expression is only valid as a for-loop iterator
 fn main() {

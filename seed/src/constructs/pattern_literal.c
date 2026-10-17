@@ -24,10 +24,10 @@ const ConstructSpec construct_pattern_literal = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "LiteralPattern ::= Literal | \"-\" Literal",
-    .research  = "research/010 §5.3 (Pattern grammar), §12.1; research/04 §9.4 (patterns)",
+    .research  = "research/001 §5.3 (Pattern grammar), §12.1; research/004 §9.4 (patterns)",
     .note      = "Reuses the literal node kinds; no node of its own. Negative literal "
                   "patterns (`-1 => ...`) parse through the unary-minus path. Range "
-                  "patterns (`RangePattern ::= ... \"..\" ...`, research/04 §9.4) are "
+                  "patterns (`RangePattern ::= ... \"..\" ...`, research/004 §9.4) are "
                   "NOT implemented.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

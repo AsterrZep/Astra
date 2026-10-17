@@ -92,16 +92,16 @@ pub const FnDecl = struct { name: []const u8, params: List, ret: ?u32, body: u32
 pub const Lambda = struct { params: List, ret: ?u32, body: u32 };
 pub const StructDecl = struct { name: []const u8, fields: List, is_pub: bool = false, generics: List = .{ .start = 0, .len = 0 } };
 pub const EnumDecl = struct { name: []const u8, variants: List, is_pub: bool = false, generics: List = .{ .start = 0, .len = 0 } };
-/// `trait Name { fn ... }` (research/010 §12.1 TraitDef). A signature-only
+/// `trait Name { fn ... }` (research/001 §12.1 TraitDef). A signature-only
 /// method carries an empty body block, so every consumer sees a well-formed
 /// `fn_decl`.
 pub const TraitDecl = struct { name: []const u8, items: List, is_pub: bool = false, generics: List = .{ .start = 0, .len = 0 } };
-/// `impl [TraitName for] Type { fn methods }` (research/010 §12.1 ImplBlock).
+/// `impl [TraitName for] Type { fn methods }` (research/001 §12.1 ImplBlock).
 /// `trait_name` is null for an inherent impl; a `<...>` list (step 1, inert
 /// until Phase 2.4 step 2) sits between `impl` and the names.
 pub const ImplDecl = struct { trait_name: ?[]const u8, type_name: []const u8, items: List, generics: List = .{ .start = 0, .len = 0 } };
 pub const VarDecl = struct { name: []const u8, type_node: ?u32, value: ?u32, is_mut: bool, is_pub: bool = false };
-/// `import ImportPath ("as" Identifier)?` (research/010 §12.1). `path` is the
+/// `import ImportPath ("as" Identifier)?` (research/001 §12.1). `path` is the
 /// source text of the whole path (`a.b.c`).
 pub const ImportDecl = struct { path: []const u8, alias: ?[]const u8 };
 /// `from ImportPath import ImportItem ("," ImportItem)*`.

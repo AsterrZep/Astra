@@ -1,4 +1,4 @@
-# Runtime Systems & Language Design Philosophy for Astra
+# 011 — Runtime Systems & Language Design Philosophy for Astra
 
 **Date:** September 2026 | **Purpose:** Deep research report for Astra language design decisions
 

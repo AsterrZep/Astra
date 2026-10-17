@@ -12,7 +12,7 @@
  * One construct covering the whole type syntax, because the parser
  * has exactly one `parse_type` entry point and the Astra-0 type
  * system is a closed set of builtins plus struct/enum names
- * (research/011 §5.2: no generics, no inference variables).
+ * (research/002 §5.2: no generics, no inference variables).
  *
  * Which spellings are implemented is recorded in `note` rather than
  * as separate files: they are alternatives inside one production,
@@ -43,13 +43,13 @@ const ConstructSpec construct_type_annotation = {
                   "PrimaryType ::= SimpleType (\".\" \"<\" TypeArgs \">\")?\n"
                   "SimpleType ::= Identifier | \"(\" Type (\",\" Type)+\")\" "
                   "| \"[\" Type (\";\" Expression)? \"]\" | \"*\" \"const\"? Type | \"&\" \"mut\"? Type",
-    .research  = "research/010 §6 (type annotation grammar), §12.1; research/011 §5.2",
+    .research  = "research/001 §6 (type annotation grammar), §12.1; research/002 §5.2",
     .note      = "Implemented: builtin names (`i32`, `f64`, `bool`, `string`), struct "
                   "names, enum names, `[T]` arrays, `(T, T) -> T` function types, "
-                  "`T?` optionals (`OptionalType`, research/010 §12.1) and generic "
+                  "`T?` optionals (`OptionalType`, research/001 §12.1) and generic "
                   "arguments `Name<U>` (Phase 2.4). Also missing: fixed-size arrays "
                   "`[T; N]`, tuples, raw pointers and references. Types are resolved "
-                  "by name at check time; there is no unification (research/011 §8.1 "
+                  "by name at check time; there is no unification (research/002 §8.1 "
                   "calls for simplified HM, which the seed does not yet need). "
                   "NOTE: this text is hand-written documentation, not machine-checked "
                   "— see Documentacion/COHERENCE_AUDIT.md §7.",

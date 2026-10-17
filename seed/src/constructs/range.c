@@ -23,10 +23,10 @@ const ConstructSpec construct_range = {
     .deps      = NULL,
     .grammar   = "a \"..\" b | a \"..=\" b        (Astra extension; §12.1 has ranges only "
                  "in RangePattern and slices)",
-    .research  = "research/010 §12.1 (Postfix slice form), §12.2 (no range row); "
-                 "research/04 §9.4 (range patterns)",
+    .research  = "research/001 §12.1 (Postfix slice form), §12.2 (no range row); "
+                 "research/004 §9.4 (range patterns)",
     .note      = "Non-associative and only meaningful as a `for` iterable in Astra-0; "
                  "the type checker rejects a range that is used as a value. Range "
-                 "patterns (research/04 §9.4) are not implemented.",
+                 "patterns (research/004 §9.4) are not implemented.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

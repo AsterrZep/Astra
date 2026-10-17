@@ -1,4 +1,4 @@
-// `import` / `from` are the module declarations of research/010 §12.1:
+// `import` / `from` are the module declarations of research/001 §12.1:
 //   ImportStmt ::= "import" ImportPath ("as" Identifier)?
 //                | "from" ImportPath "import" ImportItem ("," ImportItem)*
 //   ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*
@@ -6,7 +6,7 @@
 //
 // The seed parses them and then discards them, exactly like `use`: the driver
 // compiles exactly one file, so module resolution is deliberately not its job
-// (research/011 §5.2). Declaring the surface anyway is what keeps the seed and
+// (research/002 §5.2). Declaring the surface anyway is what keeps the seed and
 // the Zig frontend on the same grammar — the parity gate in AGENTS.md — and
 // this case is what holds the seed side of it in place.
 //

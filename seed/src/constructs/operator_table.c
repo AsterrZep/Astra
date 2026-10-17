@@ -1,12 +1,12 @@
 /* ============================================================
- * Operator table — research/010 §2.4 (pratt parsing / operator
+ * Operator table — research/001 §2.4 (pratt parsing / operator
  * registration) and §12.2 (the precedence table).
  *
  * This is the single source of truth for binding powers. The Pratt
  * parser in parser.c uses the same numeric scale, and
  * `astra-seed --check-constructs` fails if the two ever disagree.
  *
- * `doc_precedence` records the row research/010 §12.2 gives the
+ * `doc_precedence` records the row research/001 §12.2 gives the
  * operator so the dump can show where the report and the
  * implementation differ. `note` explains each such difference.
  * ============================================================ */
@@ -106,7 +106,7 @@ const ConstructSpec construct_operator_table = {
     .deps      = NULL,
     .grammar   = "§12.2 precedence table: || && | ^ & == != < > <= >= << >> + - * / % "
                  ".. ..= (prefix) - ! ~ (postfix) . [ ( ?",
-    .research  = "research/010 §2.2-2.4 (Pratt parsing and operator registration), §12.2",
+    .research  = "research/001 §2.2-2.4 (Pratt parsing and operator registration), §12.2",
     .note      = "Four documented deviations from §12.2: (1) assignment sits at the "
                  "loosest level per §12.1, not the tightest as §12.2 row 13 claims; "
                  "(2) ==/!= were split from < > <= >= so equality binds looser, as in "

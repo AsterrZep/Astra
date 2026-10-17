@@ -1,4 +1,4 @@
-// Trait items are `fn` only for now: research/010 §12.1 declares
+// Trait items are `fn` only for now: research/001 §12.1 declares
 // `TraitItem ::= FunctionDef | ConstDef`, but const items in a trait have no
 // checking or emission in Phase 2.3, so the parser rejects them explicitly
 // instead of silently accepting them.

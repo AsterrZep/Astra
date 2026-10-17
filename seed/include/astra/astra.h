@@ -289,7 +289,7 @@ typedef enum {
     /* Import item (sub-production of ImportStmt) */
     NODE_IMPORT_ITEM,
 
-    /* Generic parameter (`<T: Show>`, research/010 §12.1 GenericParam) —
+    /* Generic parameter (`<T: Show>`, research/001 §12.1 GenericParam) —
      * one node per parameter, carried as `generics` on the declaration */
     NODE_TYPE_PARAM,
 } NodeKind;
@@ -409,7 +409,7 @@ typedef struct {
     Node   *object;
     InternedString field;
     /* Non-empty when the type checker resolved this access as a method call
-     * (`x.m()`): the mangled global to dispatch to (`Type.method`, research/010
+     * (`x.m()`): the mangled global to dispatch to (`Type.method`, research/001
      * §12 static dispatch). The emitter lowers such a call to
      * GET_GLOBAL(method) + receiver + args + CALL instead of a field read. */
     InternedString method;
@@ -466,7 +466,7 @@ typedef struct {
 
 typedef struct {
     /* The assignment target. `Assignment ::= LValue "=" Assignment`
-     * (research/010 §12.1) where
+     * (research/001 §12.1) where
      * `LValue ::= Identifier | LValue "." Identifier | LValue "[" Expression "]"`.
      * The report names LValue but never defines it; see constructs/assign.c,
      * which owns the Assignment production. */
@@ -511,7 +511,7 @@ typedef struct {
     bool                  is_pub;            /* `pub enum` — exported */
 } EnumDecl;
 
-/* Trait declaration: `trait Name { fn ... }` (research/010 §12.1 TraitDef).
+/* Trait declaration: `trait Name { fn ... }` (research/001 §12.1 TraitDef).
  * Items are NODE_FN_DECL nodes; a signature-only method (no block) carries an
  * empty body block, so every consumer sees a well-formed function. */
 typedef struct {
@@ -521,7 +521,7 @@ typedef struct {
     bool             is_pub; /* `pub trait` — exported (ARCHITECTURE §10.2) */
 } TraitDecl;
 
-/* Impl block: `impl [TraitName for] Type { fn methods }` (research/010 §12.1
+/* Impl block: `impl [TraitName for] Type { fn methods }` (research/001 §12.1
  * ImplBlock). `trait_name` is NULL for an inherent impl. Items are NODE_FN_DECL
  * with has_self; where-clauses are still deferred. */
 typedef struct {
@@ -533,7 +533,7 @@ typedef struct {
 
 /* Payload of a data-carrying enum variant:
  * `enum Mover { Paso(i32) PasoDoble(x: i32, y: i32) }`.
- * Unnamed fields (`Paso(i32)`) keep name == NULL. Cites research/04 §9.2;
+ * Unnamed fields (`Paso(i32)`) keep name == NULL. Cites research/004 §9.2;
  * owned by constructs/enum_variant.c. */
 typedef struct {
     InternedString name;                     /* may be NULL for unnamed fields */
@@ -583,7 +583,7 @@ typedef struct {
     DYNARRAY(Node *) items;
 } ModuleNode;
 
-/* Import / from declarations (research/010 §12.1) */
+/* Import / from declarations (research/001 §12.1) */
 typedef struct {
     InternedString path;   /* source text of the whole path, e.g. "geometry.mesh" */
     InternedString alias;  /* NULL when no "as" */
@@ -599,7 +599,7 @@ typedef struct {
     InternedString alias;         /* NULL when no `as` */
 } ImportItem;
 
-/* One generic parameter: `T` or `T: Show + Debug` (research/010 §12.1
+/* One generic parameter: `T` or `T: Show + Debug` (research/001 §12.1
  * GenericParam / TraitBounds). Bounds are NODE_TYPE_IDENT nodes, empty when
  * the parameter carries no bound. Owned by constructs/generic_params.c. */
 typedef struct {
@@ -719,7 +719,7 @@ typedef struct Type Type;
 
 /* Compile-time payload layout of one data-carrying enum variant, parallel to
  * the variant list in `Type::enumeration`. Unnamed fields keep name NULL.
- * Cites research/04 §6.2/§9.2; owned by the checker's enum declaration pass. */
+ * Cites research/004 §6.2/§9.2; owned by the checker's enum declaration pass. */
 typedef struct {
     InternedString *names;   /* may be NULL when all fields are unnamed */
     Type          **types;

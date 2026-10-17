@@ -33,7 +33,7 @@ const ConstructSpec construct_assign = {
     .deps       = NULL,
     .grammar    = "Assignment ::= LValue (\"=\" | \"+=\" | \"-=\" | \"*=\" | \"/=\" | \"%=\" "
                   "| \"&=\" | \"|=\" | \"^=\" | \"<<=\" | \">>=\" | \"**=\") Assignment | LogicOr",
-    .research   = "research/010 §12.1 (Assignment), §2.4 (operator registration), §12.2",
+    .research   = "research/001 §12.1 (Assignment), §2.4 (operator registration), §12.2",
     .note       = "Binding power 1 = loosest, following §12.1 rather than the §12.2 "
                   "row. The report never defines LValue; the seed reads it as "
                   "`Identifier | LValue \".\" Identifier | LValue \"[\" Expression \"]\"` "

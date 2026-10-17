@@ -18,8 +18,8 @@ the self-hosting compiler written in Zig, whose Astra-0 frontend is ported (see
 Full background lives in:
 - `Documentacion/ARCHITECTURE.md` — language specification
 - `Documentacion/COMPILER_STRATEGY.md` — the C → Zig → Astra bootstrap plan
-- `Documentacion/research/010_grammar_and_parser_design.md` — grammar/parser
-- `Documentacion/research/011_seed_compiler_design.md` — seed compiler design
+- `Documentacion/research/001_grammar_and_parser_design.md` — grammar/parser
+- `Documentacion/research/002_seed_compiler_design.md` — seed compiler design
 - `Documentacion/PHASE1_PROGRESS.md` — current implementation status
 
 ## Build and test
@@ -126,7 +126,7 @@ seed conformance file, rejects every UI file).
 
 Porting rule: **the Zig compiler must accept everything the seed accepts before
 new features are added** (the suite is the gate). Match `seed/src/*.c` and the
-`research/010`–`012` reports for behaviour.
+`research/001`–`003` reports for behaviour.
 
 ## Seed compiler layout (`seed/src`)
 

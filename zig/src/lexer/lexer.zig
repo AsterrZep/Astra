@@ -3,7 +3,7 @@
 //! Ported from the C seed (`seed/src/lexer.c`) so the Zig compiler accepts the
 //! exact same token set. The important divergence from a naive tokenizer is
 //! `newline`: in Astra-0 a line break terminates a statement (see
-//! `research/010_grammar_and_parser_design.md` §4.2), so the parser needs to see
+//! `research/001_grammar_and_parser_design.md` §4.2), so the parser needs to see
 //! it. The seed exposes the same token as `TOKEN_NEWLINE`.
 //!
 //! Sources of truth mirrored here:

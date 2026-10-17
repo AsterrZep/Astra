@@ -20,7 +20,7 @@ const ConstructSpec construct_break = {
     .in_astra0  = true,
     .deps       = NULL,
     .grammar    = "BreakStmt ::= \"break\" Expression?",
-    .research   = "research/010 §12.1 (statements)",
+    .research   = "research/001 §12.1 (statements)",
     .note       = "Only valid inside a loop; the type checker rejects it elsewhere. "
                   "Jump targets are owned by the enclosing loop (while.c / for.c).",
     .parse = NULL, .check = NULL, .emit = NULL,

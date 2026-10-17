@@ -33,7 +33,7 @@ const ConstructSpec construct_literal = {
     .deps       = NULL,
     .grammar    = "Literal ::= IntegerLiteral | FloatLiteral | StringLiteral | CharLiteral "
                   "| BoolLiteral | \"none\" | ArrayLiteral | TupleLiteral | StructLiteral",
-    .research   = "research/010 §12.1 (literals and lexical conventions)",
+    .research   = "research/001 §12.1 (literals and lexical conventions)",
     .note       = "Integer bases (hex/octal/binary) and `_` separators are implemented. "
                   "`none` is lexed as TOKEN_NONE. "
                   "CharLiteral is specified but has no lexer token.",

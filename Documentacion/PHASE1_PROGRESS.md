@@ -148,7 +148,7 @@ los herede al escribir el compilador en Zig:
 | # | Qué | Antes | Ahora |
 |:-:|:----|:------|:------|
 | A | Valor de bloque en posición de valor | `{ let t = 100; 7 }` → `100` | ✅ `7` |
-| A | Regla del `;` (§4.2 de `research/010`) | `{ 7; }` → `7` | ✅ error de tipos |
+| A | Regla del `;` (§4.2 de `research/001`) | `{ 7; }` → `7` | ✅ error de tipos |
 | A | `if` como expresión con sentencias en la rama | `if c { let t = 5; t + 1 }` → `5` | ✅ `6` |
 | B | Retorno implícito de función | `fn f() -> i32 { 42 }` → `nil` | ✅ `42` |
 | B | Tipo de retorno declarado sin valor | `fn f() -> i32 { }` → `nil` | ✅ error de compilación |
@@ -360,7 +360,7 @@ Ordenado por valor para el objetivo de bootstrap.
 - [x] **match**: `NODE_MATCH` en parser/AST, `or`-patterns, wildcard,
       exhaustividad y codegen por comparación de variante.
 - [x] **Enums con datos** (ADT): `Circulo(Float)`, bindings en patrones,
-      patrones anidados. Ver `research/04` §9.3.
+      patrones anidados. Ver `research/004` §9.3.
 - [x] **Guards** `patrón if cond` (parser soporta, emitter genera código).
 - [x] **Option/Result**: constructores `some(x)`, `none`, `ok(x)`, `err(x)`
       implementados como enums builtin. Operador `?` implementado.
@@ -407,7 +407,7 @@ Ordenado por valor para el objetivo de bootstrap.
 - [x] **Migrar los hooks** `parse` / `emit` / `check` a los archivos de
       constructo — **decisión del 2026-09-21: no se migran**. El registro se
       queda declarativo y validado. Motivo y condiciones para revisarlo en
-      `CONSTRUCT_REGISTRY.md` §8; resumen: `research/011` §2.3.1 lista la
+      `CONSTRUCT_REGISTRY.md` §8; resumen: `research/002` §2.3.1 lista la
       sobre-ingeniería del seed como su primer anti-patrón y §3.3 no incluye
       siquiera un directorio `constructs/`.
 - [x] **Unificar los dos dispatchers del backend de C** (cerrado el
@@ -453,7 +453,7 @@ Ordenado por valor para el objetivo de bootstrap.
 | 17 | Migrar hooks de constructos | Medio | ✖ decidido no hacer | `CONSTRUCT_REGISTRY.md` §8 |
 | 18 | C codegen: module-level errors sin setjmp | Medio | ✅ | Verificado: salida 1 con diagnóstico en ambos backends |
 | 19 | Bitwise operators en el emisor | Medio | ✅ | VM + runtime de C + `tests/codegen/bitwise.astra` |
-| 20 | `while`/`for` como expresión | Medio | ✖ fuera de alcance | Un `while` como expresión exige `break valor` con tipo unificado; `research/010` §9 no lo incluye en el seed (su forma es `for` como *statement* + `if` como expresión). Documentado como no-soporteado |
+| 20 | `while`/`for` como expresión | Medio | ✖ fuera de alcance | Un `while` como expresión exige `break valor` con tipo unificado; `research/001` §9 no lo incluye en el seed (su forma es `for` como *statement* + `if` como expresión). Documentado como no-soporteado |
 | 21 | Frame dinámico en C codegen | Bajo | ✅ | `ASTRA_FRAME_SIZE` + `ASTRA_PUSH` acotado (§6, S9) |
 | 22 | Manejo de opcodes desconocidos en C codegen | Bajo | ✅ | Es un **error duro**, no un comentario |
 | 23 | Fuzzing del lexer/parser | Bajo | ✅ | `seed/fuzz/fuzz_compile.c` + `astra.dict`, targets `make fuzz`/`fuzz-run`, replay `-runs=0` en CI |
@@ -462,7 +462,7 @@ Ordenado por valor para el objetivo de bootstrap.
 
 | # | Tarea | Impacto | Estado | Archivos |
 |:-:|:------|:--------|:-------|:---------|
-| 24 | Module system (File-as-Module) | Alto | [ ] **Fase 2** | `research/011` §5.3 lo da por no-bloqueante para el bootstrap: el seed compila **un** fichero, que es lo que necesita para auto-hospedarse en un solo módulo |
+| 24 | Module system (File-as-Module) | Alto | [ ] **Fase 2** | `research/002` §5.3 lo da por no-bloqueante para el bootstrap: el seed compila **un** fichero, que es lo que necesita para auto-hospedarse en un solo módulo |
 | 25 | Full C codegen test suite | Alto | ✅ | La suite completa corre por ambas rutas (registro + VM + C) |
 | 26 | CI multiplataforma | Alto | ✅ (Linux) | `.github/workflows/ci.yml` — suite del seed bajo ASan/UBSan/LSan + build release + suite Zig. macOS/Windows quedan como follow-up |
 | 27 | Genéricos básicos por monomorfización | Medio | ✅ | **Fase 2.4** (seed + zig) — `conformance/generics/` (6 casos) |
@@ -560,7 +560,7 @@ memoria y los dos últimos producían **respuestas incorrectas silenciosas**
    plano (`let x: i32 = some(3)` compilaba) y dejaba a `?` sin capa que quitar. El
    VM ya da error de runtime ("? requires Result or Option") cuando no hay tag,
    así que el checker estaba contradiciendo al runtime. El tipado estático de
-   `Result` (un `TYPE_RESULT` propio) es Tier 2 (`research/011` §5.2) y queda
+   `Result` (un `TYPE_RESULT` propio) es Tier 2 (`research/002` §5.2) y queda
    fuera: hoy `ok`/`err` llevan el tipo del payload y el tag vive en runtime.
 5. **No migrar los hooks del registro de constructos** (ver `CONSTRUCT_REGISTRY.md` §8).
 6. **Semántica de agregados: compartir handle** (decisión del usuario; ver
@@ -597,8 +597,8 @@ Documentado para que no se lea como resuelto:
 
 | Tema | Estado |
 |:-----|:-------|
-| **Ancho de los enteros no verificado en runtime** | `u32`/`u64`/`i64` existen en el checker y los valores son `int64_t` en los dos backends. No se comprueba rango al sumar ni al asignar: `let a: u32 = -1` compila y `a` vale `-1`. Un `u64` por encima de `INT64_MAX` tampoco es representable (el lexer lo rechaza). Es consecuencia de que el seed modela **un** entero de 64 bits y le pone nombres; darle semántica real de anchuras es trabajo de Fase 2 (`research/011` §9.2 es lo que lo exige) |
-| **`while`/`for` como expresión** | No soportado a propósito (ver §4bis#20; requiere decisión de diseño sobre el valor de salida). `break` con valor, que la gramática de research/010 permite, es ahora error de compilación en ambos parsers en vez del mis-parse silencioso anterior |
+| **Ancho de los enteros no verificado en runtime** | `u32`/`u64`/`i64` existen en el checker y los valores son `int64_t` en los dos backends. No se comprueba rango al sumar ni al asignar: `let a: u32 = -1` compila y `a` vale `-1`. Un `u64` por encima de `INT64_MAX` tampoco es representable (el lexer lo rechaza). Es consecuencia de que el seed modela **un** entero de 64 bits y le pone nombres; darle semántica real de anchuras es trabajo de Fase 2 (`research/002` §9.2 es lo que lo exige) |
+| **`while`/`for` como expresión** | No soportado a propósito (ver §4bis#20; requiere decisión de diseño sobre el valor de salida). `break` con valor, que la gramática de research/001 permite, es ahora error de compilación en ambos parsers en vez del mis-parse silencioso anterior |
 | **Closures** | Capturan **por valor** (ARCHITECTURE.md §30.5): asignar a una variable capturada es error de compilación y las funciones con nombre anidadas no capturan. No hay semántica de referencia ni quéjas de ARC que resolver (ver §4bis#16) |
 | **Módulos** | Un fichero; el module system es Fase 2 |
 | **Fuzzing y CI** | El fuzzing está implementado desde el 2026-10-12 (§4bis#23): harness libFuzzer en `seed/fuzz/fuzz_compile.c` (lexer→parser→typechecker→emitter, sin VM para no quemar el presupuesto de timeout con `while true {}`) + diccionario `fuzz/astra.dict`; `make fuzz` lo construye y `make fuzz-run FUZZ_TIME=N` siembra el corpus desde `tests/` y campaña con **1 worker** y `-rss_limit_mb=512` (la caja de desarrollo tiene ~2 GB; los workers en paralelo la reiniciaron por OOM). Las campañas usan `ASTRA_FUZZ_QUIET=1` (el harness enmascara fd2 por input con `ASAN_OPTIONS=log_path=…` como alternativa para no perder reportes ASan) y `-timeout=10`: la primera campaña produjo un artefacto `timeout-5s` **flake de entorno** — los diagnósticos por stderr bajo presión de memoria paraban la escritura >5 s (repro: 3000 repeticiones en 8 s con `-close_fd_mask=3`). Triage de artefactos con `fuzz/classify.sh` (standalone ×20 + en proceso ×3000; `crash-*`/`leak-*` reproducibles = hallazgo real, limpios = flake; rc 137 sin artefacto = OOM killer de la máquina). Primera campaña: ~180k ejecuciones, 0 crashes/leaks, cobertura 7853→8638. La CI construye el harness y replay `-runs=0` sin quiet (diagnósticos visibles en rojo). Si aparece un crash: guardar el input en `seed/fuzz/regressions/` y añadir su replay al CI |
@@ -613,7 +613,7 @@ test**. Aparecieron dos fallos, corregidos aquí:
 | # | Severidad | Hallazgo | Evidencia (antes) | Estado |
 |:-:|:----------|:---------|:------------------|:-------|
 | S18 | 🟠 Media | **`use` era código muerto**: el constructo es Astra-0 (`constructs/use.c` pone `in_astra0`, y el parser lo acepta y el emitter lo ignora), pero el type checker no tenía caso para `NODE_USE` y caía en `default:` | `use std.io` → `error: unhandled node kind 46`. Ninguna declaración `use` podía compilar: el constructo estaba en el registro y no en la práctica | ✅ caso `NODE_USE` en `typecheck_node` (devuelve `void`); `module/use_paths.astra` lo cubre |
-| S19 | 🟡 Baja | **El separador de ruta había derivado de su propia gramática**: `parse_use` casaba `TOKEN_COLON_COLON`, pero la gramática declarada (`constructs/use.c`, `research/010` §12.1) dice `ImportPath ::= Identifier ("." Identifier)*`, y `::` no es separador de ruta en ningún otro sitio del lenguaje (los caminos de variante son `Color.Rojo`, el acceso a campo `s.field`) | `use a::b` se aceptaba aquí y en ninguna otra parte | ✅ `parse_use` casa `TOKEN_DOT`; `ui/use_colon_colon.astra` fija el rechazo. Decisión y contexto en `PHASE2_GAP_ANALYSIS.md` App. B #6 |
+| S19 | 🟡 Baja | **El separador de ruta había derivado de su propia gramática**: `parse_use` casaba `TOKEN_COLON_COLON`, pero la gramática declarada (`constructs/use.c`, `research/001` §12.1) dice `ImportPath ::= Identifier ("." Identifier)*`, y `::` no es separador de ruta en ningún otro sitio del lenguaje (los caminos de variante son `Color.Rojo`, el acceso a campo `s.field`) | `use a::b` se aceptaba aquí y en ninguna otra parte | ✅ `parse_use` casa `TOKEN_DOT`; `ui/use_colon_colon.astra` fija el rechazo. Decisión y contexto en `PHASE2_GAP_ANALYSIS.md` App. B #6 |
 
 Ninguno de los dos lo podía ver la suite: no había ni un caso de conformidad que
 nombrara `use`. La causa raíz es la misma que la del resto de este apartado — una
@@ -659,11 +659,11 @@ El paso 1 de módulos dejó al compilador Zig por delante en el *frontend*: acep
 `import`/`from`/`as` mientras el seed sólo tenía `use`, y registraba `import` como
 un constructo fuera de Astra-0 (`keyword = NULL`). Eso es un superconjunto —la
 regla de paridad lo tolera— pero es la dirección que conviene no mantener: la
-gramática de `research/010` §12.1 es una sola, y el seed es donde se decide qué es
+gramática de `research/001` §12.1 es una sola, y el seed es donde se decide qué es
 Astra-0.
 
 El seed reconoce ahora las tres formas, sin añadir resolución de módulos (sigue
-sin ser su trabajo: `research/011` §5.2):
+sin ser su trabajo: `research/002` §5.2):
 
 ```
 ExportStmt ::= "use" ImportPath
@@ -707,7 +707,7 @@ propósito:
 
 - **Las declaraciones de módulo anidadas no son un error en ninguno de los dos
   compiladores.** `fn main() { import inner.thing }` compila y ejecuta en el seed
-  y en el Zig, aunque `research/010` §12.1 declara estos constructos como
+  y en el Zig, aunque `research/001` §12.1 declara estos constructos como
   `Item`, no como sentencia. Es la misma clase de deriva que S19 (el parser
   aceptando lo que su gramática no dice), pero aquí los dos compiladores
   coinciden, así que no rompe la paridad y ninguna prueba lo fija. Decidir si se

@@ -6,7 +6,7 @@
  *
  * Astra-0 takes the plain form only. The qualifiers, generic
  * parameters and where-clauses are specified and deliberately out
- * of scope: research/011 §5.2 keeps generics and traits out of the
+ * of scope: research/002 §5.2 keeps generics and traits out of the
  * seed, and §5.4 defines the Astra-0 subset the self-hosting
  * compiler must fit into.
  * ============================================================ */
@@ -32,7 +32,7 @@ const ConstructSpec construct_fn = {
                   "FunctionParams ::= FunctionParam (\",\" FunctionParam)* \",\"?\n"
                   "FunctionParam ::= (\"comptime\"? Identifier \":\" Type) | (\"&\" | \"&&\")? \"mut\"? \"self\"\n"
                   "ReturnType ::= \"->\" Type",
-    .research  = "research/010 §7 (function signature grammar), §12.1; research/011 §5.2, §5.4",
+    .research  = "research/001 §7 (function signature grammar), §12.1; research/002 §5.2, §5.4",
     .note      = "TOP-LEVEL ONLY, and top-level functions are emitted as VM globals — a "
                   "function calling another function needs that, and storing them as "
                   "module locals made cross-function calls impossible. Methods (`self`), "

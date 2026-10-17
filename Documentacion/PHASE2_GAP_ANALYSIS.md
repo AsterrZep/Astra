@@ -591,8 +591,8 @@ and `Export` carries no `is_generic`/`type_ast`), where-clauses, turbofish
    defer to their instantiations, the bare `none` literal is rejected)
    and an optional declared return for the enclosing frame, with
    byte-identical messages in both compilers. There is no `try`
-   keyword (research/010 has no production); a distinct static
-   `Result<T, E>` stays Tier 2 (research/011 §5.2)
+   keyword (research/001 has no production); a distinct static
+   `Result<T, E>` stays Tier 2 (research/002 §5.2)
 3. **Emitter:** Implicit error propagation through call stack ✅ —
    `OPCODE_TRY_UNWRAP` unwinds one frame; the C backend now saves and
    restores the global try context around every call so nested frames
@@ -764,7 +764,7 @@ Because the toolchain is ours, debugging can go further than C++:
    Dot-separated segments — the form every module example in the repository
    uses (`import geometry.mesh`, `from geometry.vector import Vec2, add`,
    `std.os.linux`), first pinned as `ImportPath ::= Identifier
-   ("." Identifier)*` in `seed/src/constructs/use.c` and `research/010`
+   ("." Identifier)*` in `seed/src/constructs/use.c` and `research/001`
    §12.1 (the production has since grown `@/` and `/` as an equivalent
    separator — #10). `::` appeared only in
    Rust comparison snippets, and `.` is already the language's path separator
@@ -795,7 +795,7 @@ Because the toolchain is ours, debugging can go further than C++:
    (Phase 2.1/2.2) or defer all debug tooling to the native backend (2.6)?
 10. **Dotted spelling of the special roots:** ~~`ARCHITECTURE.md` §10.4 rules 3–4
     spell the project root and the stdlib with `/` (`import @/utils/logger`,
-    `import std/io`), a separator `research/010` §12.1 replaced with `.` for
+    `import std/io`), a separator `research/001` §12.1 replaced with `.` for
     `ImportPath`. Deferred, not guessed (2026-09-29): neither `astra.toml` nor a
     stdlib exists yet, and both need a root marker the grammar does not have.
     Until it is decided, `std.io` is an ordinary relative path.
@@ -849,7 +849,7 @@ Because the toolchain is ours, debugging can go further than C++:
 14. **Are a `pub` enum's variant names part of its export surface?**
     `ARCHITECTURE.md` never says whether `from m import Circle` may name a
     data-carrying variant, and both compilers reject the qualified
-    constructor `Shape.Circle(r)` (`research/010` defines bare variant names
+    constructor `Shape.Circle(r)` (`research/001` defines bare variant names
     only: `Rgb(1, 2, 3)` inside the declaring file). Cross-module
     construction therefore goes through a `pub fn` wrapper in the declaring
     module, which the foreign-aggregate support of §7.3 already runs.

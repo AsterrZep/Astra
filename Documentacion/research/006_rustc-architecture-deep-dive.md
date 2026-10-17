@@ -1,4 +1,4 @@
-# Deep Dive: Internal Architecture of the Rust Compiler (rustc)
+# 006 — Deep Dive: Internal Architecture of the Rust Compiler (rustc)
 
 *For the Astra Language Project — Understanding HOW and WHY Rust works*
 

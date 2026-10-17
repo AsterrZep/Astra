@@ -109,7 +109,7 @@ const PendingCall = struct {
     bindings: []Binding,
 };
 
-/// One method declared in an `impl` block (research/010 §12), keyed by the
+/// One method declared in an `impl` block (research/001 §12), keyed by the
 /// receiver's nominal type name plus the method name — static dispatch, no
 /// vtable (Phase 2.3 step 3-4). `fn_type` keeps the receiver at parameter 0,
 /// so a call site checks its arguments against `params[1..]`. `trait_name` is
@@ -1457,7 +1457,7 @@ pub const TypeChecker = struct {
             self.popScope();
         }
 
-        // Exhaustiveness (mirror of the seed; research/04 §9, ARCH
+        // Exhaustiveness (mirror of the seed; research/004 §9, ARCH
         // §11.3): enums prove their variants, optionals payload+none,
         // bool its two literals; every other target needs a catch-all `_`
         // (audit §3.4 + §3.8). What still slips through at run time
@@ -1479,7 +1479,7 @@ pub const TypeChecker = struct {
             // Every other target (int, float, string, struct, fn, …) needs
             // a catch-all: infinite space, no range patterns in Astra-0
             // (audit §3.8, mirror of the seed; ARCHITECTURE.md §11.3 and
-            // the strict model of research/04).
+            // the strict model of research/004).
             self.errFmt(loc, "non-exhaustive match: missing '_' arm", .{});
         }
 

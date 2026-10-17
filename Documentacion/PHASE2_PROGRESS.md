@@ -85,7 +85,7 @@ ASTRA_TRACE=1   ./zig-out/bin/astra-zig file.astra   # traza de pila por instruc
    **todas** las listas, así que cada lista apuntaba al nodo 0 y el árbol no
    podía representar un programa; ahora cada lista es un tramo real del buffer
    `extra`.
-2. **El salto de línea es un token y termina una sentencia** (`research/010`
+2. **El salto de línea es un token y termina una sentencia** (`research/001`
    §4.2). Sin esto no compila `lambda_basic.astra`, que no tiene ni un `;`.
    `optionalSemi()` consume `;` y newlines y recuerda si hubo un `;` real: eso
    distingue el valor de bloque de `{ 7 }` del vacío de `{ 7; }`.
@@ -106,7 +106,7 @@ ASTRA_TRACE=1   ./zig-out/bin/astra-zig file.astra   # traza de pila por instruc
    `parse_statement` consume el `;` con `optional_semi` incluso tras error; en
    Zig el error se propaga antes, así que la recuperación avanza un token si
    `synchronize` se detuvo donde ya estaba (si no, el bucle giraría sin fin).
-   `research/011` la sitúa en "phrase-level, no sobre-ingenierada" y eso es lo
+   `research/002` la sitúa en "phrase-level, no sobre-ingenierada" y eso es lo
    que hay: sincronización por sentencia, sin recuperación intra-expresión.
 
 ### APIs de Zig 0.16 relevantes
@@ -162,7 +162,7 @@ Ordenado por dependencia y valor para el bootstrap.
   de *debugging e inspección de bajo nivel* (flags `--emit-llvm`/`--emit-asm`,
   DWARF, depurador de bytecode) y las decisiones abiertas; el backend nativo
   está en su §11 (fase 2.6).
-- `research/010`, `research/011`, `research/012` — gramática, diseño del seed y
+- `research/001`, `research/002`, `research/003` — gramática, diseño del seed y
   backend C, que siguen siendo la especificación de comportamiento.
 
 ---
@@ -233,7 +233,7 @@ quitar ceros finales).
 
 Primer paso del sistema de módulos, todavía **sólo en el frontend**: el lexer
 reconoce `import`/`from`/`as` y el parser construye los nodos de la gramática de
-`research/010` §12.1 (`use_decl`, `import_decl`, `from_decl` e `import_item`). El
+`research/001` §12.1 (`use_decl`, `import_decl`, `from_decl` e `import_item`). El
 type checker los trata como `void` y el emitter como declaraciones sin efecto,
 igual que el seed: **la resolución de módulos no existe todavía**; esto sólo fija
 la superficie sintáctica del lenguaje.
@@ -250,7 +250,7 @@ ImportItem ::= Identifier ("as" Identifier)?
 intercambiable con `.` — App. B #10; el rechazo de `::` no cambia.)
 
 **Decisión: el separador de ruta es `.`, no `::`.** Los tres documentos de
-diseño (`research/010` §12.1, `ARCHITECTURE.md` §10) y todos los ejemplos de
+diseño (`research/001` §12.1, `ARCHITECTURE.md` §10) y todos los ejemplos de
 módulos del repositorio usan la forma punteada (`import geometry.mesh`,
 `from geometry.vector import Vec2, add`, `std.os.linux`); `::` sólo aparece en
 fragmentos de *comparación con Rust*, nunca en código Astra. Además `.` ya es el
@@ -288,7 +288,7 @@ multifichero y resolución de referencias cruzadas.
 ### 7.1 Paso 2 (esbozo): resolución de rutas, tabla de módulos y cargador
 
 `zig/src/modules/modules.zig` es lo primero del port que **no tiene contrapartida
-en C**: el seed compila un fichero y no carga nada (`research/011` §5.2), así que
+en C**: el seed compila un fichero y no carga nada (`research/002` §5.2), así que
 la paridad no dice nada de este terreno. Hace cuatro cosas y ninguna más.
 
 **Ruta → fichero.** Las cuatro reglas de `ARCHITECTURE.md` §10.4, con `.` y
@@ -385,7 +385,7 @@ este paso el lexer del seed tenía `TOKEN_PUB` pero el parser lo rechazaba
 Ahora ambos registran el modificador en el AST (`is_pub` en `FnDecl`,
 `StructDecl`, `EnumDecl` y `ConstDecl`):
 
-- `pub` es cuantificable como en research/010 §12.1 (`FunctionQualifiers ::= ("pub" | ...)*`);
+- `pub` es cuantificable como en research/001 §12.1 (`FunctionQualifiers ::= ("pub" | ...)*`);
   `pub pub fn` se acepta y deduplica.
 - `pub` seguido de cualquier otra cosa (`pub let`, `pub use`, `pub if`) es un
   error de parseo con el mismo mensaje en ambos: `'pub' can only precede fn,
@@ -512,7 +512,7 @@ truncamiento) y verificado a mano: error de parseo con fichero
 ## 8. Traits y métodos (Fase 2.3) — pasos 1–5 completos
 
 Commits `13b2f5c` (parseo inerte), `96ade27` (dispatch) y `288b5ea`
-(conformidad). Spec: `research/010` §12 (`TraitDef`/`ImplBlock`) y
+(conformidad). Spec: `research/001` §12 (`TraitDef`/`ImplBlock`) y
 `PHASE2_GAP_ANALYSIS.md` §11 (fase 2.3). El *exit criteria* de la fase —
 `impl Trait for Type` con dispatch de métodos — está cumplido en ambos
 compiladores, con mensajes de error byte-idénticos.
@@ -590,7 +590,7 @@ override inherent vs trait) y trece casos `ui/` (`self_outside_impl`,
 
 ## 9. Genéricos (Fase 2.4) — pasos 1–4 completos
 
-Genéricos de Astra (`research/010` §7.3/§12.1) en ambos compiladores,
+Genéricos de Astra (`research/001` §7.3/§12.1) en ambos compiladores,
 con el seed como referencia y paridad byte-a-byte de mensajes y dumps.
 Los commits por paso están en la fila 13 de §4; aquí el detalle.
 
@@ -764,7 +764,7 @@ el parser en 14). Dos notas de constructs que mentían sobre `?`
 ### 10.4 Diferido
 
 `Result<T,E>` estático distinto y el tipo never `!` (Tier 2 de
-research/011 §5.2; desviaciones de ARCHITECTURE §5.3/§7.2), `??`
+research/002 §5.2; desviaciones de ARCHITECTURE §5.3/§7.2), `??`
 coalescing, re-chequeo del `?` por instanciación genérica, y las fugas
 del modelo de memoria del C backend (las celdas envueltas de `some(...)`
 nunca se libera — preexistente; la suite no corre conformance con LSan).

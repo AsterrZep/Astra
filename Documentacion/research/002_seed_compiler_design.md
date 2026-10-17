@@ -1,4 +1,4 @@
-# Astra — Seed (Bootstrap) Compiler Design & Implementation Report
+# 002 — Astra — Seed (Bootstrap) Compiler Design & Implementation Report
 
 **Version:** 1.0 | **Date:** September 2026
 

@@ -1,6 +1,6 @@
 // A compound statement (match / if / nested block) as the last
 // newline-terminated item of a block IS the block's tail expression: only a
-// trailing `;` discards the value (research/010 §4.2, `Block ::= "{"
+// trailing `;` discards the value (research/001 §4.2, `Block ::= "{"
 // Statement* Expression? "}"`). Compound statements never run optional_semi,
 // so the newline still sat in front of `}` and promotion never happened —
 // a typed fn got the misleading "produces no value" error and a lambda

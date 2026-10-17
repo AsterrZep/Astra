@@ -22,7 +22,7 @@ const ConstructSpec construct_in = {
     .in_astra0 = true,
     .deps      = NULL,
     .grammar   = "\"in\" Expression",
-    .research  = "research/010 §12.1 (ForExpr), §5 (pattern grammar)",
+    .research  = "research/001 §12.1 (ForExpr), §5 (pattern grammar)",
     .note      = "Builds no node: the iterable expression is stored on NODE_FOR.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

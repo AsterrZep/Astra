@@ -1,4 +1,4 @@
-# Concurrency Primitives & Patterns for Astra
+# 012 — Concurrency Primitives & Patterns for Astra
 
 Comprehensive research report covering channels, mutexes, atomics, deadlock prevention, data race prevention, channel implementation, select/multiplexing, fiber synchronization, shared-state concurrency, and performance characteristics.
 

@@ -2447,7 +2447,7 @@ static void emit_stmt(Emitter *e, Node *node) {
 
         /* A block ending in a tail expression already left that value on the
          * stack, so it becomes the return value: this is the Rust-style
-         * implicit tail return of research/010 §4.2. Without this the body's
+         * implicit tail return of research/001 §4.2. Without this the body's
          * value was thrown away and the function returned nil. */
         bool body_is_block = node->as.fn_decl.body &&
                              node->as.fn_decl.body->kind == NODE_BLOCK;

@@ -2,7 +2,7 @@
 // enumerable pattern space) must carry a catch-all: Astra-0 has no range
 // patterns, so without `_` the match fell through at run time and yielded
 // a nil that lied under the promised type (audit §3.8 — ARCHITECTURE.md
-// §11.3 "compile error por defecto", research/04 strict model).
+// §11.3 "compile error por defecto", research/004 strict model).
 // EXPECT-ERROR: non-exhaustive match: missing '_' arm
 fn main() {
     let x = 5

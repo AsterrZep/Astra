@@ -1,5 +1,5 @@
 // A function body is an expression: its trailing expression is the return
-// value, with no `return` needed (research/010 §4.2).
+// value, with no `return` needed (research/001 §4.2).
 // EXPECT: 42
 // EXPECT: 101
 // EXPECT: 7

@@ -9,7 +9,7 @@
  * Order is deliberate and groups the registry the way the grammar
  * reads: module items, statements, control flow, patterns,
  * expressions, then the constructs the full grammar specifies but
- * Astra-0 deliberately excludes (research/011 §5.2, §5.4).
+ * Astra-0 deliberately excludes (research/002 §5.2, §5.4).
  *
  * Adding a construct: create constructs/<name>.c with a
  * `const ConstructSpec construct_<name>`, add it below, then run

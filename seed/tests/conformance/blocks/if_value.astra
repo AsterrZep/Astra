@@ -1,4 +1,4 @@
-// `if` is an expression (research/010 §3.2). Both arms must supply a value,
+// `if` is an expression (research/001 §3.2). Both arms must supply a value,
 // including when the arm body has statements before its tail expression.
 // EXPECT: 6
 // EXPECT: 10

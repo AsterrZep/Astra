@@ -23,9 +23,9 @@ const ConstructSpec construct_binding = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "Declaration ::= (\"val\" | \"mut\" | \"let\") Pattern (\":\" Type)? \"=\" Expression",
-    .research  = "research/010 §3.1-3.2, §6.3 (type annotation), §12.1",
+    .research  = "research/001 §3.1-3.2, §6.3 (type annotation), §12.1",
     .note       = "`val` and `mut` also lex as keywords (TOKEN_VAR, TOKEN_MUT); they "
-                  "map onto this same production. Destructuring patterns (research/04 "
+                  "map onto this same production. Destructuring patterns (research/004 "
                   "§8.2, `let (a, b) = ...`) are specified but not part of Astra-0.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

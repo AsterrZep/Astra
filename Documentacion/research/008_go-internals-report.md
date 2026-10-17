@@ -1,4 +1,4 @@
-# Go Internals: A Comprehensive Technical Report for Astra
+# 008 — Go Internals: A Comprehensive Technical Report for Astra
 
 *Research compiled for building a new language with green threads*
 

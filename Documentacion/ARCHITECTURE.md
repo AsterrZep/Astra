@@ -80,7 +80,7 @@ Fijado por `seed/tests/conformance/arrays/alias_write.astra`.
    compartición entre fibras. Si los agregados se copiaran, la compartición no
    sería observable y §2.4 quedaría decorativa.
 3. El seed no tiene refcounting —está explícitamente fuera de su alcance
-   (`research/011` §5.3)—, así que "compartir" es además la única de las dos
+   (`research/002` §5.3)—, así que "compartir" es además la única de las dos
    opciones que hoy puede verificarse.
 
 **Lo que esta decisión NO especifica todavía**, y hay que cerrar antes de
@@ -163,7 +163,7 @@ let resultado = a.map_native(fn(x) => x * 2.0)  // Operación SIMD sobre memoria
   (`let x: i64 = 5`, o `f(5)` con `f(x: i64)`), como el modelo de literales de
   Rust. No contradice la línea anterior: no se convierte un valor de un tipo a
   otro, sino que el literal todavía no tenía tipo. Es la condición para que
-  `i64`/`u32`/`u64` —Tier 1 de `research/011` §5.2— sean usables: el typechecker
+  `i64`/`u32`/`u64` —Tier 1 de `research/002` §5.2— sean usables: el typechecker
   ya acepta esos nombres pero hoy es imposible construir un valor de esos tipos,
   porque todo literal entero es `i32` y no existe sufijo ni cast
   (`let x: i64 = 5` → *type mismatch*). **Implementado el mismo día** (seed,
@@ -176,7 +176,7 @@ let resultado = a.map_native(fn(x) => x * 2.0)  // Operación SIMD sobre memoria
   afectan al *chequeo de tipos*, no al valor: `let a: u32 = -1` compila y `a`
   vale `-1`, y un `u64` mayor que `INT64_MAX` no es representable (el lexer
   rechaza el literal). La semántica real de anchuras pertenece a la Fase 2, que
-  es donde `research/011` §9.2 la necesita. Registrado en
+  es donde `research/002` §9.2 la necesita. Registrado en
   `PHASE1_PROGRESS.md` §6.3.
 
 ### 5.2 Unidades de Medida (Dimensional Types)
@@ -202,7 +202,7 @@ fn compute_velocity(dist: Meter, time: Second) -> Velocity {
 - **Estado en Astra-0 (2026-09-21).** La ausencia se escribe `none` (`null` está
   eliminado del lenguaje: pedirlo da `undefined variable 'null'`). `some(x)`,
   `ok(x)`, `err(x)` y `none` producen **valores etiquetados**: su tipo estático es
-  un opcional sobre el payload y el tag vive en runtime (`research/011` §5.2 sitúa
+  un opcional sobre el payload y el tag vive en runtime (`research/002` §5.2 sitúa
   Option/Result en Tier 2). El operador `?` quita la capa: devuelve el payload o
   desenrolla el frame con la ausencia/error. Verificado en ambos backends por
   `tests/conformance/enums/try_operator.astra`.
@@ -320,7 +320,7 @@ let mut y = 10       # Mutable
 ```
 
 La forma canónica es `let` / `let mut`. `val` y `mut` como introductor suelto
-(§8.1 en versiones anteriores de este documento, y Tier 1 de `research/011` §5.2)
+(§8.1 en versiones anteriores de este documento, y Tier 1 de `research/002` §5.2)
 quedaron descartados el 2026-09-16 al resolver el hallazgo D de
 `COHERENCE_AUDIT.md`; `var` sigue existiendo como token en el lexer sin uso.
 
@@ -578,7 +578,7 @@ match mensaje {
 
 ### 11.3 Exhaustiveness Checking
 
-- **Compile error por defecto** (como Rust, `research/04`): todo
+- **Compile error por defecto** (como Rust, `research/004`): todo
   `match` debe ser total o llevar `_` (o un binding irrefutable) en
   posición de armada. El espacio se **prueba** cuando es finito y
   enumerable — variantes de enum, `payload + none` de optional,
@@ -2012,7 +2012,7 @@ PEG (Parsing Expression Grammar) con parser escrito a mano, como Zig. Razón: co
 | 11 | `&&` (logical AND) | Left |
 | 12 | `\|\|` (logical OR) | Left |
 | 13 | `..` `..=` | Left |
-| 14 | `=` (los asignadores compuestos `+=` etc. están especificados en research/010 pero no se lexean en ningún compilador) | Right |
+| 14 | `=` (los asignadores compuestos `+=` etc. están especificados en research/001 pero no se lexean en ningún compilador) | Right |
 | 15 | `->` (return type) | Left |
 | 16 | `,` | Left |
 

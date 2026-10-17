@@ -17,7 +17,7 @@ const ConstructSpec construct_field_access = {
     .in_astra0 = true,
     .deps      = NULL,
     .grammar   = "Postfix ::= Primary ... \".\" Identifier",
-    .research  = "research/010 §12.1 (postfix operators); research/04 §9.2 (Enum.Variant paths)",
+    .research  = "research/001 §12.1 (postfix operators); research/004 §9.2 (Enum.Variant paths)",
     .note      = "One syntax, two meanings, decided by the type checker: if the base "
                   "expression is a struct the name must be a field, if it is an enum "
                   "type name the name must be a variant (see variant_path.c). "

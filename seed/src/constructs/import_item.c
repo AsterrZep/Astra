@@ -20,7 +20,7 @@ const ConstructSpec construct_import_item = {
     .in_astra0 = true,
     .deps      = NULL,
     .grammar   = "ImportItem ::= Identifier (\"as\" Identifier)?",
-    .research  = "research/010 §12.1 (import/export)",
+    .research  = "research/001 §12.1 (import/export)",
     .note      = "Carried by the `from` alternative of ImportStmt; the parser builds one node "
                   "per item, with alias == NULL when the item has no `as`.",
     .parse = NULL, .check = NULL, .emit = NULL,

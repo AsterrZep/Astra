@@ -41,7 +41,7 @@
 //! and rejecting the import of a private name.
 //!
 //! The seed has none of this and is not meant to: it compiles one file
-//! (`research/011` §5.2), so this is the first thing in the port with no C
+//! (`research/002` §5.2), so this is the first thing in the port with no C
 //! counterpart to match. The parity gate is unaffected — it constrains which
 //! programs the two compilers accept, not how the Zig one would resolve files.
 
@@ -166,7 +166,7 @@ fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
-/// `ImportItem ::= Identifier ("as" Identifier)?` (research/010 §12.1).
+/// `ImportItem ::= Identifier ("as" Identifier)?` (research/001 §12.1).
 pub const Item = struct { name: []const u8, alias: ?[]const u8 = null };
 
 /// The name an item binds: its alias when it has one, else its own name.
@@ -247,7 +247,7 @@ pub const CollectOptions = struct {
 
 /// Collect the module declarations of `file` from a parsed tree.
 ///
-/// Module-level items only, which is what `research/010` §12.1 makes them
+/// Module-level items only, which is what `research/001` §12.1 makes them
 /// (`Item ::= … | ImportStmt | ExportStmt`). Both frontends nonetheless accept a
 /// module declaration in statement position, so one nested in a function body is
 /// ignored here rather than silently bound at module scope; whether it should be
@@ -749,7 +749,7 @@ test "collect: declarations, resolved files, explicit bindings and exports" {
 
 test "collect ignores module declarations nested in a function body" {
     // Both frontends accept a module declaration in statement position (the
-    // seed reaches `parse_import` from there too), even though research/010
+    // seed reaches `parse_import` from there too), even though research/001
     // §12.1 makes it an `Item`. Nothing binds a name at function scope here, so
     // `collect` sees only the module level.
     const source =

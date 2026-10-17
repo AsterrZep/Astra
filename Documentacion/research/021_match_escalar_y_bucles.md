@@ -3,7 +3,7 @@
 > **Estado: ADOPTADA el 2026-10-15.** §3.8 implementado en `3c2b81a`
 > (chequeo estático + backstop `OPCODE_MATCH_NONE`), §7.15 en `d66370a`
 > (bucles = sentencias en ambos compiladores); documentación
-> contradictoria corregida en ARCH §11.3/§29.6 y research/010 §3.2.
+> contradictoria corregida en ARCH §11.3/§29.6 y research/001 §3.2.
 
 Fecha: 2026-10-15. Origen: diferidos de `PRE_LLVM_AUDIT.md` §9. Este
 documento investiga qué es **mejor para el lenguaje**, apoyado en la
@@ -38,7 +38,7 @@ exhaustividad existe y funciona para **enums** (variantes) y
     (`internal: stack imbalance in expression call_expr`) — nunca
     aceptable;
   - `let x = for i in [1] { … }` → void-in-let.
-- La spec (`research/010` §3.2 y su gramática, "Control Flow
+- La spec (`research/001` §3.2 y su gramática, "Control Flow
   **Expressions**") lista `while`/`for` como expresiones: hay un
   conflicto real spec ↔ seed ↔ zig, no solo un bug de zig.
 
@@ -60,11 +60,11 @@ De `PHILOSOPHY.md` y de las propuestas de investigación del repo:
    el anti-patrón que Astra existe para eliminar.
 4. **Errores como documentación**: "Un buen error message enseña al
    programador a ser mejor" (enfoque Rust/Elm).
-5. **Expression-oriented con límites honestos** (`research/010` §3.2):
+5. **Expression-oriented con límites honestos** (`research/001` §3.2):
    `if`, `match`, bloques y closures son expresiones *porque producen
    valores*; `let`/`return`/`break`/`continue` son sentencias.
 6. **Exhaustividad estricta ya es la decisión de diseño del repo**:
-   `research/04` (§13): "adoptar un modelo inspirado en Rust…
+   `research/004` (§13): "adoptar un modelo inspirado en Rust…
    con exhaustiveness checking **estricto por defecto**"; su comparativa
    elige `compile error` (E0004, "el más estricto") frente a warning
    (OCaml) o `#[non_exhaustive]` de escape. `ARCHITECTURE.md` §11.3:
@@ -111,7 +111,7 @@ reserva el valor real para `loop`+`break`/bloques etiquetados.
 
 - **El comportamiento actual viola tres decisiones ya tomadas**: el
   axioma de "sin null / manejo explícito de la ausencia" (§2.3), la
-  regla de exhaustividad estricta de `research/04`/ARCH §11.3 (§2.6),
+  regla de exhaustividad estricta de `research/004`/ARCH §11.3 (§2.6),
   y la predecibilidad: hoy un `match` puede o no producir `nil` según
   un dato que el lector no ve (el valor en runtime), cuando el resto
   de Astra decide estas cosas en compile-time.
@@ -146,7 +146,7 @@ reserva el valor real para `loop`+`break`/bloques etiquetados.
   expresiones de bucle no**.
 - Arreglar por el lado de la spec es además lo barato: seed ya es
   correcto, hay que hacer que zig rechace en el parser (paridad) y
-  enmendar `research/010` §3.2/gramática. Arreglar por el lado de
+  enmendar `research/001` §3.2/gramática. Arreglar por el lado de
   aceptar exige además arreglar el emitter interno de zig y aceptar
   código sin valor — para ningún beneficio.
 
@@ -198,7 +198,7 @@ mínimo: un `_` que el programador ya escribe en el 90 % de los casos.
    (`unexpected token in expression`), paridad byte-idéntica; añadir
    pins `ui/` en ambos lados. (Esto además elimina el crash interno
    del emitter: el nodo ya no llega.)
-2. **Spec**: enmendar `research/010` §3.2 — `while`/`for` pasan de
+2. **Spec**: enmendar `research/001` §3.2 — `while`/`for` pasan de
    "expresiones" a sentencias, con la razón escrita: *no producen
    valor mientras `break` con valor no exista*. La sección de
    "Control Flow Expressions" de la gramática queda solo con `if` y
@@ -226,7 +226,7 @@ justificación, no simetría por simetría.
 | §3.8 backstop | emitters seed y zig: el fallback `yield nil` → `runtime error "no match arm matched"` | pequeño |
 | §3.8 tests | `ui/scalar_match_missing_wildcard`, `ui/bool_match_missing_arm`, y ajustar `expressions/match_scalar.astra` (ya usa `_`, pasa sin cambios) | pequeño |
 | §7.15 zig | rechazar `while`/`for` en `parsePrefix` + 2 pins `ui/` | pequeño |
-| §7.15 spec | enmienda `research/010` §3.2/gramática | minúsculo |
+| §7.15 spec | enmienda `research/001` §3.2/gramática | minúsculo |
 | §9 del audit | mover 3.8 y 7.15 de "diferido" a "resuelto" | minúnculo |
 
 Fallout esperado a comprobar con la suite: cualquier test existente

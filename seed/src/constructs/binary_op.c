@@ -40,7 +40,7 @@ const ConstructSpec construct_binary_op = {
                  "Additive ::= Multiplicative ((\"+\" | \"-\") Multiplicative)*\n"
                  "Multiplicative ::= Power ((\"*\" | \"/\" | \"%\") Power)*\n"
                  "Power ::= Unary (\"**\" Unary)*",
-    .research = "research/010 §2.2-2.4 (Pratt parsing, operator registration), §12.1, §12.2",
+    .research = "research/001 §2.2-2.4 (Pratt parsing, operator registration), §12.1, §12.2",
     .note     = "Eleven productions collapsed into one construct because they are one "
                 "table; see operator_table.c for the deviations from §12.2 (`**` is "
                 "specified but unimplemented, `%` binds with `*` as in the table, "

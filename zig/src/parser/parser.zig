@@ -5,7 +5,7 @@
 //! seed accepts, which is the contract `PHASE2_KICKOFF.md` requires (the Zig
 //! compiler must pass the seed's test suite before it grows new features).
 //!
-//! Two rules from `research/010_grammar_and_parser_design.md` drive the shape of
+//! Two rules from `research/001_grammar_and_parser_design.md` drive the shape of
 //! this file and are easy to get wrong:
 //!
 //! 1. **A line break terminates a statement** (`§4.2`). Both `;` and `newline`
@@ -18,7 +18,7 @@
 //!
 //! Errors are fail-fast: the first syntax error records a message and aborts the
 //! parse. The seed recovers at statement level for better diagnostics; that is a
-//! follow-up, not a prerequisite for parity (`research/011` §Appendix C puts
+//! follow-up, not a prerequisite for parity (`research/002` §Appendix C puts
 //! error recovery at "phrase-level, not over-engineered").
 
 const std = @import("std");
@@ -70,7 +70,7 @@ fn precOf(tag: lexer.Tag) u8 {
 
 /// True when `left` can appear on the left of `=`
 /// (`LValue ::= Identifier | LValue "." Identifier | LValue "[" Expr "]"`,
-/// `research/010` §12.1, completed by the seed's Hallazgo B).
+/// `research/001` §12.1, completed by the seed's Hallazgo B).
 fn isLValue(node: ast.Node) bool {
     return switch (node) {
         .identifier => true,
@@ -99,12 +99,12 @@ pub const Parser = struct {
     no_struct_lit: bool = false,
     last_stmt_semi: bool = false,
     /// True while parsing the items of a trait or impl block: a typeless
-    /// `self` receiver is legal only there (research/010 §12.1 FunctionParam;
+    /// `self` receiver is legal only there (research/001 §12.1 FunctionParam;
     /// `self` stays a plain identifier everywhere else, so `let self = 5`
     /// keeps compiling).
     allow_self: bool = false,
     /// True only inside a trait block: a method may be a signature without a
-    /// body (`fn show(self)`), the trait-item form of research/010 §12.1.
+    /// body (`fn show(self)`), the trait-item form of research/001 §12.1.
     allow_sig_only: bool = false,
     err_msg: []const u8 = "",
     err_loc: lexer.Loc = .{ .start = 0, .end = 0, .line = 0, .col = 0 },
@@ -378,7 +378,7 @@ pub const Parser = struct {
 
         // `pub` marks a declaration as exported (ARCHITECTURE §10.2). Recorded
         // on the AST node; per-module visibility kicks in with the module
-        // system. research/010 §12.1 allows repeated qualifiers (`pub*`);
+        // system. research/001 §12.1 allows repeated qualifiers (`pub*`);
         // only the exportable kinds take it here (`impl` never is — it
         // attaches to a type).
         var is_pub = false;
@@ -455,7 +455,7 @@ pub const Parser = struct {
             const stmt = try self.parseStatement();
             if (stmt) |s| {
                 // Newlines between the last statement and `}` do not discard
-                // its value — only `;` does (research/010 §4.2). Compound
+                // its value — only `;` does (research/001 §4.2). Compound
                 // statements (`match`, `if`, a nested block) never run
                 // optional_semi, so the newline was still in front of `}` here
                 // and they were never promoted: a lambda/void fn silently
@@ -590,7 +590,7 @@ pub const Parser = struct {
 
     // ── Declarations ──────────────────────────────────────────────
 
-    /// `<T, U: Show + Debug>` (research/010 §7.3). Phase 2.4 step 1: parsed
+    /// `<T, U: Show + Debug>` (research/001 §7.3). Phase 2.4 step 1: parsed
     /// on every declaration site into `TypeParam` nodes and left inert; the
     /// common case has no `<` and yields an empty list. Strict inside the
     /// brackets (no newline skipping), no trailing comma.
@@ -646,7 +646,7 @@ pub const Parser = struct {
                 const pname = self.previous.text;
                 // A typeless `self` receiver: the name stands alone (`,` or
                 // `)` follows), so `self: Point` keeps meaning an ordinary
-                // parameter literally named `self` (research/010 §12.1).
+                // parameter literally named `self` (research/001 §12.1).
                 if (std.mem.eql(u8, pname, "self") and !self.check(.colon)) {
                     if (!self.allow_self) return self.fail("'self' parameter outside a trait or impl");
                     if (params.items.len > 0) return self.fail("'self' must be the first parameter");
@@ -676,7 +676,7 @@ pub const Parser = struct {
         if (self.match(.arrow)) ret = try self.parseType();
 
         // Body. Inside a trait a method may stop at its signature
-        // (research/010 §12.1 TraitItem); an empty block stands in for the
+        // (research/001 §12.1 TraitItem); an empty block stands in for the
         // missing body so every later phase sees a well-formed function.
         self.skipNewlines();
         const body = if (self.allow_sig_only and !self.check(.lbrace)) blk: {
@@ -800,7 +800,7 @@ pub const Parser = struct {
         return self.add(.{ .enum_decl = .{ .name = name, .variants = list, .is_pub = is_pub, .generics = generics } }, loc);
     }
 
-    /// `trait Name { fn ... }` (research/010 §12.1 TraitDef). Items are `fn`
+    /// `trait Name { fn ... }` (research/001 §12.1 TraitDef). Items are `fn`
     /// only and a method may be a signature without a body; a `<...>` list
     /// (step 1, inert until Phase 2.4 step 2) follows the name.
     fn parseTraitDecl(self: *Parser, is_pub: bool) anyerror!u32 {
@@ -840,7 +840,7 @@ pub const Parser = struct {
         return self.add(.{ .trait_decl = .{ .name = name, .items = list, .is_pub = is_pub, .generics = generics } }, loc);
     }
 
-    /// `impl [TraitName for] Type { fn methods }` (research/010 §12.1
+    /// `impl [TraitName for] Type { fn methods }` (research/001 §12.1
     /// ImplBlock). An inherent impl omits `for`; every item is a method taking
     /// a typeless `self` as its first parameter. A `<...>` list (step 1,
     /// inert until Phase 2.4 step 2) sits between `impl` and the names.
@@ -915,7 +915,7 @@ pub const Parser = struct {
     }
 
     /// `ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*`
-    /// (`research/010` §12.1, ARCHITECTURE §10.4 rules 3-4). Dot-separated —
+    /// (`research/001` §12.1, ARCHITECTURE §10.4 rules 3-4). Dot-separated —
     /// the separator the rest of the language uses for paths (`Color.Rojo`,
     /// `s.field`) — plus `/` as an equivalent module separator and the `@/`
     /// project-root prefix. The seed's `parse_use` used to match `::` while
@@ -1737,7 +1737,7 @@ test "from ... import keeps every item and per-item alias" {
 }
 
 // Phase 2.2 adopted the dot form the construct grammar already declared
-// (research/010 §12.1) and fixed the seed, which had drifted to matching `::`.
+// (research/001 §12.1) and fixed the seed, which had drifted to matching `::`.
 // This pins the decision on the Zig side too.
 test "`::` is not a module path separator" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

@@ -7,7 +7,7 @@
  * production, and this production mixes two. Keeping them apart is
  * what lets the emitter give `else` its own jump-patching strategy
  * (and, later, `if let` / `while let` bind to it without touching
- * `if` at all — research/04 §9.5).
+ * `if` at all — research/004 §9.5).
  * ============================================================ */
 
 #include "constructs/construct.h"
@@ -26,9 +26,9 @@ const ConstructSpec construct_if = {
     .in_astra0  = true,
     .deps       = deps,
     .grammar    = "IfExpr ::= \"if\" Expression Block (\"else\" (IfExpr | Block))?",
-    .research   = "research/010 §3.2 (expression-oriented), §4 (block expressions), §12.1",
+    .research   = "research/001 §3.2 (expression-oriented), §4 (block expressions), §12.1",
     .note       = "Both a statement and an expression. The condition is parsed with "
                   "no_struct_lit set so `if x {` is not read as a struct literal. "
-                  "`if let` (research/04 §9.5) will attach to the `else` construct.",
+                  "`if let` (research/004 §9.5) will attach to the `else` construct.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

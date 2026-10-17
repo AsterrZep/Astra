@@ -108,7 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fijado por los fixtures `zig/tests/link/foreign/` y
   `zig/tests/link/reexport/` (62 pruebas Zig, 104 seed).
 - **`break` con valor es error de compilación (seed + Zig)**: la gramática de
-  `research/010` permite `break Expression?`, pero Astra-0 no tiene `loop` para
+  `research/001` permite `break Expression?`, pero Astra-0 no tiene `loop` para
   recibir el valor y ambos parsers se lo tragaban en silencio — `break 5`
   compilaba como `break` más una expresión muerta que imprimía `0`. Ahora
   `break` exige límite de sentencia (`;`, newline, `}` o EOF) tras él, y cualquier
@@ -310,7 +310,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`import` path segments are re-validated at the filesystem boundary**: `zig/src/modules/modules.zig` refuses a segment that is not an identifier (`a/b`, `..`), so a module path can never escape the importing file's directory
 - **`from` with no import items was silently accepted**: `from a.b import` built a `From` that imported nothing and reported nothing; the production requires at least one item, so it now reports `expected at least one import item` (`ui/from_without_items.astra`)
 - **`use` was dead code in the seed**: the type checker had no `NODE_USE` case, so every `use` declaration — an Astra-0 construct — failed with `unhandled node kind 46` (S18)
-- **Module path separator drift**: the seed's `parse_use` matched `::` while its own declared grammar (`constructs/use.c`, `research/010` §12.1) says `.`; the parser now accepts the dot-separated `ImportPath` and rejects `::` (S19)
+- **Module path separator drift**: the seed's `parse_use` matched `::` while its own declared grammar (`constructs/use.c`, `research/001` §12.1) says `.`; the parser now accepts the dot-separated `ImportPath` and rejects `::` (S19)
 - **SHL/SHR undefined behavior**: Added range validation (`< 0 || >= 64`) and `uint64_t` cast in VM and C codegen runtime
 - **String concatenation memory leak**: Added `free(buf)` after `astra_string_new` in C codegen runtime
 - **Runtime errors in module code**: Modified `astra_runtime_error` to use `longjmp` when `astra_error_active` is set; updated `ASTRA_TRY_CONTEXT` macro and module-level error handlers

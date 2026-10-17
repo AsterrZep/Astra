@@ -18,7 +18,7 @@ const ConstructSpec construct_const_decl = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "ConstDef ::= (\"pub\"? \"const\" | \"val\") Identifier (\":\" Type)? \"=\" Expression",
-    .research  = "research/010 §12.1 (constants)",
+    .research  = "research/001 §12.1 (constants)",
     .note      = "Constant folding is not implemented: the initialiser is evaluated "
                   "where the constant is used. The `val` spelling has no lexer token "
                   "(the seed's `let` covers immutable bindings).",

@@ -4,7 +4,7 @@
  *                     "{" EnumVariants? "}"`
  * `EnumVariants ::= EnumVariant ("," EnumVariant)* ","?`
  *
- * Sum types: research/04 §9.2. Astra-0 implements the unit form
+ * Sum types: research/004 §9.2. Astra-0 implements the unit form
  * (`enum Color { Rojo Verde }`) and payload variants
  * (`enum Shape { Circle(f64) Square }`), tagged at runtime on the
  * enum value (see vm.c).
@@ -27,14 +27,14 @@ const ConstructSpec construct_enum = {
     .deps       = deps,
     .grammar    = "EnumDef ::= \"pub\"? \"enum\" Identifier GenericParams? WhereClause? \"{\" EnumVariants? \"}\"\n"
                   "EnumVariants ::= EnumVariant (\",\" EnumVariant)* \",\"?",
-    .research  = "research/04 §9.2 (enum declaration), §6 (memory and layout), §9.7 "
-                  "(exhaustiveness); research/010 §12.1",
+    .research  = "research/004 §9.2 (enum declaration), §6 (memory and layout), §9.7 "
+                  "(exhaustiveness); research/001 §12.1",
     .note      = "Unit variants only. A variant is a (enum name, variant index) pair; "
                   "the runtime value prints as `Enum.Variant` and compares structurally. "
                   "Generic parameters parse inert since Phase 2.4 step 1 (the checker "
                   "skips the declaration). No layout is allocated yet, so the "
-                  "tag-width/niche questions of research/04 §6.2-6.4 are still open. "
-                  "Empty enums (research/04 §8.4) parse but are not meaningfully "
+                  "tag-width/niche questions of research/004 §6.2-6.4 are still open. "
+                  "Empty enums (research/004 §8.4) parse but are not meaningfully "
                   "handled.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

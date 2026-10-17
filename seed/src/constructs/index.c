@@ -21,10 +21,10 @@ const ConstructSpec construct_index = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "Postfix ::= Primary ... \"[\" Expression (\"..\" Expression)? \"]\" ...",
-    .research  = "research/010 §12.1 (postfix operators)",
+    .research  = "research/001 §12.1 (postfix operators)",
     .note      = "Scalar indexing only. Slices `xs[a..b]` and `xs[a..=b]` are specified "
                   "but not implemented: they need a view type, and Astra-0 has no "
-                  "borrowing model in the seed (research/011 §5.3). Out-of-bounds "
+                  "borrowing model in the seed (research/002 §5.3). Out-of-bounds "
                   "indexing is a runtime error carrying the source line.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

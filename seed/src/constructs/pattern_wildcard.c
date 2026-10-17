@@ -2,7 +2,7 @@
  * ============================================================
  * `WildcardPattern ::= "_"`
  *
- * The catch-all arm. Per research/04 §9.7 a wildcard discharges
+ * The catch-all arm. Per research/004 §9.7 a wildcard discharges
  * the exhaustiveness check, which the seed's checker implements;
  * the report also warns that library enums should be forced to
  * wildcards so new variants cannot silently break callers, which
@@ -22,7 +22,7 @@ const ConstructSpec construct_pattern_wildcard = {
     .in_astra0 = true,
     .deps      = NULL,
     .grammar   = "WildcardPattern ::= \"_\"",
-    .research  = "research/010 §5.3 (pattern grammar); research/04 §9.7 (exhaustiveness)",
+    .research  = "research/001 §5.3 (pattern grammar); research/004 §9.7 (exhaustiveness)",
     .note      = "Types as the match target's type and makes the arm a fallback, so "
                   "it also silences the exhaustiveness check.",
     .parse = NULL, .check = NULL, .emit = NULL,

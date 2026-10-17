@@ -29,10 +29,10 @@ const ConstructSpec construct_generic_params = {
                  "GenericParam ::= Identifier (\":\" TraitBounds)?\n"
                  "TraitBounds ::= TraitBound (\"+\" TraitBound)*\n"
                  "TraitBound ::= TypePath",
-    .research  = "research/010 §7.3, §12.1 (generic parameter lists); "
-                 "research/011 §5.2 (generics were deferred to Phase 2)",
+    .research  = "research/001 §7.3, §12.1 (generic parameter lists); "
+                 "research/002 §5.2 (generics were deferred to Phase 2)",
     .note      = "In Astra-0: conformance/generics/* passes on it (audit §7.14 — "
-                 "research/011 §5.2 deferred generics, the implemented language "
+                 "research/002 §5.2 deferred generics, the implemented language "
                  "includes them). Phase 2.4 step 1: parses on fn/struct/enum/"
                  "trait/impl declarations into NODE_TYPE_PARAM nodes; inference and "
                  "monomorphization landed with steps 2-4. Bounds parse as bare "

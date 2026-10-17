@@ -29,7 +29,7 @@ const ConstructSpec construct_struct_lit = {
     .deps       = deps,
     .grammar    = "StructLiteral ::= Identifier \"{\" StructFieldInit (\",\" StructFieldInit)* \",\"? \"}\"\n"
                   "StructFieldInit ::= Identifier (\"=\" Expression)?",
-    .research   = "research/010 §12.1 (compound literals); research/04 §9.3 (product types)",
+    .research   = "research/001 §12.1 (compound literals); research/004 §9.3 (product types)",
     .note       = "Field order in the literal is free: the emitter lays values out in "
                   "declaration order. Both `=` (§12.1) and `:` (struct declarations) "
                   "are accepted as the separator. Shorthand `Point { x }` (the "

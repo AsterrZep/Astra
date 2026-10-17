@@ -24,9 +24,9 @@ const ConstructSpec construct_pattern_or = {
     .in_astra0 = true,
     .deps      = deps,
     .grammar   = "OrPattern ::= AndPattern (\"|\" AndPattern)*",
-    .research  = "research/010 §5.3 (Pattern grammar); research/04 §9.4 (or-patterns)",
+    .research  = "research/001 §5.3 (Pattern grammar); research/004 §9.4 (or-patterns)",
     .note      = "Alternatives are stored as sibling pattern nodes on NODE_PATTERN_OR. "
-                  "The `&` conjunction form (AndPattern, research/04 §9.4) is not "
+                  "The `&` conjunction form (AndPattern, research/004 §9.4) is not "
                   "implemented, and neither is `ref` (RefPattern). The checker requires "
                   "every alternative to match the target's type.",
     .parse = NULL, .check = NULL, .emit = NULL,

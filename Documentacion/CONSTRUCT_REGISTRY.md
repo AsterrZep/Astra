@@ -1,8 +1,8 @@
 # Astra — Construct Registry (one file per construct)
 
 Estado: implementado y verificado en el seed (`seed/src/constructs/`).
-Base: `research/010` §12.1 (gramática EBNF), §2.4 y §12.2 (tabla de precedencia);
-`research/011` §3.3 (estructura de módulos), §7 (parser) y §2.3 (anti-patrones).
+Base: `research/001` §12.1 (gramática EBNF), §2.4 y §12.2 (tabla de precedencia);
+`research/002` §3.3 (estructura de módulos), §7 (parser) y §2.3 (anti-patrones).
 
 ---
 
@@ -90,7 +90,7 @@ const ConstructSpec construct_if = {
     .in_astra0  = true,
     .deps       = deps,
     .grammar    = "IfExpr ::= \"if\" Expression Block (\"else\" (IfExpr | Block))?",
-    .research   = "research/010 §3.2 (expression-oriented), §4, §12.1",
+    .research   = "research/001 §3.2 (expression-oriented), §4, §12.1",
     .note       = "…",
     .parse = NULL, .check = NULL, .emit = NULL,
 };
@@ -107,7 +107,7 @@ const ConstructSpec construct_if = {
 | `has_braces` | La producción lleva un cuerpo `{ … }` |
 | `in_astra0` | Si está dentro del subconjunto que compila el seed |
 | `deps` | Sub-constructos que esta producción referencia |
-| `grammar` | La producción EBNF, literal de `research/010` §12.1 |
+| `grammar` | La producción EBNF, literal de `research/001` §12.1 |
 | `research` | Cita al reporte que la especifica |
 | `note` | Decisiones, desviaciones y huecos conocidos |
 
@@ -173,7 +173,7 @@ verdad, no con copias).
 ## 5. Desviaciones encontradas entre la investigación y el código
 
 El registro sirvió, ya en su primer día, para hacer visibles contradicciones
-que estaban repartidas por el código. Todas verificadas leyendo `research/010`.
+que estaban repartidas por el código. Todas verificadas leyendo `research/001`.
 
 | # | Hallazgo | Qué hace el seed |
 |:-:|:---------|:-----------------|
@@ -188,7 +188,7 @@ que estaban repartidas por el código. Todas verificadas leyendo `research/010`.
 Los huecos **deliberados** (especificados, fuera de Astra-0) quedan registrados
 como constructos con `in_astra0 = false` y su justificación citada:
 `trait`, `impl`, `type_alias`, `comptime`, `lambda`, `tuple_lit`,
-`pattern_ident`. `research/011` §5.2/§5.4 es la razón de cada uno.
+`pattern_ident`. `research/002` §5.2/§5.4 es la razón de cada uno.
 
 `import` salió de esta lista el 2026-09-29 (Fase 2.2, paso 1 de módulos): el seed
 registraba `import` como constructo fuera de Astra-0 y sin palabra clave, mientras
@@ -242,13 +242,13 @@ La migración de los hooks va por fases, y cada fase es verificable por sí sola
    propio: hoy el parcheo del `JUMP_IF_FALSE` del `if` ya se equivocó una vez
    por un off-by-one.
 3. **check** — igual para el type checker. `match` y su exhaustividad
-   (`research/04` §9.7) son los que más ganan.
+   (`research/004` §9.7) son los que más ganan.
 
 Cada fase se commitea por separado y `migrated: N / 47` es la métrica.
 
 ### Guardarraíl
 
-`research/011` §2.3 avisa contra **sobre-ingeniería del seed**: "es desechable,
+`research/002` §2.3 avisa contra **sobre-ingeniería del seed**: "es desechable,
 escribe rápido y sucio". El registro no contradice ese aviso mientras se
 respeten dos reglas:
 
@@ -256,7 +256,7 @@ respeten dos reglas:
   registro dinámico, ni carga en tiempo de ejecución, ni un generador de
   código. Son 47 structs constantes y unas tablas de punteros.
 - Ningún archivo de constructo **añade** un concepto al lenguaje. Cada uno
-  documenta un constructo que ya existe en `research/010`, o marca
+  documenta un constructo que ya existe en `research/001`, o marca
   explícitamente uno que está fuera de Astra-0.
 
 Si un archivo de constructo empieza a contener lógica que no es "parsear /
@@ -271,12 +271,12 @@ parar.
 declarativo + validado (`migrated: 0 / 47`).** La decisión se toma con la
 investigación delante, no por comodidad:
 
-- `research/011` §2.3.1 nombra la sobre-ingeniería del seed como su **primer
+- `research/002` §2.3.1 nombra la sobre-ingeniería del seed como su **primer
   anti-patrón** (*"quick and dirty — it's used once to bootstrap, then retired"*).
   Mover 47 hooks a un despacho por punteros es, literalmente, cambiar `switch`
   simples por una vtable: cero cambio observable, más indirección y más superficie
   donde romper el invariante de pila del emisor.
-- `research/011` §3.3 —la estructura de módulos que ese mismo reporte prescribe—
+- `research/002` §3.3 —la estructura de módulos que ese mismo reporte prescribe—
   **no tiene** directorio `constructs/`: organiza por fase (`lexer.c`, `parser.c`,
   `typechecker.c`, `codegen_c.c`…). El registro es un añadido de la
   implementación, y el guardarraíl de §7 ya exige que ningún archivo de constructo
@@ -284,10 +284,10 @@ investigación delante, no por comodidad:
 - Lo que el registro **ya** aporta es valor real y está en uso: 14 invariantes
   verificadas contra `lexer.c` y `parser.c` en cada `make test`, trazabilidad
   gramática→reporte y siete desviaciones investigación↔código sacadas a la luz
-  (§5). Eso encaja con el anti-patrón nº4 de `research/011` §2.3 (*"the seed needs
+  (§5). Eso encaja con el anti-patrón nº4 de `research/002` §2.3 (*"the seed needs
   rigorous tests"*), no con el nº1.
 - Coste de migrar: riesgo sobre el invariante de pila y sobre los 67 tests verdes,
-  sin ningún cambio de comportamiento que lo justifique. `research/011` §2.3.3
+  sin ningún cambio de comportamiento que lo justifique. `research/002` §2.3.3
   recuerda que el seed solo necesita **corrección**, no estructura.
 
 **Cuándo revisitarlo:** la Fase 2 escribe el compilador en Zig desde cero. Ahí
