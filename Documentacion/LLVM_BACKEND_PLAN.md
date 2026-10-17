@@ -105,10 +105,10 @@ llvm-config --includedir --libdir --libs --link-shared
 | `zig/src/llvm/c_api.zig` | **Único** `@cImport` de `llvm-c/Core.h, Analysis.h, TargetMachine.h, DebugInfo.h`; wrappers zig idiomáticos |
 | `zig/src/llvm/emitter.zig` | AST tipado → LLVM IR (el emisor; sigue el patrón del emitter de bytecode pero en este nivel: allocas+SSA, §1.5) |
 | `zig/src/llvm/runtime/astra_runtime_llvm.c` | TU delgada: `#include "codegen_runtime.h"` (copia sincronizada o include por ruta relativa al seed — decisión en M0) + `astra_runtime_error` `noreturn` exportado |
-| `zig/src/llvm.zig` | Fachada: `emitModule(ast) → *LLVMModuleRef`, verify, write `.ll`/`.o` |
-| `zig/src/main.zig` (edición) | Flags CLI: `--emit-llvm` (texto `.ll` junto al input), `--emit-obj` (M2+), `--emit-llvm-stdout` para tests |
+| `zig/src/llvm.zig` | Fachada: `emitModule(ast) → *LLVMModuleRef`, verify, write `.ll`, `emitObjectFile` (TargetMachineEmitToFile, M2.e) |
+| `zig/src/main.zig` (edición) | Flags CLI: `--emit-llvm` (texto `.ll` junto al input), `--emit-llvm-stdout` (tests), `--emit-obj` (objeto nativo vía TargetMachine, M2.e) |
 | `zig/tests/llvm/` | Casos `.astra` + expectativas de la ruta LLVM (paralelo a `tests/codegen/` del seed) |
-| `zig/tests/llvm_parity.sh` | Runner: conformance no-UI → `--emit-llvm` → `llc`/`lli` → salida idéntica a la VM |
+| `zig/tests/llvm_parity.sh` | Runner: conformance no-UI + suite `seed/tests/codegen/` → `--emit-obj` → link runtime → salida idéntica a la VM |
 | `Documentacion/PHASE_LLVM_PROGRESS.md` | Progress log estilo PHASE2_PROGRESS.md (se crea al aterrizar M0) |
 
 ### 3.2 Flujo
@@ -121,8 +121,7 @@ llvm-config --includedir --libdir --libs --link-shared
    └─► Ruta LLVM (nueva):     emitter.zig → LLVM C API
           │  LLVMVerifyModule  (siempre)
           ├── --emit-llvm      → archivo .ll (inspección, FileCheck)
-          ├── llc -filetype=obj → .o  (M0-M1, subproceso)
-          ├── TargetMachineEmitToFile (M2+, en proceso)
+          ├── --emit-obj       → .o vía TargetMachineEmitToFile (RelocPIC)
           └── link con astra_runtime_llvm.o + libc → binario Astra
 ```
 
@@ -165,7 +164,7 @@ opt -passes=verify file.ll                         # sanity fuera de proceso
 | Workstream | Owns | Verifies with |
 |:-----------|:-----|:--------------|
 | **llvm-infra** | `build.zig` (flag/descubrimiento/link), `c_api.zig`, runtime TU | unit test de módulo verify; `zig build` sin flag intacto |
-| **llvm-core** | `emitter.zig`: literales, aritmética con guards (§1.4), `let`, `if`/`while`, funciones, `print` | `lli`/`llc` + salida VM |
+| **llvm-core** | `emitter.zig`: literales, aritmética con guards (§1.4), `let`, `if`/`while`, funciones, `print` | `--emit-obj` + salida VM |
 | **llvm-values** | arrays, structs, enums, `match`, closures, strings | suite `tests/codegen/` + conformance |
 | **llvm-errors** | guards de div/shift/bounds, Option/Result, `?` (longjmp v1), atributos de helpers | conformance `ui/` + sweeps |
 | **llvm-testing** | `llvm_parity.sh`, ruta en CI, FileCheck, fuzz diferencial | job `llvm` CI verde |
@@ -202,16 +201,20 @@ Closures (env structs), floats (guards no-IEEE), Option/Result y `?`
 (longjmp v1), strings. **Gate**: subset de conformance (~60%) por ruta LLVM,
 `llvm_parity.sh` en CI ampliado.
 
-### M2 — Valores y patrones
+### M2 — Valores y patrones ✅ (cerrado, `74557cb`)
 Arrays/structs (GEP estáticos por layout del typechecker), enums+`match`
-(tag tests → `icmp`/`br`/phi; sin hubs), `for..in`. **Gate**: los 22 casos de
-`seed/tests/codegen/` + conformance completa por la ruta LLVM;
-`TargetMachineEmitToFile` reemplaza al `llc` subproceso.
+(tag tests → `icmp`/`br`/phi; sin hubs), `for..in` (rangos + arrays),
+`--emit-obj` vía TargetMachineEmitToFile. **Gate alcanzado**: la suite
+`seed/tests/codegen/` + la conformance completa pasan por la ruta LLVM;
+paridad 119 casos = 101 ok / 16 skip (M3) / 2 excl / 0 fail. Ver
+`PHASE_LLVM_PROGRESS.md` §6 para las decisiones de layout y lowering.
 
 ### M3 — Paridad total y robustez
-Atributos de helpers, pesos de rama fríos en traps, fuzz diferencial
-cuádruple, FileCheck para shapes críticos (guards, match). **Gate**:
-**definición de "hecho"** de §0 alcanzada; la fase es usable.
+Cierra los 16 skip restantes (genéricos, traits/impls, módulos con
+import), la guarda de profundidad de llamada que hoy se excluye (los 2
+`excl`), más atributos de helpers, pesos de rama fríos en traps, fuzz
+diferencial cuádruple y FileCheck para shapes críticos (guards, match).
+**Gate**: **definición de "hecho"** de §0 alcanzada; la fase es usable.
 
 ### M4 — Calidad (benchmark + debug)
 DWARF (`DebugInfo.h`, Kaleidoscope ch. 9), pipeline `-O2` + adiciones
@@ -235,20 +238,22 @@ Cada uno se planifica al llegar; M6 no bloquea el cierre de la fase.
 
 ```yaml
 llvm:
-  name: llvm (LLVM 19) — ruta --emit-llvm sobre la suite
+  name: llvm (LLVM 19) — ruta --emit-obj sobre la suite
   runs-on: ubuntu-latest
   steps:
     - checkout + setup-zig 0.16.0
-    - Instalar LLVM 19: wget https://apt.llvm.org/llvm.sh && sudo ./llvm.sh 19 \
-        && sudo apt-get install -y llvm-19-dev        # [a verificar en M0]
+    - Instalar LLVM 19 (apt.llvm.org, verificado en CI): wget llvm.sh 19 \
+        && sudo apt-get install -y llvm-19-dev
     - zig build -Dllvm                                # con ASTRA_LLVM_CONFIG si hace falta
-    - ./zig/tests/llvm_parity.sh
+    - ./zig/tests/llvm_parity.sh                      # --emit-obj -> link runtime
 llvm-canario:                                        # no bloqueante (continue-on-error)
   … misma instalación con latest (23) …              # churn de API detectado antes
 ```
 
-- El job principal **fija LLVM 19** (reproducible); el canario usa latest
-  para adelantar el churn de la C API hacia el rango 19..23.
+- El job principal **fija LLVM 19** (reproducible; `apt.llvm.org/llvm.sh 19`
+  quedó verificado en CI — era la única pieza "[a verificar]" en M0); el
+  canario usa latest para adelantar el churn de la C API hacia el rango
+  19..23.
 - Los jobs actuales (seed, zig, parity) **no cambian**: `-Dllvm` es opt-in.
 
 ---
@@ -269,12 +274,15 @@ llvm-canario:                                        # no bloqueante (continue-o
 
 ## 9. Próximo paso
 
-M0 es pequeño y autocontenido (~4 commits, una tarde de trabajo enfocado):
-infra + smoke de fib end-to-end. Al aterrizarlo se crea
-`PHASE_LLVM_PROGRESS.md` y se actualiza AGENTS.md. Los hitos M1+ siguen el
-mismo patrón workstream → commit probado → gate verde.
+Estado: **M0–M2 completados** (ver `PHASE_LLVM_PROGRESS.md`). El backend
+compila el subconjunto de Astra-0 (escalars, floats, strings,
+Option/Result+`match`/`?`, closures, arrays/structs/enums, `for..in`,
+`break`/`continue`) a `.o` nativo vía TargetMachineEmitToFile y reproduce la
+salida de la VM byte a byte en 101/119 casos; los 16 skip son genéricos /
+traits / traits / módulos y los 2 excl fijan la guarda de profundidad de
+llamada de la VM — todo eso es M3. Los hitos siguen el patrón workstream →
+commit probado → gate verde.
 
-Pendiente de confirmación del usuario antes de M0.1:
-- Instalación de `llvm-19-dev` en CI vía `apt.llvm.org/llvm.sh 19`
-  (la única pieza marcada "[a verificar]" — si falla, alternativa:
-  `llvm-19` de universe o contenedor con LLVM preinstalado).
+Pendiente confirmado y cerrado: la instalación de `llvm-19-dev` en CI vía
+`apt.llvm.org/llvm.sh 19` quedó verificada con el job `llvm` en verde desde
+M0.4 (ya no es un riesgo "[a verificar]").
