@@ -89,3 +89,33 @@ jobs:
       # divergences live in the script's KNOWN_FIRST_LINE list (§1.7).
       - name: ui diagnostic messages (seed <-> zig)
         run: ./zig/tests/ui_message_parity.sh
+
+  # LLVM backend (LLVM_BACKEND_PLAN.md §6 M0.4, §7): the opt-in -Dllvm route
+  # (M0 subset) must produce byte-identical stdout/stderr/exit-code to the zig
+  # VM for every in-scope case (--emit-llvm -> llc -> link runtime -> run).
+  # `-Dllvm` is opt-in, so the seed/zig/parity jobs above are untouched; this
+  # is the only job that installs LLVM. LLVM 19 is pinned for reproducibility;
+  # the apt.llvm.org install is the one piece the plan flags "[a verificar]".
+  llvm:
+    name: llvm (LLVM 19) — ruta --emit-llvm sobre la suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      # apt.llvm.org pins LLVM 19 regardless of the distro's own packages.
+      # llvm.sh installs the tools (llc-19, opt-19); llvm-19-dev provides
+      # llvm-config-19 (build.zig discovery) and the libLLVM-19 shared library
+      # the compiler links against.
+      - name: Install LLVM 19 (apt.llvm.org, pinned)
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo DEBIAN_FRONTEND=noninteractive ./llvm.sh 19
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-19-dev
+      - name: Build zig with the LLVM backend
+        run: zig build -Dllvm
+        working-directory: zig
+      - name: LLVM-route parity (VM <-> --emit-llvm -> llc -> link)
+        run: ./zig/tests/llvm_parity.sh
