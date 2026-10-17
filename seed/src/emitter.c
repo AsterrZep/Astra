@@ -1594,7 +1594,7 @@ static void emit_expr(Emitter *e, Node *node) {
              * guard-false edge — which must start at arm-entry height again —
              * is re-targeted past that copy onto the real next arm at the end
              * of the iteration (audit §4.7). */
-            size_t arm_gf_patch = 0, arm_stub_jump = 0;
+            size_t arm_stub_jump = 0;
 
             /* Each arm is entered after the previous arm's body jumped away, so
              * it starts at the height the scrutinee store left behind. The
@@ -1604,9 +1604,13 @@ static void emit_expr(Emitter *e, Node *node) {
             e->rt = rt_test;
 
             if (pat && pat->kind == NODE_PATTERN_WILDCARD) {
-                has_wildcard = true;
                 Node *guard = node->as.match_expr.arms.data[i].guard;
                 if (guard) {
+                    /* A guarded wildcard is refutable (audit §4.8): only an
+                     * unguarded one makes later arms unreachable and
+                     * suppresses the MATCH_NONE backstop. Guard-false falls
+                     * into the next arm's tests at arm-entry height — a
+                     * wildcard extracts no bindings, so no stub is needed. */
                     emit_expr(e, guard);
                     emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
                     size_t guard_false = e->code_len - 1;
@@ -1614,20 +1618,15 @@ static void emit_expr(Emitter *e, Node *node) {
                     emit_value_close(e, rt0, line);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
-                    /* Guard failed: push nil as the arm result, then close it
-                     * like any other path so the match still leaves exactly
-                     * one cell above its entry height. */
                     e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
-                    uint32_t z = add_constant(e, value_nil());
-                    emit_inst_index(e, OPCODE_CONST, z, line);
-                    emit_value_close(e, rt0, line);
-                } else {
-                    emit_branch_value(e, body, "match arm", line);
-                    emit_value_close(e, rt0, line);
-                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
-                    patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                    continue; /* tests nothing: no plain copy either */
                 }
-                break; /* a wildcard makes later arms unreachable */
+                has_wildcard = true;
+                emit_branch_value(e, body, "match arm", line);
+                emit_value_close(e, rt0, line);
+                emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                break; /* an unguarded wildcard makes later arms unreachable */
             }
 
             /* Binding pattern: always matches. Bind the scrutinee to a local
@@ -1640,8 +1639,16 @@ static void emit_expr(Emitter *e, Node *node) {
                 }
                 emit_inst_index(e, OPCODE_GET_LOCAL, slot, line);
                 emit_inst_index(e, OPCODE_SET_LOCAL, bind_slot, line);
+                uint32_t bind_rt = (uint32_t)e->rt;
                 Node *guard = node->as.match_expr.arms.data[i].guard;
                 if (guard) {
+                    /* A guarded binding is refutable (audit §4.8): the
+                     * guard-false edge drops the extracted binding and falls
+                     * into the next arm's tests at arm-entry height — the
+                     * same reconcile the variant arms do for their payload
+                     * bindings (audit §4.7). The drop covers a stale pad
+                     * cell too, when a previous arm's slots pushed
+                     * local_count past the frontier (audit §4.11). */
                     emit_expr(e, guard);
                     emit_inst_offset(e, OPCODE_JUMP_IF_FALSE, 0, line);
                     size_t guard_false = e->code_len - 1;
@@ -1649,21 +1656,17 @@ static void emit_expr(Emitter *e, Node *node) {
                     emit_value_close(e, rt0, line);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
-                    /* Guard failed: push nil as the arm result and close it.
-                     * (The `break` below still makes later arms unreachable —
-                     * audit §4.8 — so this path ends in the MATCH_NONE trap,
-                     * as before.) */
                     e->code[guard_false].arg.offset = (int32_t)(e->code_len - guard_false);
-                    uint32_t z = add_constant(e, value_nil());
-                    emit_inst_index(e, OPCODE_CONST, z, line);
-                    emit_value_close(e, rt0, line);
-                } else {
-                    emit_branch_value(e, body, "match arm", line);
-                    emit_value_close(e, rt0, line);
-                    emit_inst_offset(e, OPCODE_JUMP, 0, line);
-                    patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                    uint32_t drop = bind_rt - (uint32_t)rt_test;
+                    emit_inst_index(e, OPCODE_POP, drop, line);
+                    sp_set_index(e, e->code_len - 1, drop);
+                    continue; /* the binding slot reclaims with the match table */
                 }
-                break; /* binding makes later arms unreachable */
+                emit_branch_value(e, body, "match arm", line);
+                emit_value_close(e, rt0, line);
+                emit_inst_offset(e, OPCODE_JUMP, 0, line);
+                patch_push(e, &end_jumps, &end_len, &end_cap, e->code_len - 1);
+                break; /* an unguarded binding makes later arms unreachable */
             }
 
             /* Enum variant with payload bindings: check the variant tag, then
@@ -1700,6 +1703,7 @@ static void emit_expr(Emitter *e, Node *node) {
                 }
 
                 /* Guard: after binding extraction, evaluate the guard. */
+                uint32_t bind_rt = (uint32_t)e->rt;
                 Node *guard = node->as.match_expr.arms.data[i].guard;
                 size_t guard_false_jump = 0;
                 bool has_guard = (guard != NULL);
@@ -1718,13 +1722,18 @@ static void emit_expr(Emitter *e, Node *node) {
                  * extracted: drop them on that edge, so the next arm's tests
                  * start at arm-entry height again (audit §4.7). The edge's
                  * final target is patched after the duplicate plain copy,
-                 * below. */
+                 * below. The drop is everything the extraction put above
+                 * rt_test, not just bind_count: when a previous arm's slots
+                 * pushed local_count past the frontier, each binding lands
+                 * one cell higher and SET_LOCAL pads a stale cell below it
+                 * (audit §4.11). */
                 size_t guard_stub = 0;
                 bool has_stub = has_guard && bind_count > 0;
                 if (has_stub) {
+                    uint32_t drop = bind_rt - (uint32_t)rt_test;
                     guard_stub = e->code_len;
-                    emit_inst(e, OPCODE_POP, line);
-                    sp_set_index(e, e->code_len - 1, (uint32_t)bind_count);
+                    emit_inst_index(e, OPCODE_POP, drop, line);
+                    sp_set_index(e, e->code_len - 1, drop);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     arm_stub_jump = e->code_len - 1;
                 }
@@ -1733,7 +1742,6 @@ static void emit_expr(Emitter *e, Node *node) {
                 e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
                 if (has_guard) {
                     if (has_stub) {
-                        arm_gf_patch = guard_false_jump;
                         e->code[guard_false_jump].arg.offset =
                             (int32_t)(guard_stub - guard_false_jump);
                     } else {
@@ -1775,6 +1783,7 @@ static void emit_expr(Emitter *e, Node *node) {
                 }
 
                 Node *guard = node->as.match_expr.arms.data[i].guard;
+                uint32_t bind_rt = (uint32_t)e->rt;
                 size_t guard_false_jump = 0;
                 bool has_guard = (guard != NULL);
                 if (has_guard) {
@@ -1796,9 +1805,12 @@ static void emit_expr(Emitter *e, Node *node) {
                 size_t guard_stub = 0;
                 bool has_stub = has_guard && payload && payload->kind == NODE_PATTERN_BIND;
                 if (has_stub) {
+                    /* Same drop formula as the variant path: everything the
+                     * extraction put above rt_test (audit §4.11). */
+                    uint32_t drop = bind_rt - (uint32_t)rt_test;
                     guard_stub = e->code_len;
-                    emit_inst(e, OPCODE_POP, line);
-                    sp_set_index(e, e->code_len - 1, 1);
+                    emit_inst_index(e, OPCODE_POP, drop, line);
+                    sp_set_index(e, e->code_len - 1, drop);
                     emit_inst_offset(e, OPCODE_JUMP, 0, line);
                     arm_stub_jump = e->code_len - 1;
                 }
@@ -1807,7 +1819,6 @@ static void emit_expr(Emitter *e, Node *node) {
                 e->code[no_match].arg.offset = (int32_t)(next_arm - no_match);
                 if (has_guard) {
                     if (has_stub) {
-                        arm_gf_patch = guard_false_jump;
                         e->code[guard_false_jump].arg.offset =
                             (int32_t)(guard_stub - guard_false_jump);
                     } else {
@@ -1854,10 +1865,14 @@ static void emit_expr(Emitter *e, Node *node) {
                 e->code[guard_false_jump].arg.offset = (int32_t)(next_arm - guard_false_jump);
             }
 
-            /* Re-target the builtin/variant arms' guard-false stubs past the
-             * duplicate plain copy emitted above, onto the real next arm. */
-            if (arm_gf_patch)
-                e->code[arm_gf_patch].arg.offset = (int32_t)(e->code_len - arm_gf_patch);
+            /* Re-target the builtin/variant arms' guard-false *stub* past
+             * the duplicate plain copy emitted above, onto the real next
+             * arm. Only the stub's own JUMP gets this final target: the
+             * guard-false edge must keep pointing at the stub, or it skips
+             * the POP and the extracted binding cells stay live under the
+             * next arm. Re-patching the JIF itself (the old arm_gf_patch)
+             * did exactly that — the §4.7 stub was dead code whenever the
+             * binding carried a payload (audit §4.11). */
             if (arm_stub_jump)
                 e->code[arm_stub_jump].arg.offset = (int32_t)(e->code_len - arm_stub_jump);
         }

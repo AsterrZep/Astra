@@ -1,0 +1,30 @@
+// Guarded catch-all arms are refutable (audit §4.8): when a guard fails, the
+// match falls through to the next arm instead of aborting or yielding a
+// silent nil. Only an unguarded wildcard/binding makes later arms
+// unreachable and guarantees the match.
+// EXPECT: 2
+// EXPECT: 1
+// EXPECT: 105
+// EXPECT: 20
+// EXPECT: 4
+
+fn main() {
+    // Guarded binding, guard fails -> the wildcard arm runs (audit repro).
+    let x = 5
+    print(match x { n if n > 9 => 1, _ => 2 })
+
+    // Guarded binding, guard holds -> the binding arm runs.
+    let y = 15
+    print(match y { n if n > 9 => 1, _ => 2 })
+
+    // Guarded wildcard, guard fails -> the binding arm runs (was silent nil).
+    print(match x { _ if x > 9 => 1, m => m + 100 })
+
+    // Chained guarded bindings: each failed guard falls into the next arm.
+    let s = "b"
+    print(match s { t if t == "a" => 10, u if u == "b" => 20, _ => 30 })
+
+    // Two guarded wildcards, neither holds -> the final unguarded arm runs.
+    let z = 4
+    print(match z { _ if z > 9 => 1, _ if z > 99 => 2, _ => z })
+}

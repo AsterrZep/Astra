@@ -1837,12 +1837,12 @@ pub const Emitter = struct {
             const pat = arm.pattern;
             const body = arm.body;
 
-            // A builtin/variant arm's guard-false edge — which must start at
-            // arm-entry height again — is re-targeted onto the real next arm
-            // at the end of this iteration (audit §4.7). The Zig port emits
-            // each arm once (no duplicate plain copy), so the end of the
-            // iteration IS the real next arm.
-            var arm_gf_patch: usize = 0;
+            // A builtin/variant arm's guard-false stub — which pops the
+            // extracted bindings so the next arm starts at arm-entry height
+            // again — gets its final jump target at the end of this
+            // iteration (audit §4.7/§4.11). The Zig port emits each arm
+            // once (no duplicate plain copy), so the end of the iteration
+            // IS the real next arm.
             var arm_stub_jump: usize = 0;
 
             // Each arm is entered after the previous arm's body jumped away,
@@ -1852,8 +1852,13 @@ pub const Emitter = struct {
 
             switch (self.tree.node(pat)) {
                 .pattern_wildcard => {
-                    has_wildcard = true;
                     if (arm.guard) |g| {
+                        // A guarded wildcard is refutable (audit §4.8): only
+                        // an unguarded one makes later arms unreachable and
+                        // suppresses the MATCH_NONE backstop. Guard-false
+                        // falls into the next arm's tests at arm-entry
+                        // height — a wildcard extracts no bindings, so no
+                        // stub is needed.
                         self.emitExpr(g);
                         self.emitInstOffset(.jump_if_false, 0, ln);
                         const guard_false = self.code.items.len - 1;
@@ -1861,27 +1866,31 @@ pub const Emitter = struct {
                         self.emitValueClose(rt0, ln);
                         self.emitInstOffset(.jump, 0, ln);
                         self.patchPush(&end_jumps, self.code.items.len - 1);
-                        // Guard failed: push nil as the arm result, then close
-                        // it like any other path so the match still leaves
-                        // exactly one cell above its entry height.
                         self.code.items[guard_false].arg = .{ .offset = @intCast(self.code.items.len - guard_false) };
-                        const z = self.addNil();
-                        self.emitInstIndex(.const_, z, ln);
-                        self.emitValueClose(rt0, ln);
-                    } else {
-                        self.emitBranchValue(body, "match arm", ln);
-                        self.emitValueClose(rt0, ln);
-                        self.emitInstOffset(.jump, 0, ln);
-                        self.patchPush(&end_jumps, self.code.items.len - 1);
+                        continue :arms_loop; // tests nothing: no plain copy either
                     }
-                    break :arms_loop; // a wildcard makes later arms unreachable
+                    has_wildcard = true;
+                    self.emitBranchValue(body, "match arm", ln);
+                    self.emitValueClose(rt0, ln);
+                    self.emitInstOffset(.jump, 0, ln);
+                    self.patchPush(&end_jumps, self.code.items.len - 1);
+                    break :arms_loop; // an unguarded wildcard makes later arms unreachable
                 },
                 .pattern_bind => |name| {
                     const bind_slot = self.addLocal(name);
                     if (bind_slot == 0xFF) break :arms_loop;
                     self.emitInstIndex(.get_local, slot, ln);
                     self.emitInstIndex(.set_local, bind_slot, ln);
+                    const bind_rt = self.rt;
                     if (arm.guard) |g| {
+                        // A guarded binding is refutable (audit §4.8): the
+                        // guard-false edge drops the extracted binding and
+                        // falls into the next arm's tests at arm-entry
+                        // height — the same reconcile the variant arms do
+                        // for their payload bindings (audit §4.7). The drop
+                        // covers a stale pad cell too, when a previous arm's
+                        // slots pushed local_count past the frontier (audit
+                        // §4.11).
                         self.emitExpr(g);
                         self.emitInstOffset(.jump_if_false, 0, ln);
                         const guard_false = self.code.items.len - 1;
@@ -1889,21 +1898,17 @@ pub const Emitter = struct {
                         self.emitValueClose(rt0, ln);
                         self.emitInstOffset(.jump, 0, ln);
                         self.patchPush(&end_jumps, self.code.items.len - 1);
-                        // Guard failed: push nil as the arm result and close
-                        // it. (The `break` below still makes later arms
-                        // unreachable — audit §4.8 — so this path ends in the
-                        // MATCH_NONE trap, as before.)
                         self.code.items[guard_false].arg = .{ .offset = @intCast(self.code.items.len - guard_false) };
-                        const z = self.addNil();
-                        self.emitInstIndex(.const_, z, ln);
-                        self.emitValueClose(rt0, ln);
-                    } else {
-                        self.emitBranchValue(body, "match arm", ln);
-                        self.emitValueClose(rt0, ln);
-                        self.emitInstOffset(.jump, 0, ln);
-                        self.patchPush(&end_jumps, self.code.items.len - 1);
+                        const drop: usize = @intCast(bind_rt - rt_test);
+                        self.emitInstIndex(.pop, @intCast(drop), ln);
+                        self.spSetIndex(self.code.items.len - 1, @intCast(drop));
+                        continue :arms_loop; // the binding slot reclaims with the match table
                     }
-                    break :arms_loop; // binding makes later arms unreachable
+                    self.emitBranchValue(body, "match arm", ln);
+                    self.emitValueClose(rt0, ln);
+                    self.emitInstOffset(.jump, 0, ln);
+                    self.patchPush(&end_jumps, self.code.items.len - 1);
+                    break :arms_loop; // an unguarded binding makes later arms unreachable
                 },
                 .pattern_variant_bind => |vb| {
                     var hits: std.ArrayListUnmanaged(usize) = .empty;
@@ -1926,6 +1931,7 @@ pub const Emitter = struct {
                         if (bind_slot == 0xFF) break;
                         self.emitInstIndex(.set_local, bind_slot, ln);
                     }
+                    const bind_rt = self.rt;
 
                     var guard_false_jump: ?usize = null;
                     if (arm.guard) |g| {
@@ -1942,13 +1948,18 @@ pub const Emitter = struct {
                     // extracted: drop them on that edge, so the next arm's
                     // tests start at arm-entry height again (audit §4.7). The
                     // edge's final target is patched at the end of this
-                    // iteration.
+                    // iteration. The drop is everything the extraction put
+                    // above rt_test, not just bind_count: when a previous
+                    // arm's slots pushed local_count past the frontier, each
+                    // binding lands one cell higher and SET_LOCAL pads a
+                    // stale cell below it (audit §4.11).
                     var guard_stub: usize = 0;
                     const has_stub = arm.guard != null and bind_count > 0;
                     if (has_stub) {
+                        const drop: usize = @intCast(bind_rt - rt_test);
                         guard_stub = self.code.items.len;
-                        self.emitInst(.pop, ln);
-                        self.spSetIndex(self.code.items.len - 1, @intCast(bind_count));
+                        self.emitInstIndex(.pop, @intCast(drop), ln);
+                        self.spSetIndex(self.code.items.len - 1, @intCast(drop));
                         self.emitInstOffset(.jump, 0, ln);
                         arm_stub_jump = self.code.items.len - 1;
                     }
@@ -1957,18 +1968,21 @@ pub const Emitter = struct {
                     self.code.items[no_match].arg = .{ .offset = @intCast(next_arm - no_match) };
                     if (guard_false_jump) |gf| {
                         if (has_stub) {
-                            arm_gf_patch = gf;
                             self.code.items[gf].arg = .{ .offset = @intCast(guard_stub - gf) };
                         } else {
                             self.code.items[gf].arg = .{ .offset = @intCast(next_arm - gf) };
                         }
                     }
 
-                    // Re-target the guard-false stub onto the real next arm:
-                    // this iteration ends here.
-                    if (arm_gf_patch != 0) {
-                        self.code.items[arm_gf_patch].arg = .{ .offset = @intCast(self.code.items.len - arm_gf_patch) };
-                    }
+                    // Re-target the guard-false *stub* onto the real next
+                    // arm: this iteration ends here. Only the stub's own
+                    // JUMP gets this final target — the guard-false edge
+                    // must keep pointing at the stub, or it skips the POP
+                    // and the extracted binding cells stay live under the
+                    // next arm. Re-patching the JIF itself (the old
+                    // arm_gf_patch) did exactly that: the §4.7 stub was
+                    // dead code whenever the binding carried a payload
+                    // (audit §4.11, mirror of the seed).
                     if (arm_stub_jump != 0) {
                         self.code.items[arm_stub_jump].arg = .{ .offset = @intCast(self.code.items.len - arm_stub_jump) };
                     }
@@ -2002,6 +2016,7 @@ pub const Emitter = struct {
                             else => {},
                         }
                     }
+                    const bind_rt = self.rt;
 
                     var guard_false_jump: ?usize = null;
                     if (arm.guard) |g| {
@@ -2018,14 +2033,17 @@ pub const Emitter = struct {
                     // extracted into its binding local: drop that cell on the
                     // edge so the next arm's tests start at arm-entry height
                     // again (audit §4.7). The edge's final target is patched
-                    // at the end of this iteration.
+                    // at the end of this iteration. Same drop formula as the
+                    // variant path — everything the extraction put above
+                    // rt_test (audit §4.11).
                     var guard_stub: usize = 0;
                     const has_stub = arm.guard != null and
                         if (b.payload) |payload| std.meta.activeTag(self.tree.node(payload)) == .pattern_bind else false;
                     if (has_stub) {
+                        const drop: usize = @intCast(bind_rt - rt_test);
                         guard_stub = self.code.items.len;
-                        self.emitInst(.pop, ln);
-                        self.spSetIndex(self.code.items.len - 1, 1);
+                        self.emitInstIndex(.pop, @intCast(drop), ln);
+                        self.spSetIndex(self.code.items.len - 1, @intCast(drop));
                         self.emitInstOffset(.jump, 0, ln);
                         arm_stub_jump = self.code.items.len - 1;
                     }
@@ -2034,18 +2052,21 @@ pub const Emitter = struct {
                     self.code.items[no_match].arg = .{ .offset = @intCast(next_arm - no_match) };
                     if (guard_false_jump) |gf| {
                         if (has_stub) {
-                            arm_gf_patch = gf;
                             self.code.items[gf].arg = .{ .offset = @intCast(guard_stub - gf) };
                         } else {
                             self.code.items[gf].arg = .{ .offset = @intCast(next_arm - gf) };
                         }
                     }
 
-                    // Re-target the guard-false stub onto the real next arm:
-                    // this iteration ends here.
-                    if (arm_gf_patch != 0) {
-                        self.code.items[arm_gf_patch].arg = .{ .offset = @intCast(self.code.items.len - arm_gf_patch) };
-                    }
+                    // Re-target the guard-false *stub* onto the real next
+                    // arm: this iteration ends here. Only the stub's own
+                    // JUMP gets this final target — the guard-false edge
+                    // must keep pointing at the stub, or it skips the POP
+                    // and the extracted binding cells stay live under the
+                    // next arm. Re-patching the JIF itself (the old
+                    // arm_gf_patch) did exactly that: the §4.7 stub was
+                    // dead code whenever the binding carried a payload
+                    // (audit §4.11, mirror of the seed).
                     if (arm_stub_jump != 0) {
                         self.code.items[arm_stub_jump].arg = .{ .offset = @intCast(self.code.items.len - arm_stub_jump) };
                     }

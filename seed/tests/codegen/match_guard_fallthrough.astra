@@ -1,0 +1,28 @@
+// EXPECT: 2
+// EXPECT: 1
+// EXPECT: 105
+// EXPECT: 20
+// EXPECT: 4
+//
+// C backend twin of conformance/enums/match_guard_fallthrough.astra (audit
+// §4.8): guarded catch-all arms are refutable — a failed guard falls into the
+// next arm in the VM, the C backend and the Zig mirror alike. The backend
+// translates the emitter's guard-false edges unchanged, so this pins that the
+// seed emitter's stub POP (drop the extracted binding) and its
+// no-stub wildcard fall-through survive the round-trip.
+
+fn main() {
+    let x = 5
+    print(match x { n if n > 9 => 1, _ => 2 })
+
+    let y = 15
+    print(match y { n if n > 9 => 1, _ => 2 })
+
+    print(match x { _ if x > 9 => 1, m => m + 100 })
+
+    let s = "b"
+    print(match s { t if t == "a" => 10, u if u == "b" => 20, _ => 30 })
+
+    let z = 4
+    print(match z { _ if z > 9 => 1, _ if z > 99 => 2, _ => z })
+}
