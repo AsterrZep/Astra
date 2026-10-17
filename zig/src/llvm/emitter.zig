@@ -1,19 +1,22 @@
 //! Emisor LLVM (Fase LLVM, LLVM_BACKEND_PLAN.md §6).
 //!
 //! Convierte el AST plano ya verificado por el typechecker en LLVM IR textual
-//! para el subconjunto escalar: literales int/bool/float, identificadores,
+//! para el subconjunto escalar: literales int/bool/float/string, identificadores,
 //! `let`/`const` (locales y de módulo), asignación, aritmética i64 y f64 con
-//! los mismos guards que el VM, comparaciones, `&&`/`||`/`!`, `if` (sentencia
-//! y expresión vía phi), `while`, funciones con recursión, `return` y `print`.
+//! los mismos guards que el VM, `+` de strings (concat por contenido),
+//! comparaciones, `&&`/`||`/`!`, `if` (sentencia y expresión vía phi), `while`,
+//! funciones con recursión, `return` y `print`.
 //!
-//! Modelo de valores: escalares sin boxing. `i64` para todos los tipos enteros
-//! de Astra (el VM almacena int64 completo), `i8` 0/1 para bool y `f64` para
-//! floats. El typechecker exige tipos de operandos idénticos (`type_eq`) en
+//! Modelo de valores: escalares sin boxing — `i64` para todos los tipos enteros
+//! de Astra (el VM almacena int64 completo), `i8` 0/1 para bool, `f64` para
+//! floats — más `str_`, el primer tipo con heap: puntero al bloque
+//! `{ i64 len; [len+1 x i8] data }` que el runtime lee directamente (longitud
+//! explícita como el par (str, len) del VM, soporta NULs intercalados, §2.14).
+//! El typechecker exige tipos de operandos idénticos (`type_eq`) en
 //! aritmética/comparación/asignación/argumentos, así que el emisor no necesita
 //! coerción int↔float: si ve operandos de distinto tipo es un bug del checker.
-//! El boxing a AstraValue llega con strings/Option/Result/arrays (M1–M2), que
-//! llevan tag en runtime. Los guards de div/mod/shift se emiten en línea y
-//! delegan el error en `astra_llvm_fail`, que reimprime
+//! El boxing de Option/Result/arrays llega con M1–M2. Los guards de div/mod/shift
+//! se emiten en línea y delegan el error en `astra_llvm_fail`, que reimprime
 //! `file:line: runtime error: msg` con el runtime compartido del seed — así la
 //! ruta LLVM no deriva en un tercer formato de error.
 //!
@@ -25,9 +28,11 @@ const ast = @import("../ast/ast.zig");
 const diagnostics = @import("../diagnostics.zig");
 const c = @import("c_api.zig").c;
 
-/// Tipos escalares que el subconjunto actual representa sin boxing: `i64` para
-/// todos los tipos enteros de Astra, `bool` como `i8` 0/1, `f64` para floats.
-const Ty = enum { i64_, bool_, f64_ };
+/// Tipos escalares que el subconjunto actual representa sin boxing, más el
+/// primer tipo con representación en heap: `i64` para todos los tipos enteros
+/// de Astra, `bool` como `i8` 0/1, `f64` para floats y `str_` como puntero al
+/// bloque `{ i64 len; [len+1 x i8] data }` del runtime (M1).
+const Ty = enum { i64_, bool_, f64_, str_ };
 
 /// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
@@ -75,7 +80,11 @@ pub const Emitter = struct {
     r_print_i64: c.LLVMValueRef,
     r_print_f64: c.LLVMValueRef,
     r_print_bool: c.LLVMValueRef,
+    r_print_str: c.LLVMValueRef,
     r_print_end: c.LLVMValueRef,
+    // Operaciones de string (M1): concat con `+` e igualdad por contenido.
+    r_str_concat: c.LLVMValueRef,
+    r_str_eq: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
@@ -84,6 +93,8 @@ pub const Emitter = struct {
     // Función que se emite actualmente (para allocas y bloques).
     cur_fn: c.LLVMValueRef = undefined,
     cur_returns_value: bool = false,
+    /// Contador para nombrar los globales de literales de string únicos.
+    str_seq: u32 = 0,
     // `astra_module_main`: el código de nivel superior, invocado desde @main.
     module_main: c.LLVMValueRef = undefined,
 
@@ -126,7 +137,10 @@ pub const Emitter = struct {
             .r_print_i64 = undefined,
             .r_print_f64 = undefined,
             .r_print_bool = undefined,
+            .r_print_str = undefined,
             .r_print_end = undefined,
+            .r_str_concat = undefined,
+            .r_str_eq = undefined,
         };
         self.declareRuntime();
         return self;
@@ -151,14 +165,22 @@ pub const Emitter = struct {
         self.r_print_i64 = self.declVoid("astra_llvm_print_i64", &.{self.t_i64});
         self.r_print_f64 = self.declVoid("astra_llvm_print_f64", &.{self.t_f64});
         self.r_print_bool = self.declVoid("astra_llvm_print_bool", &.{self.t_i32});
+        self.r_print_str = self.declVoid("astra_llvm_print_str", &.{self.t_ptr});
         self.r_print_end = self.declVoid("astra_llvm_print_end", &.{});
+        // concat(line, a, b) devuelve el bloque nuevo; eq(a, b) → i32 0/1.
+        self.r_str_concat = self.declRet(self.t_ptr, "astra_llvm_str_concat", &.{ self.t_i32, self.t_ptr, self.t_ptr });
+        self.r_str_eq = self.declRet(self.t_i32, "astra_llvm_str_eq", &.{ self.t_ptr, self.t_ptr });
+    }
+
+    fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
+        var pbuf: [8]c.LLVMTypeRef = undefined;
+        for (params, 0..) |p, i| pbuf[i] = p;
+        const fty = c.LLVMFunctionType(ret, if (params.len > 0) &pbuf else null, @intCast(params.len), 0);
+        return c.LLVMAddFunction(self.mod, name, fty);
     }
 
     fn declVoid(self: *Emitter, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
-        var pbuf: [8]c.LLVMTypeRef = undefined;
-        for (params, 0..) |p, i| pbuf[i] = p;
-        const fty = c.LLVMFunctionType(self.t_void, if (params.len > 0) &pbuf else null, @intCast(params.len), 0);
-        return c.LLVMAddFunction(self.mod, name, fty);
+        return self.declRet(self.t_void, name, params);
     }
 
     // ── Punto de entrada público ────────────────────────────────────────────
@@ -209,7 +231,7 @@ pub const Emitter = struct {
         for (param_items, 0..) |pi, i| {
             const p = self.tree.node(pi).param;
             const mt = self.scalarM0Ty(p.type_node) orelse
-                return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool)");
+                return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool/string)");
             pbuf[i] = self.llvmTy(mt);
         }
         var ret_ty: c.LLVMTypeRef = self.t_void;
@@ -236,7 +258,7 @@ pub const Emitter = struct {
             return self.unsupported(idx, "top-level binding without an initializer");
         const gname = std.fmt.allocPrintSentinel(self.a, "astra_g_{s}", .{vd.name}, 0) catch @panic("OOM");
         const gv = c.LLVMAddGlobal(self.mod, self.llvmTy(ty), gname);
-        c.LLVMSetInitializer(gv, c.LLVMConstInt(self.llvmTy(ty), 0, 0));
+        c.LLVMSetInitializer(gv, self.zeroInit(ty));
         self.globals.put(vd.name, .{ .val = gv, .ty = ty }) catch @panic("OOM");
     }
 
@@ -454,6 +476,7 @@ pub const Emitter = struct {
         switch (self.tree.node(idx)) {
             .int_literal => |v| return .{ .ref = c.LLVMConstInt(self.t_i64, @as(u64, @bitCast(v)), 0), .ty = .i64_ },
             .float_literal => |v| return .{ .ref = c.LLVMConstReal(self.t_f64, v), .ty = .f64_ },
+            .string_literal => |s| return self.emitStringLit(s),
             .bool_literal => |b| return .{ .ref = c.LLVMConstInt(self.t_i8, @intFromBool(b), 0), .ty = .bool_ },
             .identifier => |name| return self.emitIdent(idx, name),
             .binary_expr => return self.emitBinary(idx),
@@ -471,6 +494,27 @@ pub const Emitter = struct {
                 return null;
             },
         }
+    }
+
+    /// Literal de string → global constante `{ i64 len; [len+1 x i8] data }`
+    /// y su puntero como valor. La longitud va explícita (no un string C):
+    /// el literal puede llevar NULs intercalados — `"a\0b"` del caso
+    /// types/string_nul — y un puntero a C truncaría en el NUL (audit §2.14).
+    fn emitStringLit(self: *Emitter, bytes: []const u8) Val {
+        const len: u64 = bytes.len;
+        const data_ty = c.LLVMArrayType(self.t_i8, @intCast(len + 1));
+        var ftypes = [_]c.LLVMTypeRef{ self.t_i64, data_ty };
+        const s_ty = c.LLVMStructTypeInContext(self.ctx, &ftypes, 2, 0);
+        const data_c = c.LLVMConstStringInContext2(self.ctx, bytes.ptr, len, 0);
+        var elts = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i64, len, 0), data_c };
+        const sinit = c.LLVMConstNamedStruct(s_ty, &elts, 2);
+        self.str_seq += 1;
+        const name = std.fmt.allocPrintSentinel(self.a, "astrstr.{d}", .{self.str_seq}, 0) catch @panic("OOM");
+        const g = c.LLVMAddGlobal(self.mod, s_ty, name);
+        c.LLVMSetInitializer(g, sinit);
+        c.LLVMSetLinkage(g, c.LLVMPrivateLinkage);
+        c.LLVMSetUnnamedAddress(g, c.LLVMGlobalUnnamedAddr);
+        return .{ .ref = g, .ty = .str_ };
     }
 
     fn emitIdent(self: *Emitter, idx: u32, name: []const u8) ?Val {
@@ -497,6 +541,15 @@ pub const Emitter = struct {
                     self.unsupported(idx, "comparison of mixed types");
                     return null;
                 }
+                if (lhs.ty == .str_) {
+                    // Igualdad por contenido (value_eq del VM): len + memcmp,
+                    // que es lo que resuelve los NULs intercalados (§2.14).
+                    var sargs = [_]c.LLVMValueRef{ lhs.ref, rhs.ref };
+                    const eqv = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_eq), self.r_str_eq, &sargs, 2, "");
+                    var e8 = c.LLVMBuildTrunc(self.builder, eqv, self.t_i8, ""); // i32 0/1 → i8 0/1
+                    if (b.op == .neq) e8 = c.LLVMBuildXor(self.builder, e8, c.LLVMConstInt(self.t_i8, 1, 0), "");
+                    return .{ .ref = e8, .ty = .bool_ };
+                }
                 const cmp = if (lhs.ty == .f64_)
                     c.LLVMBuildFCmp(self.builder, if (b.op == .eq_eq) c.LLVMRealOEQ else c.LLVMRealUNE, lhs.ref, rhs.ref, "")
                 else
@@ -507,6 +560,12 @@ pub const Emitter = struct {
                 if (lhs.ty != rhs.ty) {
                     self.unsupported(idx, "comparison of mixed types");
                     return null;
+                }
+                if (lhs.ty == .str_) {
+                    // Sólo los números se ordenan; `type_eq` deja pasar el caso
+                    // y el runtime dice no (types/string_order_rejected).
+                    self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot compare string and string");
+                    return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ }; // inalcanzable: fail es noreturn
                 }
                 if (lhs.ty == .f64_) {
                     const pred: c.LLVMRealPredicate = switch (b.op) {
@@ -537,6 +596,12 @@ pub const Emitter = struct {
                 if (lhs.ty != rhs.ty) {
                     self.unsupported(idx, "arithmetic of mixed types");
                     return null;
+                }
+                if (lhs.ty == .str_ and b.op == .plus) {
+                    // Concatenación (typechecker: string + string -> string).
+                    var sargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), lhs.ref, rhs.ref };
+                    const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_concat), self.r_str_concat, &sargs, 3, "");
+                    return .{ .ref = rp, .ty = .str_ };
                 }
                 if (lhs.ty == .f64_) {
                     const r = switch (b.op) {
@@ -734,6 +799,10 @@ pub const Emitter = struct {
                     var bargs = [_]c.LLVMValueRef{ext};
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_bool), self.r_print_bool, &bargs, 1, "");
                 },
+                .str_ => {
+                    var sargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_str), self.r_print_str, &sargs, 1, "");
+                },
             }
         }
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_end), self.r_print_end, null, 0, "");
@@ -815,10 +884,16 @@ pub const Emitter = struct {
             const fzero = c.LLVMConstReal(self.t_f64, 0.0);
             return c.LLVMBuildFCmp(self.builder, c.LLVMRealUNE, v.ref, fzero, "");
         }
+        if (v.ty == .str_) {
+            // VM: `str != NULL && len > 0`; en este modelo los strings nunca
+            // son NULL, así que basta len > 0.
+            const len = c.LLVMBuildLoad2(self.builder, self.t_i64, v.ref, "");
+            return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, len, c.LLVMConstInt(self.t_i64, 0, 0), "");
+        }
         const zero = switch (v.ty) {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
-            .f64_ => unreachable,
+            .f64_, .str_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
     }
@@ -873,6 +948,19 @@ pub const Emitter = struct {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
             .f64_ => self.t_f64,
+            .str_ => self.t_ptr,
+        };
+    }
+
+    /// Inicializador cero de un global, con la forma correcta para cada tipo:
+    /// `LLVMConstInt` sobre un tipo no entero (f64/ptr) es inválido y rompía
+    /// `let g = 1.5` o `let g = "x"` a nivel de módulo.
+    fn zeroInit(self: *Emitter, ty: Ty) c.LLVMValueRef {
+        return switch (ty) {
+            .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
+            .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
+            .f64_ => c.LLVMConstReal(self.t_f64, 0.0),
+            .str_ => c.LLVMConstPointerNull(self.t_ptr),
         };
     }
 
@@ -884,6 +972,7 @@ pub const Emitter = struct {
                     std.mem.eql(u8, t.name, "u32") or std.mem.eql(u8, t.name, "u64")) return .i64_;
                 if (std.mem.eql(u8, t.name, "bool")) return .bool_;
                 if (std.mem.eql(u8, t.name, "f64")) return .f64_;
+                if (std.mem.eql(u8, t.name, "string")) return .str_;
                 return null;
             },
             else => return null,
@@ -896,6 +985,7 @@ pub const Emitter = struct {
         switch (self.tree.node(idx)) {
             .int_literal => return .i64_,
             .float_literal => return .f64_,
+            .string_literal => return .str_,
             .bool_literal => return .bool_,
             .identifier => |name| {
                 if (self.lookupLocal(name)) |l| return l.ty;

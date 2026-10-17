@@ -17,6 +17,8 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "codegen_runtime.h"
 
@@ -82,4 +84,50 @@ void astra_llvm_print_bool(int v) {
 
 void astra_llvm_print_end(void) {
     putchar('\n');
+}
+
+/* ---- strings ----------------------------------------------------------- */
+
+/* String values are the one boxed shape M1 introduces: the emitter lays a
+ * string out as `{ i64 len; [len+1 x i8] data }` (a NUL-terminated literal
+ * global, or a malloc'd block from concat) and passes a pointer to it around
+ * as `ptr`. The C view below mirrors that layout exactly — `len` at offset 0,
+ * bytes at offset 8 — so the runtime reads the header directly through the
+ * opaque pointer with no bitcasts in the IR. Length-bounded, like the VM's
+ * (str, len) pair: a NUL byte inside the string must not truncate print,
+ * concat or equality (audit §2.14, tests/conformance/types/string_nul). */
+typedef struct { int64_t len; char data[]; } AstraLLVMStr;
+
+void astra_llvm_print_str(const void *p) {
+    const AstraLLVMStr *s = (const AstraLLVMStr *)p;
+    if (astra_llvm_printed_any++) putchar(' ');
+    fwrite(s->data, 1, (size_t)s->len, stdout);
+}
+
+/* `a + b` for strings (VM OPCODE_ADD string arm): length-bounded copy into a
+ * fresh block, NUL-terminated for C convenience. The line rides along so the
+ * only failure mode (OOM) reports `file:line:` like the VM's arena_alloc. */
+void *astra_llvm_str_concat(unsigned line, const void *pa, const void *pb) {
+    const AstraLLVMStr *a = (const AstraLLVMStr *)pa;
+    const AstraLLVMStr *b = (const AstraLLVMStr *)pb;
+    int64_t n = a->len + b->len;
+    AstraLLVMStr *out = (AstraLLVMStr *)malloc(sizeof(int64_t) + (size_t)n + 1);
+    if (!out) astra_llvm_fail(line, "out of memory");
+    out->len = n;
+    memcpy(out->data, a->data, (size_t)a->len);
+    memcpy(out->data + a->len, b->data, (size_t)b->len);
+    out->data[n] = '\0';
+    return out;
+}
+
+/* `==`/`!=` for strings: content equality — VM value_eq's string arm (pointer
+ * fast path, then length + memcmp). Ordering is deliberately absent: the VM
+ * rejects `"a" < "b"` at runtime ("cannot compare string and string") and the
+ * emitter reproduces that, so no compare function lives here. */
+int32_t astra_llvm_str_eq(const void *pa, const void *pb) {
+    const AstraLLVMStr *a = (const AstraLLVMStr *)pa;
+    const AstraLLVMStr *b = (const AstraLLVMStr *)pb;
+    if (a == b) return 1;
+    if (a->len != b->len) return 0;
+    return memcmp(a->data, b->data, (size_t)a->len) == 0;
 }
