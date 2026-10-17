@@ -67,6 +67,14 @@ void astra_llvm_print_i64(int64_t v) {
     printf("%ld", (long)v);
 }
 
+/* Floats print with C's %g, the exact formatting builtin_print (VM) and the
+ * --emit-c backend use, so stdout bytes match (audit: dump.zig replicates the
+ * same %g without libc). */
+void astra_llvm_print_f64(double v) {
+    if (astra_llvm_printed_any++) putchar(' ');
+    printf("%g", v);
+}
+
 void astra_llvm_print_bool(int v) {
     if (astra_llvm_printed_any++) putchar(' ');
     printf("%s", v ? "true" : "false");

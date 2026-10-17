@@ -12,13 +12,15 @@
 #
 # The zig VM is the reference here. The seed jobs separately guarantee the zig
 # VM matches the seed VM (dump parity + conformance + ui parity), so
-# LLVM == zig VM transitively implies LLVM == seed semantics for the M0 subset.
+# LLVM == zig VM transitively implies LLVM == seed semantics for the subset the
+# backend covers.
 #
-# M0's emitter accepts a narrow scalar subset; a case using anything outside it
-# is *skipped* (the emitter rejects it with "not supported by the LLVM backend
-# (M0)") rather than failed — the sweep_emit_c.sh pattern. As M1+ widen the
-# subset, cases flip from skip to ok automatically. A case that emits
-# successfully but diverges from the VM is a hard FAIL.
+# The emitter accepts a growing scalar subset (ints, bools, floats, control
+# flow, functions as of M1); a case using anything outside it is *skipped* (the
+# emitter rejects it with "not supported by the LLVM backend") rather than
+# failed — the sweep_emit_c.sh pattern. As each milestone widens the subset,
+# cases flip from skip to ok automatically. A case that emits successfully but
+# diverges from the VM is a hard FAIL.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -113,7 +115,7 @@ while IFS= read -r f; do
     # LLVM route, step 1: emit .ll. Constructs outside M0 are a clean skip.
     base=${f%.astra}
     if ! "$ASTRA_ZIG" --emit-llvm "$f" >"$work/emit.out" 2>"$work/emit.err"; then
-        if grep -q "not supported by the LLVM backend (M0)" "$work/emit.err"; then
+        if grep -q "not supported by the LLVM backend" "$work/emit.err"; then
             echo "skip $rel (not M0 scope)"
             skip=$((skip + 1))
             continue

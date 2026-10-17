@@ -1,31 +1,35 @@
-//! Emisor LLVM mínimo (Fase LLVM M0.3, LLVM_BACKEND_PLAN.md §6).
+//! Emisor LLVM (Fase LLVM, LLVM_BACKEND_PLAN.md §6).
 //!
 //! Convierte el AST plano ya verificado por el typechecker en LLVM IR textual
-//! para el subconjunto M0: literales int/bool, identificadores, `let`/`const`
-//! (locales y de módulo), asignación, aritmética i64 con los mismos guards que
-//! el VM, comparaciones, `&&`/`||`/`!`, `if` (sentencia y expresión vía phi),
-//! `while`, funciones con recursión, `return` y `print`.
+//! para el subconjunto escalar: literales int/bool/float, identificadores,
+//! `let`/`const` (locales y de módulo), asignación, aritmética i64 y f64 con
+//! los mismos guards que el VM, comparaciones, `&&`/`||`/`!`, `if` (sentencia
+//! y expresión vía phi), `while`, funciones con recursión, `return` y `print`.
 //!
 //! Modelo de valores: escalares sin boxing. `i64` para todos los tipos enteros
-//! de Astra (el VM almacena int64 completo) y `i8` 0/1 para bool. El boxing a
-//! AstraValue llega en M1, cuando aparecen tipos con tag en runtime (strings,
-//! arrays, enums). Los guards de div/mod/shift se emiten en línea y delegan el
-//! error en `astra_llvm_fail`, que reimprime `file:line: runtime error: msg`
-//! con el runtime compartido del seed — así la ruta LLVM no deriva en un tercer
-//! formato de error.
+//! de Astra (el VM almacena int64 completo), `i8` 0/1 para bool y `f64` para
+//! floats. El typechecker exige tipos de operandos idénticos (`type_eq`) en
+//! aritmética/comparación/asignación/argumentos, así que el emisor no necesita
+//! coerción int↔float: si ve operandos de distinto tipo es un bug del checker.
+//! El boxing a AstraValue llega con strings/Option/Result/arrays (M1–M2), que
+//! llevan tag en runtime. Los guards de div/mod/shift se emiten en línea y
+//! delegan el error en `astra_llvm_fail`, que reimprime
+//! `file:line: runtime error: msg` con el runtime compartido del seed — así la
+//! ruta LLVM no deriva en un tercer formato de error.
 //!
-//! Todo lo que está fuera de M0 se rechaza con `diagnostics.emit` y sale limpio
-//! (exit 1) sin escribir IR: el emisor nunca produce un módulo a medias.
+//! Todo lo que está fuera de alcance se rechaza con `diagnostics.emit` y sale
+//! limpio (exit 1) sin escribir IR: el emisor nunca produce un módulo a medias.
 
 const std = @import("std");
 const ast = @import("../ast/ast.zig");
 const diagnostics = @import("../diagnostics.zig");
 const c = @import("c_api.zig").c;
 
-/// Tipos escalares que el subconjunto M0 representa sin boxing.
-const Ty = enum { i64_, bool_ };
+/// Tipos escalares que el subconjunto actual representa sin boxing: `i64` para
+/// todos los tipos enteros de Astra, `bool` como `i8` 0/1, `f64` para floats.
+const Ty = enum { i64_, bool_, f64_ };
 
-/// Un valor emitido: su representación LLVM y su tipo M0. Las expresiones sin
+/// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
 const Val = struct { ref: c.LLVMValueRef, ty: Ty };
 
@@ -58,6 +62,7 @@ pub const Emitter = struct {
     t_i8: c.LLVMTypeRef,
     t_i32: c.LLVMTypeRef,
     t_i64: c.LLVMTypeRef,
+    t_f64: c.LLVMTypeRef,
     t_ptr: c.LLVMTypeRef,
     t_void: c.LLVMTypeRef,
 
@@ -68,6 +73,7 @@ pub const Emitter = struct {
     r_fail: c.LLVMValueRef,
     r_print_begin: c.LLVMValueRef,
     r_print_i64: c.LLVMValueRef,
+    r_print_f64: c.LLVMValueRef,
     r_print_bool: c.LLVMValueRef,
     r_print_end: c.LLVMValueRef,
 
@@ -90,6 +96,7 @@ pub const Emitter = struct {
         const t_i8 = c.LLVMInt8TypeInContext(ctx);
         const t_i32 = c.LLVMInt32TypeInContext(ctx);
         const t_i64 = c.LLVMInt64TypeInContext(ctx);
+        const t_f64 = c.LLVMDoubleTypeInContext(ctx);
         const t_ptr = c.LLVMPointerTypeInContext(ctx, 0);
         const t_void = c.LLVMVoidTypeInContext(ctx);
         const file_z = a.allocSentinel(u8, file.len, 0) catch @panic("OOM");
@@ -106,6 +113,7 @@ pub const Emitter = struct {
             .t_i8 = t_i8,
             .t_i32 = t_i32,
             .t_i64 = t_i64,
+            .t_f64 = t_f64,
             .t_ptr = t_ptr,
             .t_void = t_void,
             .fns = std.StringHashMap(FnInfo).init(a),
@@ -116,6 +124,7 @@ pub const Emitter = struct {
             .r_fail = undefined,
             .r_print_begin = undefined,
             .r_print_i64 = undefined,
+            .r_print_f64 = undefined,
             .r_print_bool = undefined,
             .r_print_end = undefined,
         };
@@ -140,6 +149,7 @@ pub const Emitter = struct {
         self.r_fail = self.declVoid("astra_llvm_fail", &.{ self.t_i32, self.t_ptr });
         self.r_print_begin = self.declVoid("astra_llvm_print_begin", &.{});
         self.r_print_i64 = self.declVoid("astra_llvm_print_i64", &.{self.t_i64});
+        self.r_print_f64 = self.declVoid("astra_llvm_print_f64", &.{self.t_f64});
         self.r_print_bool = self.declVoid("astra_llvm_print_bool", &.{self.t_i32});
         self.r_print_end = self.declVoid("astra_llvm_print_end", &.{});
     }
@@ -199,7 +209,7 @@ pub const Emitter = struct {
         for (param_items, 0..) |pi, i| {
             const p = self.tree.node(pi).param;
             const mt = self.scalarM0Ty(p.type_node) orelse
-                return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/bool)");
+                return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool)");
             pbuf[i] = self.llvmTy(mt);
         }
         var ret_ty: c.LLVMTypeRef = self.t_void;
@@ -443,6 +453,7 @@ pub const Emitter = struct {
     fn emitExpr(self: *Emitter, idx: u32) ?Val {
         switch (self.tree.node(idx)) {
             .int_literal => |v| return .{ .ref = c.LLVMConstInt(self.t_i64, @as(u64, @bitCast(v)), 0), .ty = .i64_ },
+            .float_literal => |v| return .{ .ref = c.LLVMConstReal(self.t_f64, v), .ty = .f64_ },
             .bool_literal => |b| return .{ .ref = c.LLVMConstInt(self.t_i8, @intFromBool(b), 0), .ty = .bool_ },
             .identifier => |name| return self.emitIdent(idx, name),
             .binary_expr => return self.emitBinary(idx),
@@ -486,13 +497,30 @@ pub const Emitter = struct {
                     self.unsupported(idx, "comparison of mixed types");
                     return null;
                 }
-                const pred: c.LLVMIntPredicate = if (b.op == .eq_eq) c.LLVMIntEQ else c.LLVMIntNE;
-                const cmp = c.LLVMBuildICmp(self.builder, pred, lhs.ref, rhs.ref, "");
+                const cmp = if (lhs.ty == .f64_)
+                    c.LLVMBuildFCmp(self.builder, if (b.op == .eq_eq) c.LLVMRealOEQ else c.LLVMRealUNE, lhs.ref, rhs.ref, "")
+                else
+                    c.LLVMBuildICmp(self.builder, if (b.op == .eq_eq) c.LLVMIntEQ else c.LLVMIntNE, lhs.ref, rhs.ref, "");
                 return .{ .ref = c.LLVMBuildZExt(self.builder, cmp, self.t_i8, ""), .ty = .bool_ };
             },
             .lt, .gt, .le, .ge => {
-                if (lhs.ty != .i64_ or rhs.ty != .i64_) {
-                    self.unsupported(idx, "ordered comparison requires integers");
+                if (lhs.ty != rhs.ty) {
+                    self.unsupported(idx, "comparison of mixed types");
+                    return null;
+                }
+                if (lhs.ty == .f64_) {
+                    const pred: c.LLVMRealPredicate = switch (b.op) {
+                        .lt => c.LLVMRealOLT,
+                        .gt => c.LLVMRealOGT,
+                        .le => c.LLVMRealOLE,
+                        .ge => c.LLVMRealOGE,
+                        else => unreachable,
+                    };
+                    const cmp = c.LLVMBuildFCmp(self.builder, pred, lhs.ref, rhs.ref, "");
+                    return .{ .ref = c.LLVMBuildZExt(self.builder, cmp, self.t_i8, ""), .ty = .bool_ };
+                }
+                if (lhs.ty != .i64_) {
+                    self.unsupported(idx, "ordered comparison requires numbers");
                     return null;
                 }
                 const pred: c.LLVMIntPredicate = switch (b.op) {
@@ -505,17 +533,42 @@ pub const Emitter = struct {
                 const cmp = c.LLVMBuildICmp(self.builder, pred, lhs.ref, rhs.ref, "");
                 return .{ .ref = c.LLVMBuildZExt(self.builder, cmp, self.t_i8, ""), .ty = .bool_ };
             },
-            .plus, .minus, .star, .slash, .percent, .amp, .pipe, .caret, .shl, .shr => {
-                if (lhs.ty != .i64_ or rhs.ty != .i64_) {
-                    self.unsupported(idx, "arithmetic/bitwise operation requires integers");
+            .plus, .minus, .star, .slash, .percent => {
+                if (lhs.ty != rhs.ty) {
+                    self.unsupported(idx, "arithmetic of mixed types");
+                    return null;
+                }
+                if (lhs.ty == .f64_) {
+                    const r = switch (b.op) {
+                        .plus => c.LLVMBuildFAdd(self.builder, lhs.ref, rhs.ref, ""),
+                        .minus => c.LLVMBuildFSub(self.builder, lhs.ref, rhs.ref, ""),
+                        .star => c.LLVMBuildFMul(self.builder, lhs.ref, rhs.ref, ""),
+                        .slash => self.emitDivRem(lhs.ref, rhs.ref, line, false, .f64_),
+                        .percent => self.emitDivRem(lhs.ref, rhs.ref, line, true, .f64_),
+                        else => unreachable,
+                    };
+                    return .{ .ref = r, .ty = .f64_ };
+                }
+                if (lhs.ty != .i64_) {
+                    self.unsupported(idx, "arithmetic requires numbers");
                     return null;
                 }
                 const r = switch (b.op) {
                     .plus => c.LLVMBuildAdd(self.builder, lhs.ref, rhs.ref, ""),
                     .minus => c.LLVMBuildSub(self.builder, lhs.ref, rhs.ref, ""),
                     .star => c.LLVMBuildMul(self.builder, lhs.ref, rhs.ref, ""),
-                    .slash => self.emitDivRem(lhs.ref, rhs.ref, line, false),
-                    .percent => self.emitDivRem(lhs.ref, rhs.ref, line, true),
+                    .slash => self.emitDivRem(lhs.ref, rhs.ref, line, false, .i64_),
+                    .percent => self.emitDivRem(lhs.ref, rhs.ref, line, true, .i64_),
+                    else => unreachable,
+                };
+                return .{ .ref = r, .ty = .i64_ };
+            },
+            .amp, .pipe, .caret, .shl, .shr => {
+                if (lhs.ty != .i64_ or rhs.ty != .i64_) {
+                    self.unsupported(idx, "bitwise operation requires integers");
+                    return null;
+                }
+                const r = switch (b.op) {
                     .amp => c.LLVMBuildAnd(self.builder, lhs.ref, rhs.ref, ""),
                     .pipe => c.LLVMBuildOr(self.builder, lhs.ref, rhs.ref, ""),
                     .caret => c.LLVMBuildXor(self.builder, lhs.ref, rhs.ref, ""),
@@ -537,8 +590,11 @@ pub const Emitter = struct {
         const v = self.emitExpr(u.operand) orelse return null;
         switch (u.op) {
             .minus => {
+                if (v.ty == .f64_) {
+                    return .{ .ref = c.LLVMBuildFNeg(self.builder, v.ref, ""), .ty = .f64_ };
+                }
                 if (v.ty != .i64_) {
-                    self.unsupported(idx, "negation requires an integer");
+                    self.unsupported(idx, "negation requires a number");
                     return null;
                 }
                 const zero = c.LLVMConstInt(self.t_i64, 0, 0);
@@ -669,6 +725,10 @@ pub const Emitter = struct {
                     var iargs = [_]c.LLVMValueRef{av.ref};
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_i64), self.r_print_i64, &iargs, 1, "");
                 },
+                .f64_ => {
+                    var fargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_f64), self.r_print_f64, &fargs, 1, "");
+                },
                 .bool_ => {
                     const ext = c.LLVMBuildZExt(self.builder, av.ref, self.t_i32, "");
                     var bargs = [_]c.LLVMValueRef{ext};
@@ -682,7 +742,16 @@ pub const Emitter = struct {
 
     // ── Guards de aritmética (idénticos al VM) ──────────────────────────────
 
-    fn emitDivRem(self: *Emitter, a: c.LLVMValueRef, b: c.LLVMValueRef, line: u32, is_rem: bool) c.LLVMValueRef {
+    fn emitDivRem(self: *Emitter, a: c.LLVMValueRef, b: c.LLVMValueRef, line: u32, is_rem: bool, ty: Ty) c.LLVMValueRef {
+        if (ty == .f64_) {
+            // Float: divisor cero es error (no inf) con el mismo texto que el VM
+            // (S14); sin guard de INT64_MIN (no aplica), `%` = fmod.
+            const fzero = c.LLVMConstReal(self.t_f64, 0.0);
+            const b_fzero = c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, b, fzero, "");
+            self.emitGuardTrue(b_fzero, line, if (is_rem) "modulo by zero" else "division by zero");
+            if (is_rem) return c.LLVMBuildFRem(self.builder, a, b, "");
+            return c.LLVMBuildFDiv(self.builder, a, b, "");
+        }
         const zero = c.LLVMConstInt(self.t_i64, 0, 0);
         const b_zero = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, b, zero, "");
         self.emitGuardTrue(b_zero, line, if (is_rem) "modulo by zero" else "division by zero");
@@ -740,9 +809,16 @@ pub const Emitter = struct {
     }
 
     fn truthyI1(self: *Emitter, v: Val) c.LLVMValueRef {
+        // Las condiciones son bool por el typechecker; el caso f64 es defensivo
+        // y replica `!= 0.0` de C (true también para NaN → UNE).
+        if (v.ty == .f64_) {
+            const fzero = c.LLVMConstReal(self.t_f64, 0.0);
+            return c.LLVMBuildFCmp(self.builder, c.LLVMRealUNE, v.ref, fzero, "");
+        }
         const zero = switch (v.ty) {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
+            .f64_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
     }
@@ -796,6 +872,7 @@ pub const Emitter = struct {
         return switch (ty) {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
+            .f64_ => self.t_f64,
         };
     }
 
@@ -806,6 +883,7 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, t.name, "i32") or std.mem.eql(u8, t.name, "i64") or
                     std.mem.eql(u8, t.name, "u32") or std.mem.eql(u8, t.name, "u64")) return .i64_;
                 if (std.mem.eql(u8, t.name, "bool")) return .bool_;
+                if (std.mem.eql(u8, t.name, "f64")) return .f64_;
                 return null;
             },
             else => return null,
@@ -817,20 +895,37 @@ pub const Emitter = struct {
     fn inferStaticTy(self: *Emitter, idx: u32) ?Ty {
         switch (self.tree.node(idx)) {
             .int_literal => return .i64_,
+            .float_literal => return .f64_,
             .bool_literal => return .bool_,
             .identifier => |name| {
                 if (self.lookupLocal(name)) |l| return l.ty;
                 if (self.globals.get(name)) |g| return g.ty;
                 return null;
             },
-            .unary_expr => |u| return switch (u.op) {
-                .minus, .tilde => .i64_,
-                .bang => .bool_,
-                else => null,
+            .unary_expr => |u| switch (u.op) {
+                .bang => return .bool_,
+                .tilde => return .i64_,
+                .minus => {
+                    // `-1.5` es f64 pero `-1` es i64: el operando decide.
+                    if (self.inferStaticTy(u.operand)) |ot| {
+                        if (ot == .f64_) return .f64_;
+                    }
+                    return .i64_;
+                },
+                else => return null,
             },
-            .binary_expr => |b| return switch (b.op) {
-                .eq_eq, .neq, .lt, .gt, .le, .ge, .and_and, .or_or => .bool_,
-                else => .i64_,
+            .binary_expr => |b| switch (b.op) {
+                .eq_eq, .neq, .lt, .gt, .le, .ge, .and_and, .or_or => return .bool_,
+                else => {
+                    // Aritmética: f64 si alguno de los operandos es float, si no i64.
+                    if (self.inferStaticTy(b.left)) |lt| {
+                        if (lt == .f64_) return .f64_;
+                    }
+                    if (self.inferStaticTy(b.right)) |rt| {
+                        if (rt == .f64_) return .f64_;
+                    }
+                    return .i64_;
+                },
             },
             .call_expr => |call| switch (self.tree.node(call.callee)) {
                 .identifier => |nm| {
@@ -862,7 +957,7 @@ pub const Emitter = struct {
 
     fn unsupported(self: *Emitter, idx: u32, what: []const u8) void {
         self.error_count += 1;
-        diagnostics.emit(self.diag, self.file, self.tree.loc(idx), "not supported by the LLVM backend (M0): {s}", .{what});
+        diagnostics.emit(self.diag, self.file, self.tree.loc(idx), "not supported by the LLVM backend: {s}", .{what});
     }
 };
 
