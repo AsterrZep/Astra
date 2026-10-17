@@ -228,10 +228,11 @@ Cerrados los seis en `e88d925`.
 | 4.6 | 🔴 | `parser.c` loop Pratt (`led`), `parser.zig` `parseExprImpl`, `typechecker.c:913`, `emitter.c:994` | El guard de profundidad del parser cubre su descenso recursivo, pero el loop Pratt es **iterativo**: una cadena plana (`1+1+1+…`, `a[0][0]…`) construye árboles tan profundos como quiera el usuario y `typecheck_binary`/`emit_expr` recursan una vez por nodo sin cota — ASan stack-overflow a **300** términos en el debug del seed, SIGSEGV a ≥8000 en release, zig segfault a 20k. | ✅ fix `e88d925` — contador de cadena en el loop Pratt de ambos parsers, cap = `PARSER_MAX_DEPTH` (256), `expression chain too deep (max 256)`; test `ui/expr_chain_deep.astra` |
 
 | 4.7 | ✅ | `emitter.c` `NODE_MATCH`/`NODE_IF` + nuevo contador `Emitter.rt` (`priv.h`), `codegen.c` (`SET_LOCAL` con pad, `sp = local_count`), espejo `emitter.zig` (**dossier completo con evidencia, intentos y resolución: `Documentacion/research/022_TAREA_fix_47_match_inline_frame.md` §11 — nombre de delegación `TAREA-4.7-match-inline-frame`**) | **Descubierto al implementar §3.8:** un `match` **inline como argumento de llamada** (y, descubierto al arreglarlo, un `if` con `let` en rama) corrompía el frame en **los dos VMs**: `fn main() { let x = 5; print(match x { 1 => 10, _ => 20 }) }` → `runtime error: cannot call non-function value`. Causa raíz: los slots de locales y los valores de expresión comparten coordenadas del stack de la VM, `add_local` asigna por recuento de declaración, y la frontera real de runtime (los residuos de matches/bloques/bucles previos dejan celdas stale que el VM nunca recorta) no era computable en compile-time — por eso los dos intentos previos con objetivos estáticos fallaban de forma dependiente del camino. | ✅ fix `ed1792e` — dirección (i) del dossier con las piezas que faltaban: (a) contador `rt` de **altura runtime exacta** en paralelo al `sp` viejo (`SET_LOCAL` = `max(rt-1, slot+1)` como `vm.c`; resyncs exactos en `&&`/`||`, brazos, ramas de `if`, fn/lambda); (b) **pad de la tabla de locales hasta la frontera** en la entrada de `match`/`if`; (c) **cierre por camino** (`SET_LOCAL(target)` + `POP` de excedentes) tras cada brazo/rama — elimina además el residuo de los matches en sentencia, con lo que el bloqueador estructural del intento #2 desaparece; (d) stubs de bindings en `guard=false` (parchados más allá de la copia plain duplicada del brazo); (e) ensure de salida de bucle + stubs de reconciliación para `break`; (f) backend C fiel a `vm.c` (pad de nil + `sp = local_count`) para que los closes estáticos signifiquen lo mismo en ambos backends; (g) `NEW_ENUM` corrigiendo también `rt`. Tests: `expressions/match_inline_{call,if_let,after_statement}`, `loops/loop_residue_inline`, `codegen/match_inline_arg` |
-| 4.8 | 🟠 | `emitter.c` armada bind con guardia (`break` tras `NODE_PATTERN_BIND`), espejo probable en `emitter.zig` (candidato reportado en el dossier 022 §1.4, abierto al cerrar §4.7) | Tras un brazo binding **con guardia** hay un `break` incondicional (*"binding makes later arms unreachable"*) que solo es cierto sin guardia: los brazos posteriores **nunca se emiten** aunque el typechecker sí los procesa, así que el programa compila y en runtime cae al backstop de §3.8 — `fn main() { let x = 5; print(match x { n if n > 9 => 1, _ => 2 }) }` con x=5 debería imprimir 2 y hoy aborta `no match arm matched`. | ⚠️ diferido con repro (registrado el 2026-10-15 al cerrar §4.7; dossier 022 §11): fix probable = quitar el `break` cuando hay guardia y parchear `guard_false` al brazo siguiente con los bindings extraídos ya poppeados — el stub POP que `ed1792e` añadió para variantes/builtins es el patrón a reutilizar |
+| 4.8 | ✅ | `emitter.c` armada bind con guardia (`break` tras `NODE_PATTERN_BIND`), espejo confirmado en `emitter.zig` (candidato reportado en el dossier 022 §1.4, abierto al cerrar §4.7) | Tras un brazo binding **con guardia** hay un `break` incondicional (*"binding makes later arms unreachable"*) que solo es cierto sin guardia: los brazos posteriores **nunca se emiten** aunque el typechecker sí los procesa, así que el programa compila y en runtime cae al backstop de §3.8 — `fn main() { let x = 5; print(match x { n if n > 9 => 1, _ => 2 }) }` con x=5 debería imprimir 2 y hoy aborta `no match arm matched`. El wildcard con guardia tiene el mismo corte: `_ if c => 1, n => n + 100` con guardia falsa devolvía nil silencioso (`has_wildcard` se fijaba antes de mirar la guardia y suprimía el backstop). | ✅ fix `a29f1af` — un wildcard/binding **con** guardia ya no corta el bucle de brazos: la guardia fallida cae al brazo siguiente a la altura de entrada (POP de reconciliación cuando el binding dejó celda viva); solo el catch-all sin guardia suprime el backstop MATCH_NONE. El patrón reutilizado (stub de §4.7) resultó tener su propio bug, registrado como §4.11. Tests `conformance/enums/match_guard_fallthrough.astra` + gemelo `codegen/` |
 | 4.9 | 🔴 | `parser.c` `parse_block_impl` (chequeo de cola ANTES de `skip_newlines`), `parser.zig` `parseBlock`; efectos en typechecker (`produces no value`, `void vs …`) y en runtime (nil silencioso) | El último ítem de un bloque solo se promovía a expresión de cola si el token siguiente a la sentencia era `}` **sin newlines de por medio**: `match`, `if` y bloque anidado no ejecutan `optional_semi`, el newline quedaba delante de `}` y se violaba `Block ::= "{" Statement* Expression? "}"` (research/010 §4.2/§4.3). Vectores: una **lambda/fn void terminada en compuesto multilinea devolvía nil EN SILENCIO**; una fn tipada recibía el error engañoso `produces no value` (aconsejaba no poner `;` final, que ya no había); una rama de `if` multilinea se tipeaba `void vs integer`. Descubierto el 2026-10-15 al verificar la lista de fixes de este audit; **preexistente en ambos compilers** (idéntico en `ddc97d2`, no regresión de §4.7); la suite no tenía ningún shape así. | ✅ fix `87aaaf1` — `skip_newlines` antes del chequeo de cola en ambos parsers (solo `;` descarta el valor: `ui/missing_return_value` sigue rechazando `let …;`); test `blocks/tail_compound_multiline.astra` (fn tipada, lambda, rama de `if`, inicializador de bloque) verificado también en el C backend |
 
 | 4.10 | 🔴 | `emitter.c` `emit_back_edge_reconcile` + stubs de `continue` en `loop_leave` (`LoopPatch.head_rt`/`continue_rt` en `priv.h`), espejo `emitter.zig` (`emitBackEdgeReconcile`) | El hueco de `continue` documentado en dossier 022 §11 era real **y más ancho**: la normalización de altura faltaba en dos sitios. (a) El **back-edge no reconciliaba** — las alturas del cuerpo se modelan en la entrada del bucle, pero el salto de vuelta lleva el runtime a la altura del fin del cuerpo, así que desde la iteración 2 el cuerpo corría N celdas alto y un constructo de valor cuyo slot oculto/close target caía entre las dos alturas sobrescribía celdas vivas; repro mínimo **sin `continue`**: `for i in 0..3 { let e = B(s); print(match e { E.B(n) => n }); let z = 0 }` → iteración 2 trap `cannot call non-function value` (el close del match pisaba la celda del receptor `print` y el `CALL` marcaba una celda stale). (b) `continue` saltaba al objetivo sin reconciliar (el stub que el dossier prescribía): sus celdas vivas llegaban de más, o de menos cuando se saltaba declaraciones. Descubierto el 2026-10-16 al implementar el hueco §11 con una batería diferencial `continue`-vs-guarda (150 pares → 2 divergencias; 72 de los "pases" iniciales eran enmascaramiento de mi generador); **preexistente en ambos compilers** (el bug no es de `continue` sino de cualquier iteración ≥2 con declaraciones + constructo de valor en args de call — la suite no tenía ningún shape así). | ✅ fix `4cc9ca2` — drenaje POP en el back-edge hasta `head_rt` y stubs por `continue` hasta `continue_rt` (POP si la ruta llega alta, `CONST nil` si llega baja: la siguiente iteración reescribe cada celda antes de leerla); espejo zig idéntico; el C backend traduce los stubs sin cambios. Tests `conformance/loops/iter_height_norm.astra` (repro sin continue, continue que salta decls, continue que llega baja) + gemelo `codegen/loop_iter_height.astra`; batería diferencial 750 pares a 5 semillas, 0 divergencias |
+| 4.11 | 🔴 | `emitter.c` stub de guardia de brazos de variante/builtin con payload (mecanismo añadido en §4.7/`ed1792e`), espejo confirmado en `emitter.zig` | El stub POP era **código muerto**: el re-parcheo *"Re-target the guard-false stub"* volvía a apuntar `arm_gf_patch` (el JIF de la guardia) al final de la iteración, saltándose el POP — las celdas de los bindings extraídos quedaban vivas bajo el brazo siguiente y el `CALL` del resultado llegaba desalineado: `match v { E.B(n) if n > 1 => n, _ => 0 }` con v=B(1) trapeaba `cannot call non-function value` en los tres backends. Los tests de §4.7 solo cubrían variantes **unitarias** (`bind_count=0`, sin stub), así que el hueco nunca corrió. Además el count del POP era `bind_count` a ciegas: con `local_count` ya más allá del frontier (brazos previos siguen en la tabla), cada binding cae una celda más arriba y `SET_LOCAL` paddea una celda stale bajo él, así que el drop correcto es `bind_rt − rt_test` (§4.11 descubierto el 2026-10-16 al cerrar §4.8: el fix de §4.8 reutilizó el stub y el probe de interacción variante-guardia + bind-guardia lo delató). | ✅ fix `a29f1af` — el JIF apunta al stub y **solo el JUMP del stub** recibe el objetivo final; el POP lleva `drop = bind_rt − rt_test` en las tres rutas (variante, builtin, bind plain de §4.8). Tests `conformance/enums/match_guard_payload_stub.astra` (payload simple/doble, builtin Option, cadena con slots stale, cadena de guardias de variante) + gemelo `codegen/` |
 
 ### Notas de higiene (§4, sin acción)
 
@@ -434,7 +435,11 @@ quedó diferido con repro más abajo.
 después el hueco de `continue` del dossier §11 apareció **4.10** (alturas de
 iteración de bucle: back-edge sin reconciliar + `continue` sin stub), **más ancho
 que el hueco documentado** — el repro mínimo no llevaba `continue` — y cerrada el
-mismo día (`4cc9ca2`). |
+mismo día (`4cc9ca2`). Al cerrar §4.8 el 2026-10-16 (`a29f1af`, catch-alls con
+guardia refutables + backstop solo sin guardia) apareció **4.11** — el stub POP
+que §4.8 reutilizó era código muerto en variantes/builtins con payload (el
+re-parcheo saltaba el POP) y su count era `bind_count` a ciegas — y se cerró en
+el mismo commit. **Sin 🔴 ni 🟠 abiertos.** |
 | 2 | Los tres barridos de §1 como gate en CI | ✅ `sweep_emit_c.sh` (job seed), `ui_message_parity.sh` (job parity, `STRICT=1`), replay de fuzz `-runs=0` (job seed) — todos en `.github/workflows/ci.yml` y verdes en los 29 commits. |
 | 3 | Cada feature con `EXPECT`/`EXPECT-ERROR`; sin `checked > N` sueltos | ✅ §7 añadió los pines que faltaban (guards, inmutable, escapes, runtime errors, constructos rechazados) y §6.2 sustituyó `checked > 40/15` por invariantes seen-vs-procesados en `conformance.zig`. Residuales documentados: `--dump-bytecode`/`--dump-operators` sin gate propio (🔴-bajo valor, el segundo lo vigila `--check-constructs`). |
 | 4 | §4 (emitter/VM) cerrado: semántica verificada y fijada con tests | ✅ Invariantes 1-5 de `AGENTS.md` verificados con probes; 6 hallazgos cerrados; tests `integer_wrap`, `int_min_div_neg1`, `match_binding_reclaim`, `toplevel_return`, `expr_chain_deep`, `enum_payload_print`. |
@@ -447,7 +452,7 @@ mismo día (`4cc9ca2`). |
 | §1 barridos | 1.1-1.4, 1.6 (+gates) | `b3136d1`, `a72d4a7`, `6437aa0`, `123809d`, `ac987ca`, `2d2722f` |
 | §2 frontend | 2.1-2.14 + return-EOF | `8832fc9`, `5435722`, `b3c798b`, `2364a2c`, `179d138`, `97f8909`, `e5376a4`, `74a90b4` |
 | §3 semántica | 3.1-3.7, 3.10, 3.13(=1.6) | `ac987ca`, `213cc35`, `61b2e30`, `99759d5`, `74a90b4` |
-| §4 emitter/VM | 4.1-4.7 + 4.9 + 4.10 (4.8 diferido con repro) | `e88d925`, `ed1792e`, `87aaaf1`, `4cc9ca2` |
+| §4 emitter/VM | 4.1-4.11 | `e88d925`, `ed1792e`, `87aaaf1`, `4cc9ca2`, `a29f1af` |
 | §5 backend C | 5.1-5.6, 5.8 | `6961005` |
 | §6 zig | 6.1-6.4, 6.6, 2 wins | `492f6e4` |
 | §7 suite | 7.1-7.14 | `6e2a4e1` |
@@ -495,7 +500,9 @@ en los dos VMs), se cerró el 2026-10-15 con `ed1792e` — dirección (i)
 del dossier 022 con altura runtime exacta, pad hasta la frontera y
 cierre por camino, espejo en zig y backend C unificado (resolución
 completa en dossier §11); al cerrarlo apareció **§4.8** (binding con
-guardia no emite los brazos posteriores), **diferido con repro**. El
+guardia no emite los brazos posteriores), que se cerró el 2026-10-16
+(`a29f1af`, catch-alls con guardia refutables) junto con **§4.11**,
+el bug que su fix destapó en el stub de payloads de §4.7. El
 resto de diferidos (3.9, 3.11, 3.12, 3.14, A1–A3, 5.7, 6.5, 7.7, 7.16)
 son decisiones de lenguaje documentadas o deuda de UX, no bloqueos.
 
@@ -569,3 +576,44 @@ total=116 first_fail=0; la batería diferencial pasó a 750 pares (5 semillas) c
 vacíos no-equivalentes) y 72/150 pares ni compilaban (ids indefinidos) dando
 "falso pase": sin el paso de verificar que los pares realmente compilan, la
 evidencia no vale.
+
+### §4.8 + §4.11 — catch-alls con guardia y el stub de payloads (2026-10-16, `a29f1af`)
+
+Al atacar la fila §4.8 (el `break` tras un brazo binding con guardia) el probe
+ampliado mostró que **el wildcard con guardia tenía el mismo corte**:
+`match x { _ if x > 9 => 1, n => n + 100 }` con x=5 devolvía `nil` silencioso —
+`has_wildcard` se fijaba antes de mirar la guardia, así que el guardado
+suprimía el backstop MATCH_NONE y los brazos posteriores ni se emiten. Fix en
+ambos compilers: un catch-all **con** guardia es refutable — la guardia fallida
+cae al brazo siguiente a la altura de entrada del brazo (POP de reconciliación
+cuando el binding dejó celda viva; sin stub para el wildcard, que no extrae) y
+solo el catch-all **sin** guardia corta el bucle y suprime el backstop. El
+typechecker ya trataba los guards como no totales (exige `_`), así que el
+runtime ahora coincide con él.
+
+Reutilizar el stub de §4.7 como patrón (era el fix prescrito por el dossier
+022 §11) destapó **§4.11**, un bug preexistente en la misma maquinaria: el
+re-parcheo *"Re-target the guard-false stub"* volvía a apuntar `arm_gf_patch`
+— el JIF de la guardia — al final de la iteración, **saltándose el POP**, de
+modo que el stub era código muerto y las celdas de los bindings extraídos
+quedaban vivas bajo el brazo siguiente (`match v { E.B(n) if n > 1 => n, _ => 0 }`
+con v=B(1) → trap `cannot call non-function value` en los tres backends, desde
+antes de §4.7: los tests de esa fila solo cubrían variantes unitarias, sin
+stub). Y al arreglar el enlace apareció el segundo defecto: el count del POP
+era `bind_count` a ciegas, pero cuando un brazo previo dejó `local_count` más
+allá del frontier cada binding cae una celda más arriba y `SET_LOCAL` paddea
+una celda stale bajo él — el drop exacto es `bind_rt − rt_test` (1 + pad, o
+`bind_count` + pads), emitido como POP con operand-count en las tres rutas
+(variante, builtin, bind plain). El probe que lo delató cruzó patrones:
+variante con guardia → bind con guardia → variante → wildcard, dentro de un
+loop (`s48_mix`), la misma familia de desalineación que §4.10 pero por slots
+de la tabla de locales en vez de back-edges.
+
+Gates tras el fix: seed 237/237 (ASan), sweep 92/92 skip=3, `--check-constructs`
+OK, `zig build test` 73/73, `dump_parity` 124/124, `ui_message_parity`
+total=116 first_fail=0. Tests nuevos: `enums/match_guard_fallthrough.astra`
+(catch-alls con guardia: bind, wildcard, cadena de guards, guard verdadera) y
+`enums/match_guard_payload_stub.astra` (§4.11: payload simple y doble, builtin
+Option, cadena con slots stale, cadena de guardias de variante), cada uno con
+su gemelo `tests/codegen/` — los 21 shapes de repro (VM, C y zig) quedan
+pinned entre ambos.

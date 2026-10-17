@@ -96,7 +96,7 @@ sp=3 | [<fn>][5][5]           ; idx2 = 5  ← print ya no existe
 ; CALL: fn_idx = sp-1-argc apunta a 5 (un int) -> "cannot call non-function value"
 ```
 
-### 1.4 Bug adyacente DESCUBIERTO y registrado como fila §4.8 del audit (pendiente)
+### 1.4 Bug adyacente DESCUBIERTO y registrado como fila §4.8 del audit (cerrado como §4.8+§4.11, `a29f1af`)
 
 `seed/src/emitter.c`, armada **bind con guardia**: tras el bloque de
 `NODE_PATTERN_BIND` hay un `break` incondicional (*"binding makes later
@@ -463,7 +463,9 @@ Los items 1-3 y 6 de §10 se cumplen (229/229 en seed — 224 originales +
 `zig build test` 73/73, `dump_parity` 117/117 con 0 divergentes,
 `ui_message_parity` total=115 first_fail=0 known=0, CI verde, y 40
 probes sin una sola divergencia seed↔zig). El item 4 (§4.8) **no** se
-arregló y quedó registrado como fila nueva del audit; el item 5 (esta
+arregló y quedó registrado como fila nueva del audit; hoy está cerrado
+como §4.8+§4.11 (`a29f1af`, 2026-10-16 — ver el párrafo de cierre más
+abajo en §11). El item 5 (esta
 cabecera) es este párrafo.
 
 **La dirección (i), pero con cuatro piezas que los intentos previos no
@@ -513,14 +515,23 @@ frontera y rompía el match siguiente — hallazgo del espejo zig); el
 `guard_false` de los brazos `_ if`/bind aterrizaba *después* del
 `CONST nil` (off-by-one que dejaba la pila sin valor).
 
-**§4.8 sigue ABIERTO (registrado como fila nueva del audit):** el
-`break` incondicional tras un binding con guardia sigue sin emitir los
-brazos posteriores (`match x { n if n > 9 => 1, _ => 2 }` con x=5 cae al
-trap `no match arm matched` en vez de imprimir 2). El cierre por camino
-de `ed1792e` no lo empeora ni lo arregla: quitar ese `break` exige
-parchear `guard_false` al brazo siguiente con los bindings ya extraídos
-(el stub POP ya existe para variantes/builtins — el fix probable es
-reutilizarlo).
+**§4.8 → CERRADO como `a29f1af` (2026-10-16), junto con §4.11:** el
+`break` incondicional tras un binding (o wildcard) con guardia ya no
+corta el bucle de brazos — la armada con guardia es *refutable* y su
+`guard_false` cae al brazo siguiente a la altura de entrada, con un POP
+de reconciliación cuando el binding dejó celda viva; el backstop
+MATCH_NONE ahora solo lo suprime un catch-all **sin** guardia (antes el
+wildcard con guardia devolvía nil silencioso en
+`_ if c => 1, n => n + 100`). La sugerencia de reutilizar el stub POP de
+variantes/builtins se siguió… y **destapó §4.11**: ese stub era código
+muerto desde `ed1792e` (el re-parcheo de `arm_gf_patch` volvía a apuntar
+el JIF al final de la iteración, saltándose el POP) y su count era
+`bind_count` a ciegas cuando el drop exacto es `bind_rt − rt_test` —
+`match v { E.B(n) if n > 1 => n, _ => 0 }` con v=B(1) trapeaba
+`cannot call non-function value` en los tres backends. Ambos bugs cerrados
+en el mismo commit, en seed y zig, con tests
+`enums/match_guard_fallthrough.astra` y `enums/match_guard_payload_stub.astra`
+(+ gemelos codegen); ver la sección datada del audit §4.8+§4.11.
 
 **Hueco conocido → CERRADO como §4.10 (`4cc9ca2`, 2026-10-16):** el
 "por debajo del modelo" resultó ser **más ancho** que el escenario
