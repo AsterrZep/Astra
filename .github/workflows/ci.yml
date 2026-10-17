@@ -91,13 +91,14 @@ jobs:
         run: ./zig/tests/ui_message_parity.sh
 
   # LLVM backend (LLVM_BACKEND_PLAN.md §6 M0.4, §7): the opt-in -Dllvm route
-  # (M0 subset) must produce byte-identical stdout/stderr/exit-code to the zig
-  # VM for every in-scope case (--emit-llvm -> llc -> link runtime -> run).
+  # must produce byte-identical stdout/stderr/exit-code to the zig VM for
+  # every in-scope case (--emit-obj -> link runtime -> run; M2.e replaced the
+  # llc subprocess with TargetMachineEmitToFile).
   # `-Dllvm` is opt-in, so the seed/zig/parity jobs above are untouched; this
   # is the only job that installs LLVM. LLVM 19 is pinned for reproducibility;
   # the apt.llvm.org install is the one piece the plan flags "[a verificar]".
   llvm:
-    name: llvm (LLVM 19) — ruta --emit-llvm sobre la suite
+    name: llvm (LLVM 19) — ruta --emit-obj sobre la suite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,5 +118,5 @@ jobs:
       - name: Build zig with the LLVM backend
         run: zig build -Dllvm
         working-directory: zig
-      - name: LLVM-route parity (VM <-> --emit-llvm -> llc -> link)
+      - name: LLVM-route parity (VM <-> --emit-obj -> link)
         run: ./zig/tests/llvm_parity.sh

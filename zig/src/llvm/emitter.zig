@@ -301,6 +301,10 @@ const FreeVars = struct {
 const TAG_OK: u32 = 0;
 const TAG_ERR: u32 = 1;
 const TAG_SOME: u32 = 2;
+/// Límite de globales de la VM (vm.zig VM_MAX_GLOBALS): una 257ª
+/// declaración de nivel superior aborta en runtime — emitModuleMain emite el
+/// mismo trap en el mismo orden de fuente.
+const VM_MAX_GLOBALS: u32 = 256;
 const PTY_BOOL: u32 = 1;
 const PTY_I64: u32 = 2;
 const PTY_F64: u32 = 3;
@@ -1167,7 +1171,28 @@ pub const Emitter = struct {
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
         self.pushScope();
         defer self.popScope();
+        // Espejo del límite de globales del VM (vm.zig: VM_MAX_GLOBALS = 256):
+        // las declaraciones fn/var/const de nivel superior consumen slot en
+        // orden de fuente vía SET_GLOBAL, y definir la 257ª aborta con esa
+        // línea y "too many global variables". El backend cuenta igual y emite
+        // el mismo trap en runtime — los ficheros de límite casan byte a byte
+        // y un programa que la VM rechaza no corre aquí en silencio.
+        var vm_globals: u32 = 0;
         for (items) |it| {
+            switch (self.tree.node(it)) {
+                .fn_decl, .var_decl, .const_decl => {
+                    if (vm_globals >= VM_MAX_GLOBALS) {
+                        const linev = c.LLVMConstInt(self.t_i32, self.tree.loc(it).line, 0);
+                        const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "too many global variables", "");
+                        var fargs = [_]c.LLVMValueRef{ linev, msgp };
+                        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
+                        _ = c.LLVMBuildUnreachable(self.builder);
+                        return; // el resto del módulo es inalcanzable, como en el VM
+                    }
+                    vm_globals += 1;
+                },
+                else => {},
+            }
             switch (self.tree.node(it)) {
                 .fn_decl => {},
                 .var_decl, .const_decl => {

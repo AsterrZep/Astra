@@ -22,10 +22,10 @@ const dump_mod = @import("dump.zig");
 // llvm-c jamás se traduce — `astra-zig` sin LLVM sigue compilando igual.
 const llvm = if (build_options.llvm_enabled) @import("llvm.zig") else void;
 
-const Mode = enum { parse, tokens, ast_dump, bytecode, modules, emit_llvm, emit_llvm_stdout };
+const Mode = enum { parse, tokens, ast_dump, bytecode, modules, emit_llvm, emit_llvm_stdout, emit_obj };
 
 const usage =
-    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --debug] <file.astra>
+    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --emit-obj | --debug] <file.astra>
     \\
     \\  (no flag)              compile and run, exit 1 on a compile or runtime error
     \\  --dump-tokens          print the token stream
@@ -34,6 +34,7 @@ const usage =
     \\  --dump-bytecode        print the emitted bytecode
     \\  --emit-llvm            write LLVM IR to <file>.ll (requires -Dllvm)
     \\  --emit-llvm-stdout     print LLVM IR to stdout (requires -Dllvm)
+    \\  --emit-obj             compile to a native object <file>.o via TargetMachine (requires -Dllvm)
     \\  --debug                run under the interactive bytecode debugger (stdin)
     \\
 ;
@@ -59,6 +60,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .emit_llvm;
         } else if (std.mem.eql(u8, arg, "--emit-llvm-stdout")) {
             mode = .emit_llvm_stdout;
+        } else if (std.mem.eql(u8, arg, "--emit-obj")) {
+            mode = .emit_obj;
         } else if (std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -178,9 +181,10 @@ pub fn main(init: std.process.Init) !void {
     tc.check(root);
     if (tc.error_count > 0) std.process.exit(1);
 
-    // Backend LLVM (opt-in, M0.3): tras el typecheck, genera IR y sale. No
-    // necesita el emisor de bytecode ni la VM — el emisor LLVM camina el AST.
-    if (mode == .emit_llvm or mode == .emit_llvm_stdout) {
+    // Backend LLVM (opt-in, M0.3): tras el typecheck, genera IR u objeto y
+    // sale. No necesita el emisor de bytecode ni la VM — el emisor LLVM
+    // camina el AST.
+    if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
         emitLlvm(a, io, file, &tree, root, mode, &diag);
         return;
     }
@@ -273,12 +277,19 @@ fn emitLlvm(
             stdout_writer.interface.flush() catch {};
         } else {
             const base = if (std.mem.endsWith(u8, file, ".astra")) file[0 .. file.len - ".astra".len] else file;
-            const out_path = std.fmt.allocPrintSentinel(a, "{s}.ll", .{base}, 0) catch @panic("OOM");
-            llvm.writeToFile(em.mod, out_path) catch std.process.exit(1);
+            if (mode == .emit_obj) {
+                // M2.e: TargetMachineEmitToFile produce el .o directamente —
+                // la ruta LLVM ya no subprocesa `llc`.
+                const out_path = std.fmt.allocPrintSentinel(a, "{s}.o", .{base}, 0) catch @panic("OOM");
+                if (!llvm.emitObjectFile(em.mod, diag, file, out_path)) std.process.exit(1);
+            } else {
+                const out_path = std.fmt.allocPrintSentinel(a, "{s}.ll", .{base}, 0) catch @panic("OOM");
+                llvm.writeToFile(em.mod, out_path) catch std.process.exit(1);
+            }
         }
     } else {
         std.debug.print(
-            "error: --emit-llvm requires the compiler to be built with `-Dllvm` (LLVM 19..23 via llvm-config)\n",
+            "error: the LLVM backend output modes (--emit-llvm / --emit-llvm-stdout / --emit-obj) require the compiler to be built with `-Dllvm` (LLVM 19..23 via llvm-config)\n",
             .{},
         );
         std.process.exit(2);
@@ -314,8 +325,8 @@ fn compileAndRunMulti(
 ) !void {
     // M0.3: el emisor LLVM aún no resuelve varios módulos. Se rechaza limpio
     // (como cualquier otra limitación de M0) en vez de emitir IR incompleto.
-    if (mode == .emit_llvm or mode == .emit_llvm_stdout) {
-        std.debug.print("error: --emit-llvm does not yet support multi-module programs (LLVM M0)\n", .{});
+    if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
+        std.debug.print("error: the LLVM backend output modes do not yet support multi-module programs (LLVM M0)\n", .{});
         std.process.exit(2);
     }
     var loader = modules_mod.Loader.init(a, io, dir);
