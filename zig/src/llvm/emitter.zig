@@ -6,8 +6,9 @@
 //! los mismos guards que el VM, `+` de strings (concat por contenido),
 //! comparaciones, `&&`/`||`/`!`, `if` (sentencia y expresión vía phi), `while`,
 //! funciones con recursión, `return`, `print`, Option/Result (`some`/`none`/
-//! `ok`/`err`, `match` sobre variantes builtin/literales, `?`) y `match` como
-//! expresión (phi de brazos).
+//! `ok`/`err`, `match` sobre variantes builtin/literales, `?`), `match` como
+//! expresión (phi de brazos) y closures (M1.d): lambdas `|x: i32| -> i32 { }`
+//! como valores de primer orden con captura por valor.
 //!
 //! Modelo de valores: escalares sin boxing — `i64` para todos los tipos enteros
 //! de Astra (el VM almacena int64 completo), `i8` 0/1 para bool, `f64` para
@@ -36,15 +37,18 @@ const c = @import("c_api.zig").c;
 /// Tipos escalares que el subconjunto actual representa sin boxing, más los
 /// tipos con heap: `i64` para todos los tipos enteros de Astra, `bool` como
 /// `i8` 0/1, `f64` para floats, `str_` como puntero al bloque
-/// `{ i64 len; [len+1 x i8] data }` y `boxed_` (Option/Result) como puntero a
-/// `{ i32 tag; i32 ptype; i64 payload }` (M1).
-const Ty = enum { i64_, bool_, f64_, str_, boxed_ };
+/// `{ i64 len; [len+1 x i8] data }`, `boxed_` (Option/Result) como puntero a
+/// `{ i32 tag; i32 ptype; i64 payload }` (M1) y `fn_` (funciones de primer
+/// orden, M1.d) como puntero al objeto `{ ptr code; ptr env }`.
+const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_ };
 
 /// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
 /// `payload_ty` es el tipo estático del contenido de un `boxed_` (el `T` de
 /// `T?` o el inferido de `some(x)`/`ok(x)`/`err(x)`): los bindings de un
 /// `match` y el resultado de `?` lo necesitan para releer los bits del payload.
+/// En un `fn_` es el tipo de RETORNO de la función (null = void), que es lo
+/// que la llamada dinámica necesita para armar su firma LLVM.
 const Val = struct { ref: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
 
 const FnInfo = struct {
@@ -60,6 +64,189 @@ const FnInfo = struct {
 
 const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
 const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null };
+
+/// Una captura de closure: su nombre, el tipo estático con el que se lee del
+/// env (i64 bits) y su índice en el env de la lambda. Los closures capturan
+/// por valor (ARCHITECTURE.md §30.5, audit §7.11): el sitio de creación
+/// snapshota los valores actuales en un array heap que sobrevive al frame
+/// que los produjo — ni el reasignar la variable después alcanza al closure,
+/// ni la salida del frame rompe el env.
+const CapSlot = struct { name: []const u8, ty: Ty, payload_ty: ?Ty = null, index: u32 = 0 };
+const CaptureScope = std.ArrayListUnmanaged(CapSlot);
+
+/// Análisis de variables libres para closures (réplica de collect_free_vars
+/// del seed, emitter.c §347): recorre un cuerpo de lambda y recolecta los
+/// nombres que resuelven al scope ENCLOSING (locales o capturas actuales) y
+/// no están ligados dentro de la lambda. Las lambdas anidadas contribuyen
+/// con sus propios nombres libres — un nombre libre a cualquier profundidad
+/// debe ser alcanzable desde el env del lambda más externo, porque los
+/// sitios de creación internos lo leen por GET_LOCAL/GET_CAPTURE del frame
+/// que los contiene. Las `fn` declaradas se saltan: sólo las lambdas
+/// capturan y un cuerpo de fn anidada resuelve sus nombres libres como
+/// globales.
+const FreeVars = struct {
+    em: *Emitter,
+    names: std.ArrayListUnmanaged([]const u8) = .empty,
+    marks: std.ArrayListUnmanaged(usize) = .empty,
+    caps: CaptureScope = .empty,
+    overflow: bool = false,
+
+    fn deinit(fv: *FreeVars) void {
+        const a = fv.em.a;
+        fv.names.deinit(a);
+        fv.marks.deinit(a);
+        fv.caps.deinit(a);
+    }
+
+    fn pushScope(fv: *FreeVars) void {
+        fv.marks.append(fv.em.a, fv.names.items.len) catch @panic("OOM");
+    }
+    fn popScope(fv: *FreeVars) void {
+        fv.names.items.len = fv.marks.pop().?;
+    }
+    fn bind(fv: *FreeVars, name: []const u8) void {
+        fv.names.append(fv.em.a, name) catch @panic("OOM");
+    }
+    fn bound(fv: *FreeVars, name: []const u8) bool {
+        var i = fv.names.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, fv.names.items[i], name)) return true;
+        }
+        return false;
+    }
+    fn ref(fv: *FreeVars, name: []const u8) void {
+        if (fv.bound(name)) return;
+        // Una captura iff el scope enclosing puede suministrarla (local o
+        // captura propia). Cualquier otro nombre es global y se queda global.
+        const em = fv.em;
+        var ty: ?Ty = null;
+        var pty: ?Ty = null;
+        if (em.lookupLocal(name)) |l| {
+            ty = l.ty;
+            pty = l.payload_ty;
+        } else if (em.lookupCapture(name)) |cp| {
+            ty = cp.ty;
+            pty = cp.payload_ty;
+        } else return;
+        for (fv.caps.items) |cp2| {
+            if (std.mem.eql(u8, cp2.name, name)) return;
+        }
+        if (fv.caps.items.len >= 16) {
+            fv.overflow = true;
+            return;
+        }
+        fv.caps.append(em.a, .{ .name = name, .ty = ty.?, .payload_ty = pty }) catch @panic("OOM");
+    }
+
+    fn walk(fv: *FreeVars, idx: u32) void {
+        const em = fv.em;
+        switch (em.tree.node(idx)) {
+            .identifier => |nm| fv.ref(nm),
+            .binary_expr => |b| {
+                fv.walk(b.left);
+                fv.walk(b.right);
+            },
+            .unary_expr => |u| fv.walk(u.operand),
+            .call_expr => |cl| {
+                fv.walk(cl.callee);
+                for (em.tree.extraSlice(cl.args)) |ai| fv.walk(ai);
+            },
+            .index_expr => |ix| {
+                fv.walk(ix.object);
+                fv.walk(ix.index);
+            },
+            .array_literal => |list| for (em.tree.extraSlice(list)) |e| fv.walk(e),
+            .range_expr => |r| {
+                if (r.start_node) |s| fv.walk(s);
+                if (r.end_node) |e| fv.walk(e);
+            },
+            .struct_literal => |sl| {
+                for (em.tree.extraSlice(sl.fields)) |fi| fv.walk(em.tree.node(fi).struct_init_field.value);
+            },
+            .field_access => |fa| fv.walk(fa.object),
+            .some_expr, .ok_expr, .err_expr, .try_expr => |inner| fv.walk(inner),
+            .none_expr, .nil_literal, .int_literal, .float_literal, .string_literal, .bool_literal, .break_stmt, .continue_stmt => {},
+            .block => |blk| {
+                fv.pushScope();
+                for (em.tree.extraSlice(blk.stmts)) |s| fv.walk(s);
+                if (blk.tail) |t| fv.walk(t);
+                fv.popScope();
+            },
+            .expr_stmt => |inner| fv.walk(inner),
+            .if_expr => |ie| {
+                fv.walk(ie.cond);
+                fv.walk(ie.then_block);
+                if (ie.else_block) |eb| fv.walk(eb);
+            },
+            .while_expr => |we| {
+                fv.walk(we.cond);
+                fv.walk(we.body);
+            },
+            .for_expr => |fe| {
+                fv.walk(fe.iter);
+                fv.pushScope();
+                fv.bind(fe.var_name);
+                fv.walk(fe.body);
+                fv.popScope();
+            },
+            .match_expr => |me| {
+                fv.walk(me.target);
+                for (em.tree.extraSlice(me.arms)) |ai| {
+                    const arm = em.tree.node(ai).match_arm;
+                    fv.pushScope();
+                    fv.walkPattern(arm.pattern);
+                    if (arm.guard) |g| fv.walk(g);
+                    fv.walk(arm.body);
+                    fv.popScope();
+                }
+            },
+            .return_stmt => |v| if (v) |vi| fv.walk(vi),
+            .assignment => |as| {
+                // El target es una escritura, pero se resuelve como lectura:
+                // asignar a un nombre capturado debe diagnosticarse, y para
+                // eso el body emitter lo encuentra en el set de capturas.
+                switch (em.tree.node(as.target)) {
+                    .identifier => |nm| fv.ref(nm),
+                    else => fv.walk(as.target),
+                }
+                fv.walk(as.value);
+            },
+            .compound_assignment => |ca| {
+                switch (em.tree.node(ca.target)) {
+                    .identifier => |nm| fv.ref(nm),
+                    else => fv.walk(ca.target),
+                }
+                fv.walk(ca.value);
+            },
+            .fn_decl => |fd| fv.bind(fd.name),
+            .lambda_expr => |lm| {
+                fv.pushScope();
+                for (em.tree.extraSlice(lm.params)) |pi| fv.bind(em.tree.node(pi).param.name);
+                fv.walk(lm.body);
+                fv.popScope();
+            },
+            .var_decl, .const_decl => |vd| {
+                if (vd.value) |v| fv.walk(v);
+                fv.bind(vd.name);
+            },
+            else => {},
+        }
+    }
+
+    fn walkPattern(fv: *FreeVars, pat: u32) void {
+        const em = fv.em;
+        switch (em.tree.node(pat)) {
+            .pattern_bind => |nm| fv.bind(nm),
+            .pattern_variant_bind => |vb| {
+                for (em.tree.extraSlice(vb.bindings)) |bi| fv.bind(em.tree.node(bi).pattern_bind);
+            },
+            .pattern_builtin_variant => |bv| if (bv.payload) |p| fv.walkPattern(p),
+            .pattern_or => |list| for (em.tree.extraSlice(list)) |sp| fv.walkPattern(sp),
+            else => {},
+        }
+    }
+};
 
 /// Números de tag/ptype del contrato emisor↔runtime (astra_runtime_llvm.c):
 /// el tag sigue la numeración de TAG_IS del VM y el `none` es NULL.
@@ -113,10 +300,18 @@ pub const Emitter = struct {
     r_print_boxed: c.LLVMValueRef,
     r_boxed_eq: c.LLVMValueRef,
     r_boxed_order_fail: c.LLVMValueRef,
+    // libc malloc: los objetos de closure (env + {code, env}) y las cajas
+    // viven en heap con lifetime de proceso, como el backend C.
+    r_malloc: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
     scopes: std.ArrayListUnmanaged(std.StringHashMap(Local)) = .empty,
+    /// Pila de scopes de capturas: una entrada por lambda en cuyo cuerpo se
+    /// esté compilando. Los nombres de un cuerpo se resuelven primero como
+    /// locales (params/lets) y luego contra esta pila (§30.5).
+    captures: std.ArrayListUnmanaged(CaptureScope) = .empty,
+    lambda_seq: u32 = 0,
 
     // Función que se emite actualmente (para allocas y bloques).
     cur_fn: c.LLVMValueRef = undefined,
@@ -173,6 +368,7 @@ pub const Emitter = struct {
             .r_print_boxed = undefined,
             .r_boxed_eq = undefined,
             .r_boxed_order_fail = undefined,
+            .r_malloc = undefined,
         };
         self.declareRuntime();
         return self;
@@ -208,6 +404,7 @@ pub const Emitter = struct {
         self.r_print_boxed = self.declVoid("astra_llvm_print_boxed", &.{self.t_ptr});
         self.r_boxed_eq = self.declRet(self.t_i32, "astra_llvm_boxed_eq", &.{ self.t_ptr, self.t_ptr });
         self.r_boxed_order_fail = self.declVoid("astra_llvm_boxed_order_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr });
+        self.r_malloc = self.declRet(self.t_ptr, "malloc", &.{self.t_i64});
     }
 
     fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
@@ -265,12 +462,17 @@ pub const Emitter = struct {
         if (fd.generics.len > 0) return self.unsupported(idx, "generic function");
         const param_items = self.tree.extraSlice(fd.params);
         var pbuf: [16]c.LLVMTypeRef = undefined;
-        if (param_items.len > pbuf.len) return self.unsupported(idx, "too many parameters");
+        if (param_items.len + 1 > pbuf.len) return self.unsupported(idx, "too many parameters");
+        // Convención uniforme de las funciones Astra: el parámetro 0 es el
+        // env del closure (las funciones nombradas no capturan y lo ignoran;
+        // las lambdas leen sus capturas de ahí). Uniformidad = un objeto
+        // { code, env } basta para llamar a cualquiera de las dos.
+        pbuf[0] = self.t_ptr;
         for (param_items, 0..) |pi, i| {
             const p = self.tree.node(pi).param;
             const at = self.annotTy(p.type_node) orelse
                 return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool/string/T?)");
-            pbuf[i] = self.llvmTy(at.ty);
+            pbuf[i + 1] = self.llvmTy(at.ty);
         }
         var ret_ty: c.LLVMTypeRef = self.t_void;
         var ret_m0: ?Ty = null;
@@ -282,7 +484,7 @@ pub const Emitter = struct {
             ret_m0 = at.ty;
             ret_payload = at.payload;
         }
-        const fty = c.LLVMFunctionType(ret_ty, if (param_items.len > 0) &pbuf else null, @intCast(param_items.len), 0);
+        const fty = c.LLVMFunctionType(ret_ty, &pbuf, @intCast(param_items.len + 1), 0);
         const mangled = std.fmt.allocPrintSentinel(self.a, "astra_fn_{s}", .{fd.name}, 0) catch @panic("OOM");
         const fnv = c.LLVMAddFunction(self.mod, mangled, fty);
         self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload }) catch @panic("OOM");
@@ -316,7 +518,7 @@ pub const Emitter = struct {
             const p = self.tree.node(pi).param;
             const at = self.annotTy(p.type_node) orelse return;
             const alloca = self.buildAlloca(self.llvmTy(at.ty));
-            _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(info.val, @intCast(i)), alloca);
+            _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(info.val, @intCast(i + 1)), alloca);
             self.addLocal(p.name, alloca, at.ty, at.payload);
         }
         const body_val = self.emitBlockValue(fd.body);
@@ -331,6 +533,189 @@ pub const Emitter = struct {
                 _ = c.LLVMBuildRetVoid(self.builder);
             }
         }
+    }
+
+    // ── Closures (M1.d, §30.5) ─────────────────────────────────────────────
+
+    /// Una lambda es un objeto heap `{ ptr code; ptr env }` cuyo `code` es una
+    /// función LLVM con la convención uniforme `(env, params...) -> ret`. El
+    /// env es un array de slots i64 (toBits del valor capturado) malloc'd en
+    /// el SITIO DE CREACIÓN — snapshot por valor que sobrevive al frame, que
+    /// es lo que separa a los closures de un préstamo de slots (audit §7.11:
+    /// `saved = |x| { x + base }` debe seguir devolviendo 8 tras salir
+    /// `store`, y `f(1)` tras reasignar `n` debe seguir devolviendo 6).
+    fn emitLambda(self: *Emitter, idx: u32) ?Val {
+        const l = self.tree.node(idx).lambda_expr;
+        const params = self.tree.extraSlice(l.params);
+
+        // 1: análisis de variables libres contra el scope ACTUAL (locales y
+        //    capturas del frame que contiene la creación).
+        var fv = FreeVars{ .em = self };
+        defer fv.deinit();
+        for (params) |pi| fv.bind(self.tree.node(pi).param.name);
+        fv.walk(l.body);
+        if (fv.overflow) {
+            self.unsupported(idx, "too many captured variables");
+            return null;
+        }
+
+        // 2: firma — env + params anotados, retorno anotado o inferido.
+        var pbuf: [17]c.LLVMTypeRef = undefined;
+        if (params.len + 1 > pbuf.len) {
+            self.unsupported(idx, "too many parameters");
+            return null;
+        }
+        pbuf[0] = self.t_ptr;
+        for (params, 0..) |pi, i| {
+            const p = self.tree.node(pi).param;
+            const at = self.annotTy(p.type_node) orelse {
+                self.unsupported(pi, "lambda parameter without a scalar type annotation");
+                return null;
+            };
+            pbuf[i + 1] = self.llvmTy(at.ty);
+        }
+        const ret_ty = self.lambdaRetTy(l) orelse {
+            self.unsupported(idx, "lambda requires a known return type");
+            return null;
+        };
+        const fty = c.LLVMFunctionType(self.llvmTy(ret_ty), &pbuf, @intCast(params.len + 1), 0);
+
+        // 3: función LLVM única por lambda.
+        const seq = self.lambda_seq;
+        self.lambda_seq += 1;
+        const lname = std.fmt.allocPrintSentinel(self.a, "astra_lambda_{d}", .{seq}, 0) catch @panic("OOM");
+        const fnv = c.LLVMAddFunction(self.mod, lname, fty);
+
+        // 4: env y objeto en el sitio de creación (builder todavía aquí).
+        var env_ptr = c.LLVMConstPointerNull(self.t_ptr);
+        const ncaps: u32 = @intCast(fv.caps.items.len);
+        if (ncaps > 0) {
+            var margs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8 * ncaps, 0)};
+            env_ptr = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_malloc), self.r_malloc, &margs, 1, "");
+            for (fv.caps.items, 0..) |cp, i| {
+                const cv = self.captureValue(cp, idx) orelse return null;
+                var sidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8 * i, 0)};
+                const slot = c.LLVMBuildGEP2(self.builder, self.t_i8, env_ptr, &sidxs, 1, "");
+                _ = c.LLVMBuildStore(self.builder, self.toBits(cv.ref, cv.ty), slot);
+            }
+        }
+        const obj = self.buildFnObject(fnv, env_ptr);
+
+        // 5: cuerpo de la lambda, compilado con su scope de capturas. Los
+        //    scopes y las capturas del frame que contiene la creación se
+        //    guardan aparte: el cuerpo sólo ve sus propios params/lets y su
+        //    env — resolver un nombre libre contra los allocas del frame
+        //    ajeno produciría loads de otra función (IR inválido), y el
+        //    análisis de free vars ya puso todo lo libre en fv.caps.
+        const saved_block = c.LLVMGetInsertBlock(self.builder);
+        const prev_fn = self.cur_fn;
+        const prev_ret = self.cur_returns_value;
+        const saved_scopes = self.scopes;
+        const saved_captures = self.captures;
+        self.scopes = .empty;
+        self.captures = .empty;
+        self.cur_fn = fnv;
+        self.cur_returns_value = true;
+        const entry = c.LLVMAppendBasicBlockInContext(self.ctx, fnv, "entry");
+        c.LLVMPositionBuilderAtEnd(self.builder, entry);
+        self.pushScope();
+        self.pushCaptures(fv.caps.items);
+        for (params, 0..) |pi, i| {
+            const p = self.tree.node(pi).param;
+            const at = self.annotTy(p.type_node) orelse return null;
+            const alloca = self.buildAlloca(self.llvmTy(at.ty));
+            _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(fnv, @intCast(i + 1)), alloca);
+            self.addLocal(p.name, alloca, at.ty, at.payload);
+        }
+        const body_val = self.emitBlockValue(l.body);
+        if (!self.isTerminated()) {
+            if (body_val) |v| {
+                _ = c.LLVMBuildRet(self.builder, v.ref);
+            } else {
+                _ = c.LLVMBuildUnreachable(self.builder);
+            }
+        }
+        self.popCaptures();
+        self.popScope();
+        self.cur_fn = prev_fn;
+        self.cur_returns_value = prev_ret;
+        self.scopes = saved_scopes;
+        self.captures = saved_captures;
+        c.LLVMPositionBuilderAtEnd(self.builder, saved_block);
+
+        return .{ .ref = obj, .ty = .fn_, .payload_ty = ret_ty };
+    }
+
+    /// Tipo de retorno de una lambda: la anotación `-> T`, o inferido del
+    /// tail del body (el typechecker infiere el retorno cuando no hay
+    /// anotación y el body produce valor).
+    fn lambdaRetTy(self: *Emitter, l: ast.Lambda) ?Ty {
+        if (l.ret) |r| return (self.annotTy(r) orelse return null).ty;
+        return switch (self.tree.node(l.body)) {
+            .block => |blk| if (blk.tail) |t| self.inferStaticTy(t) else null,
+            else => self.inferStaticTy(l.body),
+        };
+    }
+
+    /// Objeto `{ ptr code; ptr env }` en heap (16 bytes, lifetime de proceso).
+    fn buildFnObject(self: *Emitter, code: c.LLVMValueRef, env: c.LLVMValueRef) c.LLVMValueRef {
+        var margs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 16, 0)};
+        const obj = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_malloc), self.r_malloc, &margs, 1, "");
+        var cidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+        const codep = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &cidxs, 1, "");
+        _ = c.LLVMBuildStore(self.builder, code, codep);
+        var eidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8, 0)};
+        const envp = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &eidxs, 1, "");
+        _ = c.LLVMBuildStore(self.builder, env, envp);
+        return obj;
+    }
+
+    /// Carga el slot i del env actual (array de i64 bits).
+    fn loadEnvSlot(self: *Emitter, env: c.LLVMValueRef, idx: u32) c.LLVMValueRef {
+        var sidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8 * idx, 0)};
+        const pp = c.LLVMBuildGEP2(self.builder, self.t_i8, env, &sidxs, 1, "");
+        return c.LLVMBuildLoad2(self.builder, self.t_i64, pp, "");
+    }
+
+    /// Valor ACTUAL de una captura en el sitio de creación: una local del
+    /// frame (alloca) o un slot del env de la lambda que lo contiene.
+    fn captureValue(self: *Emitter, cap: CapSlot, idx: u32) ?Val {
+        if (self.lookupLocal(cap.name)) |l|
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty };
+        if (self.lookupCapture(cap.name)) |cp| {
+            const env = c.LLVMGetParam(self.cur_fn, 0);
+            const bits = self.loadEnvSlot(env, cp.index);
+            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty };
+        }
+        self.unsupported(idx, "capture of a variable that no longer resolves");
+        return null;
+    }
+
+    fn pushCaptures(self: *Emitter, slots: []const CapSlot) void {
+        var scope: CaptureScope = .empty;
+        for (slots, 0..) |cp, i| {
+            var with_idx = cp;
+            with_idx.index = @intCast(i);
+            scope.append(self.a, with_idx) catch @panic("OOM");
+        }
+        self.captures.append(self.a, scope) catch @panic("OOM");
+    }
+
+    fn popCaptures(self: *Emitter) void {
+        var scope = self.captures.pop().?;
+        scope.deinit(self.a);
+    }
+
+    /// Índice de captura de un nombre en la pila de envs, o null.
+    fn lookupCapture(self: *Emitter, name: []const u8) ?CapSlot {
+        var s = self.captures.items.len;
+        while (s > 0) {
+            s -= 1;
+            for (self.captures.items[s].items) |cp| {
+                if (std.mem.eql(u8, cp.name, name)) return cp;
+            }
+        }
+        return null;
     }
 
     fn emitModuleMain(self: *Emitter, items: []const u32) void {
@@ -363,7 +748,8 @@ pub const Emitter = struct {
         }
         if (self.fns.get("main")) |mi| {
             self.ensureOpenBlock();
-            _ = c.LLVMBuildCall2(self.builder, mi.fty, mi.val, null, 0, "");
+            var eargs = [_]c.LLVMValueRef{c.LLVMConstPointerNull(self.t_ptr)};
+            _ = c.LLVMBuildCall2(self.builder, mi.fty, mi.val, &eargs, 1, "");
         }
         self.ensureOpenBlock();
         _ = c.LLVMBuildRetVoid(self.builder);
@@ -540,6 +926,7 @@ pub const Emitter = struct {
             },
             .try_expr => return self.emitTry(idx),
             .match_expr => return self.emitMatch(idx),
+            .lambda_expr => return self.emitLambda(idx),
             .identifier => |name| return self.emitIdent(idx, name),
             .binary_expr => return self.emitBinary(idx),
             .unary_expr => return self.emitUnary(idx),
@@ -855,16 +1242,33 @@ pub const Emitter = struct {
             },
             .f64_ => c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, a.ref, b.ref, ""),
             .i64_, .bool_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
+            .fn_ => {
+                self.unsupported(idx, "cannot compare function values");
+                return null;
+            },
         };
     }
     fn emitIdent(self: *Emitter, idx: u32, name: []const u8) ?Val {
         if (self.lookupLocal(name)) |l| {
             return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty };
         }
+        // Captura de closure: los parámetros siempre sombrean (el scope de
+        // locales se busca primero), luego la pila de envs de las lambdas.
+        if (self.lookupCapture(name)) |cp| {
+            const env = c.LLVMGetParam(self.cur_fn, 0);
+            const bits = self.loadEnvSlot(env, cp.index);
+            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty };
+        }
         if (self.globals.get(name)) |g| {
             return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, ""), .ty = g.ty, .payload_ty = g.payload_ty };
         }
-        self.unsupported(idx, "reference to a function as a value");
+        // Función nombrada usada como valor (argumento, asignación…): se
+        // empaqueta en el mismo objeto { code, env = NULL } que una lambda.
+        if (self.fns.get(name)) |fi| {
+            const obj = self.buildFnObject(fi.val, c.LLVMConstPointerNull(self.t_ptr));
+            return .{ .ref = obj, .ty = .fn_, .payload_ty = fi.ret_ty };
+        }
+        self.unsupported(idx, "unknown identifier");
         return null;
     }
 
@@ -1076,6 +1480,12 @@ pub const Emitter = struct {
         };
         if (self.lookupLocal(target_name)) |l| {
             _ = c.LLVMBuildStore(self.builder, val.ref, l.alloca);
+        } else if (self.lookupCapture(target_name) != null) {
+            // §30.5: los closures capturan por valor — no hay ninguna celda
+            // a la que escribir, el env es un snapshot (el typechecker zig ya
+            // lo rechaza antes; defensivo como el emitter del seed).
+            self.unsupported(idx, "cannot assign to a captured variable (closures capture by value)");
+            return null;
         } else if (self.globals.get(target_name)) |g| {
             _ = c.LLVMBuildStore(self.builder, val.ref, g.val);
         } else {
@@ -1091,28 +1501,70 @@ pub const Emitter = struct {
             .identifier => |name| {
                 if (std.mem.eql(u8, name, "print")) return self.emitPrint(idx);
                 const info = self.fns.get(name) orelse {
-                    self.unsupported(idx, "call to an unknown function");
-                    return null;
+                    // No es una fn nombrada: puede ser un valor de función en
+                    // un local/global (lambda o referencia a fn) — llamada
+                    // dinámica vía el objeto { code, env }.
+                    return self.emitDynamicCall(idx, call.callee);
                 };
                 const args = self.tree.extraSlice(call.args);
-                var abuf: [16]c.LLVMValueRef = undefined;
-                if (args.len > abuf.len) {
+                var abuf: [17]c.LLVMValueRef = undefined;
+                if (args.len + 1 > abuf.len) {
                     self.unsupported(idx, "too many arguments");
                     return null;
                 }
+                // Convención uniforme: las funciones nombradas no capturan,
+                // así que su env es NULL (parámetro 0 ignorado en el callee).
+                abuf[0] = c.LLVMConstPointerNull(self.t_ptr);
                 for (args, 0..) |ai, i| {
                     const av = self.emitExpr(ai) orelse return null;
-                    abuf[i] = av.ref;
+                    abuf[i + 1] = av.ref;
                 }
-                const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, if (args.len > 0) &abuf else null, @intCast(args.len), "");
+                const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, &abuf, @intCast(args.len + 1), "");
                 if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload };
                 return null;
             },
-            else => {
-                self.unsupported(idx, "only direct calls to named functions");
-                return null;
-            },
+            else => return self.emitDynamicCall(idx, call.callee),
         }
+    }
+
+    /// Llamada a un valor de función (lambda o referencia a fn pasada como
+    /// argumento): `code(env, args...)` a través del objeto { code, env }.
+    /// La firma LLVM se arma en el sitio de llamada con los tipos reales de
+    /// los argumentos y el retorno estático del callee (payload_ty), que el
+    /// typechecker garantiza compatibles.
+    fn emitDynamicCall(self: *Emitter, idx: u32, callee: u32) ?Val {
+        const fv = self.emitExpr(callee) orelse return null;
+        if (fv.ty != .fn_) {
+            self.unsupported(idx, "call of a non-function value");
+            return null;
+        }
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        var abuf: [17]c.LLVMValueRef = undefined;
+        var fbuf: [17]c.LLVMTypeRef = undefined;
+        if (args.len + 1 > abuf.len) {
+            self.unsupported(idx, "too many arguments");
+            return null;
+        }
+        fbuf[0] = self.t_ptr; // env
+        for (args, 0..) |ai, i| {
+            const av = self.emitExpr(ai) orelse return null;
+            abuf[i + 1] = av.ref;
+            fbuf[i + 1] = self.llvmTy(av.ty);
+        }
+        // El objeto: { ptr code; ptr env } — code en el offset 0, env en 8.
+        var cidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
+        const codep = c.LLVMBuildGEP2(self.builder, self.t_i8, fv.ref, &cidxs, 1, "");
+        const code = c.LLVMBuildLoad2(self.builder, self.t_ptr, codep, "");
+        var eidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8, 0)};
+        const envp = c.LLVMBuildGEP2(self.builder, self.t_i8, fv.ref, &eidxs, 1, "");
+        const env = c.LLVMBuildLoad2(self.builder, self.t_ptr, envp, "");
+        abuf[0] = env;
+        const ret_lty = if (fv.payload_ty) |rt| self.llvmTy(rt) else self.t_void;
+        const fty = c.LLVMFunctionType(ret_lty, &fbuf, @intCast(args.len + 1), 0);
+        const rv = c.LLVMBuildCall2(self.builder, fty, code, &abuf, @intCast(args.len + 1), "");
+        if (fv.payload_ty) |rt| return .{ .ref = rv, .ty = rt };
+        return null;
     }
 
     fn emitPrint(self: *Emitter, idx: u32) ?Val {
@@ -1145,6 +1597,10 @@ pub const Emitter = struct {
                 .boxed_ => {
                     var xargs = [_]c.LLVMValueRef{av.ref};
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_boxed), self.r_print_boxed, &xargs, 1, "");
+                },
+                .fn_ => {
+                    self.unsupported(idx, "print of a function value");
+                    return null;
                 },
             }
         }
@@ -1241,7 +1697,7 @@ pub const Emitter = struct {
         const zero = switch (v.ty) {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
-            .f64_, .str_, .boxed_ => unreachable,
+            .f64_, .str_, .boxed_, .fn_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
     }
@@ -1296,7 +1752,7 @@ pub const Emitter = struct {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
             .f64_ => self.t_f64,
-            .str_, .boxed_ => self.t_ptr,
+            .str_, .boxed_, .fn_ => self.t_ptr,
         };
     }
 
@@ -1308,12 +1764,13 @@ pub const Emitter = struct {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
             .f64_ => c.LLVMConstReal(self.t_f64, 0.0),
-            .str_, .boxed_ => c.LLVMConstPointerNull(self.t_ptr),
+            .str_, .boxed_, .fn_ => c.LLVMConstPointerNull(self.t_ptr),
         };
     }
 
     /// Código ptype de un payload, para guardarlo en la caja (contrato con el
-    /// runtime). `null` si el tipo no puede vivir dentro de una caja.
+    /// runtime). `null` si el tipo no puede vivir dentro de una caja: el
+    /// runtime no tiene representación para funciones.
     fn boxPTy(ty: Ty) ?u32 {
         return switch (ty) {
             .bool_ => PTY_BOOL,
@@ -1321,6 +1778,7 @@ pub const Emitter = struct {
             .f64_ => PTY_F64,
             .str_ => PTY_STR,
             .boxed_ => PTY_BOXED,
+            .fn_ => null,
         };
     }
 
@@ -1330,7 +1788,7 @@ pub const Emitter = struct {
             .i64_ => ref,
             .bool_ => c.LLVMBuildZExt(self.builder, ref, self.t_i64, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, ref, self.t_i64, ""),
-            .str_, .boxed_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
+            .str_, .boxed_, .fn_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
         };
     }
 
@@ -1340,7 +1798,7 @@ pub const Emitter = struct {
             .i64_ => bits,
             .bool_ => c.LLVMBuildTrunc(self.builder, bits, self.t_i8, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, bits, self.t_f64, ""),
-            .str_, .boxed_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
+            .str_, .boxed_, .fn_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
         };
     }
 
@@ -1404,9 +1862,20 @@ pub const Emitter = struct {
         }
     }
 
-    /// Anotación de parámetro/retorno/let: escalar o `T?`.
+    /// Anotación de parámetro/retorno/let: escalar, `T?` o `fn(T, ...) -> T`.
+    /// En un `fn(...)` el payload es el tipo de retorno (lo que la llamada
+    /// dinámica necesita); los parámetros del tipo sólo validan la forma y
+    /// los reales salen del sitio de llamada.
     fn annotTy(self: *Emitter, node: ?u32) ?Annot {
         if (self.scalarM0Ty(node)) |t| return .{ .ty = t, .payload = null };
+        const ni = node orelse return null;
+        switch (self.tree.node(ni)) {
+            .type_fn => |tf| return .{
+                .ty = .fn_,
+                .payload = if (tf.ret) |r| (self.annotTy(r) orelse return null).ty else null,
+            },
+            else => {},
+        }
         return self.boxedM0Ty(node);
     }
 
@@ -1416,6 +1885,7 @@ pub const Emitter = struct {
     fn inferBoxPayload(self: *Emitter, idx: u32) ?Ty {
         switch (self.tree.node(idx)) {
             .some_expr, .ok_expr, .err_expr => |inner| return self.inferStaticTy(inner),
+            .lambda_expr => |lm| return self.lambdaRetTy(lm),
             .identifier => |name| {
                 if (self.lookupLocal(name)) |l| return l.payload_ty;
                 if (self.globals.get(name)) |g| return g.payload_ty;
@@ -1441,6 +1911,7 @@ pub const Emitter = struct {
             .string_literal => return .str_,
             .bool_literal => return .bool_,
             .none_expr, .nil_literal, .some_expr, .ok_expr, .err_expr => return .boxed_,
+            .lambda_expr => return .fn_,
             .try_expr => |inner| return self.inferBoxPayload(inner),
             .match_expr => |mm| {
                 // El valor del match: el tail del último brazo (el typechecker
@@ -1678,4 +2149,49 @@ test "emite ?: payload en ok/some y ret temprano del boxed en err/none" {
     const ir_str = std.mem.span(ir_s);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "try_err") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "try_ok") != null);
+}
+
+test "emite closure: objeto {code, env} por valor y env que sobrevive al frame" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\let mut saved = |x: i32| -> i32 { x }
+        \\fn store() {
+        \\    let base = 7
+        \\    saved = |x: i32| -> i32 { x + base }
+        \\}
+        \\fn main() {
+        \\    store()
+        \\    print(saved(3))
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "closure.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "closure.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "closure.astra");
+    defer em.deinit();
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+    // Dos lambdas (el literal inicial y el de store) con su convención
+    // uniforme (env, params…) y la llamada dinámica a través del objeto.
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_lambda_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "astra_lambda_1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "define i64 @astra_lambda_1(ptr") != null);
 }
