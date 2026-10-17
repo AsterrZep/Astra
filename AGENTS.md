@@ -142,7 +142,8 @@ cd zig
 zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
 ./zig-out/bin/astra-zig --emit-llvm file.astra          # write file.ll
 ./zig-out/bin/astra-zig --emit-llvm-stdout file.astra   # print IR (for tests)
-./tests/llvm_parity.sh                  # VM <-> --emit-llvm -> llc -> link
+./zig-out/bin/astra-zig --emit-obj file.astra           # native <file>.o via TargetMachine (M2.e)
+./tests/llvm_parity.sh                  # VM <-> --emit-obj -> link runtime
 ```
 
 Gotchas that will bite you:
@@ -151,11 +152,13 @@ Gotchas that will bite you:
   shared library references libc symbols, and with the linker's `--as-needed`
   default a leading `-lLLVM-19` with a trailing `-lc` drops libc — the link
   dies on undefined `printf`/`putchar`.
-- **`llc` needs `-relocation-model=pic`** to link against a default-PIE `cc`;
-  without it `ld` rejects the object (`relocation R_X86_64_32 against …`).
+- **PIC o el enlazador rechaza el objeto**: el `cc` default-PIE de la distro
+  no enlaza objetos no-PIC (`relocation R_X86_64_32 against …`). `--emit-obj`
+  crea el TargetMachine con `LLVMRelocPIC`, así que ya no hace falta nada; si
+  enlazas a mano un `.ll` vía `llc`, pasa `-relocation-model=pic`.
 - `build.zig` discovers `llvm-config` as `ASTRA_LLVM_CONFIG` env → `llvm-config`
-  → `llvm-config-19..-23`; `zig/tests/llvm_parity.sh` finds `llc` the same way
-  (`$LLC` → `llc` → `llc-19..-23` → `/usr/lib/llvm-*/bin/llc`).
+  → `llvm-config-19..-23`. `zig/tests/llvm_parity.sh` no necesita `llc` desde
+  M2.e: el objeto sale de `--emit-obj` y sólo usa `${CC:-cc}` para enlazar.
 - The runtime TU (`src/llvm/runtime/astra_runtime_llvm.c`) includes the seed's
   `codegen_runtime.h` **exactly once** (that header *defines* its globals), and
   compiles with `-I<repo>/seed/src`. A link error duplicating `astra_file`/…

@@ -26,13 +26,16 @@ por la VM.
 
 ## 1. Estado actual (2026-10-17)
 
-**M0 (infraestructura) y M1 (núcleo completo) están terminados.** El emisor
-compila el núcleo de Astra-0 — escalars, floats, strings, Option/Result con
-`match`/`?` y closures — a LLVM IR verificado, lo baja a objeto con `llc`,
-lo enlaza contra el runtime compartido del seed y produce binarios cuya
-salida (stdout, stderr y código de salida) es **byte-idéntica a la VM** para
-todos los casos en alcance (41 de los 93 casos del gate de paridad; el resto
-son arrays/structs/enums de usuario/`for`, que llegan con M2).
+**M0 (infraestructura), M1 (núcleo completo) y M2 (valores y patrones) están
+terminados.** El emisor compila Astra-0 — escalars, floats, strings,
+Option/Result con `match`/`?`, closures, arrays/structs/enums de usuario y
+`for..in`/`break`/`continue` — a LLVM IR verificado, lo baja a objeto nativo
+con `--emit-obj` (TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo
+enlaza contra el runtime compartido del seed y produce binarios cuya salida
+(stdout, stderr y código de salida) es **byte-idéntica a la VM** para todos
+los casos en alcance (101 de los 119 casos del gate de paridad; los 16 skip
+restantes son genéricos/tráits/módulos de M3 y los 2 excluidos fijan guardas
+VM-only de profundidad de llamada).
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -42,7 +45,7 @@ son arrays/structs/enums de usuario/`for`, que llegan con M2).
 | **M0.4** | runner `zig/tests/llvm_parity.sh` + job CI `llvm` (apt.llvm.org 19) | ✅ |
 | **M0.5** | `PHASE_LLVM_PROGRESS.md` + AGENTS.md (build `-Dllvm`, `-lc`) | ✅ |
 | **M1** | floats, strings, Option/Result + `?` + `match`, closures | ✅ |
-| **M2** | arrays/structs (GEP), enums de usuario + `match`, `for..in` | ⬜ |
+| **M2** | arrays/structs (GEP), enums de usuario + `match`, `for..in`, `--emit-obj` | ✅ |
 | **M3** | paridad total, fuzz diferencial, FileCheck | ⬜ |
 | **M4** | calidad: DWARF, pipeline `-O2` + remarks, benchmarks | ⬜ |
 
@@ -221,27 +224,76 @@ los cinco patrones de `closures.astra` byte a byte.
 
 ---
 
-## 6. Diferido a M2+
+## 6. M2 — valores y patrones (2026-10-17)
+
+M2.a–M2.e cerrados: arrays homogéneos, structs con layout, enums de usuario
+con `match` de variantes, `for..in` (rangos y arrays) + `break`/`continue`, y
+`--emit-obj` vía TargetMachineEmitToFile. La ruta LLVM cubre ahora la suite
+completa de `seed/tests/codegen/` además de la conformance (gate M2, plan
+§6): **119 casos — 101 ok, 16 skip (M3), 2 excl, 0 fail**.
+
+### Decisiones de diseño de M2
+
+| Qué | Decisión |
+|:----|:---------|
+| **Array** (M2.a) | objeto `{ i64 len; i32 elem_pty; i32 pad; <elems@16> }` (ARR_HDR=16, PTY_ARRAY=6); identidad compartida entre aliases; bounds check → `astra_llvm_index_fail`; literales ≥1025 elems → trap de stack overflow. `==` **estructural por elemento** con el ptype del objeto: la rama identidad del switch de `vm.c` es código muerto — `value_eq` compara elemento a elemento —, así que `astra_llvm_array_eq` recursa por ptype y lo comparten boxed/structs/enums/elems (fix latente descubierto por `aggregate_equality`, que antes ni compilaba). |
+| **Struct** (M2.b) | objeto `{ ptr layout_def; f0@8; f1@16; … }` — todos los campos en slots de 8 bytes en orden de declaración; descriptor estático `AstraLLVMStructDef { name, nfields, ptypes, fields }` (PTY_STRUCT=7); `sname` propagado en `Val`/`Annot`/`Local`/`GlobalInfo`/`CapSlot`/`FnInfo` para resolver campos; print `astra_llvm_print_struct`, eq estructural `astra_llvm_struct_eq`. |
+| **Enum** (M2.c) | objeto `{ const AstraLLVMEnumDef *def; i32 variant; i32 kind; <payload@16> }` con `AstraLLVMEnumDef { name, nvariants, variants[] }` y `AstraLLVMVariantDef { name, npayload, ptypes }`; el `kind` replica los dos kinds del VM — kind 0 (VAL_ENUM: acceso unit, acceso pelón de variante con payload y constantes de patrón; eq SÓLO por nombres, igual que el cross-kind de `value_eq`) y kind 1 (VAL_ENUM_DATA: construcción `Variant(x)`, eq estructural con payloads por ptype). Las constantes kind-0 se emiten con los slots de payload a cero del tamaño de la variante (un match con bindings sobre kind-0 lee 0, no OOB). Registro en pasada previa: nombres de struct → enums completos → layouts de struct. Payload literal de builtin (`some(1)`) testado en tag_bb (camino no-NULL). |
+| **for..in** (M2.d) | réplica de NODE_FOR: almacen oculto de índice + límite/arr, condición al frente (`i < end`, `<=` en `..=`, `i < len(arr)` con el len del objeto en offset 0), la variable del loop se tipa con el **tipo de elemento** del array (`Val.payload_ty`), incremento como objetivo de `continue`; pila de contextos de loop (break→salida, continue→incremento en `for` y condición en `while`). |
+| **Objeto** (M2.e) | `--emit-obj` escribe `<file>.o` con LLVMTargetMachineEmitToFile (CodeGenLevelDefault + **RelocPIC** — el PIC que el enlazador default-PIE exige); el init del target nativo sale del static inline de `llvm-c/Target.h` que translate-c sí traduce (`llvm-config.h` lo expande). `llvm_parity.sh` ya no subprocesa `llc` (sólo `${CC:-cc}` para enlazar el runtime). |
+
+Límites conocidos (unsupported honestos): el elemento de un array pierde el
+`sname` de struct (acceso a campo sobre `xs[0]` y `for p in structs`), y una
+lambda con retorno struct pierde el `sname` del tipo — ambos documentados en
+el emisor.
+
+### Alcance M2 (soportado con paridad)
+
+Todo lo de M0/M1, más: arrays (literal, lectura/escritura con bounds check,
+`==` estructural, iteración, anidados, campos-array de struct/enum); structs
+(literal, campo lectura/escritura, eq estructural, print, structs en payloads
+de match); enums de usuario (acceso, construcción, `match` con
+bindings/guards/or-patterns/brazos-bloque, eq cross-kind, print de ambos
+kinds, anotaciones `x: Color`, enums dentro de boxes/arrays/structs);
+`for..in` sobre rangos y arrays de cualquier tipo soportado; `break`/`continue`
+en `for` y `while`. El límite de 256 globales de la VM se espeja en runtime
+(`too many global variables` en la línea del declarante, como el SET_GLOBAL
+del VM en orden de fuente).
+
+Gate de paridad al cierre: **119 casos — 101 ok, 16 skip, 2 excl, 0 fail**.
+Los flips de M2: `arrays/*`, `structs/*`, `enums/*` (12; `mixed_patterns`
+esperó a `for..in`), `loops/*` + `control/while_*` (8, incluidos
+`iter_height_norm` y `loop_residue_inline`), `aggregate_equality`,
+`match_inline_call`, `pub_decls`, `toplevel_aggregates`, `forward_type_refs`,
+`integer_widths`, `deep_recursion`, `element_assign`, y la suite
+`codegen/*` (20 ok, 1 auto-skip). Verificado a mano contra el VM además de
+por el runner: eq cross-kind de enums (`Shape.Circle == Circle(2.5)` → true),
+constructores y prints de ambos kinds, y los 13 ficheros de loops/enums
+pendientes.
+
+---
+
+## 7. Diferido a M3+
 
 | Qué | Hito |
 |:----|:-----|
-| Arrays/structs (GEP estáticos por layout del typechecker) | M2 |
-| Enums de usuario + `match` de variantes (tag tests → `icmp`/`br` + phi), `for..in` | M2 |
-| `TargetMachineEmitToFile` reemplaza al `llc` subproceso | M2 |
+| Paridad total: genéricos, traits/impls, módulos con import (los 16 skip) | M3 |
+| Guard de profundidad de llamada espejando `VM_CALL_DEPTH` (los 2 excl) | M3 |
 | Atributos de helpers, pesos de rama fría en traps, fuzz diferencial, FileCheck | M3 |
 | DWARF (`DebugInfo.h`), pipeline `-O2` + remarks, benchmarks | M4 |
 
 Exclusiones del runner de paridad (con commentario en el propio script):
 
-- **`expressions/recursion_depth_limit.astra`** — fija el guard de profundidad
-  de llamada de la VM (`VM_CALL_DEPTH`); el código nativo no lo reproduce y
-  completa legítimamente, así que no es comparable hasta que la ruta LLVM
-  crece su propio guard.
+- **`expressions/recursion_depth_limit.astra`** y
+  **`codegen/frame_overflow.astra`** — fijan el guard de profundidad de
+  llamada de la VM (`VM_CALL_DEPTH`); el código nativo no lo reproduce y
+  completa legítimamente, así que no son comparables hasta que la ruta LLVM
+  crece su propio guard (M3, con pesos de rama fría).
 - Los casos con `import`/`from`/`use` se saltan (emisor de fichero único).
 
 ---
 
-## 7. Bug pre-existente conocido (no de esta fase)
+## 8. Bug pre-existente conocido (no de esta fase)
 
 El operador **`||` (`or_or`)** falla en runtime con
 `cannot call non-function value` en **ambas** VMs (seed y zig) — `&&` funciona.
@@ -251,7 +303,7 @@ al seed/espejo zig (fix(seed) + fix(zig)) y queda fuera del alcance de M0.
 
 ---
 
-## 8. Commits
+## 9. Commits
 
 ### M0
 
@@ -281,3 +333,19 @@ dumps **124/0**, `sweep_emit_c` **0 fail**, `ui_message_parity`
 Los mismos gates, verdes en cada commit de M1, con `zig build test -Dllvm`
 creciendo de 76 a **79** (tests de emisión de match/`?`/closures) y
 `llvm_parity.sh` de 14 a **41 ok, 0 fail**.
+
+### M2
+
+| # | Commit | Mensaje |
+|:-:|:-------|:--------|
+| M2.a | `a79c495` | `feat(llvm): arrays homogéneos con bounds check (M2.a)` |
+| M2.b | `74f086b` | `feat(llvm): structs con layout, print y igualdad estructural (M2.b)` |
+| M2.c | `8b79b26` | `feat(llvm): enums de usuario + match con payloads (M2.c)` |
+| M2.d | `1914658` | `feat(llvm): for..in con rangos y arrays + break/continue (M2.d)` |
+| M2.e | `6f54cd9` | `feat(llvm): --emit-obj vía TargetMachine y paridad con la suite codegen (M2.e)` |
+| M2.doc | _(este commit)_ | `docs(llvm): PHASE_LLVM_PROGRESS.md — cierre de M2` |
+
+Los mismos gates, verdes en cada commit de M2, con `zig build test -Dllvm`
+creciendo de 79 a **84** (tests de arrays/structs/enums/loops/emit-obj) y
+`llvm_parity.sh` de 41 a **101 ok, 0 fail** (119 casos: conformance + suite
+`seed/tests/codegen/`).
