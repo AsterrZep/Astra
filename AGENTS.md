@@ -128,6 +128,46 @@ Porting rule: **the Zig compiler must accept everything the seed accepts before
 new features are added** (the suite is the gate). Match `seed/src/*.c` and the
 `research/001`–`003` reports for behaviour.
 
+### LLVM backend (`-Dllvm`, opt-in)
+
+The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
+progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
+the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
+build and binary are byte-identical and none of the existing gates change. M0
+emits a minimal scalar subset straight from the typed AST (no bytecode/VM) and
+is gated by `zig/tests/llvm_parity.sh`.
+
+```bash
+cd zig
+zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
+./zig-out/bin/astra-zig --emit-llvm file.astra          # write file.ll
+./zig-out/bin/astra-zig --emit-llvm-stdout file.astra   # print IR (for tests)
+./tests/llvm_parity.sh                  # VM <-> --emit-llvm -> llc -> link
+```
+
+Gotchas that will bite you:
+
+- **Link `-lc` before `-lLLVM-19`** (see `linkLlvm` in `build.zig`): LLVM's
+  shared library references libc symbols, and with the linker's `--as-needed`
+  default a leading `-lLLVM-19` with a trailing `-lc` drops libc — the link
+  dies on undefined `printf`/`putchar`.
+- **`llc` needs `-relocation-model=pic`** to link against a default-PIE `cc`;
+  without it `ld` rejects the object (`relocation R_X86_64_32 against …`).
+- `build.zig` discovers `llvm-config` as `ASTRA_LLVM_CONFIG` env → `llvm-config`
+  → `llvm-config-19..-23`; `zig/tests/llvm_parity.sh` finds `llc` the same way
+  (`$LLC` → `llc` → `llc-19..-23` → `/usr/lib/llvm-*/bin/llc`).
+- The runtime TU (`src/llvm/runtime/astra_runtime_llvm.c`) includes the seed's
+  `codegen_runtime.h` **exactly once** (that header *defines* its globals), and
+  compiles with `-I<repo>/seed/src`. A link error duplicating `astra_file`/…
+  means a second translation unit started including the header too.
+- CI's `llvm` job pins LLVM 19 via apt.llvm.org; the seed/zig/parity jobs are
+  untouched because `-Dllvm` is opt-in.
+
+Beyond M0 the backend splits into parallel workstreams (`llvm-infra`,
+`llvm-core`, `llvm-values`, `llvm-errors`, `llvm-testing`, `llvm-quality`),
+each owning a slice of `src/llvm/` and verified by `llvm_parity.sh` +
+`zig build -Dllvm` — the file/ownership map is in `LLVM_BACKEND_PLAN.md` §5.
+
 ## Seed compiler layout (`seed/src`)
 
 | File | Responsibility |
