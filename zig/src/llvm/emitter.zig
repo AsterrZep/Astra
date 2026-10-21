@@ -1428,10 +1428,13 @@ pub const Emitter = struct {
                 // `trait_decl` es solo firmas; `impl_decl` ya emitió sus
                 // métodos en la pasada 3 (espejo del emitter bytecode).
                 .trait_decl, .impl_decl => {},
-                .use_decl, .import_decl, .from_decl => {
-                    self.unsupported(it, "module-level declaration");
-                    return;
-                },
+                // Las declaraciones de módulo no tienen semántica en el
+                // fichero único: el driver sólo llega aquí sin imports o con
+                // `--single-file` (semántica del seed), y el emitter de
+                // bytecode también las ignora. Rechazarlas aquí obligaba a
+                // saltar los 3 fixtures de `module/`, que precisamente fijan
+                // que el frontend las parsea y las descarta.
+                .use_decl, .import_decl, .from_decl => {},
                 else => {
                     self.ensureOpenBlock();
                     _ = self.emitExpr(it);

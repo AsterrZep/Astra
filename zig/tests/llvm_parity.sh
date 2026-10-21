@@ -87,24 +87,25 @@ while IFS= read -r f; do
         continue
     ;; esac
 
-    # The LLVM emitter is single-file (multi-module exits 2 clean). Fixtures that
-    # import sibling modules are out of M0 scope for the same reason sweep_emit_c
-    # skips them, and for a second: the seed discards imports, zig resolves them.
+    # The LLVM emitter is single-file, and the seed discards module
+    # declarations. The module conformance fixtures assert exactly that
+    # (their imports name files that must NOT be resolved), so both routes run
+    # them with --single-file: the seed's semantics, and the same pipeline the
+    # zig conformance runner uses for every case.
+    extra=""
     if grep -qE '^(import|from|use) ' "$f"; then
-        echo "skip $rel (module import)"
-        skip=$((skip + 1))
-        continue
+        extra="--single-file"
     fi
 
     # Reference: zig VM.
-    "$ASTRA_ZIG" "$f" >"$work/vm.out" 2>"$work/vm.err"
+    "$ASTRA_ZIG" $extra "$f" >"$work/vm.out" 2>"$work/vm.err"
     vm_rc=$?
 
     # LLVM route, step 1: compile straight to a native object
     # (TargetMachineEmitToFile, M2.e — the .o lands next to the snapshot).
     # Constructs outside the backend's scope are a clean skip.
     base=${f%.astra}
-    if ! "$ASTRA_ZIG" --emit-obj "$f" >"$work/emit.out" 2>"$work/emit.err"; then
+    if ! "$ASTRA_ZIG" --emit-obj $extra "$f" >"$work/emit.out" 2>"$work/emit.err"; then
         if grep -q "not supported by the LLVM backend" "$work/emit.err"; then
             echo "skip $rel (not M0 scope)"
             skip=$((skip + 1))

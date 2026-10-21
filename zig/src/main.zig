@@ -25,9 +25,11 @@ const llvm = if (build_options.llvm_enabled) @import("llvm.zig") else void;
 const Mode = enum { parse, tokens, ast_dump, bytecode, modules, emit_llvm, emit_llvm_stdout, emit_obj };
 
 const usage =
-    \\usage: astra-zig [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --emit-obj | --debug] <file.astra>
+    \\usage: astra-zig [--single-file] [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --emit-obj | --debug] <file.astra>
     \\
     \\  (no flag)              compile and run, exit 1 on a compile or runtime error
+    \\  --single-file          ignore `import`/`from`/`use` and compile only the entry
+    \\                         file (seed semantics; needed for module-decl fixtures)
     \\  --dump-tokens          print the token stream
     \\  --dump-ast             print the parsed AST
     \\  --dump-modules         load and print the module graph (files reached, cycles reported)
@@ -46,6 +48,7 @@ pub fn main(init: std.process.Init) !void {
 
     var mode: Mode = .parse;
     var debug = false;
+    var single_file = false;
     var path: ?[]const u8 = null;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -62,6 +65,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .emit_llvm_stdout;
         } else if (std.mem.eql(u8, arg, "--emit-obj")) {
             mode = .emit_obj;
+        } else if (std.mem.eql(u8, arg, "--single-file")) {
+            single_file = true;
         } else if (std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -161,7 +166,10 @@ pub fn main(init: std.process.Init) !void {
     // Multi-module: the entry file declares imports, so the loader builds the
     // graph and every module is checked (shared type pool, `pub` gating) and
     // executed in dependency order on one VM. A single-file program takes the
-    // unchanged path below.
+    // unchanged path below. `--single-file` forces the seed's semantics
+    // (module declarations parsed and discarded), which is what the module
+    // conformance fixtures assert: they name imports that must NOT be
+    // resolved, and the LLVM emitter is single-file by construction.
     const entry_items = tree.extraSlice(tree.node(root).source_file);
     var has_module_decls = false;
     for (entry_items) |it| {
@@ -171,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    if (has_module_decls) {
+    if (has_module_decls and !single_file) {
         try compileAndRunMulti(a, io, dir, file, source, out, mode, debug, init, &diag);
         return;
     }
