@@ -1,0 +1,32 @@
+// Shape de `?` (LLVM_BACKEND_PLAN.md §6 M3): `?` es un `ret` local de la
+// caja — NULL o tag err desvían al bloque `try_err`, que devuelve el valor
+// tal cual; el camino ok extrae el payload del slot 8. Sin longjmp.
+//
+// CHECK: define ptr @astra_fn_quarter
+// CHECK: %[[BOX:[0-9]+]] = call ptr @astra_fn_half(ptr null, i64
+// CHECK: %[[NIL:[0-9]+]] = icmp eq ptr %[[BOX]], null
+// CHECK: br i1 %[[NIL]], label %try_err, label %try_tag, !prof
+// CHECK: try_err:
+// CHECK: ret ptr %[[BOX]]
+// CHECK: try_tag:
+// CHECK: %[[TAG:[0-9]+]] = load i32, ptr %[[BOX]]
+// CHECK: %[[ISERR:[0-9]+]] = icmp eq i32 %[[TAG]], 1
+// CHECK: br i1 %[[ISERR]], label %try_err, label %try_ok, !prof
+// CHECK: try_ok:
+// CHECK: getelementptr i8, ptr %[[BOX]], i64 8
+// CHECK: call ptr @astra_llvm_wrap(i32 {{[0-9]+}}, i32 2, i32 2, i64
+
+fn half(x: i32) -> i32? {
+    if x % 2 != 0 { return none }
+    some(x / 2)
+}
+
+fn quarter(x: i32) -> i32? {
+    let h = half(x)?
+    some(h / 2)
+}
+
+fn main() {
+    print(quarter(8))
+    print(quarter(9))
+}

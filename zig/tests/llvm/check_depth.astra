@@ -1,0 +1,27 @@
+// Shape del guard de profundidad (LLVM_BACKEND_PLAN.md §6 M3): contador
+// global interno, comprobación `>= 256` antes de entrar con trap noreturn en
+// la línea del call site, incremento y decremento alrededor de la llamada.
+//
+// CHECK: @astra_llvm_depth = internal global i64 0
+// CHECK: define i64 @astra_fn_countdown
+// CHECK: %[[D:[0-9]+]] = load i64, ptr @astra_llvm_depth
+// CHECK: %[[OVER:[0-9]+]] = icmp uge i64 %[[D]], 256
+// CHECK: br i1 %[[OVER]], label %depth_fail, label %depth_ok, !prof
+// CHECK: depth_fail:
+// CHECK: call void @astra_llvm_fail(i32 22, ptr
+// CHECK: unreachable
+// CHECK: depth_ok:
+// CHECK: %[[INC:[0-9]+]] = add i64 %[[D]], 1
+// CHECK: store i64 %[[INC]], ptr @astra_llvm_depth
+// CHECK: %[[R:[0-9]+]] = call i64 @astra_fn_countdown(ptr null, i64
+// CHECK: %[[DEC:[0-9]+]] = sub i64 %{{[0-9]+}}, 1
+// CHECK: store i64 %[[DEC]], ptr @astra_llvm_depth
+
+fn countdown(n: i32) -> i32 {
+    if n <= 0 { return 0 }
+    return countdown(n - 1) + 1
+}
+
+fn main() {
+    print(countdown(3))
+}

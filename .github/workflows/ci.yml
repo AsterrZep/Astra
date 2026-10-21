@@ -114,9 +114,12 @@ jobs:
           wget -qO llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo DEBIAN_FRONTEND=noninteractive ./llvm.sh 19
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-19-dev
+          # llvm-19-tools aporta FileCheck-19 (shapes de IR, M3).
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-19-dev llvm-19-tools
       - name: Build zig with the LLVM backend
         run: zig build -Dllvm
         working-directory: zig
       - name: LLVM-route parity (VM <-> --emit-obj -> link)
         run: ./zig/tests/llvm_parity.sh
+      - name: IR shape checks (FileCheck)
+        run: ./zig/tests/llvm_filecheck.sh

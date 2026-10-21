@@ -1,0 +1,44 @@
+// Shapes críticos de los guards (LLVM_BACKEND_PLAN.md §6 M3): cada trap es
+// `call @astra_llvm_fail` + `unreachable` en un bloque propio, el edge de
+// error lleva pesos de rama fríos (!prof) y los helpers de fallo declaran
+// `cold noreturn nounwind`. FileCheck exige los patrones en orden.
+//
+// CHECK: @astra_llvm_depth = internal global i64 0
+// CHECK: declare void @astra_llvm_fail(i32, ptr) #[[FAILATTR:[0-9]+]]
+// CHECK: define i64 @astra_fn_div
+// CHECK: %[[ZERO:[0-9]+]] = icmp eq i64 %{{[0-9]+}}, 0
+// CHECK: br i1 %[[ZERO]], label %guard_fail, label %guard_cont, !prof ![[COLD:[0-9]+]]
+// CHECK: guard_fail:
+// CHECK: call void @astra_llvm_fail(i32 31, ptr
+// CHECK: unreachable
+// CHECK: guard_cont:
+// CHECK: sdiv i64
+// CHECK: define i64 @astra_fn_idx
+// CHECK: %[[NIL:[0-9]+]] = icmp eq ptr %{{[0-9]+}}, null
+// CHECK: br i1 %[[NIL]], label %idx_nil, label %idx_arr, !prof ![[COLD]]
+// CHECK: idx_nil:
+// CHECK: call void @astra_llvm_index_nil_fail(i32 33)
+// CHECK: unreachable
+// CHECK: idx_arr:
+// CHECK: br i1 %{{[0-9]+}}, label %idx_ok, label %idx_fail, !prof ![[HOT:[0-9]+]]
+// CHECK: idx_fail:
+// CHECK: call void @astra_llvm_index_fail(i32 33, i64
+// CHECK: unreachable
+// CHECK: attributes #[[FAILATTR]] = { cold noreturn nounwind }
+// CHECK: ![[COLD]] = !{!"branch_weights", i32 1, i32 1048576}
+// CHECK: ![[HOT]] = !{!"branch_weights", i32 1048576, i32 1}
+
+fn div(a: i32, b: i32) -> i32 { a / b }
+
+fn idx(a: [i32], i: i32) -> i32 { a[i] }
+
+fn nil_idx(i: i32) -> i32 {
+    let a: [i32]
+    a[i]
+}
+
+fn main() {
+    print(div(6, 3))
+    print(idx([1, 2, 3], 1))
+    print(nil_idx(0))
+}
