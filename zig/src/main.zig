@@ -185,7 +185,7 @@ pub fn main(init: std.process.Init) !void {
     // sale. No necesita el emisor de bytecode ni la VM — el emisor LLVM
     // camina el AST.
     if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
-        emitLlvm(a, io, file, &tree, root, mode, &diag);
+        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc);
         return;
     }
 
@@ -258,6 +258,7 @@ fn emitLlvm(
     root: u32,
     mode: Mode,
     diag: *diagnostics.Sink,
+    tc: *typechecker.TypeChecker,
 ) void {
     // `build_options.llvm_enabled` es comptime: sin -Dllvm solo se analiza esta
     // rama y `llvm.Emitter` (que sería `void`) jamás se referencia.
@@ -265,6 +266,25 @@ fn emitLlvm(
         var em = llvm.Emitter.init(a, tree, file);
         defer em.deinit();
         em.diag = diag;
+        // Instancias genéricas materializadas por el checker (Phase 2.4
+        // steps 2b/3b): wrappers de fn con sus rewrites y un layout por
+        // instancia de struct (los ptypes de print/eq difieren).
+        if (tc.instances.items.len > 0) {
+            const inst = a.alloc(llvm.Instance, tc.instances.items.len) catch @panic("OOM");
+            for (tc.instances.items, 0..) |src, i| {
+                const rws = a.alloc(llvm.Rewrite, src.rewrites.items.len) catch @panic("OOM");
+                for (src.rewrites.items, 0..) |rw, j| rws[j] = .{ .callee = rw.callee, .name = rw.name };
+                inst[i] = .{ .wrapper = src.wrapper, .rewrites = rws };
+            }
+            em.setInstances(inst);
+        }
+        if (tc.struct_instances.items.len > 0) {
+            const si = a.alloc(llvm.StructInstance, tc.struct_instances.items.len) catch @panic("OOM");
+            for (tc.struct_instances.items, 0..) |src, i| {
+                si[i] = .{ .name = src.name, .source_name = src.source_name, .decl = src.decl, .fields = src.fields };
+            }
+            em.setStructInstances(si);
+        }
         em.emit(root);
         if (em.error_count > 0) std.process.exit(1);
         if (!llvm.verify(em.mod, diag, file)) std.process.exit(1);

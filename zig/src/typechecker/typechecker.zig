@@ -100,6 +100,20 @@ pub const Instance = struct {
     rewrites: std.ArrayListUnmanaged(Rewrite) = .empty,
 };
 
+/// One materialized generic struct instance (Phase 2.4 step 3b). The pool
+/// type carries the concrete fields; the LLVM backend needs them per
+/// instance (each has its own field ptypes for print/eq), while the
+/// bytecode/C backends share the source declaration's runtime def.
+pub const StructInstance = struct {
+    /// Mangled type name (`Box<i32>`), the key every annotation resolves to.
+    name: []const u8,
+    /// Source declaration name (`Box`) — what the VM prints for a struct.
+    source_name: []const u8,
+    /// Source declaration node (diagnostics).
+    decl: u32,
+    fields: []const Field,
+};
+
 /// A call inside a generic body whose bindings still mention the enclosing
 /// fn's parameters; resolved once per instance of `fn_decl`.
 const PendingCall = struct {
@@ -184,6 +198,9 @@ pub const TypeChecker = struct {
     /// Instantiations materialized so far and the not-yet-concrete call
     /// sites inside generic bodies (Phase 2.4 step 2b).
     instances: std.ArrayListUnmanaged(Instance) = .empty,
+    /// Materialized generic struct instances (Phase 2.4 step 3b), for the
+    /// LLVM backend's per-instance layouts.
+    struct_instances: std.ArrayListUnmanaged(StructInstance) = .empty,
     pending: std.ArrayListUnmanaged(PendingCall) = .empty,
     current_fn_return: ?*Type = null,
     // Depth of enclosing fn/lambda bodies: current_fn_return is also null
@@ -625,6 +642,38 @@ pub const TypeChecker = struct {
         return self.a.dupe(u8, buf[0..pos]) catch @panic("OOM");
     }
 
+    /// Build a type-annotation node for a concrete type (Phase 2.4 step
+    /// 2b/3b): instance wrappers carry their substituted signature so the
+    /// LLVM backend can declare a real LLVM type. Null for types with no
+    /// annotation form (void/param/unknown) — the wrapper keeps the original
+    /// node and the backend rejects it cleanly.
+    fn typeNodeFor(self: *TypeChecker, t: *Type, loc: lexer.Loc) ?u32 {
+        const n: ast.Node = switch (t.kind) {
+            .bool_ => .{ .type_ident = .{ .name = "bool" } },
+            .int, .int_literal => .{ .type_ident = .{ .name = "i32" } },
+            .int64 => .{ .type_ident = .{ .name = "i64" } },
+            .uint32 => .{ .type_ident = .{ .name = "u32" } },
+            .uint64 => .{ .type_ident = .{ .name = "u64" } },
+            .float => .{ .type_ident = .{ .name = "f64" } },
+            .string => .{ .type_ident = .{ .name = "string" } },
+            .struct_, .enum_ => .{ .type_ident = .{ .name = t.name } },
+            .optional => .{ .type_optional = self.typeNodeFor(t.inner.?, loc) orelse return null },
+            .array => blk: {
+                const el = self.typeNodeFor(t.elem.?, loc) orelse return null;
+                break :blk .{ .type_array = .{ .elem = el, .size = null } };
+            },
+            .fn_type => blk: {
+                const ps = self.a.alloc(u32, t.params.len) catch @panic("OOM");
+                for (t.params, 0..) |pt, i| ps[i] = self.typeNodeFor(pt, loc) orelse return null;
+                const plist = self.tree.addExtra(ps) catch @panic("OOM");
+                const ret = if (t.ret) |rt| self.typeNodeFor(rt, loc) else null;
+                break :blk .{ .type_fn = .{ .params = plist, .ret = ret } };
+            },
+            else => return null,
+        };
+        return self.tree.addNode(n, loc) catch @panic("OOM");
+    }
+
     /// `Name<args...>` in a type position (Phase 2.4 step 3b): resolve the
     /// arguments, check the arity against the declaration and materialize
     /// the cached struct instance under the mangled name.
@@ -647,7 +696,13 @@ pub const TypeChecker = struct {
             if (isErrorType(env[k].type_.?)) return env[k].type_.?;
         }
         self.checkGenericBounds(params, env, name, loc);
-        return self.ensureStructInstance(decl, env, loc);
+        const inst = self.ensureStructInstance(decl, env, loc);
+        if (isErrorType(inst)) return inst;
+        // Annotate the annotation node: the LLVM backend needs the concrete
+        // instance name to pick the per-instance layout (the bytecode/C
+        // backends keep reading `name`).
+        self.tree.nodes.items[idx].type_ident.inst_name = inst.name;
+        return inst;
     }
 
     /// Materialize (or find) the instance of the generic struct declared at
@@ -675,7 +730,10 @@ pub const TypeChecker = struct {
         }
         defer self.popGenericScope(mark);
         const fields = self.tree.extraSlice(s.fields);
-        if (fields.len == 0) return st;
+        if (fields.len == 0) {
+            self.recordStructInstance(mangled, s.name, decl, st.fields);
+            return st;
+        }
         const buf = self.a.alloc(Field, fields.len) catch @panic("OOM");
         for (fields, 0..) |fidx, i| {
             const fd = self.tree.node(fidx).field_decl;
@@ -684,7 +742,17 @@ pub const TypeChecker = struct {
             buf[i] = .{ .name = fd.name, .type_ = ft };
         }
         st.fields = buf;
+        self.recordStructInstance(mangled, s.name, decl, st.fields);
         return st;
+    }
+
+    fn recordStructInstance(self: *TypeChecker, mangled: []const u8, source_name: []const u8, decl: u32, fields: []const Field) void {
+        self.struct_instances.append(self.a, .{
+            .name = mangled,
+            .source_name = source_name,
+            .decl = decl,
+            .fields = fields,
+        }) catch @panic("OOM");
     }
 
     /// Does the concrete type `ty` carry an `impl T for ...` record?
@@ -832,9 +900,50 @@ pub const TypeChecker = struct {
         var n = self.tree.node(fn_idx);
         n.fn_decl.name = mangled;
         n.fn_decl.generics = .{ .start = 0, .len = 0 };
+        // Per-instance copies of the parameter and return type nodes: the
+        // substitution below must not rewrite the shared source declaration
+        // (a second instance would then resolve concrete types instead of
+        // `T` and inherit the first instance's signature).
+        const src_params = self.tree.extraSlice(n.fn_decl.params);
+        const new_params = self.a.alloc(u32, src_params.len) catch @panic("OOM");
+        for (src_params, 0..) |pi, i| {
+            new_params[i] = self.tree.addNode(self.tree.node(pi), self.tree.loc(pi)) catch @panic("OOM");
+        }
+        n.fn_decl.params = self.tree.addExtra(new_params) catch @panic("OOM");
+        if (n.fn_decl.ret) |rn| {
+            n.fn_decl.ret = self.tree.addNode(self.tree.node(rn), self.tree.loc(rn)) catch @panic("OOM");
+        }
         const widx = self.tree.addNode(n, self.tree.loc(fn_idx)) catch @panic("OOM");
         self.instances.append(self.a, .{ .source = fn_idx, .wrapper = widx }) catch @panic("OOM");
         const gi_idx = self.instances.items.len - 1;
+
+        // Substitute the concrete bindings into the wrapper's signature
+        // (`x: T` → `x: i32`): the bytecode emitter ignores static types, but
+        // the LLVM backend declares the LLVM signature from them.
+        {
+            const mark = self.generic_stack.items.len;
+            for (env) |b| {
+                self.generic_stack.append(self.a, .{ .name = b.name, .type_ = b.type_ orelse unreachable })
+                    catch @panic("OOM");
+            }
+            defer self.popGenericScope(mark);
+            const wfd = self.tree.node(widx).fn_decl;
+            for (self.tree.extraSlice(wfd.params)) |pidx| {
+                const p = self.tree.node(pidx).param;
+                const tn = p.type_node orelse continue;
+                const t = self.resolveTypeNode(tn);
+                if (isErrorType(t) or typeMentionsParamOf(t, fn_idx)) continue;
+                if (self.typeNodeFor(t, self.tree.loc(pidx))) |nn|
+                    self.tree.nodes.items[pidx].param.type_node = nn;
+            }
+            if (wfd.ret) |rn| {
+                const t = self.resolveTypeNode(rn);
+                if (!isErrorType(t) and !typeMentionsParamOf(t, fn_idx)) {
+                    if (self.typeNodeFor(t, self.tree.loc(rn))) |nn|
+                        self.tree.nodes.items[widx].fn_decl.ret = nn;
+                }
+            }
+        }
 
         for (self.pending.items) |pc| {
             if (pc.fn_decl != fn_idx) continue;
@@ -1075,7 +1184,7 @@ pub const TypeChecker = struct {
         return object.elem.?;
     }
 
-    fn checkStructLit(self: *TypeChecker, name: []const u8, fields: ast.List, loc: lexer.Loc) *Type {
+    fn checkStructLit(self: *TypeChecker, idx: u32, name: []const u8, fields: ast.List, loc: lexer.Loc) *Type {
         const sym = self.lookup(name) orelse return self.errorType(loc, "unknown struct '{s}'", .{name});
         if (sym.type_.kind != .struct_) return self.errorType(loc, "unknown struct '{s}'", .{name});
         var st = sym.type_;
@@ -1156,6 +1265,9 @@ pub const TypeChecker = struct {
             const inst = self.ensureStructInstance(decl, env, loc);
             if (isErrorType(inst)) return inst;
             st = inst;
+            // The LLVM backend needs the concrete instance (per-instance
+            // field types); the bytecode/C backends keep the source name.
+            self.tree.nodes.items[idx].struct_literal.inst_name = inst.name;
         }
 
         // Every declared field initialised exactly once, with a compatible type.
@@ -1865,7 +1977,7 @@ pub const TypeChecker = struct {
             .call_expr => |c| self.checkCall(c.callee, c.args, loc),
             .index_expr => |ix| self.checkIndex(ix.object, ix.index),
             .array_literal => |l| self.checkArrayLit(l),
-            .struct_literal => |s| self.checkStructLit(s.name, s.fields, loc),
+            .struct_literal => |s| self.checkStructLit(idx, s.name, s.fields, loc),
             .some_expr => |v| blk: {
                 const inner = self.checkNode(v);
                 if (isErrorType(inner)) break :blk inner;

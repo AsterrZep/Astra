@@ -10,6 +10,9 @@ const diagnostics = @import("diagnostics.zig");
 const c = @import("llvm/c_api.zig").c;
 
 pub const Emitter = @import("llvm/emitter.zig").Emitter;
+pub const Instance = @import("llvm/emitter.zig").Instance;
+pub const Rewrite = @import("llvm/emitter.zig").Rewrite;
+pub const StructInstance = @import("llvm/emitter.zig").StructInstance;
 
 /// Verifica el módulo y, si el verificador falla, reporta el error a través del
 /// sink de diagnósticos. Devuelve `true` cuando el módulo es válido (listo para

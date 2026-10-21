@@ -34,6 +34,7 @@
 const std = @import("std");
 const ast = @import("../ast/ast.zig");
 const diagnostics = @import("../diagnostics.zig");
+const tc_types = @import("../typechecker/types.zig");
 const c = @import("c_api.zig").c;
 
 /// Tipos escalares que el subconjunto actual representa sin boxing, más los
@@ -87,6 +88,25 @@ const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, s
 const InferBinding = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
 const InferredRet = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
 const RetScan = struct { ty: ?Ty = null, node: ?u32 = null, conflict: bool = false, bare: bool = false };
+
+/// Una llamada de un cuerpo genérico renombrada a su instancia (Phase 2.4
+/// step 2b): el cuerpo es compartido por todas las instancias, así que el
+/// callee se resuelve por nodo mientras se emite cada wrapper.
+pub const Rewrite = struct { callee: u32, name: []const u8 };
+
+/// Una instanciación materializada de una fn genérica, con sus rewrites.
+pub const Instance = struct { wrapper: u32, rewrites: []const Rewrite };
+
+/// Una instanciación de un struct genérico (Phase 2.4 step 3b): layout
+/// propio por instancia (los ptypes de print/eq difieren), nombre de fuente
+/// para el descriptor (el VM imprime `Box { ... }`, no `Box<i32> { ... }`).
+pub const StructInstance = struct {
+    name: []const u8,
+    source_name: []const u8,
+    /// Nodo de la declaración fuente (diagnósticos).
+    decl: u32 = 0,
+    fields: []const tc_types.Field,
+};
 
 /// Una captura de closure: su nombre, el tipo estático con el que se lee del
 /// env (i64 bits) y su índice en el env de la lambda. Los closures capturan
@@ -412,6 +432,13 @@ pub const Emitter = struct {
     /// Scope temporal de `let` para la inferencia de firma de las fn sin `->`
     /// (ver `inferFnRet`). Solo lo consultan los `infer*`; nunca la emisión.
     infer_tmp: ?*const std.StringHashMapUnmanaged(InferBinding) = null,
+    /// Instancias genéricas del checker (Phase 2.4 step 2b): mientras se
+    /// emite el cuerpo de un wrapper, `current_instance` renombra los callees
+    /// registrados en sus rewrites.
+    instances: []const Instance = &.{},
+    current_instance: ?*const Instance = null,
+    /// Layouts por instancia de struct genérico (Phase 2.4 step 3b).
+    struct_instances: []const StructInstance = &.{},
     /// Contador para nombrar los globales de literales de string únicos.
     str_seq: u32 = 0,
     // `astra_module_main`: el código de nivel superior, invocado desde @main.
@@ -535,6 +562,18 @@ pub const Emitter = struct {
 
     // ── Punto de entrada público ────────────────────────────────────────────
 
+    /// Instancias genéricas de fn materializadas por el checker (Phase 2.4
+    /// step 2b). Llamar antes de `emit`.
+    pub fn setInstances(self: *Emitter, instances: []const Instance) void {
+        self.instances = instances;
+    }
+
+    /// Instancias de struct genérico (Phase 2.4 step 3b). Llamar antes de
+    /// `emit`: `registerDecls` emite un layout por instancia.
+    pub fn setStructInstances(self: *Emitter, instances: []const StructInstance) void {
+        self.struct_instances = instances;
+    }
+
     pub fn emit(self: *Emitter, root: u32) void {
         const items = self.tree.extraSlice(self.tree.node(root).source_file);
         // 0: registra los layouts de structs y enums (los annotations, los
@@ -549,7 +588,12 @@ pub const Emitter = struct {
         // referencian por ese nombre. `trait_decl` es inerte (solo firmas).
         for (items) |it| {
             switch (self.tree.node(it)) {
-                .fn_decl => self.declareFn(it),
+                .fn_decl => |fd| {
+                    // La declaración genérica fuente nunca llega a codegen: el
+                    // checker ya añadió un wrapper por instancia con nombre
+                    // manglado (espejo del emitter bytecode).
+                    if (fd.generics.len == 0) self.declareFn(it);
+                },
                 .impl_decl => |im| {
                     if (im.generics.len > 0) continue; // inert (espejo del emitter bytecode)
                     for (self.tree.extraSlice(im.items)) |sub| {
@@ -571,7 +615,9 @@ pub const Emitter = struct {
         // 3: emite los cuerpos de las funciones (también las de `impl`).
         for (items) |it| {
             switch (self.tree.node(it)) {
-                .fn_decl => self.emitFn(it),
+                .fn_decl => |fd| {
+                    if (fd.generics.len == 0) self.emitFn(it);
+                },
                 .impl_decl => |im| {
                     if (im.generics.len > 0) continue;
                     for (self.tree.extraSlice(im.items)) |sub| {
@@ -596,6 +642,17 @@ pub const Emitter = struct {
     fn declareFn(self: *Emitter, idx: u32) void {
         const fd = self.tree.node(idx).fn_decl;
         if (fd.generics.len > 0) return self.unsupported(idx, "generic function");
+        // La inferencia de retorno de un wrapper resuelve sus callees por los
+        // rewrites de la instancia (declareFn corre antes de emitFn, que es
+        // quien normalmente fija current_instance).
+        const saved_inst = self.current_instance;
+        for (self.instances) |*inst| {
+            if (inst.wrapper == idx) {
+                self.current_instance = inst;
+                break;
+            }
+        }
+        defer self.current_instance = saved_inst;
         const param_items = self.tree.extraSlice(fd.params);
         var pbuf: [16]c.LLVMTypeRef = undefined;
         if (param_items.len + 1 > pbuf.len) return self.unsupported(idx, "too many parameters");
@@ -654,6 +711,17 @@ pub const Emitter = struct {
     fn emitFn(self: *Emitter, idx: u32) void {
         const fd = self.tree.node(idx).fn_decl;
         const info = self.fns.get(fd.name) orelse return; // la firma ya falló
+        // Wrapper de instancia genérica: su cuerpo es el de la declaración
+        // fuente (compartido), así que los callees registrados en los
+        // rewrites se renombran a los globals manglados de ESTA instancia.
+        const saved_inst = self.current_instance;
+        for (self.instances) |*inst| {
+            if (inst.wrapper == idx) {
+                self.current_instance = inst;
+                break;
+            }
+        }
+        defer self.current_instance = saved_inst;
         self.cur_fn = info.val;
         self.cur_returns_value = info.returns_value;
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, info.val, "entry");
@@ -1025,7 +1093,10 @@ pub const Emitter = struct {
     /// puntero.
     fn emitStructLit(self: *Emitter, idx: u32) ?Val {
         const sl = self.tree.node(idx).struct_literal;
-        const layout = self.structs.get(sl.name) orelse {
+        // Literal de un struct genérico: el checker anotó la instancia
+        // concreta (`Box<i32>`); su layout tiene los tipos de campo reales.
+        const layout_name = if (sl.inst_name.len > 0) sl.inst_name else sl.name;
+        const layout = self.structs.get(layout_name) orelse {
             self.unsupported(idx, "struct literal of an undeclared struct");
             return null;
         };
@@ -1072,7 +1143,7 @@ pub const Emitter = struct {
             const zp = c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &zidxs, 1, "");
             _ = c.LLVMBuildStore(self.builder, self.zeroInit(lf.ty), zp);
         }
-        return .{ .ref = obj, .ty = .struct_, .sname = sl.name };
+        return .{ .ref = obj, .ty = .struct_, .sname = layout_name };
     }
 
     /// Dirección de un slot a byte offset fijo (campos de struct: `obj + 8 +
@@ -1210,6 +1281,18 @@ pub const Emitter = struct {
         return .{ .ref = obj, .ty = .enum_ };
     }
 
+    /// Trap del límite de globales del VM (`too many global variables`) en la
+    /// línea del declarante que lo desborda; el resto del módulo es
+    /// inalcanzable, como en el VM.
+    fn reportGlobalLimit(self: *Emitter, idx: u32) void {
+        self.ensureOpenBlock();
+        const linev = c.LLVMConstInt(self.t_i32, self.tree.loc(idx).line, 0);
+        const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "too many global variables", "");
+        var fargs = [_]c.LLVMValueRef{ linev, msgp };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+    }
+
     fn emitModuleMain(self: *Emitter, items: []const u32) void {
         const mty = c.LLVMFunctionType(self.t_void, null, 0, 0);
         const mm = c.LLVMAddFunction(self.mod, "astra_module_main", mty);
@@ -1229,14 +1312,20 @@ pub const Emitter = struct {
         var vm_globals: u32 = 0;
         for (items) |it| {
             switch (self.tree.node(it)) {
-                .fn_decl, .var_decl, .const_decl => {
+                .fn_decl => |fd| {
+                    // Una declaración genérica fuente no emite SET_GLOBAL en
+                    // el VM (solo sus wrappers), así que no consume slot.
+                    if (fd.generics.len > 0) continue;
                     if (vm_globals >= VM_MAX_GLOBALS) {
-                        const linev = c.LLVMConstInt(self.t_i32, self.tree.loc(it).line, 0);
-                        const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "too many global variables", "");
-                        var fargs = [_]c.LLVMValueRef{ linev, msgp };
-                        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
-                        _ = c.LLVMBuildUnreachable(self.builder);
-                        return; // el resto del módulo es inalcanzable, como en el VM
+                        self.reportGlobalLimit(it);
+                        return;
+                    }
+                    vm_globals += 1;
+                },
+                .var_decl, .const_decl => {
+                    if (vm_globals >= VM_MAX_GLOBALS) {
+                        self.reportGlobalLimit(it);
+                        return;
                     }
                     vm_globals += 1;
                 },
@@ -1248,11 +1337,7 @@ pub const Emitter = struct {
                     for (self.tree.extraSlice(im.items)) |sub| {
                         if (std.meta.activeTag(self.tree.node(sub)) != .fn_decl) continue;
                         if (vm_globals >= VM_MAX_GLOBALS) {
-                            const linev = c.LLVMConstInt(self.t_i32, self.tree.loc(sub).line, 0);
-                            const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "too many global variables", "");
-                            var fargs = [_]c.LLVMValueRef{ linev, msgp };
-                            _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
-                            _ = c.LLVMBuildUnreachable(self.builder);
+                            self.reportGlobalLimit(sub);
                             return;
                         }
                         vm_globals += 1;
@@ -2286,7 +2371,11 @@ pub const Emitter = struct {
             return self.emitMethodCall(idx, callee_node.field_access.method, callee_node.field_access.object);
         }
         switch (callee_node) {
-            .identifier => |name| {
+            .identifier => |name0| {
+                // Phase 2.4 step 2b: dentro del cuerpo de una instancia, el
+                // callee genérico se resuelve a la instancia concreta
+                // (`identity` → `identity<i32>`) por el nodo del callee.
+                const name = self.instanceCallee(call.callee, name0);
                 if (std.mem.eql(u8, name, "print")) return self.emitPrint(idx);
                 const info = self.fns.get(name) orelse {
                     // Constructor pelón de variante de enum: `Circle(x)`
@@ -2316,6 +2405,16 @@ pub const Emitter = struct {
             },
             else => return self.emitDynamicCall(idx, call.callee),
         }
+    }
+
+    /// Nombre efectivo de un callee: dentro del wrapper de una instancia, el
+    /// ident registrado en los rewrites apunta al global de esa instancia.
+    fn instanceCallee(self: *Emitter, callee_idx: u32, name: []const u8) []const u8 {
+        const inst = self.current_instance orelse return name;
+        for (inst.rewrites) |rw| {
+            if (rw.callee == callee_idx) return rw.name;
+        }
+        return name;
     }
 
     /// `receiver.m(args)` con dispatch estático: el checker ya resolvió el
@@ -2735,9 +2834,10 @@ pub const Emitter = struct {
         switch (self.tree.node(ni)) {
             .type_ident => |t| {
                 // Nombre de un struct declarado → su layout (M2.b); de un
-                // enum declarado → valor de enum (M2.c). Nombres desconocidos
-                // caen a boxedM0Ty → null → unsupported honesto (traits/struct
-                // sin declarar ya rechazó el checker).
+                // enum declarado → valor de enum (M2.c). Un `Box<i32>` ya
+                // resuelto por el checker trae el nombre de instancia.
+                if (t.inst_name.len > 0 and self.structs.contains(t.inst_name))
+                    return .{ .ty = .struct_, .sname = t.inst_name };
                 if (self.structs.contains(t.name))
                     return .{ .ty = .struct_, .sname = t.name };
                 if (self.enums.contains(t.name))
@@ -2773,6 +2873,14 @@ pub const Emitter = struct {
     /// como valor se rechaza limpio y el caso queda skip.
     fn inferFnRet(self: *Emitter, fd: ast.FnDecl) ?InferredRet {
         var map: std.StringHashMapUnmanaged(InferBinding) = .empty;
+        // Los parámetros también resuelven la cola (`fn p<T>(x: T) { x }` en
+        // un wrapper: `x: i32`), y en declareFn todavía no hay locals.
+        for (self.tree.extraSlice(fd.params)) |pi| {
+            const p = self.tree.node(pi).param;
+            const tn = p.type_node orelse continue;
+            const at = self.annotTy(tn) orelse continue;
+            map.put(self.a, p.name, .{ .ty = at.ty, .payload = at.payload, .sname = at.sname }) catch @panic("OOM");
+        }
         self.collectInferLets(fd.body, &map);
         const saved = self.infer_tmp;
         self.infer_tmp = &map;
@@ -2945,7 +3053,10 @@ pub const Emitter = struct {
                 return null;
             },
             .call_expr => |call| switch (self.tree.node(call.callee)) {
-                .identifier => |nm| {
+                .identifier => |nm0| {
+                    // En el cuerpo de una instancia el callee genérico es el
+                    // global de esa instancia (`c` → `c<i32>`).
+                    const nm = self.instanceCallee(call.callee, nm0);
                     if (std.mem.eql(u8, nm, "print")) return null;
                     if (self.fns.get(nm)) |fi| return fi.ret_ty;
                     if (self.variant_map.contains(nm)) return .enum_;
@@ -3023,7 +3134,7 @@ pub const Emitter = struct {
     /// conservan el del payload vía emitWrap/emitTry/bindArmBinding.
     fn inferStaticSName(self: *Emitter, idx: u32) ?[]const u8 {
         switch (self.tree.node(idx)) {
-            .struct_literal => |sl| return sl.name,
+            .struct_literal => |sl| return if (sl.inst_name.len > 0) sl.inst_name else sl.name,
             .identifier => |nm| {
                 if (self.lookupLocal(nm)) |l| return l.sname;
                 if (self.globals.get(nm)) |g| return g.sname;
@@ -3043,37 +3154,34 @@ pub const Emitter = struct {
     /// no necesita estado compilado.
     fn registerDecls(self: *Emitter, items: []const u32) void {
         // 0a: nombres — placeholder para que annotTy resuelva referencias
-        // cruzadas entre structs (P { q: Q } con Q declarada después).
+        // cruzadas entre structs (P { q: Q } con Q declarada después). La
+        // declaración genérica fuente no tiene layout propio (sus campos son
+        // parámetros): cada instancia materializada se registra por su nombre
+        // manglado con sus tipos concretos.
         for (items) |it| {
             const sd = switch (self.tree.node(it)) {
                 .struct_decl => |sd| sd,
                 else => continue,
             };
-            if (sd.generics.len > 0) {
-                self.unsupported(it, "generic struct");
-                return;
-            }
+            if (sd.generics.len > 0) continue;
             self.structs.put(sd.name, .{ .fields = &.{}, .def = null, .size = 8 }) catch @panic("OOM");
+        }
+        for (self.struct_instances) |inst| {
+            self.structs.put(inst.name, .{ .fields = &.{}, .def = null, .size = 8 }) catch @panic("OOM");
         }
         // 0b: enums (variantes + payloads + descriptores + constantes kind-0).
         self.registerEnums(items);
         if (self.error_count > 0) return;
-        // 0c: campos + descriptor por cada layout de struct.
-        var it = self.structs.iterator();
-        while (it.next()) |entry| {
-            const name = entry.key_ptr.*;
-            // Recupera el decl correspondiente por nombre (mismo nombre de
-            // campo `name` en StructDecl). Re-ejecutar la scan es barato.
-            var decl_idx: ?u32 = null;
-            for (items) |sit| {
-                const n = self.tree.node(sit);
-                if (std.meta.activeTag(n) != .struct_decl) continue;
-                if (std.mem.eql(u8, n.struct_decl.name, name)) decl_idx = sit;
-            }
-            const sd = self.tree.node(decl_idx.?).struct_decl;
+        // 0c1: structs de fuente — campos desde el AST.
+        for (items) |sit| {
+            const n = self.tree.node(sit);
+            if (std.meta.activeTag(n) != .struct_decl) continue;
+            const sd = n.struct_decl;
+            if (sd.generics.len > 0) continue;
+            const entry = self.structs.getPtr(sd.name) orelse continue;
             const field_items = self.tree.extraSlice(sd.fields);
             if (field_items.len > 64) { // el buffer de ptypes/nombres del descriptor
-                self.unsupported(decl_idx.?, "too many struct fields");
+                self.unsupported(sit, "too many struct fields");
                 return;
             }
             var fields = self.a.alloc(StructField, field_items.len) catch @panic("OOM");
@@ -3089,12 +3197,66 @@ pub const Emitter = struct {
                 ptypes[i] = boxPTy(at.ty) orelse PTY_BOOL; // inalcanzable: fn ya rechazó el checker
                 off += 8; // slots de 8 bytes: el bool vive como i8 en el inicio del slot
             }
-            entry.value_ptr.* = .{
+            entry.* = .{
                 .fields = fields,
-                .def = self.emitStructDefGlobal(name, field_items.len, fields, ptypes),
+                .def = self.emitStructDefGlobal(sd.name, field_items.len, fields, ptypes),
                 .size = off,
             };
         }
+        // 0c2: instancias genéricas — campos concretos que resolvió el
+        // checker (`Box<i32>` y `Box<string>` no comparten ptypes). El
+        // descriptor lleva el nombre de FUENTE: el VM imprime `Box { ... }`.
+        for (self.struct_instances) |inst| {
+            const entry = self.structs.getPtr(inst.name) orelse continue;
+            if (inst.fields.len > 64) {
+                self.unsupported(inst.decl, "too many struct fields");
+                return;
+            }
+            var fields = self.a.alloc(StructField, inst.fields.len) catch @panic("OOM");
+            var ptypes = self.a.alloc(u32, inst.fields.len) catch @panic("OOM");
+            var off: i64 = 8;
+            for (inst.fields, 0..) |f, i| {
+                const at = self.tyFromType(f.type_) orelse {
+                    self.unsupported(inst.decl, "generic struct field without a supported type");
+                    return;
+                };
+                fields[i] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .sname = at.sname };
+                ptypes[i] = boxPTy(at.ty) orelse PTY_BOOL;
+                off += 8;
+            }
+            entry.* = .{
+                .fields = fields,
+                .def = self.emitStructDefGlobal(inst.source_name, inst.fields.len, fields, ptypes),
+                .size = off,
+            };
+        }
+    }
+
+    /// Traduce un tipo del checker al modelo del backend (Phase 2.4 step 3b:
+    /// los campos de una instancia genérica llegan como `*Type`, no como
+    /// nodos de anotación). Null si el tipo no es representable.
+    fn tyFromType(self: *Emitter, t: *const tc_types.Type) ?Annot {
+        return switch (t.kind) {
+            .int, .int64, .uint32, .uint64, .int_literal => .{ .ty = .i64_ },
+            .bool_ => .{ .ty = .bool_ },
+            .float => .{ .ty = .f64_ },
+            .string => .{ .ty = .str_ },
+            .optional => blk: {
+                const inner = self.tyFromType(t.inner orelse return null) orelse return null;
+                break :blk .{ .ty = .boxed_, .payload = inner.ty };
+            },
+            .array => blk: {
+                const el = self.tyFromType(t.elem orelse return null) orelse return null;
+                break :blk .{ .ty = .arr_, .payload = el.ty };
+            },
+            .fn_type => .{
+                .ty = .fn_,
+                .payload = if (t.ret) |r| (self.tyFromType(r) orelse return null).ty else null,
+            },
+            .struct_ => .{ .ty = .struct_, .sname = t.name },
+            .enum_ => .{ .ty = .enum_ },
+            else => null,
+        };
     }
 
     /// Global constante `AstraLLVMStructDef { name, nfields, ptypes, fields }`
@@ -3160,10 +3322,7 @@ pub const Emitter = struct {
                 .enum_decl => |ed| ed,
                 else => continue,
             };
-            if (ed.generics.len > 0) {
-                self.unsupported(it, "generic enum");
-                return;
-            }
+            if (ed.generics.len > 0) continue; // inert (Phase 2.4 step 1)
             self.enums.put(ed.name, .{ .name = ed.name, .variants = &.{}, .def = null }) catch @panic("OOM");
         }
         for (items) |it| {
@@ -3171,6 +3330,7 @@ pub const Emitter = struct {
                 .enum_decl => |ed| ed,
                 else => continue,
             };
+            if (ed.generics.len > 0) continue; // inert: sin instancias que emitir
             const variant_items = self.tree.extraSlice(ed.variants);
             if (variant_items.len == 0 or variant_items.len > 64) {
                 self.unsupported(it, "enum without variants or too many variants");

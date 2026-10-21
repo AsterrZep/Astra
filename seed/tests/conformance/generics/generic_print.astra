@@ -1,0 +1,21 @@
+// Generic struct instances share the VM's single runtime def: print shows the
+// SOURCE name (`Box { value: 42 }`), not the mangled `Box<i32>`. The LLVM
+// backend needs one descriptor per instance (the field ptypes differ:
+// i64 vs str) but must keep the source name for parity.
+struct Box<T> {
+    value: T
+}
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+let a: Box<i32> = Box { value: 42 }
+let b = Box { value: "hola" }
+print(a)
+// EXPECT: Box { value: 42 }
+print(b)
+// EXPECT: Box { value: hola }
+print(Pair { first: 1, second: "x" })
+// EXPECT: Pair { first: 1, second: x }

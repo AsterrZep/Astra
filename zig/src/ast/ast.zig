@@ -128,7 +128,15 @@ pub const FieldAccess = struct {
     method: []const u8 = "",
 };
 pub const Range = struct { start_node: ?u32, end_node: ?u32, inclusive: bool };
-pub const StructLiteral = struct { name: []const u8, fields: List };
+pub const StructLiteral = struct {
+    name: []const u8,
+    fields: List,
+    /// Non-empty when the literal names a generic declaration: the mangled
+    /// instance the checker materialized (`Box<i32>`). The bytecode/C backends
+    /// keep using `name` (one runtime def shared by every instance, field
+    /// names identical); the LLVM backend needs the concrete field types.
+    inst_name: []const u8 = "",
+};
 pub const IfExpr = struct { cond: u32, then_block: u32, else_block: ?u32 };
 pub const WhileExpr = struct { cond: u32, body: u32 };
 pub const ForExpr = struct { var_name: []const u8, iter: u32, body: u32 };
@@ -145,6 +153,10 @@ pub const TypeFn = struct { params: List, ret: ?u32 };
 pub const TypeIdent = struct {
     name: []const u8,
     generics: List = .{ .start = 0, .len = 0 },
+    /// Non-empty when the checker resolved `Name<args...>` to a materialized
+    /// generic struct instance: the mangled type name (`Box<i32>`). Backends
+    /// that need per-instance layouts (LLVM) read it; the others ignore it.
+    inst_name: []const u8 = "",
 };
 /// One `<T: Bound + Bound>` parameter. Phase 2.4 step 1: parsed inert on
 /// fn/struct/enum/trait/impl declarations; inference lands with step 2.
