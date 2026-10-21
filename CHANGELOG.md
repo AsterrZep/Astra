@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend nativo LLVM (Fase LLVM, M0–M2, opt-in `-Dllvm`)**: tercera ruta
+  de codegen del compilador zig — AST tipado → LLVM IR (C API `llvm-c`,
+  LLVM 19..23 vía `llvm-config`) → `.o` nativo con TargetMachineEmitToFile
+  (`--emit-obj`), enlazado contra el runtime compartido del seed. Cubre el
+  subconjunto Astra-0 sin heap de usuario: escalars, floats, strings,
+  Option/Result con `match`/`?`, closures, arrays/structs/enums,
+  `for..in`/`break`/`continue`. Gate de paridad `zig/tests/llvm_parity.sh`
+  (salida de la VM ↔ ruta LLVM byte a byte): **121 casos — 103 ok, 0 fail**;
+  job CI `llvm` con LLVM 19. La contra-investigación post-M2 (2026-10-20)
+  verificó docs contra código, localizó y cerró un bug pre-existente de
+  `&&`/`||` en call-args (doble push del short-circuit en ambos emitters
+  VM, heredado por el C) y alineó el dump AST (`BinaryOp(&&/||)`). Detalle:
+  `Documentacion/PHASE_LLVM_PROGRESS.md`.
 - **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
   el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,
   unwind de frame, setjmp del C backend); ahora el typechecker de ambos

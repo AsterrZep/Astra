@@ -24,7 +24,7 @@ por la VM.
 
 ---
 
-## 1. Estado actual (2026-10-17)
+## 1. Estado actual (2026-10-20, contra-investigación post-M2)
 
 **M0 (infraestructura), M1 (núcleo completo) y M2 (valores y patrones) están
 terminados.** El emisor compila Astra-0 — escalars, floats, strings,
@@ -33,9 +33,10 @@ Option/Result con `match`/`?`, closures, arrays/structs/enums de usuario y
 con `--emit-obj` (TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo
 enlaza contra el runtime compartido del seed y produce binarios cuya salida
 (stdout, stderr y código de salida) es **byte-idéntica a la VM** para todos
-los casos en alcance (101 de los 119 casos del gate de paridad; los 16 skip
-restantes son genéricos/tráits/módulos de M3 y los 2 excluidos fijan guardas
-VM-only de profundidad de llamada).
+los casos en alcance (103 de los 121 casos del gate de paridad tras la
+contra-investigación del 2026-10-20; los 16 skip restantes son
+genéricos/traits/módulos de M3 y los 2 excluidos fijan guardas VM-only de
+profundidad de llamada).
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -230,7 +231,8 @@ M2.a–M2.e cerrados: arrays homogéneos, structs con layout, enums de usuario
 con `match` de variantes, `for..in` (rangos y arrays) + `break`/`continue`, y
 `--emit-obj` vía TargetMachineEmitToFile. La ruta LLVM cubre ahora la suite
 completa de `seed/tests/codegen/` además de la conformance (gate M2, plan
-§6): **119 casos — 101 ok, 16 skip (M3), 2 excl, 0 fail**.
+§6): **121 casos — 103 ok, 16 skip (M3), 2 excl, 0 fail** (los dos casos
+nuevos de la contra-investigación post-M2 flipearon a ok).
 
 ### Decisiones de diseño de M2
 
@@ -260,7 +262,7 @@ en `for` y `while`. El límite de 256 globales de la VM se espeja en runtime
 (`too many global variables` en la línea del declarante, como el SET_GLOBAL
 del VM en orden de fuente).
 
-Gate de paridad al cierre: **119 casos — 101 ok, 16 skip, 2 excl, 0 fail**.
+Gate de paridad al cierre: **121 casos — 103 ok, 16 skip, 2 excl, 0 fail**.
 Los flips de M2: `arrays/*`, `structs/*`, `enums/*` (12; `mixed_patterns`
 esperó a `for..in`), `loops/*` + `control/while_*` (8, incluidos
 `iter_height_norm` y `loop_residue_inline`), `aggregate_equality`,
@@ -293,13 +295,27 @@ Exclusiones del runner de paridad (con commentario en el propio script):
 
 ---
 
-## 8. Bug pre-existente conocido (no de esta fase)
+## 8. Bug pre-existente conocido (cerrado en la contra-investigación)
 
-El operador **`||` (`or_or`)** falla en runtime con
-`cannot call non-function value` en **ambas** VMs (seed y zig) — `&&` funciona.
-No es una regresión del backend LLVM: el `||` de la ruta LLVM calcula bien
-(short-circuit + phi). Se excluye de la paridad por ahora; su arreglo pertenece
-al seed/espejo zig (fix(seed) + fix(zig)) y queda fuera del alcance de M0.
+El operador **`||` (`or_or`)** fallaba en runtime con
+`cannot call non-function value` en **ambas** VMs (seed y zig) cuando su
+resultado alimentaba un call (`print(a || b)`) — `&&` funcionaba, y en
+condición de `if` ambos pasaban por residuo que nadie leía. La
+contra-investigación post-M2 (2026-10-20) lo localizó con exactitud: en
+**ambos emitters** el primer `CONST` objetivo de rama de un short-circuit
+caía al segundo sin `JUMP` intermedio (doble push → el `CALL` leía el slot
+equivocado), y **`&&` con izquierda falsa fallaba igual** — la afirmación
+original de que `&&` funcionaba estaba enmascarada. La ruta LLVM lo
+computaba bien (phi) y sirvió de referencia.
+
+✅ fix `395c588` — `JUMP` al final tras el primer CONST de rama en
+`OP_AND`/`OP_OR` de ambos emitters; el C backend hereda el bytecode
+corregido. Tests gemelos `expressions/short_circuit_call_arg.astra` +
+`codegen/` cubren las formas (call-args con ambas polaridades, let-init,
+if-condición) y flipearon los dos casos nuevos del gate de paridad a ok.
+Complemento `5e61b48`: el dump AST del seed imprimía `BinaryOp(and/or)`
+(los keywords muertos, audit §A3) donde zig imprime `&&`/`||`; corregido
+en el seed, dump_parity 126/0.
 
 ---
 
@@ -310,7 +326,7 @@ al seed/espejo zig (fix(seed) + fix(zig)) y queda fuera del alcance de M0.
 | # | Commit | Mensaje |
 |:-:|:-------|:--------|
 | M0.1 | `c2c62d1` | `build(llvm): flag -Dllvm y descubrimiento de LLVM vía llvm-config` |
-| M0.2 | `52a4710` | `feat(llvm): binding llvm-c y módulo verify/print (M0.2)` |
+| M0.2 | `52a4710` | `feat(llvm): binding llvm-c y módulo smoke verify/print (M0.2)` |
 | M0.3 | `96f66c4` | `feat(llvm): emisor mínimo y CLI --emit-llvm` |
 | M0.4 | `2ee1e47` | `test(llvm): runner llvm_parity + job CI llvm (apt.llvm.org 19)` |
 | M0.5 | `8538b75` | `docs(llvm): PHASE_LLVM_PROGRESS.md + AGENTS.md (build -Dllvm, -lc)` |
@@ -349,3 +365,26 @@ Los mismos gates, verdes en cada commit de M2, con `zig build test -Dllvm`
 creciendo de 79 a **84** (tests de arrays/structs/enums/loops/emit-obj) y
 `llvm_parity.sh` de 41 a **101 ok, 0 fail** (119 casos: conformance + suite
 `seed/tests/codegen/`).
+
+### Contra-investigación post-M2 (2026-10-20)
+
+| # | Commit | Mensaje |
+|:-:|:-------|:--------|
+| C1 | `5e61b48` | `fix(seed): dump AST de \`&&\`/\`\|\|\` usa los símbolos, no las keywords muertas` |
+| C2 | `395c588` | `fix(compiler): \`&&\`/\`\|\|\` en call-args empujaban dos veces su resultado` |
+
+Hallazgos de la contra-investigación (verificación de docs contra código,
+repros en `/tmp/opencode/`, cifras del gate re-ejecutado):
+
+- El gate estaba exactamente donde la doc decía (119 — 101/16/2/0) y los 14
+  hashes de commits citados existen con su mensaje.
+- El bug de §8 era real **y más ancho de lo documentado**: `&&` con izquierda
+  falsa fallaba igual (doble push del short-circuit en ambos emitters, C
+  incluido) — cerrado en C2, con el dump-name fix de C1 que el test nuevo
+  desenmascaró (`BinaryOp(and/or)` vs `BinaryOp(&&/||)`).
+- Gate al cierre: **121 casos — 103 ok, 16 skip, 2 excl, 0 fail**; dump_parity
+  126/0; suite seed 239/239; `zig build test` 73/73; `sweep_emit_c` 0 fail;
+  `ui_message_parity` 0 fail.
+- Documentación corregida en el mismo pase: erratas del plan (§9
+  "traits/traits"), el canario CI descrito pero aún no implementado, AGENTS.md
+  en estado post-M2, CHANGELOG con la fase, PHASE2_PROGRESS con el puntero.

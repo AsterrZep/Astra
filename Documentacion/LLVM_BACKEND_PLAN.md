@@ -253,7 +253,8 @@ llvm-canario:                                        # no bloqueante (continue-o
 - El job principal **fija LLVM 19** (reproducible; `apt.llvm.org/llvm.sh 19`
   quedó verificado en CI — era la única pieza "[a verificar]" en M0); el
   canario usa latest para adelantar el churn de la C API hacia el rango
-  19..23.
+  19..23. **El job `llvm` está implementado; el canario aún no existe en
+  `ci.yml` (pendiente, M3-llvm-testing).**
 - Los jobs actuales (seed, zig, parity) **no cambian**: `-Dllvm` es opt-in.
 
 ---
@@ -278,8 +279,8 @@ Estado: **M0–M2 completados** (ver `PHASE_LLVM_PROGRESS.md`). El backend
 compila el subconjunto de Astra-0 (escalars, floats, strings,
 Option/Result+`match`/`?`, closures, arrays/structs/enums, `for..in`,
 `break`/`continue`) a `.o` nativo vía TargetMachineEmitToFile y reproduce la
-salida de la VM byte a byte en 101/119 casos; los 16 skip son genéricos /
-traits / traits / módulos y los 2 excl fijan la guarda de profundidad de
+salida de la VM byte a byte en 103/121 casos; los 16 skip son genéricos /
+traits / módulos con import y los 2 excl fijan la guarda de profundidad de
 llamada de la VM — todo eso es M3. Los hitos siguen el patrón workstream →
 commit probado → gate verde.
 

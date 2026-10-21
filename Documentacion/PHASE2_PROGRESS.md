@@ -161,7 +161,10 @@ Ordenado por dependencia y valor para el bootstrap.
   completo (genéricos, traits, comptime, módulos, FFI…). Su **§12** fija el plan
   de *debugging e inspección de bajo nivel* (flags `--emit-llvm`/`--emit-asm`,
   DWARF, depurador de bytecode) y las decisiones abiertas; el backend nativo
-  está en su §11 (fase 2.6).
+  está en su §11 (fase 2.6) — **implementado en su primera etapa**: la Fase
+  LLVM (M0–M2) vive en `zig/src/llvm/` con su propio log
+  (`PHASE_LLVM_PROGRESS.md`, opt-in `-Dllvm`, gate `zig/tests/llvm_parity.sh`,
+  103/121 casos ok a 2026-10-20).
 - `research/001`, `research/002`, `research/003` — gramática, diseño del seed y
   backend C, que siguen siendo la especificación de comportamiento.
 

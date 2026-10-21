@@ -133,9 +133,15 @@ new features are added** (the suite is the gate). Match `seed/src/*.c` and the
 The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
 progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
-build and binary are byte-identical and none of the existing gates change. M0
-emits a minimal scalar subset straight from the typed AST (no bytecode/VM) and
-is gated by `zig/tests/llvm_parity.sh`.
+build and binary are byte-identical and none of the existing gates change.
+**M0–M2 are closed** (2026-10-17): the emitter compiles the Astra-0 subset —
+scalars, floats, strings, Option/Result with `match`/`?`, closures,
+arrays/structs/enums, `for..in`/`break`/`continue` — straight from the typed
+AST (no bytecode/VM) to a native object via TargetMachine (`--emit-obj`,
+M2.e), and `zig/tests/llvm_parity.sh` gates it against the zig VM: **121
+cases — 103 ok, 16 skip (M3: genéricos/traits/módulos), 2 excl (guard
+VM-only de profundidad de llamada), 0 fail**. M3 (paridad total + fuzz
+diferencial + FileCheck) is next; see `PHASE_LLVM_PROGRESS.md` §7.
 
 ```bash
 cd zig
