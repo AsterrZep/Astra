@@ -1,0 +1,12 @@
+// El argumento de `print` se evalúa ANTES de abrir la línea de impresión. Una
+// llamada dentro del argumento que imprime por su cuenta no debe dejar el
+// separador armado: salía `1\n 2` en vez de `1\n2` en la ruta LLVM.
+// EXPECT: 1
+// EXPECT: 2
+fn f() -> i32 {
+    print(1)
+    return 2
+}
+fn main() {
+    print(f())
+}

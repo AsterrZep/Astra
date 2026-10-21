@@ -1,0 +1,7 @@
+// Dos strings nil: `cannot add nil and nil` (tercera rama del guard).
+// EXPECT-RUNTIME-ERROR: cannot add nil and nil
+fn main() {
+    let a: string
+    let b: string
+    print(a + b)
+}

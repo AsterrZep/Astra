@@ -1,0 +1,7 @@
+// Escritura de campo sobre un struct nil: misma guarda que la lectura.
+// EXPECT-RUNTIME-ERROR: cannot access field on nil
+struct P { x: i32 }
+fn main() {
+    let mut p: P
+    p.x = 1
+}

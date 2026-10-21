@@ -1,0 +1,8 @@
+// Lectura de campo sobre un struct nil: diagnóstico limpio de la VM, no un
+// GEP/load sobre NULL. La ruta LLVM no tenía guarda en field access.
+// EXPECT-RUNTIME-ERROR: cannot access field on nil
+struct P { x: i32 }
+fn main() {
+    let p: P
+    print(p.x)
+}

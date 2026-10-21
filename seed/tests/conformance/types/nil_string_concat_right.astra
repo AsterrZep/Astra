@@ -1,0 +1,7 @@
+// Misma guarda que nil_string_concat.astra, con el nil a la derecha: el
+// mensaje distingue el orden (`cannot add string and nil`).
+// EXPECT-RUNTIME-ERROR: cannot add string and nil
+fn main() {
+    let s: string
+    print("x" + s)
+}

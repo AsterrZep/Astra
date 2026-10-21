@@ -1,0 +1,7 @@
+// Llamar a un valor-función nil: el VM dice `cannot call non-function value`;
+// la llamada indirecta LLVM leía code/env del NULL (SEGV).
+// EXPECT-RUNTIME-ERROR: cannot call non-function value
+fn main() {
+    let f: fn(i32) -> i32
+    print(f(1))
+}

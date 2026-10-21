@@ -1,0 +1,7 @@
+// `+` con un string nil no es un SEGV: la VM falla nombrando los operandos
+// reales. El runtime LLVM ahora replica las tres combinaciones.
+// EXPECT-RUNTIME-ERROR: cannot add nil and string
+fn main() {
+    let s: string
+    print(s + "x")
+}

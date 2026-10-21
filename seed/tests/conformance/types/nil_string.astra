@@ -1,0 +1,19 @@
+// Un `string` sin inicializador es nil en los tres backends. La ruta LLVM
+// desreferenciaba el NULL al imprimir, al comparar y al hacer match con un
+// literal (SEGV); debe comportarse como la VM: `nil`, `==` por identidad y
+// un literal que no casa.
+// EXPECT: nil
+// EXPECT: true
+// EXPECT: false
+// EXPECT: 2
+fn main() {
+    let s: string
+    let t: string
+    print(s)
+    print(s == t)
+    print(s == "x")
+    match s {
+        "x" => print(1),
+        _ => print(2),
+    }
+}

@@ -1,0 +1,17 @@
+// Valores-función (M2.6 fix): la ruta LLVM imprime `<fn>` y compara por
+// identidad, también dentro de Option y structs. Antes el layout de un campo
+// `fn` caía a PTY_BOOL y `print` mostraba `true`.
+// (Fixture exclusivo de la ruta LLVM: el backend C del seed imprime `fn`.)
+struct S { f: fn(i32) -> i32 }
+
+fn main() {
+    let f = |x: i32| -> i32 { return x + 1 }
+    let g = f
+    print(f)
+    print(f == g)
+    print(some(f))
+    let s = S { f: f }
+    print(s)
+    let fs = [f, f]
+    print(fs)
+}

@@ -1,0 +1,8 @@
+// Ordenar strings es un error de runtime; el mensaje nombra el tipo real del
+// operando. Con un string nil, la VM dice `cannot compare nil and string` (la
+// ruta LLVM emitía el texto fijo `string and string`).
+// EXPECT-RUNTIME-ERROR: cannot compare nil and string
+fn main() {
+    let s: string
+    print(s < "x")
+}

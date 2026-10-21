@@ -1,0 +1,9 @@
+// `for` sobre un array nil: el VM falla al evaluar la condición con
+// `cannot take length of nil`; la ruta LLVM cargaba `len` del NULL (SEGV).
+// EXPECT-RUNTIME-ERROR: cannot take length of nil
+fn main() {
+    let a: [i32]
+    for x in a {
+        print(x)
+    }
+}

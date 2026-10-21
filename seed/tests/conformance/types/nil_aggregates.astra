@@ -1,0 +1,26 @@
+// Aggregados sin inicializador (array, enum, struct): la VM imprime `nil` en
+// cada uno, también cuando viajan dentro de un Option. El runtime LLVM
+// imprimía `[]`/`?` en array/enum y desreferenciaba NULL en struct y en el
+// payload de la caja.
+// EXPECT: nil
+// EXPECT: nil
+// EXPECT: nil
+// EXPECT: some(nil)
+// EXPECT: some(nil)
+// EXPECT: some(nil)
+struct P { x: i32 }
+enum C {
+    A
+    B
+}
+fn main() {
+    let a: [i32]
+    let e: C
+    let p: P
+    print(a)
+    print(e)
+    print(p)
+    print(some(a))
+    print(some(e))
+    print(some(p))
+}

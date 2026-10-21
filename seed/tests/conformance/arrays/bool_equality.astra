@@ -1,0 +1,15 @@
+// `==` de arrays de bool: los elementos ocupan 1 byte en el objeto array
+// (ARR_HDR + slot*1), así que la comparación estructural debe avanzar con el
+// mismo stride. Con el stride fijo de 8 que usaba el runtime LLVM, comparar
+// dos arrays de 3 bools leía fuera del heap (ASan: heap-buffer-overflow).
+// EXPECT: true
+// EXPECT: false
+// EXPECT: [true, false, true]
+fn main() {
+    let a = [true, false, true]
+    let b = [true, false, true]
+    let c = [true, false, false]
+    print(a == b)
+    print(a == c)
+    print(a)
+}
