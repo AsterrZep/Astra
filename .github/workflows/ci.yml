@@ -128,6 +128,12 @@ jobs:
         run: ASTRA_LLVM_OPT=2 ./zig/tests/llvm_parity.sh
       - name: IR shape checks (FileCheck)
         run: ./zig/tests/llvm_filecheck.sh
+      # M4.d: ASan sobre los artefactos (IR instrumentado, enlace forzado con
+      # -fsanitize=address, control negativo y la suite completa bajo ASan a
+      # -O0 y -O2). LeakSanitizer va apagado: v1 no libera valores, igual que
+      # la arena de la VM, así que los leaks no son el objetivo del gate.
+      - name: Sanitizers (ASan over the artifacts)
+        run: ./zig/tests/llvm_sanitize.sh
       # Differential fuzz (M3): generated programs through the zig VM and the
       # LLVM route, byte-identical stdout/stderr/exit code. The seed routes
       # self-skip here (no seed build in this job); they run locally and in

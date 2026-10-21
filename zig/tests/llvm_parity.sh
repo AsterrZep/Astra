@@ -5,6 +5,11 @@
 # match byte-for-byte.
 #
 #   ./zig/tests/llvm_parity.sh            # report (exit 1 on divergence)
+#   ASTRA_LLVM_SAN=address ./zig/tests/llvm_parity.sh   # same gate under ASan (M4.d)
+#
+# ASTRA_LLVM_SAN=<type> passes `--sanitize=<type>` to the emitter and links the
+# object and the runtime TU with `-fsanitize=<type>` (the emitted object
+# references `__asan_*`, so a plain link fails by design).
 #
 # Requires the compiler built with -Dllvm (zig build -Dllvm) — since M2.e the
 # object comes from TargetMachineEmitToFile inside astra-zig, so no external
@@ -28,6 +33,17 @@ zigdir=$(cd "$here/.." && pwd)
 root=$(cd "$zigdir/.." && pwd)
 ASTRA_ZIG="$zigdir/zig-out/bin/astra-zig"
 RUNTIME_SRC="$zigdir/src/llvm/runtime/astra_runtime_llvm.c"
+# M4.d: instrumentación de sanitizer para toda la ruta (emisor + runtime +
+# enlace). Vacío = gate normal, sin tocar flags ni objetos.
+SAN="${ASTRA_LLVM_SAN:-}"
+SAN_EMIT=""
+SAN_CFLAGS=""
+SAN_LDFLAGS=""
+if [ -n "$SAN" ]; then
+    SAN_EMIT="--sanitize=$SAN"
+    SAN_CFLAGS="-fsanitize=$SAN"
+    SAN_LDFLAGS="-fsanitize=$SAN"
+fi
 
 die() { echo "llvm_parity: $*" >&2; exit 2; }
 
@@ -57,7 +73,7 @@ cp "$root"/seed/tests/codegen/*.astra "$work/cg/" 2>/dev/null || true
 
 # Runtime object, compiled once (the thin TU over seed/src/codegen_runtime.h;
 # exactly one includer because the header defines its globals).
-if ! "${CC:-cc}" -c -O2 -std=c11 -I"$root/seed/src" "$RUNTIME_SRC" -o "$work/runtime.o" 2>"$work/rt.err"; then
+if ! "${CC:-cc}" -c -O2 -std=c11 $SAN_CFLAGS -I"$root/seed/src" "$RUNTIME_SRC" -o "$work/runtime.o" 2>"$work/rt.err"; then
     echo "llvm_parity: cannot compile the LLVM runtime TU"
     sed 's/^/    /' "$work/rt.err"
     exit 2
@@ -112,7 +128,7 @@ while IFS= read -r f; do
     # (TargetMachineEmitToFile, M2.e — the .o lands next to the snapshot).
     # Constructs outside the backend's scope are a clean skip.
     base=${f%.astra}
-    if ! "$ASTRA_ZIG" --emit-obj $extra $OPT_ARGS "$f" >"$work/emit.out" 2>"$work/emit.err"; then
+    if ! "$ASTRA_ZIG" --emit-obj $extra $OPT_ARGS $SAN_EMIT "$f" >"$work/emit.out" 2>"$work/emit.err"; then
         if grep -q "not supported by the LLVM backend" "$work/emit.err"; then
             echo "skip $rel (not M0 scope)"
             skip=$((skip + 1))
@@ -125,7 +141,7 @@ while IFS= read -r f; do
     fi
 
     # Step 2: link against the runtime.
-    if ! "${CC:-cc}" "$base.o" "$work/runtime.o" -o "$work/bin" -lm 2>"$work/link.err"; then
+    if ! "${CC:-cc}" $SAN_LDFLAGS "$base.o" "$work/runtime.o" -o "$work/bin" -lm 2>"$work/link.err"; then
         echo "FAIL $rel: link failed"
         sed 's/^/    /' "$work/link.err"
         fail=$((fail + 1))
@@ -156,5 +172,5 @@ done < <(
 )
 
 echo "----"
-echo "llvm_parity: total=$total ok=$((total - skip - excl - fail)) skip=$skip excl=$excl fail=$fail opt=$OPT"
+echo "llvm_parity: total=$total ok=$((total - skip - excl - fail)) skip=$skip excl=$excl fail=$fail opt=$OPT san=${SAN:-none}"
 [ "$fail" -eq 0 ]
