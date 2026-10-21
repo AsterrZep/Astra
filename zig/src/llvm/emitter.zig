@@ -544,9 +544,18 @@ pub const Emitter = struct {
         self.registerDecls(items);
         if (self.error_count > 0) return;
         // 1: declara todas las funciones (recursión y mutua recursión).
+        // Las de un `impl` también: el checker ya las renombró a globales
+        // manglados (`Point.add`, `Point.Math.add`) y los call-sites las
+        // referencian por ese nombre. `trait_decl` es inerte (solo firmas).
         for (items) |it| {
             switch (self.tree.node(it)) {
                 .fn_decl => self.declareFn(it),
+                .impl_decl => |im| {
+                    if (im.generics.len > 0) continue; // inert (espejo del emitter bytecode)
+                    for (self.tree.extraSlice(im.items)) |sub| {
+                        if (std.meta.activeTag(self.tree.node(sub)) == .fn_decl) self.declareFn(sub);
+                    }
+                },
                 else => {},
             }
             if (self.error_count > 0) return;
@@ -559,10 +568,16 @@ pub const Emitter = struct {
             }
             if (self.error_count > 0) return;
         }
-        // 3: emite los cuerpos de las funciones.
+        // 3: emite los cuerpos de las funciones (también las de `impl`).
         for (items) |it| {
             switch (self.tree.node(it)) {
                 .fn_decl => self.emitFn(it),
+                .impl_decl => |im| {
+                    if (im.generics.len > 0) continue;
+                    for (self.tree.extraSlice(im.items)) |sub| {
+                        if (std.meta.activeTag(self.tree.node(sub)) == .fn_decl) self.emitFn(sub);
+                    }
+                },
                 else => {},
             }
             if (self.error_count > 0) return;
@@ -1225,6 +1240,24 @@ pub const Emitter = struct {
                     }
                     vm_globals += 1;
                 },
+                // Los métodos de un impl son fn_decls de scope 0 con nombre
+                // manglado: el VM emite su SET_GLOBAL en orden de fuente, así
+                // que también consumen slot del límite de 256.
+                .impl_decl => |im| {
+                    if (im.generics.len > 0) continue;
+                    for (self.tree.extraSlice(im.items)) |sub| {
+                        if (std.meta.activeTag(self.tree.node(sub)) != .fn_decl) continue;
+                        if (vm_globals >= VM_MAX_GLOBALS) {
+                            const linev = c.LLVMConstInt(self.t_i32, self.tree.loc(sub).line, 0);
+                            const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "too many global variables", "");
+                            var fargs = [_]c.LLVMValueRef{ linev, msgp };
+                            _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
+                            _ = c.LLVMBuildUnreachable(self.builder);
+                            return;
+                        }
+                        vm_globals += 1;
+                    }
+                },
                 else => {},
             }
             switch (self.tree.node(it)) {
@@ -1234,7 +1267,10 @@ pub const Emitter = struct {
                     self.emitGlobalDecl(it);
                 },
                 .struct_decl, .enum_decl => {}, // layout ya registrado en la pasada 0 (M2.b/M2.c)
-                .trait_decl, .impl_decl, .use_decl, .import_decl, .from_decl => {
+                // `trait_decl` es solo firmas; `impl_decl` ya emitió sus
+                // métodos en la pasada 3 (espejo del emitter bytecode).
+                .trait_decl, .impl_decl => {},
+                .use_decl, .import_decl, .from_decl => {
                     self.unsupported(it, "module-level declaration");
                     return;
                 },
@@ -2241,7 +2277,15 @@ pub const Emitter = struct {
 
     fn emitCall(self: *Emitter, idx: u32) ?Val {
         const call = self.tree.node(idx).call_expr;
-        switch (self.tree.node(call.callee)) {
+        // Static method dispatch (Phase 2.3 step 4, espejo de emitter.zig):
+        // el checker anotó el callee con el global manglado (`Point.add`,
+        // `Point.Math.add`), así que se llama a esa fn con el receptor como
+        // argumento 0 — después del env, igual que el frame del VM.
+        const callee_node = self.tree.node(call.callee);
+        if (std.meta.activeTag(callee_node) == .field_access and callee_node.field_access.method.len > 0) {
+            return self.emitMethodCall(idx, callee_node.field_access.method, callee_node.field_access.object);
+        }
+        switch (callee_node) {
             .identifier => |name| {
                 if (std.mem.eql(u8, name, "print")) return self.emitPrint(idx);
                 const info = self.fns.get(name) orelse {
@@ -2272,6 +2316,34 @@ pub const Emitter = struct {
             },
             else => return self.emitDynamicCall(idx, call.callee),
         }
+    }
+
+    /// `receiver.m(args)` con dispatch estático: el checker ya resolvió el
+    /// global manglado (`Point.add`) y el receptor viaja como argumento 0.
+    /// La firma del callee incluye `self` en `params[0]`, así que el buffer es
+    /// env + receptor + args.
+    fn emitMethodCall(self: *Emitter, idx: u32, method: []const u8, recv_node: u32) ?Val {
+        const info = self.fns.get(method) orelse {
+            self.unsupported(idx, "method not declared");
+            return null;
+        };
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        var abuf: [17]c.LLVMValueRef = undefined;
+        if (args.len + 2 > abuf.len) {
+            self.unsupported(idx, "too many arguments");
+            return null;
+        }
+        abuf[0] = c.LLVMConstPointerNull(self.t_ptr);
+        const recv = self.emitExpr(recv_node) orelse return null;
+        abuf[1] = recv.ref;
+        for (args, 0..) |ai, i| {
+            const av = self.emitExpr(ai) orelse return null;
+            abuf[i + 2] = av.ref;
+        }
+        const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, &abuf, @intCast(args.len + 2), "");
+        if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
+        return null;
     }
 
     /// Llamada a un valor de función (lambda o referencia a fn pasada como
