@@ -129,3 +129,34 @@ jobs:
       # the seed job's sweep. Fixed seed so a failure is reproducible.
       - name: Differential fuzz (VM <-> LLVM)
         run: ./zig/tests/llvm_fuzz.sh -n 20 -s 1
+
+  # Canario no bloqueante (LLVM_BACKEND_PLAN.md §2/§7): la misma ruta con el
+  # LLVM stable más reciente de apt.llvm.org (llvm.sh sin argumentos usa su
+  # CURRENT_LLVM_STABLE). Adelanta el churn de la C API hacia el rango
+  # soportado (19..23) sin bloquear merges: el gate real es el job `llvm`,
+  # pinado a 19, que es el suelo del rango.
+  llvm-canario:
+    name: llvm (latest) — canario no bloqueante
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install latest LLVM (apt.llvm.org default)
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          v=$(grep -oE 'CURRENT_LLVM_STABLE=[0-9]+' llvm.sh | cut -d= -f2)
+          sudo DEBIAN_FRONTEND=noninteractive ./llvm.sh "$v"
+          # -dev aporta llvm-config-NN (descubrimiento de build.zig) y
+          # -tools aporta FileCheck-NN.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "llvm-$v-dev" "llvm-$v-tools"
+      - name: Build zig with the LLVM backend
+        run: zig build -Dllvm
+        working-directory: zig
+      - name: LLVM-route parity (VM <-> --emit-obj -> link)
+        run: ./zig/tests/llvm_parity.sh
+      - name: IR shape checks (FileCheck)
+        run: ./zig/tests/llvm_filecheck.sh
