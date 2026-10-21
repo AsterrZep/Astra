@@ -24,10 +24,11 @@ por la VM.
 
 ---
 
-## 1. Estado actual (2026-10-20, M3 cerrado)
+## 1. Estado actual (2026-10-20, M3 cerrado; M4 en curso)
 
 **M0 (infraestructura), M1 (núcleo completo), M2 (valores y patrones) y M3
-(paridad total y robustez) están terminados.** El emisor compila Astra-0 —
+(paridad total y robustez) están terminados; M4 (calidad) tiene cerrados el
+pipeline `-O2` y los benchmarks, con DWARF y sanitizers pendientes.** El emisor compila Astra-0 —
 escalares, floats, strings, Option/Result con `match`/`?`, closures,
 arrays/structs/enums de usuario, `for..in`/`break`/`continue`, genéricos
 monomorfizados, traits/impls, `let` sin inicializador y retornos sin anotar —
@@ -47,7 +48,7 @@ gate de paridad: **131 — 131 ok, 0 skip, 0 excl, 0 fail**.
 | **M1** | floats, strings, Option/Result + `?` + `match`, closures | ✅ |
 | **M2** | arrays/structs (GEP), enums de usuario + `match`, `for..in`, `--emit-obj` | ✅ |
 | **M3** | paridad total, guard de profundidad, atributos/pesos, fuzz, FileCheck | ✅ |
-| **M4** | calidad: DWARF, pipeline `-O2` + remarks, benchmarks | ⬜ |
+| **M4** | calidad: pipeline `-O2` + benchmarks ✅; DWARF y sanitizers ⬜ | 🟡 |
 
 ---
 
@@ -74,8 +75,15 @@ cc file.o runtime.o -o program -lm && ./program
 ./tests/llvm_parity.sh
 ./tests/llvm_filecheck.sh
 
+# El mismo gate con el optimizador (M4): no puede cambiar la semántica.
+ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh
+
 # Fuzz diferencial de cuatro rutas (seed VM / --emit-c / zig VM / LLVM)
 ./tests/llvm_fuzz.sh -n 40 -s 1
+
+# Benchmarks (VM / backend C / LLVM), con y sin pipeline
+./tests/llvm_bench.sh -n 3 -O 0
+./tests/llvm_bench.sh -n 3 -O 2
 ```
 
 Sin `-Dllvm`, `--emit-llvm`/`--emit-llvm-stdout` terminan con un error
@@ -307,13 +315,14 @@ El resto de gates: `zig build test` 73/73 (84/84 con `-Dllvm`), dump_parity
 - **Programas multi-módulo reales** (loader, mangling entre módulos, orden de
   dependencias): el emisor es de fichero único. `--single-file` reproduce la
   semántica del seed para los fixtures que declaran imports inertes.
-- `@cImport`/translate-c, DWARF y optimización: M4+.
+- `@cImport`/translate-c, DWARF y sanitizers: M4.
 
 ### Diferido a M4
 
 | Qué | Hito |
 |:----|:-----|
-| DWARF (`DebugInfo.h`), pipeline `-O2` + remarks, benchmarks vs VM/C, sanitizers sobre artefactos | M4 |
+| DWARF (`DebugInfo.h`), sanitizers sobre artefactos | M4.c/M4.d |
+| Remarks del pipeline (medir las adiciones de `-O2`) | M4 (opcional) |
 
 El runner de paridad **no excluye ningún caso**: el guard de profundidad se
 reproduce con el contador interno y los fixtures de módulo corren con
@@ -321,7 +330,62 @@ reproduce con el contador interno y los fixtures de módulo corren con
 
 ---
 
-## 8. Bug pre-existente conocido (cerrado en la contra-investigación)
+## 8. M4 — calidad (en curso, 2026-10-20)
+
+### M4.a — Benchmarks (cerrado)
+
+`zig/tests/bench/` (recursión, bucle entero con guards div/módulo, `match`
+de enum con payload, arrays + structs) y `zig/tests/llvm_bench.sh`, que pasa
+cada programa por la VM zig, el backend C del seed y la ruta LLVM, compara
+stdout byte a byte (gate de correctitud) y publica el mínimo de N
+repeticiones. En esta máquina (AMD Ryzen 3 3250C, 4 hilos, 3 repeticiones,
+ms):
+
+| bench | vm | llvm build | llvm -O0 | c build | c run | llvm/vm |
+|:------|---:|-----------:|---------:|--------:|------:|--------:|
+| arrays | 12374 | 163 | 20 | 651 | 301 | 619x |
+| fib | 1022 | 149 | 11 | 427 | 33 | 93x |
+| loop | 7506 | 165 | 18 | 407 | 194 | 417x |
+| match | 11695 | 166 | 172 | 920 | 700 | 68x |
+
+El backend C también interpreta (bytecode traducido a un switch en C), así
+que el nativo le gana por 10–17x; la VM paga el intérprete y la arena.
+
+### M4.b — Pipeline de optimización (cerrado)
+
+`--opt-level=N` (0..3, default 0) corre el pipeline del new PM con
+`LLVMRunPasses` antes de verificar y emitir: 1 = `default<O1>`, 2 =
+`default<O2>` + LICM (adaptador `loop-mssa`), `simple-loop-unswitch` (el
+nombre del unswitch en LLVM 19) e IRCE — las adiciones que pide el plan —,
+3 = `default<O3>`. El nivel 0 deja el módulo intacto: el IR que fijan los
+FileCheck y el binario por defecto no cambian.
+
+El optimizador **no puede cambiar la semántica observable**: `llvm_parity.sh`
+acepta `ASTRA_LLVM_OPT` y CI corre el gate dos veces, sin pipeline y con
+`-O2`; **131/131 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
+
+| bench | llvm -O0 | llvm -O2 |
+|:------|---------:|---------:|
+| arrays | 20 | 10 |
+| loop | 18 | 16 |
+| match | 172 | 121 |
+| fib | 11 | 13 |
+
+`match` y `arrays` mejoran porque el pipeline quita los checks redundantes
+y hoistea; `fib` está dominado por llamadas (el boxeo de `AstraValue` es el
+techo conocido, 023 §1.2) y la diferencia es ruido.
+
+### Pendiente de M4
+
+- **M4.c — DWARF** (`llvm-c/DebugInfo.h`, Kaleidoscope ch. 9): metadata de
+  línea por instrucción para que `lldb` pare en líneas Astra.
+- **M4.d — Sanitizers sobre artefactos**: instrumentar el IR generado
+  (`asan` en el pipeline) y enlazar el runtime con ASan/UBSan para correr
+  la suite completa bajo ellos.
+
+---
+
+## 9. Bug pre-existente conocido (cerrado en la contra-investigación)
 
 El operador **`||` (`or_or`)** fallaba en runtime con
 `cannot call non-function value` en **ambas** VMs (seed y zig) cuando su
@@ -345,7 +409,7 @@ en el seed, dump_parity 126/0.
 
 ---
 
-## 9. Commits
+## 10. Commits
 
 ### M0
 
@@ -431,6 +495,14 @@ repros en `/tmp/opencode/`, cifras del gate re-ejecutado):
 | M3.h | `661b7cd` | `feat(llvm): fichero único explícito y fixtures de módulo en paridad (M3.h)` |
 | M3.i | `a6a9672` | `ci(llvm): canario no bloqueante con LLVM latest (M3.i)` |
 | M3.doc | _(este commit)_ | `docs(llvm): cierre de M3 — paridad total, fuzz y FileCheck` |
+
+### M4
+
+| # | Commit | Mensaje |
+|:-:|:-------|:--------|
+| M4.a | `cd0ad33` | `test(llvm): suite de benchmarks VM/C/LLVM (M4.a)` |
+| M4.b | `8a0aad9` | `feat(llvm): pipeline de optimización --opt-level y gate a -O2 (M4.b)` |
+| M4.doc | _(este commit)_ | `docs(llvm): M4.a/M4.b — benchmarks y pipeline -O2` |
 
 Gates en cada commit de M3: `zig build test` 73/73 (84/84 con `-Dllvm`),
 dump_parity 132/0, suite seed 245/245, `sweep_emit_c` 0 fail,

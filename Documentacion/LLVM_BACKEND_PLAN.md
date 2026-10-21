@@ -220,12 +220,19 @@ diferencial cuádruple y FileCheck para shapes críticos (guards, match).
 0 fail**, `llvm_filecheck.sh` 4/4, fuzz de cuatro rutas 480/480 y canario CI
 no bloqueante. Detalle por paso en `PHASE_LLVM_PROGRESS.md` §7/§9.
 
-### M4 — Calidad (benchmark + debug)
+### M4 — Calidad (benchmark + debug) — 🟡 en curso
 DWARF (`DebugInfo.h`, Kaleidoscope ch. 9), pipeline `-O2` + adiciones
 (LICM/LoopUnswitch extra, IRCE) **midiendo** con remarks; suite de
 benchmarks (fib, bucles, match) vs VM y backend C; sanitizers sobre
 artefactos. **Gate**: números publicados en el progress log; lldb depura por
 línea Astra.
+
+**Hecho (2026-10-20)**: M4.a (suite `zig/tests/bench/` + `llvm_bench.sh`,
+números en `PHASE_LLVM_PROGRESS.md` §8) y M4.b (`--opt-level=N` con
+`LLVMRunPasses`; `-O2` = `default<O2>` + `loop-mssa(licm)` +
+`simple-loop-unswitch` + `irce`; el gate de paridad corre también con
+`ASTRA_LLVM_OPT=2`: **131/131**). Pendiente: M4.c DWARF y M4.d sanitizers
+sobre los artefactos.
 
 ### M5 — Targets y release
 Cruzado `-mtriple=aarch64-linux-gnu` (+ wasm si se quiere), artefactos,
@@ -287,9 +294,10 @@ Option/Result+`match`/`?`, closures, arrays/structs/enums, `for..in`,
 TargetMachineEmitToFile y reproduce la salida de la VM byte a byte en
 **131/131 casos** (0 skip, 0 excl); el fuzz diferencial de cuatro rutas y
 FileCheck cierran el gate de M3, y el canario CI vigila el churn de LLVM.
-Lo siguiente es **M4** (DWARF, pipeline `-O2` con remarks, benchmarks vs VM
-y C, sanitizers sobre artefactos). Los hitos siguen el patrón workstream →
-commit probado → gate verde.
+**M4 está en curso**: el pipeline `-O2` y los benchmarks están cerrados y
+medidos (§8 del progress log), con el gate de paridad repetido a `-O2`
+(131/131). Quedan DWARF y sanitizers sobre los artefactos. Los hitos siguen
+el patrón workstream → commit probado → gate verde.
 
 Pendiente confirmado y cerrado: la instalación de `llvm-19-dev` en CI vía
 `apt.llvm.org/llvm.sh 19` quedó verificada con el job `llvm` en verde desde

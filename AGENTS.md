@@ -146,8 +146,12 @@ fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
 `llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
 multi-module programs stay out of scope (the emitter is single-file; the
 driver rejects them cleanly with exit 2); `--single-file` reproduces the
-seed's inert-import semantics for the `module/` fixtures. M4 (DWARF, `-O2`
-pipeline + remarks, benchmarks) is next; see `PHASE_LLVM_PROGRESS.md` §7.
+seed's inert-import semantics for the `module/` fixtures. M4 (quality) is in
+progress: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
+simple-loop-unswitch / IRCE for N=2) and the parity gate is run both plain and
+with `ASTRA_LLVM_OPT=2` (131/131 in both); `zig/tests/llvm_bench.sh` publishes
+VM/C/LLVM timings. DWARF and sanitizers are the remaining M4 steps; see
+`PHASE_LLVM_PROGRESS.md` §8.
 
 ```bash
 cd zig
@@ -155,9 +159,12 @@ zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
 ./zig-out/bin/astra-zig --emit-llvm file.astra          # write file.ll
 ./zig-out/bin/astra-zig --emit-llvm-stdout file.astra   # print IR (for tests)
 ./zig-out/bin/astra-zig --emit-obj file.astra           # native <file>.o via TargetMachine (M2.e)
+./zig-out/bin/astra-zig --emit-obj --opt-level=2 file.astra  # new-PM pipeline (M4)
 ./tests/llvm_parity.sh                  # VM <-> --emit-obj -> link runtime
+ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh # same gate through default<O2>+extras
 ./tests/llvm_filecheck.sh               # IR shapes (FileCheck-19..23)
 ./tests/llvm_fuzz.sh -n 40 -s 1         # differential fuzz, 4 routes
+./tests/llvm_bench.sh -n 3 -O 2         # VM / C / LLVM timings (M4)
 ```
 
 Gotchas that will bite you:
