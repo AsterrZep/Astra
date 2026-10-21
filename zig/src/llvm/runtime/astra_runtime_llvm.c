@@ -22,6 +22,107 @@
 
 #include "codegen_runtime.h"
 
+/* ---- reference counting (v1 ownership model) -------------------------- */
+
+/* Every value with heap storage carries an 8-byte header immediately before
+ * the pointer the emitted IR handles: `{ int32_t rc; int32_t kind; }`. The
+ * header keeps the object layouts unchanged (array len still at +0, struct
+ * def still at +0, …), so print/eq and every inline GEP in the IR keep
+ * working. Static values (string literals, kind-0 enum constants) carry the
+ * same header with rc = -1 (immortal): releasing them is a no-op, which lets
+ * the emitter release any value pointer uniformly without tracking provenance.
+ *
+ * Ownership rules the emitter implements on top of this:
+ *   - a fresh object starts at rc = 1 and is registered as a temporary;
+ *   - storing a pointer into a local/global/field/element/box/env retains it;
+ *   - a function return retains the value; parameters are retained on entry;
+ *   - locals/globals are released by their owner, temporaries at statement
+ *     boundaries (or before break/continue/return).
+ * Cycles (a closure whose env reaches the closure itself) are the one leak
+ * this model cannot collect; they are documented as a v1 limitation. */
+typedef struct { int32_t rc; int32_t kind; } AstraLLVMHdr;
+
+void astra_llvm_fail(unsigned line, const char *msg);
+
+enum {
+    ASTRA_LLVM_KIND_STR = 1,
+    ASTRA_LLVM_KIND_BOX = 2,
+    ASTRA_LLVM_KIND_ARR = 3,
+    ASTRA_LLVM_KIND_STRUCT = 4,
+    ASTRA_LLVM_KIND_ENUM = 5,
+    ASTRA_LLVM_KIND_FN = 6,
+    ASTRA_LLVM_KIND_ENV = 7,
+};
+
+static void astra_llvm_destroy(int32_t kind, void *p);
+
+static AstraLLVMHdr *astra_llvm_hdr(const void *p) {
+    return (AstraLLVMHdr *)((char *)p - sizeof(AstraLLVMHdr));
+}
+
+/* Zero-filled allocation: aggregate constructors store fields/elements with
+ * the same "release the previous value" path used for assignments, and the
+ * previous value of a fresh slot must be NULL rather than malloc garbage. */
+void *astra_llvm_alloc(unsigned line, int64_t size, int32_t kind) {
+    if (size < 0) astra_llvm_fail(line, "out of memory");
+    AstraLLVMHdr *h = (AstraLLVMHdr *)calloc(1, sizeof *h + (size_t)size);
+    if (!h) astra_llvm_fail(line, "out of memory");
+    h->rc = 1;
+    h->kind = kind;
+    return (char *)h + sizeof *h;
+}
+
+void astra_llvm_retain(void *p) {
+    if (!p) return;
+    AstraLLVMHdr *h = astra_llvm_hdr(p);
+    if (h->rc < 0) return; /* immortal (static literal / unit enum) */
+    h->rc++;
+}
+
+void astra_llvm_release(void *p) {
+    if (!p) return;
+    AstraLLVMHdr *h = astra_llvm_hdr(p);
+    if (h->rc < 0) return;
+    if (--h->rc > 0) return;
+    astra_llvm_destroy(h->kind, p);
+    free(h);
+}
+
+/* Temporary roots: the emitter registers every fresh object here and clears
+ * back to a statement/function mark, so values that are never stored are
+ * released instead of living until process exit. The stack is per-process but
+ * marks nest, which makes recursion and nested calls safe: a callee only
+ * clears its own entries. */
+static void **astra_llvm_temps = NULL;
+static size_t astra_llvm_temp_count = 0;
+static size_t astra_llvm_temp_cap = 0;
+
+int64_t astra_llvm_tmp_mark(void) {
+    return (int64_t)astra_llvm_temp_count;
+}
+
+void astra_llvm_tmp_push(void *p) {
+    if (!p) return;
+    if (astra_llvm_temp_count == astra_llvm_temp_cap) {
+        size_t cap = astra_llvm_temp_cap ? astra_llvm_temp_cap * 2 : 256;
+        void **grown = (void **)realloc(astra_llvm_temps, cap * sizeof *grown);
+        /* Sin memoria para registrar el temporal: se deja sin raíz (peor caso,
+         * una fuga) en vez de abortar un programa correcto. */
+        if (!grown) return;
+        astra_llvm_temps = grown;
+        astra_llvm_temp_cap = cap;
+    }
+    astra_llvm_temps[astra_llvm_temp_count++] = p;
+}
+
+void astra_llvm_tmp_clear(int64_t mark) {
+    if (mark < 0) mark = 0;
+    while (astra_llvm_temp_count > (size_t)mark) {
+        void *p = astra_llvm_temps[--astra_llvm_temp_count];
+        astra_llvm_release(p);
+    }
+}
+
 /* ---- program start ---------------------------------------------------- */
 
 /* The emitted @main passes its own source-file name so runtime errors print
@@ -37,6 +138,13 @@ void astra_llvm_runtime_init(void) {
 }
 
 void astra_llvm_runtime_cleanup(void) {
+    /* El emisor vacía los temporales por sentencia; lo que quede aquí sólo
+     * puede ser un ciclo o una salida por error. Se libera el buffer para que
+     * LSan no lo cuente como fuga del runtime. */
+    free(astra_llvm_temps);
+    astra_llvm_temps = NULL;
+    astra_llvm_temp_count = 0;
+    astra_llvm_temp_cap = 0;
     astra_runtime_cleanup();
 }
 
@@ -119,8 +227,9 @@ void *astra_llvm_str_concat(unsigned line, const void *pa, const void *pb) {
     const AstraLLVMStr *a = (const AstraLLVMStr *)pa;
     const AstraLLVMStr *b = (const AstraLLVMStr *)pb;
     int64_t n = a->len + b->len;
-    AstraLLVMStr *out = (AstraLLVMStr *)malloc(sizeof(int64_t) + (size_t)n + 1);
-    if (!out) astra_llvm_fail(line, "out of memory");
+    if (n < a->len) astra_llvm_fail(line, "out of memory");
+    AstraLLVMStr *out = (AstraLLVMStr *)astra_llvm_alloc(
+        line, (int64_t)sizeof(int64_t) + n + 1, ASTRA_LLVM_KIND_STR);
     out->len = n;
     memcpy(out->data, a->data, (size_t)a->len);
     memcpy(out->data + a->len, b->data, (size_t)b->len);
@@ -165,11 +274,14 @@ void astra_llvm_str_order_fail(unsigned line, const void *pa, const void *pb) {
 typedef struct { int32_t tag; int32_t ptype; int64_t payload; } AstraLLVMBox;
 
 void *astra_llvm_wrap(unsigned line, int32_t tag, int32_t ptype, int64_t payload) {
-    AstraLLVMBox *b = (AstraLLVMBox *)malloc(sizeof *b);
-    if (!b) astra_llvm_fail(line, "out of memory");
+    AstraLLVMBox *b = (AstraLLVMBox *)astra_llvm_alloc(line, sizeof *b, ASTRA_LLVM_KIND_BOX);
     b->tag = tag;
     b->ptype = ptype;
     b->payload = payload;
+    /* La caja posee una referencia al payload cuando es un puntero (string,
+     * array, struct, enum, caja anidada o closure): liberarla al destruir la
+     * caja es lo que evita que `some([...])` deje el array vivo. */
+    if (ptype >= 4 && ptype <= 9) astra_llvm_retain((void *)(intptr_t)payload);
     return b;
 }
 
@@ -541,4 +653,85 @@ int32_t astra_llvm_enum_eq(const void *pa, const void *pb) {
             return 0;
     }
     return 1;
+}
+
+/* ---- object destruction (refcount reaches zero) ------------------------ */
+
+/* Layout of a closure object (M1.d + refcount): code@0, env@8, the capture
+ * ptypes array@16 and ncaps@24. The ptypes are needed to release the values
+ * snapshotted in the env; named functions have ncaps = 0. */
+typedef struct {
+    void *code;
+    void *env;
+    const int32_t *cap_ptypes;
+    int32_t ncaps;
+} AstraLLVMFnObj;
+
+/* Libera un slot que contiene un puntero según el código ptype del runtime
+ * (4=str 5=boxed 6=array 7=struct 8=enum 9=fn). Los escalares (1/2/3) no
+ * poseen nada. */
+static void astra_llvm_release_slot(int32_t pty, const char *slot) {
+    if (pty < 4 || pty > 9) return;
+    void *child;
+    memcpy(&child, slot, sizeof child);
+    astra_llvm_release(child);
+}
+
+static void astra_llvm_destroy(int32_t kind, void *p) {
+    switch (kind) {
+        case ASTRA_LLVM_KIND_STR:
+        case ASTRA_LLVM_KIND_ENV:
+            /* La cadena no posee nada; el env ya liberó sus capturas en el
+             * destructor del closure (evita liberarlas dos veces). */
+            break;
+        case ASTRA_LLVM_KIND_BOX: {
+            const AstraLLVMBox *b = (const AstraLLVMBox *)p;
+            if (b->ptype >= 4 && b->ptype <= 9)
+                astra_llvm_release((void *)(intptr_t)b->payload);
+            break;
+        }
+        case ASTRA_LLVM_KIND_ARR: {
+            int64_t len;
+            int32_t pty;
+            memcpy(&len, p, sizeof len);
+            memcpy(&pty, (const char *)p + 8, sizeof pty);
+            const int slot = astra_llvm_arr_slot(pty);
+            for (int64_t i = 0; i < len; i++)
+                astra_llvm_release_slot(pty, (const char *)p + ASTRA_LLVM_ARR_HDR + (size_t)slot * (size_t)i);
+            break;
+        }
+        case ASTRA_LLVM_KIND_STRUCT: {
+            const AstraLLVMStructDef *def;
+            memcpy(&def, p, sizeof def);
+            if (!def) break;
+            for (int32_t i = 0; i < def->nfields; i++)
+                astra_llvm_release_slot(def->ptypes[i], (const char *)p + 8 + 8 * (size_t)i);
+            break;
+        }
+        case ASTRA_LLVM_KIND_ENUM: {
+            const AstraLLVMEnumDef *def;
+            int32_t vi, vkind;
+            memcpy(&def, p, sizeof def);
+            memcpy(&vi, (const char *)p + 8, sizeof vi);
+            memcpy(&vkind, (const char *)p + 12, sizeof vkind);
+            if (!def || vi < 0 || vi >= def->nvariants || vkind != 1) break;
+            const AstraLLVMVariantDef *v = &def->variants[vi];
+            for (int32_t i = 0; i < v->npayload; i++)
+                astra_llvm_release_slot(v->ptypes[i], (const char *)p + 16 + 8 * (size_t)i);
+            break;
+        }
+        case ASTRA_LLVM_KIND_FN: {
+            const AstraLLVMFnObj *f = (const AstraLLVMFnObj *)p;
+            if (f->env) {
+                if (f->cap_ptypes) {
+                    for (int32_t i = 0; i < f->ncaps; i++)
+                        astra_llvm_release_slot(f->cap_ptypes[i], (const char *)f->env + 8 * (size_t)i);
+                }
+                astra_llvm_release(f->env);
+            }
+            break;
+        }
+        default:
+            break;
+    }
 }

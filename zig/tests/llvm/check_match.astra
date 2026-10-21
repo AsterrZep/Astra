@@ -4,7 +4,7 @@
 //
 // CHECK: define i64 @astra_fn_area
 // CHECK: %[[OBJ:[0-9]+]] = load ptr, ptr
-// CHECK: call i32 @astra_llvm_enum_eq(ptr %[[OBJ]], ptr @
+// CHECK: call i32 @astra_llvm_enum_eq(ptr %[[OBJ]], ptr getelementptr (
 // CHECK: br i1 %{{[0-9]+}}, label %arm_bind, label %arm_next
 // CHECK: match_merge:
 // CHECK: phi i64
@@ -12,12 +12,12 @@
 // CHECK: call void @astra_llvm_fail(i32 37, ptr
 // CHECK: unreachable
 // CHECK: arm_next:
-// CHECK: call i32 @astra_llvm_enum_eq(ptr %[[OBJ]], ptr @
+// CHECK: call i32 @astra_llvm_enum_eq(ptr %[[OBJ]], ptr getelementptr (
 // CHECK: br i1 %{{[0-9]+}}, label %arm_bind2, label %arm_next1
 // CHECK: arm_bind:
 // CHECK: getelementptr i8, ptr %[[OBJ]], i64 16
 // CHECK: arm_next1:
-// CHECK: call i32 @astra_llvm_enum_eq(ptr %[[OBJ]], ptr @
+// CHECK: call i32 @astra_llvm_enum_eq(ptr %[[OBJ]], ptr getelementptr (
 // CHECK: br i1 %{{[0-9]+}}, label %arm_bind5, label %arm_next4
 // CHECK: arm_bind2:
 // CHECK: getelementptr i8, ptr %[[OBJ]], i64 16
