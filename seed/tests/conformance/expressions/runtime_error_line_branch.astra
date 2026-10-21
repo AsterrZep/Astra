@@ -1,0 +1,13 @@
+// A runtime error raised inside a branch must report its own source line.
+// The C backend tracked the last `astra_line` store textually (a dedup
+// shadow), so an op in the else branch sitting on the same source line as a
+// fallible op in the then branch skipped its store even when the then branch
+// never ran: the error then reported the line of the enclosing condition.
+// sweep_emit_c.sh compares stderr byte-for-byte, so the stale line fails
+// there (found by the M3 differential fuzzer, seed 5 index 28).
+// EXPECT-RUNTIME-ERROR: modulo by zero
+fn main() {
+    let z = 0
+    let b = "a" + "b" == "ab"
+    print((if !b { -1 } else { z }) % 0)
+}

@@ -725,6 +725,11 @@ static void emit_instructions(Codegen *cg,
     for (size_t ip = 0; ip < code_len; ip++) {
         if (is_label[ip]) {
             cg_writef(cg, "    L_%zu: ;\n", ip);
+            /* A label is reachable from several predecessors, so the
+             * textually-last `astra_line` store may not have run on this
+             * path. Forget the dedup shadow and let the next fallible op
+             * re-store its line (see cg_set_line). */
+            *last_line = CG_NO_LINE;
         }
 
         Instruction inst = code[ip];
@@ -963,6 +968,10 @@ static void emit_instructions(Codegen *cg,
         case OPCODE_JUMP: {
             int32_t offset = inst.arg.offset;
             cg_writef(cg, "    goto L_%zu;\n", ip + (size_t)offset);
+            /* Nothing falls out of a goto: the next instruction is reached
+             * from a label or from an earlier conditional branch, so the
+             * textual shadow no longer describes astra_line. */
+            *last_line = CG_NO_LINE;
         } break;
 
         case OPCODE_JUMP_IF_FALSE: {
@@ -1037,6 +1046,9 @@ static void emit_instructions(Codegen *cg,
 
         case OPCODE_RET: {
             cg_write(cg, "    return frame[sp - 1];\n");
+            /* Same reasoning as OPCODE_JUMP: the epilogue that follows is
+             * not reached by falling out of this return. */
+            *last_line = CG_NO_LINE;
         } break;
 
         case OPCODE_CLOSURE: {
