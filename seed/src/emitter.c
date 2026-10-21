@@ -1298,12 +1298,20 @@ static void emit_expr(Emitter *e, Node *node) {
             e->rt = rt0;
             uint32_t false_idx = add_constant(e, value_bool(false));
             emit_inst_index(e, OPCODE_CONST, false_idx, line);
+            /* Each branch target pushes its own constant: without this jump
+             * the first CONST falls through to the second and the caller
+             * (e.g. a CALL right after) reads the wrong slot — the
+             * "cannot call non-function value" of `print(a && b)` with a
+             * false left operand (&& / || double-push bug). */
+            emit_inst_offset(e, OPCODE_JUMP, 0, line);
+            size_t patch_first_end = e->code_len - 1;
 
             e->code[patch_right_false].arg.offset = (int32_t)(e->code_len - patch_right_false);
             e->sp = base;
             e->rt = rt0;
             emit_inst_index(e, OPCODE_CONST, false_idx, line);
 
+            e->code[patch_first_end].arg.offset = (int32_t)(e->code_len - patch_first_end);
             e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
             e->sp = base + 1;
             e->rt = rt0 + 1;
@@ -1327,12 +1335,17 @@ static void emit_expr(Emitter *e, Node *node) {
             e->rt = rt0;
             uint32_t true_idx = add_constant(e, value_bool(true));
             emit_inst_index(e, OPCODE_CONST, true_idx, line);
+            /* Same double-push guard as OP_AND: the true path must skip the
+             * second CONST true or a CALL right after reads the wrong slot. */
+            emit_inst_offset(e, OPCODE_JUMP, 0, line);
+            size_t patch_first_end = e->code_len - 1;
 
             e->code[patch_right_true].arg.offset = (int32_t)(e->code_len - patch_right_true);
             e->sp = base;
             e->rt = rt0;
             emit_inst_index(e, OPCODE_CONST, true_idx, line);
 
+            e->code[patch_first_end].arg.offset = (int32_t)(e->code_len - patch_first_end);
             e->code[patch_end].arg.offset = (int32_t)(e->code_len - patch_end);
             e->sp = base + 1;
             e->rt = rt0 + 1;

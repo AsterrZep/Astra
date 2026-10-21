@@ -1,0 +1,46 @@
+// Short-circuit `&&`/`||` used to double-push their result in call-argument
+// position: the first branch CONST fell through to the second (no jump
+// between them), so a CALL right after read the wrong stack slot and died
+// with "cannot call non-function value". The bug hit `||` with a true left
+// operand and — masked in PHASE_LLVM_PROGRESS §8, which claimed `&&` was
+// fine — `&&` with a false left operand, in BOTH VMs and the C backend.
+// Fixed in the seed emitter + zig mirror with a jump past the twin
+// constant; the LLVM route was already correct (phi-based). Pinned by the
+// codegen twin so the C and LLVM gates agree byte for byte.
+fn pos(n: i32) -> bool {
+    n > 0
+}
+
+fn main() {
+    let a = true
+    let b = false
+
+    // `||` in call-argument position: left decides, right must not run.
+    print(a || b)
+// EXPECT: true
+    print(b || a)
+// EXPECT: true
+    print(pos(1) || pos(-1))
+// EXPECT: true
+
+    // `&&` in call-argument position: left decides, right must not run.
+    print(a && b)
+// EXPECT: false
+    print(b && a)
+// EXPECT: false
+    print(pos(-1) && pos(1))
+// EXPECT: false
+
+    // Result-value shapes that used to work only because the residue was
+    // never read.
+    let x = a || b
+    print(x)
+// EXPECT: true
+    let y = a && b
+    print(y)
+// EXPECT: false
+    if a && b { print(1) } else { print(2) }
+// EXPECT: 2
+    if a || b { print(3) } else { print(4) }
+// EXPECT: 3
+}

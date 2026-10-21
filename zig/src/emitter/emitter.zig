@@ -1358,12 +1358,19 @@ pub const Emitter = struct {
                     self.rt = rt0;
                     const false_idx = self.addConstant(bc.vBool(false));
                     self.emitInstIndex(.const_, false_idx, ln);
+                    // Each branch target pushes its own constant: without this
+                    // jump the first CONST falls through to the second and a
+                    // CALL right after reads the wrong slot (the `&&` / `||`
+                    // double-push bug, mirror of the seed emitter fix).
+                    self.emitInstOffset(.jump, 0, ln);
+                    const patch_first_end = self.code.items.len - 1;
 
                     self.code.items[patch_right_false].arg = .{ .offset = @intCast(self.code.items.len - patch_right_false) };
                     self.sp = base;
                     self.rt = rt0;
                     self.emitInstIndex(.const_, false_idx, ln);
 
+                    self.code.items[patch_first_end].arg = .{ .offset = @intCast(self.code.items.len - patch_first_end) };
                     self.code.items[patch_end].arg = .{ .offset = @intCast(self.code.items.len - patch_end) };
                     self.sp = base + 1;
                     self.rt = rt0 + 1;
@@ -1386,12 +1393,18 @@ pub const Emitter = struct {
                     self.rt = rt0;
                     const true_idx = self.addConstant(bc.vBool(true));
                     self.emitInstIndex(.const_, true_idx, ln);
+                    // Same double-push guard as `&&`: the true path must skip
+                    // the second CONST true or a CALL right after reads the
+                    // wrong slot.
+                    self.emitInstOffset(.jump, 0, ln);
+                    const patch_first_end = self.code.items.len - 1;
 
                     self.code.items[patch_right_true].arg = .{ .offset = @intCast(self.code.items.len - patch_right_true) };
                     self.sp = base;
                     self.rt = rt0;
                     self.emitInstIndex(.const_, true_idx, ln);
 
+                    self.code.items[patch_first_end].arg = .{ .offset = @intCast(self.code.items.len - patch_first_end) };
                     self.code.items[patch_end].arg = .{ .offset = @intCast(self.code.items.len - patch_end) };
                     self.sp = base + 1;
                     self.rt = rt0 + 1;
