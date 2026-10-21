@@ -447,6 +447,8 @@ pub const Emitter = struct {
     /// VM rechaza la llamada 257 con `call depth exceeded` y el C backend
     /// replica el mismo límite (ASTRA_CALL_DEPTH); esta ruta también.
     depth_global: c.LLVMValueRef = undefined,
+    /// Kind ID de la metadata `!prof` (pesos de rama de los traps).
+    prof_kind: u32 = 0,
     /// Contador para nombrar los globales de literales de string únicos.
     str_seq: u32 = 0,
     // `astra_module_main`: el código de nivel superior, invocado desde @main.
@@ -561,6 +563,61 @@ pub const Emitter = struct {
         self.depth_global = c.LLVMAddGlobal(self.mod, self.t_i64, "astra_llvm_depth");
         c.LLVMSetInitializer(self.depth_global, c.LLVMConstInt(self.t_i64, 0, 0));
         c.LLVMSetLinkage(self.depth_global, c.LLVMInternalLinkage);
+        self.prof_kind = c.LLVMGetMDKindIDInContext(self.ctx, "prof", 4);
+
+        // Atributos de los helpers del runtime (024 §2): el runtime C no lanza
+        // excepciones (`nounwind`) y los de fallo no retornan (`noreturn`,
+        // `cold`), así el optimizador puede borrar todo lo que sigue al trap y
+        // mantener el camino de error fuera de la ruta caliente.
+        const helpers = [_]c.LLVMValueRef{
+            self.r_set_file,      self.r_init,          self.r_cleanup,
+            self.r_fail,          self.r_print_begin,   self.r_print_i64,
+            self.r_print_f64,     self.r_print_bool,    self.r_print_str,
+            self.r_print_end,     self.r_str_concat,    self.r_str_eq,
+            self.r_wrap,          self.r_print_boxed,   self.r_boxed_eq,
+            self.r_boxed_order_fail, self.r_malloc,     self.r_print_array,
+            self.r_index_fail,    self.r_index_nil_fail, self.r_print_struct,
+            self.r_struct_eq,     self.r_print_enum,    self.r_enum_eq,
+            self.r_array_eq,
+        };
+        for (helpers) |h| self.addFnAttr(h, "nounwind");
+        const noreturn_helpers = [_]c.LLVMValueRef{
+            self.r_fail, self.r_boxed_order_fail, self.r_index_fail, self.r_index_nil_fail,
+        };
+        for (noreturn_helpers) |h| {
+            self.addFnAttr(h, "noreturn");
+            self.addFnAttr(h, "cold");
+        }
+    }
+
+    /// Atributo de función por nombre (se omite si la versión de LLVM no lo
+    /// conoce: el rango soportado es 19..23).
+    fn addFnAttr(self: *Emitter, f: c.LLVMValueRef, name: [*:0]const u8) void {
+        const kind = c.LLVMGetEnumAttributeKindForName(name, std.mem.len(name));
+        if (kind == 0) return;
+        const attr = c.LLVMCreateEnumAttribute(self.ctx, kind, 0);
+        // LLVMAttributeFunctionIndex es -1 en la API C pero el parámetro es
+        // unsigned: el bitcast da el mismo valor que el enum del header.
+        const fn_index: c.LLVMAttributeIndex = @bitCast(@as(i32, -1));
+        c.LLVMAddAttributeAtIndex(f, fn_index, attr);
+    }
+
+    /// Adjunta `!prof !{!"branch_weights", i32 hot, i32 1}` al condicional:
+    /// el edge de error pesa 1 frente a 2^20. Los traps de div/shift/bounds/
+    /// nil/`?`/profundidad son caminos fríos, y sin el peso el optimizador
+    /// trata el fallo como 50/50 (layout y inlineo dejan de ser realistas).
+    fn coldBranch(self: *Emitter, br: c.LLVMValueRef, cold_on_true: bool) void {
+        const hot = c.LLVMConstInt(self.t_i32, 1 << 20, 0);
+        const cold = c.LLVMConstInt(self.t_i32, 1, 0);
+        const w0 = if (cold_on_true) cold else hot;
+        const w1 = if (cold_on_true) hot else cold;
+        const name = c.LLVMMDStringInContext2(self.ctx, "branch_weights", 14);
+        const m0 = c.LLVMValueAsMetadata(w0);
+        const m1 = c.LLVMValueAsMetadata(w1);
+        var vals = [_]c.LLVMMetadataRef{ name, m0, m1 };
+        const node = c.LLVMMDNodeInContext2(self.ctx, &vals, 3);
+        // La API C histórica pasa el nodo como LLVMValueRef.
+        c.LLVMSetMetadata(br, self.prof_kind, c.LLVMMetadataAsValue(self.ctx, node));
     }
 
     fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
@@ -1023,7 +1080,8 @@ pub const Emitter = struct {
         const is_nil = c.LLVMBuildIsNull(self.builder, arr, "");
         const nil_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_nil");
         const arr_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_arr");
-        _ = c.LLVMBuildCondBr(self.builder, is_nil, nil_bb, arr_bb);
+        const nil_br = c.LLVMBuildCondBr(self.builder, is_nil, nil_bb, arr_bb);
+        self.coldBranch(nil_br, true);
         c.LLVMPositionBuilderAtEnd(self.builder, nil_bb);
         var nargs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i32, line, 0)};
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_index_nil_fail), self.r_index_nil_fail, &nargs, 1, "");
@@ -1037,7 +1095,8 @@ pub const Emitter = struct {
         const inb = c.LLVMBuildAnd(self.builder, ge, lt, "");
         const ok_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_ok");
         const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_fail");
-        _ = c.LLVMBuildCondBr(self.builder, inb, ok_bb, fail_bb);
+        const bnd_br = c.LLVMBuildCondBr(self.builder, inb, ok_bb, fail_bb);
+        self.coldBranch(bnd_br, false);
         c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
         var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), i, len };
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_index_fail), self.r_index_fail, &fargs, 3, "");
@@ -1750,13 +1809,15 @@ pub const Emitter = struct {
         const tag_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_tag");
         const ok_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_ok");
         const isnull = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, v.ref, c.LLVMConstPointerNull(self.t_ptr), "");
-        _ = c.LLVMBuildCondBr(self.builder, isnull, err_bb, tag_bb);
+        const null_br = c.LLVMBuildCondBr(self.builder, isnull, err_bb, tag_bb);
+        self.coldBranch(null_br, true);
 
         // none (NULL) o err (tag 1) → propagar; ok/some → payload.
         c.LLVMPositionBuilderAtEnd(self.builder, tag_bb);
         const tag = self.loadBoxTag(v.ref);
         const iserr = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tag, c.LLVMConstInt(self.t_i32, TAG_ERR, 0), "");
-        _ = c.LLVMBuildCondBr(self.builder, iserr, err_bb, ok_bb);
+        const err_br = c.LLVMBuildCondBr(self.builder, iserr, err_bb, ok_bb);
+        self.coldBranch(err_br, true);
 
         c.LLVMPositionBuilderAtEnd(self.builder, err_bb);
         const ret_lty = c.LLVMGetReturnType(c.LLVMGlobalGetValueType(self.cur_fn));
@@ -2434,7 +2495,8 @@ pub const Emitter = struct {
         const over = c.LLVMBuildICmp(self.builder, c.LLVMIntUGE, cur, limit, "");
         const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "depth_fail");
         const ok_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "depth_ok");
-        _ = c.LLVMBuildCondBr(self.builder, over, fail_bb, ok_bb);
+        const depth_br = c.LLVMBuildCondBr(self.builder, over, fail_bb, ok_bb);
+        self.coldBranch(depth_br, true);
         c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
         const linev = c.LLVMConstInt(self.t_i32, line, 0);
         const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "call depth exceeded", "");
@@ -2631,7 +2693,8 @@ pub const Emitter = struct {
     fn emitGuardTrue(self: *Emitter, cond: c.LLVMValueRef, line: u32, msg: [*:0]const u8) void {
         const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "guard_fail");
         const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "guard_cont");
-        _ = c.LLVMBuildCondBr(self.builder, cond, fail_bb, cont_bb);
+        const guard_br = c.LLVMBuildCondBr(self.builder, cond, fail_bb, cont_bb);
+        self.coldBranch(guard_br, true);
         c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
         const linev = c.LLVMConstInt(self.t_i32, line, 0);
         const msgp = c.LLVMBuildGlobalStringPtr(self.builder, msg, "");
