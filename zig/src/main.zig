@@ -37,6 +37,7 @@ const usage =
     \\  --emit-llvm            write LLVM IR to <file>.ll (requires -Dllvm)
     \\  --emit-llvm-stdout     print LLVM IR to stdout (requires -Dllvm)
     \\  --emit-obj             compile to a native object <file>.o via TargetMachine (requires -Dllvm)
+    \\  --opt-level=N          optimize the LLVM module before emitting (N = 0..3; 0 default)
     \\  --debug                run under the interactive bytecode debugger (stdin)
     \\
 ;
@@ -49,6 +50,7 @@ pub fn main(init: std.process.Init) !void {
     var mode: Mode = .parse;
     var debug = false;
     var single_file = false;
+    var opt_level: u8 = 0;
     var path: ?[]const u8 = null;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -67,6 +69,15 @@ pub fn main(init: std.process.Init) !void {
             mode = .emit_obj;
         } else if (std.mem.eql(u8, arg, "--single-file")) {
             single_file = true;
+        } else if (std.mem.startsWith(u8, arg, "--opt-level=")) {
+            opt_level = std.fmt.parseInt(u8, arg["--opt-level=".len..], 10) catch {
+                std.debug.print("error: --opt-level expects 0..3, got {s}\n{s}", .{ arg, usage });
+                std.process.exit(2);
+            };
+            if (opt_level > 3) {
+                std.debug.print("error: --opt-level expects 0..3, got {d}\n{s}", .{ opt_level, usage });
+                std.process.exit(2);
+            }
         } else if (std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -193,7 +204,7 @@ pub fn main(init: std.process.Init) !void {
     // sale. No necesita el emisor de bytecode ni la VM — el emisor LLVM
     // camina el AST.
     if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
-        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc);
+        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level);
         return;
     }
 
@@ -267,6 +278,7 @@ fn emitLlvm(
     mode: Mode,
     diag: *diagnostics.Sink,
     tc: *typechecker.TypeChecker,
+    opt_level: u8,
 ) void {
     // `build_options.llvm_enabled` es comptime: sin -Dllvm solo se analiza esta
     // rama y `llvm.Emitter` (que sería `void`) jamás se referencia.
@@ -295,6 +307,9 @@ fn emitLlvm(
         }
         em.emit(root);
         if (em.error_count > 0) std.process.exit(1);
+        // M4: pipeline del new PM antes de verificar/emitir. Nivel 0 (default)
+        // deja el módulo intacto: los gates de IR y paridad no cambian.
+        if (!llvm.runPasses(em.mod, diag, file, opt_level)) std.process.exit(1);
         if (!llvm.verify(em.mod, diag, file)) std.process.exit(1);
         if (mode == .emit_llvm_stdout) {
             const ir = llvm.printToString(a, em.mod);

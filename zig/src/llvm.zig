@@ -49,17 +49,10 @@ pub fn writeToFile(mod: c.LLVMModuleRef, path_z: [*:0]const u8) !void {
     }
 }
 
-/// Compila el módulo a un objeto nativo vía TargetMachineEmitToFile
-/// (LLVM_BACKEND_PLAN.md §6 M2.e): el backend deja de depender del subproceso
-/// `llc` — mismo TargetMachine del host, PIC como pide el enlazador por
-/// defecto (sin `-relocation-model=pic` el default-PIE `cc` rechaza el
-/// objeto). Devuelve `false` y reporta el motivo cuando LLVM no puede.
-pub fn emitObjectFile(
-    mod: c.LLVMModuleRef,
-    diag: ?*diagnostics.Sink,
-    file: []const u8,
-    path_z: [*:0]const u8,
-) bool {
+/// Crea el TargetMachine del host (triple y features por defecto, PIC) que
+/// comparten la emisión de objeto y el pipeline de optimización. Devuelve null
+/// (y reporta por el sink) si el target no existe. El llamador lo libera.
+fn createTargetMachine(diag: ?*diagnostics.Sink, file: []const u8) ?c.LLVMTargetMachineRef {
     // El target del host debe estar registrado en libLLVM antes de crear un
     // TargetMachine. Los init son un static inline de llvm-c/Target.h que
     // translate-c sí traduce (llvm-config.h los expande al target nativo).
@@ -74,7 +67,7 @@ pub fn emitObjectFile(
         const msg: []const u8 = if (err != null) std.mem.span(@as([*:0]const u8, @ptrCast(err))) else "unknown target";
         diagnostics.emit(diag, file, diagnostics.no_span, "cannot find target for '{s}': {s}", .{ std.mem.span(@as([*:0]const u8, @ptrCast(triple))), msg });
         if (err != null) c.LLVMDisposeMessage(err);
-        return false;
+        return null;
     }
     const tm = c.LLVMCreateTargetMachine(
         target,
@@ -87,13 +80,72 @@ pub fn emitObjectFile(
     );
     if (tm == null) {
         diagnostics.emit(diag, file, diagnostics.no_span, "cannot create target machine", .{});
-        return false;
+        return null;
     }
+    return tm;
+}
+
+/// Compila el módulo a un objeto nativo vía TargetMachineEmitToFile
+/// (LLVM_BACKEND_PLAN.md §6 M2.e): el backend deja de depender del subproceso
+/// `llc` — mismo TargetMachine del host, PIC como pide el enlazador por
+/// defecto (sin `-relocation-model=pic` el default-PIE `cc` rechaza el
+/// objeto). Devuelve `false` y reporta el motivo cuando LLVM no puede.
+pub fn emitObjectFile(
+    mod: c.LLVMModuleRef,
+    diag: ?*diagnostics.Sink,
+    file: []const u8,
+    path_z: [*:0]const u8,
+) bool {
+    const tm = createTargetMachine(diag, file) orelse return false;
     defer c.LLVMDisposeTargetMachine(tm);
+    var err: [*c]u8 = null;
     if (c.LLVMTargetMachineEmitToFile(tm, mod, path_z, c.LLVMObjectFile, &err) != 0) {
         const msg: []const u8 = if (err != null) std.mem.span(@as([*:0]const u8, @ptrCast(err))) else "unknown";
         diagnostics.emit(diag, file, diagnostics.no_span, "cannot emit object file: {s}", .{msg});
         if (err != null) c.LLVMDisposeMessage(err);
+        return false;
+    }
+    return true;
+}
+
+/// Pipeline de optimización por nivel (LLVM_BACKEND_PLAN.md §6 M4). El nivel 2
+/// añade las pasadas que el plan pide explícitamente sobre `default<O2>`:
+/// LICM (que exige el adaptador `loop-mssa`), loop-unswitch (en LLVM 19 se
+/// llama `simple-loop-unswitch`) e IRCE, todas de función, de ahí el
+/// envoltorio `function(...)`. El 3 usa el pipeline completo del new PM.
+/// Nivel 0 (default) no toca el módulo: el IR de los gates no cambia.
+pub fn pipelineForLevel(level: u8) ?[:0]const u8 {
+    return switch (level) {
+        0 => null,
+        1 => "default<O1>",
+        2 => "default<O2>,function(loop-mssa(licm)),function(simple-loop-unswitch),function(irce)",
+        3 => "default<O3>",
+        else => null,
+    };
+}
+
+/// Corre el pipeline del new PM sobre el módulo antes de verificar/emitir.
+/// Devuelve `false` (y reporta por el sink) si LLVM rechaza el pipeline o una
+/// pasada falla; el llamador sale sin escribir IR ni objeto.
+pub fn runPasses(
+    mod: c.LLVMModuleRef,
+    diag: ?*diagnostics.Sink,
+    file: []const u8,
+    level: u8,
+) bool {
+    const pipeline = pipelineForLevel(level) orelse return true;
+    // El TargetMachine aporta el target de las pasadas (vectorización, costes);
+    // no se usa para emitir, sólo para correr el pipeline.
+    const tm = createTargetMachine(diag, file) orelse return false;
+    defer c.LLVMDisposeTargetMachine(tm);
+    const opts = c.LLVMCreatePassBuilderOptions();
+    defer c.LLVMDisposePassBuilderOptions(opts);
+    const err = c.LLVMRunPasses(mod, pipeline.ptr, tm, opts);
+    if (err != null) {
+        const raw = c.LLVMGetErrorMessage(err);
+        defer c.LLVMDisposeErrorMessage(raw);
+        const msg: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+        diagnostics.emit(diag, file, diagnostics.no_span, "LLVM optimization pipeline '{s}' failed: {s}", .{ pipeline, msg });
         return false;
     }
     return true;
@@ -128,4 +180,28 @@ test "emit-obj: TargetMachineEmitToFile produce un ELF de host" {
     defer std.testing.allocator.free(data);
     try std.testing.expect(data.len > 16);
     try std.testing.expectEqualStrings("\x7fELF", data[0..4]);
+}
+
+test "M4: runPasses aplica el pipeline y el módulo sigue verificando" {
+    // `i64 add(i64,i64)` con un bucle no hace falta para el plumbing: el nivel
+    // 2 parsea `default<O2>,function(loop-mssa(licm)),…` y corre las pasadas
+    // sobre una función trivial. Lo que se fija aquí es que LLVMRunPasses
+    // acepta el pipeline (LICM con su adaptador incluido) y que el módulo
+    // resultante sigue pasando LLVMVerifyModule.
+    const mod = c.LLVMModuleCreateWithName("astra_opt_smoke");
+    defer c.LLVMDisposeModule(mod);
+    const i64t = c.LLVMInt64Type();
+    var params = [_]c.LLVMTypeRef{ i64t, i64t };
+    const fty = c.LLVMFunctionType(i64t, &params, 2, 0);
+    const fnv = c.LLVMAddFunction(mod, "add", fty);
+    const bb = c.LLVMAppendBasicBlock(fnv, "entry");
+    const builder = c.LLVMCreateBuilder();
+    defer c.LLVMDisposeBuilder(builder);
+    c.LLVMPositionBuilderAtEnd(builder, bb);
+    _ = c.LLVMBuildRet(builder, c.LLVMBuildAdd(builder, c.LLVMGetParam(fnv, 0), c.LLVMGetParam(fnv, 1), "sum"));
+    try std.testing.expect(runPasses(mod, null, "opt_smoke.astra", 2));
+    try std.testing.expect(verify(mod, null, "opt_smoke.astra"));
+    // Nivel 0 no toca nada (el IR de los FileCheck depende de ello).
+    try std.testing.expect(pipelineForLevel(0) == null);
+    try std.testing.expect(runPasses(mod, null, "opt_smoke.astra", 0));
 }

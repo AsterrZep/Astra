@@ -63,6 +63,13 @@ if ! "${CC:-cc}" -c -O2 -std=c11 -I"$root/seed/src" "$RUNTIME_SRC" -o "$work/run
     exit 2
 fi
 
+# Nivel de optimización del módulo antes de emitir el objeto (M4): 0 (default,
+# el IR que fijan los FileCheck) o 1..3 para el pipeline del new PM. CI corre
+# el gate dos veces, sin y con ASTRA_LLVM_OPT=2.
+OPT="${ASTRA_LLVM_OPT:-0}"
+OPT_ARGS=""
+if [ "$OPT" != 0 ]; then OPT_ARGS="--opt-level=$OPT"; fi
+
 # M3: the LLVM route reproduces the VM's VM_CALL_DEPTH bound with its own
 # `call depth exceeded` trap at the same call site (recursion_depth_limit and
 # frame_overflow now run through both routes), so no case is excluded.
@@ -105,7 +112,7 @@ while IFS= read -r f; do
     # (TargetMachineEmitToFile, M2.e — the .o lands next to the snapshot).
     # Constructs outside the backend's scope are a clean skip.
     base=${f%.astra}
-    if ! "$ASTRA_ZIG" --emit-obj $extra "$f" >"$work/emit.out" 2>"$work/emit.err"; then
+    if ! "$ASTRA_ZIG" --emit-obj $extra $OPT_ARGS "$f" >"$work/emit.out" 2>"$work/emit.err"; then
         if grep -q "not supported by the LLVM backend" "$work/emit.err"; then
             echo "skip $rel (not M0 scope)"
             skip=$((skip + 1))
@@ -149,5 +156,5 @@ done < <(
 )
 
 echo "----"
-echo "llvm_parity: total=$total ok=$((total - skip - excl - fail)) skip=$skip excl=$excl fail=$fail"
+echo "llvm_parity: total=$total ok=$((total - skip - excl - fail)) skip=$skip excl=$excl fail=$fail opt=$OPT"
 [ "$fail" -eq 0 ]

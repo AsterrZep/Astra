@@ -121,6 +121,11 @@ jobs:
         working-directory: zig
       - name: LLVM-route parity (VM <-> --emit-obj -> link)
         run: ./zig/tests/llvm_parity.sh
+      # M4: el mismo gate con el pipeline del new PM (default<O2> + licm /
+      # simple-loop-unswitch / irce). El optimizador no puede cambiar la
+      # semántica observable: stdout, stderr y exit siguen byte a byte.
+      - name: LLVM-route parity (optimized, -O2)
+        run: ASTRA_LLVM_OPT=2 ./zig/tests/llvm_parity.sh
       - name: IR shape checks (FileCheck)
         run: ./zig/tests/llvm_filecheck.sh
       # Differential fuzz (M3): generated programs through the zig VM and the

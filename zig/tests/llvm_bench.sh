@@ -4,12 +4,14 @@
 # must match the VM byte for byte) and then wall time; the table is
 # informational, the exit status is the correctness gate.
 #
-#   ./zig/tests/llvm_bench.sh [-n REPEATS]      # REPEATS=3 por defecto
+#   ./zig/tests/llvm_bench.sh [-n REPEATS] [-O LEVEL]   # 3 repeticiones, O0
 #
 # Tiempos: `vm` es compilación + ejecución (lo que ve el usuario de la VM);
 # `llvm build` es --emit-obj + enlace y `llvm run` la ejecución del binario;
 # `c build`/`c run` lo mismo por el backend C del seed. Cada ejecución se
 # repite REPEATS veces y se queda el mínimo (menos ruido de scheduler).
+# `-O` pasa --opt-level=LEVEL al emisor LLVM (M4: 0 sin pipeline, 2 default<O2>
+# + licm/simple-loop-unswitch/irce).
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -20,10 +22,12 @@ ASTRA_SEED="$root/seed/astra-seed"
 BENCHDIR="$zigdir/tests/bench"
 
 N=3
-while getopts "n:" opt; do
+OPT=0
+while getopts "n:O:" opt; do
     case "$opt" in
         n) N=$OPTARG ;;
-        *) echo "usage: $0 [-n REPEATS]" >&2; exit 2 ;;
+        O) OPT=$OPTARG ;;
+        *) echo "usage: $0 [-n REPEATS] [-O LEVEL]" >&2; exit 2 ;;
     esac
 done
 
@@ -67,7 +71,7 @@ min_run() {
     RUN_MS=$best
 }
 
-printf '%-12s %9s %10s %9s' "bench" "vm" "llvm build" "llvm run"
+printf '%-12s %9s %10s %9s' "bench" "vm" "llvm build" "llvm -O$OPT"
 [ "$c_routes" = 1 ] && printf ' %8s %8s' "c build" "c run"
 printf ' %9s\n' "llvm/vm"
 
@@ -83,7 +87,7 @@ for f in "$work"/*.astra; do
 
     # Ruta LLVM: construir una vez, ejecutar N veces.
     t0=$(now_ms)
-    if ! "$ASTRA_ZIG" --emit-obj "$f" >"$work/emit.log" 2>&1; then
+    if ! "$ASTRA_ZIG" --emit-obj --opt-level="$OPT" "$f" >"$work/emit.log" 2>&1; then
         echo "FAIL $name: --emit-obj failed"
         sed 's/^/    /' "$work/emit.log"
         fail=$((fail + 1))
@@ -142,5 +146,5 @@ for f in "$work"/*.astra; do
 done
 
 echo "----"
-echo "llvm_bench: benches=$(ls "$work"/*.astra | wc -l) repeats=$N c_routes=$c_routes fail=$fail"
+echo "llvm_bench: benches=$(ls "$work"/*.astra | wc -l) repeats=$N opt=$OPT c_routes=$c_routes fail=$fail"
 [ "$fail" -eq 0 ]
