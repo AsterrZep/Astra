@@ -350,6 +350,9 @@ const PTY_STRUCT: u32 = 7;
 /// Valor de enum (payload dentro de cajas, slots de payload y elementos de
 /// array) — contrato con el runtime (M2.c).
 const PTY_ENUM: u32 = 8;
+/// Valor-función (objeto `{ code, env }`) dentro de cajas, payloads y arrays:
+/// el VM lo imprime `<fn>` y lo compara por identidad (value_eq VAL_FN).
+const PTY_FN: u32 = 9;
 
 /// Offset de los elementos inline en un objeto array (`{ i64 len; i32
 /// elem_pty; i32 pad; <elems> }`, M2.a).
@@ -404,10 +407,12 @@ pub const Emitter = struct {
     r_print_f64: c.LLVMValueRef,
     r_print_bool: c.LLVMValueRef,
     r_print_str: c.LLVMValueRef,
+    r_print_fn: c.LLVMValueRef,
     r_print_end: c.LLVMValueRef,
     // Operaciones de string (M1): concat con `+` e igualdad por contenido.
     r_str_concat: c.LLVMValueRef,
     r_str_eq: c.LLVMValueRef,
+    r_str_order_fail: c.LLVMValueRef,
     // Option/Result boxed (M1): construcción, print, igualdad y el fallo
     // dinámico de ordenación ("cannot compare some and some").
     r_wrap: c.LLVMValueRef,
@@ -511,9 +516,11 @@ pub const Emitter = struct {
             .r_print_f64 = undefined,
             .r_print_bool = undefined,
             .r_print_str = undefined,
+            .r_print_fn = undefined,
             .r_print_end = undefined,
             .r_str_concat = undefined,
             .r_str_eq = undefined,
+            .r_str_order_fail = undefined,
             .r_wrap = undefined,
             .r_print_boxed = undefined,
             .r_boxed_eq = undefined,
@@ -553,10 +560,14 @@ pub const Emitter = struct {
         self.r_print_f64 = self.declVoid("astra_llvm_print_f64", &.{self.t_f64});
         self.r_print_bool = self.declVoid("astra_llvm_print_bool", &.{self.t_i32});
         self.r_print_str = self.declVoid("astra_llvm_print_str", &.{self.t_ptr});
+        self.r_print_fn = self.declVoid("astra_llvm_print_fn", &.{self.t_ptr});
         self.r_print_end = self.declVoid("astra_llvm_print_end", &.{});
         // concat(line, a, b) devuelve el bloque nuevo; eq(a, b) → i32 0/1.
         self.r_str_concat = self.declRet(self.t_ptr, "astra_llvm_str_concat", &.{ self.t_i32, self.t_ptr, self.t_ptr });
         self.r_str_eq = self.declRet(self.t_i32, "astra_llvm_str_eq", &.{ self.t_ptr, self.t_ptr });
+        // Ordenación de strings: siempre falla, pero escribe los nombres de
+        // los operandos reales (un string nil dice `nil`, no `string`).
+        self.r_str_order_fail = self.declVoid("astra_llvm_str_order_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr });
         // wrap(line, tag, ptype, payload) → caja; eq por contenido; el fallo
         // de ordenación lleva ambos operandos para nombrarlos dinámicamente.
         self.r_wrap = self.declRet(self.t_ptr, "astra_llvm_wrap", &.{ self.t_i32, self.t_i32, self.t_i32, self.t_i64 });
@@ -585,19 +596,20 @@ pub const Emitter = struct {
         // `cold`), así el optimizador puede borrar todo lo que sigue al trap y
         // mantener el camino de error fuera de la ruta caliente.
         const helpers = [_]c.LLVMValueRef{
-            self.r_set_file,      self.r_init,          self.r_cleanup,
-            self.r_fail,          self.r_print_begin,   self.r_print_i64,
-            self.r_print_f64,     self.r_print_bool,    self.r_print_str,
-            self.r_print_end,     self.r_str_concat,    self.r_str_eq,
-            self.r_wrap,          self.r_print_boxed,   self.r_boxed_eq,
-            self.r_boxed_order_fail, self.r_malloc,     self.r_print_array,
-            self.r_index_fail,    self.r_index_nil_fail, self.r_print_struct,
-            self.r_struct_eq,     self.r_print_enum,    self.r_enum_eq,
-            self.r_array_eq,
+            self.r_set_file,       self.r_init,           self.r_cleanup,
+            self.r_fail,           self.r_print_begin,    self.r_print_i64,
+            self.r_print_f64,      self.r_print_bool,     self.r_print_str,
+            self.r_print_fn,       self.r_print_end,      self.r_str_concat,
+            self.r_str_eq,         self.r_str_order_fail, self.r_wrap,
+            self.r_print_boxed,    self.r_boxed_eq,       self.r_boxed_order_fail,
+            self.r_malloc,         self.r_print_array,    self.r_index_fail,
+            self.r_index_nil_fail, self.r_print_struct,   self.r_struct_eq,
+            self.r_print_enum,     self.r_enum_eq,        self.r_array_eq,
         };
         for (helpers) |h| self.addFnAttr(h, "nounwind");
         const noreturn_helpers = [_]c.LLVMValueRef{
-            self.r_fail, self.r_boxed_order_fail, self.r_index_fail, self.r_index_nil_fail,
+            self.r_fail,           self.r_boxed_order_fail, self.r_index_fail, self.r_index_nil_fail,
+            self.r_str_order_fail,
         };
         for (noreturn_helpers) |h| {
             self.addFnAttr(h, "noreturn");
@@ -1346,6 +1358,14 @@ pub const Emitter = struct {
             self.unsupported(idx, "field access on a non-struct value");
             return null;
         }
+        // Receptor nil (`let p: P` sin inicializador): el VM falla con
+        // `cannot access field on nil` en la línea del acceso; sin guard el
+        // GEP/load desreferencia NULL (SEGV).
+        self.emitGuardTrue(
+            c.LLVMBuildIsNull(self.builder, ov.ref, ""),
+            self.tree.loc(idx).line,
+            "cannot access field on nil",
+        );
         const layout = self.structs.get(ov.sname.?) orelse {
             self.unsupported(idx, "field access on an unknown struct");
             return null;
@@ -1379,6 +1399,13 @@ pub const Emitter = struct {
             self.unsupported(idx, "field assignment on a non-struct value");
             return null;
         }
+        // Misma guarda que la lectura: escribir `p.x` con `p` nil no debe
+        // desreferenciar NULL (VM: `cannot access field on nil`).
+        self.emitGuardTrue(
+            c.LLVMBuildIsNull(self.builder, ov.ref, ""),
+            self.tree.loc(idx).line,
+            "cannot access field on nil",
+        );
         const layout = self.structs.get(ov.sname.?) orelse {
             self.unsupported(idx, "field assignment on an unknown struct");
             return null;
@@ -1735,6 +1762,13 @@ pub const Emitter = struct {
             break :blk c.LLVMBuildICmp(self.builder, if (inclusive) c.LLVMIntSLE else c.LLVMIntSLT, iv, bv, "");
         } else blk: {
             const ap = c.LLVMBuildLoad2(self.builder, self.t_ptr, bound_alloca, "");
+            // Array nil (`let a: [i32]`): el VM falla con `cannot take length
+            // of nil` al evaluar la condición; cargar `len` de NULL es SEGV.
+            self.emitGuardTrue(
+                c.LLVMBuildIsNull(self.builder, ap, ""),
+                self.tree.loc(idx).line,
+                "cannot take length of nil",
+            );
             var lidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
             const lp = c.LLVMBuildGEP2(self.builder, self.t_i8, ap, &lidxs, 1, "");
             const len = c.LLVMBuildLoad2(self.builder, self.t_i64, lp, "");
@@ -2263,10 +2297,9 @@ pub const Emitter = struct {
                 const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_enum_eq), self.r_enum_eq, &eargs, 2, "");
                 break :blk c.LLVMBuildTrunc(self.builder, r, self.t_i1, "");
             },
-            .fn_ => {
-                self.unsupported(idx, "cannot compare function values");
-                return null;
-            },
+            // VM value_eq: los valores-función se comparan por identidad del
+            // objeto `{ code, env }` (vm.c value_eq VAL_FN).
+            .fn_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
         };
     }
     fn emitIdent(self: *Emitter, idx: u32, name: []const u8) ?Val {
@@ -2314,8 +2347,11 @@ pub const Emitter = struct {
                 }
                 if (lhs.ty == .str_) {
                     // Sólo los números se ordenan; `type_eq` deja pasar el caso
-                    // y el runtime dice no (types/string_order_rejected).
-                    self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot compare string and string");
+                    // y el runtime dice no (types/string_order_rejected). El
+                    // runtime nombra los operandos reales, así que un string
+                    // nil da `cannot compare nil and string` como el VM.
+                    var oargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), lhs.ref, rhs.ref };
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_order_fail), self.r_str_order_fail, &oargs, 3, "");
                     return .{ .ref = c.LLVMConstInt(self.t_i8, 0, 0), .ty = .bool_ }; // inalcanzable: fail es noreturn
                 }
                 if (lhs.ty == .arr_ or lhs.ty == .fn_ or lhs.ty == .struct_ or lhs.ty == .enum_) {
@@ -2667,6 +2703,13 @@ pub const Emitter = struct {
             self.unsupported(idx, "call of a non-function value");
             return null;
         }
+        // `let f: fn(...)` sin inicializador es nil: el VM falla con `cannot
+        // call non-function value`; cargar code/env de NULL es SEGV.
+        self.emitGuardTrue(
+            c.LLVMBuildIsNull(self.builder, fv.ref, ""),
+            self.tree.loc(idx).line,
+            "cannot call non-function value",
+        );
         const call = self.tree.node(idx).call_expr;
         const args = self.tree.extraSlice(call.args);
         var abuf: [17]c.LLVMValueRef = undefined;
@@ -2700,13 +2743,20 @@ pub const Emitter = struct {
 
     fn emitPrint(self: *Emitter, idx: u32) ?Val {
         const call = self.tree.node(idx).call_expr;
-        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_begin), self.r_print_begin, null, 0, "");
         const args = self.tree.extraSlice(call.args);
-        for (args) |ai| {
-            const av = self.emitExpr(ai) orelse {
+        // Evaluar los argumentos ANTES de `print_begin`: una llamada dentro del
+        // argumento puede imprimir por su cuenta y dejar el separador en 1, lo
+        // que hacía que el print externo empezara con un espacio (`print(f())`
+        // con `f` imprimiendo → " 2" en vez de "2").
+        const vals = self.a.alloc(Val, args.len) catch @panic("OOM");
+        for (args, 0..) |ai, i| {
+            vals[i] = self.emitExpr(ai) orelse {
                 if (self.error_count == 0) self.unsupported(idx, "print argument without a scalar value");
                 return null;
             };
+        }
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_begin), self.r_print_begin, null, 0, "");
+        for (vals) |av| {
             switch (av.ty) {
                 .i64_ => {
                     var iargs = [_]c.LLVMValueRef{av.ref};
@@ -2730,8 +2780,8 @@ pub const Emitter = struct {
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_boxed), self.r_print_boxed, &xargs, 1, "");
                 },
                 .fn_ => {
-                    self.unsupported(idx, "print of a function value");
-                    return null;
+                    var xargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_fn), self.r_print_fn, &xargs, 1, "");
                 },
                 .arr_ => {
                     var xargs = [_]c.LLVMValueRef{av.ref};
@@ -2937,7 +2987,7 @@ pub const Emitter = struct {
             .arr_ => PTY_ARRAY,
             .struct_ => PTY_STRUCT,
             .enum_ => PTY_ENUM,
-            .fn_ => null,
+            .fn_ => PTY_FN,
         };
     }
 
