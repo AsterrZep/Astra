@@ -1,0 +1,23 @@
+// `fn` sin `->`: el checker lo tipa void, pero la VM es dinámica — el valor
+// de `return e` y el de la expresión de cola fluyen al caller (print(g())
+// imprime lo que g devuelva). El emitter LLVM infiere la firma del cuerpo
+// (returns + tail) desde la contra-investigación post-M2; antes
+// `print(tail())` se rechazaba como "print argument without a scalar value"
+// y el caso quedaba fuera de la paridad.
+fn tail() { 5 }
+fn explicit() { return 7 }
+fn mixed(x: i32) {
+    if x > 0 { return 1 }
+    2
+}
+
+fn main() {
+    print(tail())
+// EXPECT: 5
+    print(explicit())
+// EXPECT: 7
+    print(mixed(5))
+// EXPECT: 1
+    print(mixed(-5))
+// EXPECT: 2
+}

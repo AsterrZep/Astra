@@ -1,0 +1,21 @@
+// Codegen twin of conformance/expressions/unannotated_return.astra: the C
+// backend always returned these values (bytecode RET carries them); the LLVM
+// route needed the inferred signature. Pinned here so both codegen gates
+// agree with the VM on unannotated returns.
+fn tail() { 5 }
+fn explicit() { return 7 }
+fn mixed(x: i32) {
+    if x > 0 { return 1 }
+    2
+}
+
+fn main() {
+    print(tail())
+// EXPECT: 5
+    print(explicit())
+// EXPECT: 7
+    print(mixed(5))
+// EXPECT: 1
+    print(mixed(-5))
+// EXPECT: 2
+}

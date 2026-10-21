@@ -80,6 +80,13 @@ const FnInfo = struct {
 
 const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
 const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
+/// Binding temporal para la inferencia de la firma de un `fn` sin `->`:
+/// declareFn corre antes de emitir el cuerpo, así que los `let` de dentro no
+/// están en el scope real. Se resuelven aquí solo para tipos (nunca para
+/// valores), con la última declaración ganando (conservador).
+const InferBinding = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
+const InferredRet = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
+const RetScan = struct { ty: ?Ty = null, node: ?u32 = null, conflict: bool = false, bare: bool = false };
 
 /// Una captura de closure: su nombre, el tipo estático con el que se lee del
 /// env (i64 bits) y su índice en el env de la lambda. Los closures capturan
@@ -374,6 +381,7 @@ pub const Emitter = struct {
     r_malloc: c.LLVMValueRef,
     r_print_array: c.LLVMValueRef,
     r_index_fail: c.LLVMValueRef,
+    r_index_nil_fail: c.LLVMValueRef,
     r_print_struct: c.LLVMValueRef,
     r_struct_eq: c.LLVMValueRef,
     r_print_enum: c.LLVMValueRef,
@@ -401,6 +409,9 @@ pub const Emitter = struct {
     // Función que se emite actualmente (para allocas y bloques).
     cur_fn: c.LLVMValueRef = undefined,
     cur_returns_value: bool = false,
+    /// Scope temporal de `let` para la inferencia de firma de las fn sin `->`
+    /// (ver `inferFnRet`). Solo lo consultan los `infer*`; nunca la emisión.
+    infer_tmp: ?*const std.StringHashMapUnmanaged(InferBinding) = null,
     /// Contador para nombrar los globales de literales de string únicos.
     str_seq: u32 = 0,
     // `astra_module_main`: el código de nivel superior, invocado desde @main.
@@ -459,6 +470,7 @@ pub const Emitter = struct {
             .r_malloc = undefined,
             .r_print_array = undefined,
             .r_index_fail = undefined,
+            .r_index_nil_fail = undefined,
             .r_print_struct = undefined,
             .r_struct_eq = undefined,
             .r_print_enum = undefined,
@@ -502,6 +514,7 @@ pub const Emitter = struct {
         self.r_malloc = self.declRet(self.t_ptr, "malloc", &.{self.t_i64});
         self.r_print_array = self.declVoid("astra_llvm_print_array", &.{self.t_ptr});
         self.r_index_fail = self.declVoid("astra_llvm_index_fail", &.{ self.t_i32, self.t_i64, self.t_i64 });
+        self.r_index_nil_fail = self.declVoid("astra_llvm_index_nil_fail", &.{self.t_i32});
         self.r_print_struct = self.declVoid("astra_llvm_print_struct", &.{self.t_ptr});
         self.r_struct_eq = self.declRet(self.t_i32, "astra_llvm_struct_eq", &.{ self.t_ptr, self.t_ptr });
         self.r_print_enum = self.declVoid("astra_llvm_print_enum", &.{self.t_ptr});
@@ -593,6 +606,14 @@ pub const Emitter = struct {
             ret_m0 = at.ty;
             ret_payload = at.payload;
             ret_sname = at.sname;
+        } else if (self.inferFnRet(fd)) |inf| {
+            // El checker tipa void un `fn` sin `->`, pero el VM devuelve el
+            // valor de `return`/tail: la firma LLVM tiene que reflejarlo para
+            // que `print(g())` reproduzca la VM.
+            ret_ty = self.llvmTy(inf.ty);
+            ret_m0 = inf.ty;
+            ret_payload = inf.payload;
+            ret_sname = inf.sname;
         }
         const fty = c.LLVMFunctionType(ret_ty, &pbuf, @intCast(param_items.len + 1), 0);
         const mangled = std.fmt.allocPrintSentinel(self.a, "astra_fn_{s}", .{fd.name}, 0) catch @panic("OOM");
@@ -898,6 +919,19 @@ pub const Emitter = struct {
     /// (noreturn — mensaje del VM OPCODE_INDEX: `index i out of bounds (len
     /// n)`) y el arm ok queda abierto para el load/store siguiente.
     fn emitBoundsCheck(self: *Emitter, i: c.LLVMValueRef, arr: c.LLVMValueRef, line: u32) void {
+        // Receptor nil: el VM rechaza `a[i]` con `cannot index nil` antes de
+        // mirar bounds (audit §5.3 en el backend C); un GEP sobre NULL
+        // segfaultea, así que el guard va primero. `let a: [i32]` sin
+        // inicializador es el nil del modelo (NULL).
+        const is_nil = c.LLVMBuildIsNull(self.builder, arr, "");
+        const nil_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_nil");
+        const arr_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "idx_arr");
+        _ = c.LLVMBuildCondBr(self.builder, is_nil, nil_bb, arr_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, nil_bb);
+        var nargs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i32, line, 0)};
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_index_nil_fail), self.r_index_nil_fail, &nargs, 1, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, arr_bb);
         var lidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 0, 0)};
         const lp = c.LLVMBuildGEP2(self.builder, self.t_i8, arr, &lidxs, 1, "");
         const len = c.LLVMBuildLoad2(self.builder, self.t_i64, lp, "");
@@ -1284,7 +1318,24 @@ pub const Emitter = struct {
 
     fn emitLocalDecl(self: *Emitter, idx: u32) void {
         const vd = self.varDeclOf(idx);
-        const vi = vd.value orelse return self.unsupported(idx, "let without an initializer");
+        if (vd.value == null) {
+            // `let a: [i32]` sin inicializador: la VM guarda nil y falla en el
+            // primer uso (`cannot index nil`, `cannot access field on nil`…).
+            // Los tipos con representación puntero lo modelan como NULL; un
+            // escalar no tiene nil en el modelo LLVM (i64 0 mentiría sobre el
+            // tipo), así que se rechaza limpio y el caso queda skip.
+            const ann = self.annotTy(vd.type_node) orelse
+                return self.unsupported(idx, "let without an initializer needs a type annotation");
+            switch (ann.ty) {
+                .i64_, .bool_, .f64_ => return self.unsupported(idx, "let without an initializer for a scalar type"),
+                else => {},
+            }
+            const alloca = self.buildAlloca(self.llvmTy(ann.ty));
+            _ = c.LLVMBuildStore(self.builder, c.LLVMConstPointerNull(self.t_ptr), alloca);
+            self.addLocal(vd.name, alloca, ann.ty, ann.payload, ann.sname);
+            return;
+        }
+        const vi = vd.value.?;
         const val = self.emitExpr(vi) orelse {
             if (self.error_count == 0) self.unsupported(idx, "initializer produces no value");
             return;
@@ -2640,6 +2691,143 @@ pub const Emitter = struct {
     /// Tipo del payload de un `boxed_` inferido estructuralmente (los `T?`
     /// anotados pasan por annotTy; aquí sólo constructores y referencia a un
     /// valor ya tipado).
+    /// Firma inferida de un `fn` sin `->`: el checker las tipa void, pero la VM
+    /// es dinámica — tanto `return e` como la expresión de cola fluyen al
+    /// caller (`print(g())` imprime lo que g devuelva; repro 2026-10-20:
+    /// 5/7/1/2). Recorre los `return` (también anidados en if/while/for/match)
+    /// y la cola, con un scope temporal de `let` para que expresiones como
+    /// `a[3]` resuelvan el tipo de `a` (declareFn corre antes de emitir el
+    /// cuerpo). Tipos en conflicto o no inferibles → void, como antes: el uso
+    /// como valor se rechaza limpio y el caso queda skip.
+    fn inferFnRet(self: *Emitter, fd: ast.FnDecl) ?InferredRet {
+        var map: std.StringHashMapUnmanaged(InferBinding) = .empty;
+        self.collectInferLets(fd.body, &map);
+        const saved = self.infer_tmp;
+        self.infer_tmp = &map;
+        defer self.infer_tmp = saved;
+
+        var ri = RetScan{};
+        self.scanReturns(fd.body, &ri);
+        var tail: ?u32 = null;
+        if (std.meta.activeTag(self.tree.node(fd.body)) == .block) tail = self.tree.node(fd.body).block.tail;
+        const tail_ty: ?Ty = if (tail) |t| self.inferStaticTy(t) else null;
+
+        // Un `return` pelado (void) mezclado con un valor es irreproducible
+        // con una sola firma; los conflictos de tipo también.
+        if (ri.bare and (ri.ty != null or tail_ty != null)) return null;
+        if (ri.conflict) return null;
+        if (ri.ty) |rt| {
+            if (tail_ty) |tt| {
+                if (tt != rt) return null;
+            }
+            const src = ri.node.?;
+            return .{
+                .ty = rt,
+                .payload = if (rt == .boxed_) self.inferBoxPayload(src) else null,
+                .sname = if (rt == .struct_) self.inferStaticSName(src) else null,
+            };
+        }
+        if (tail_ty) |tt| {
+            const src = tail.?;
+            return .{
+                .ty = tt,
+                .payload = if (tt == .boxed_) self.inferBoxPayload(src) else null,
+                .sname = if (tt == .struct_) self.inferStaticSName(src) else null,
+            };
+        }
+        return null;
+    }
+
+    /// Bindings `let`/`for`/parámetros de patrón visibles en cualquier punto
+    /// del cuerpo, solo para tipos. Última declaración gana (conservador).
+    fn collectInferLets(self: *Emitter, idx: u32, map: *std.StringHashMapUnmanaged(InferBinding)) void {
+        switch (self.tree.node(idx)) {
+            .block => |b| {
+                for (self.tree.extraSlice(b.stmts)) |st| self.collectInferLets(st, map);
+            },
+            .var_decl => |vd| {
+                const b: InferBinding = if (self.annotTy(vd.type_node)) |at|
+                    .{ .ty = at.ty, .payload = at.payload, .sname = at.sname }
+                else if (vd.value) |vi| blk: {
+                    const t = self.inferStaticTy(vi) orelse return;
+                    break :blk .{
+                        .ty = t,
+                        .payload = if (t == .boxed_ or t == .arr_) self.inferBoxPayload(vi) else null,
+                        .sname = if (t == .struct_) self.inferStaticSName(vi) else null,
+                    };
+                } else return;
+                map.put(self.a, vd.name, b) catch @panic("OOM");
+            },
+            .if_expr => |ie| {
+                self.collectInferLets(ie.then_block, map);
+                if (ie.else_block) |eb| self.collectInferLets(eb, map);
+            },
+            .while_expr => |we| self.collectInferLets(we.body, map),
+            .for_expr => |fe| {
+                // Variable del loop: i64 en rangos, tipo de elemento en arrays.
+                var b = InferBinding{ .ty = .i64_ };
+                if (self.inferStaticTy(fe.iter)) |it| {
+                    if (it == .arr_) b = .{ .ty = self.inferBoxPayload(fe.iter) orelse .i64_ };
+                }
+                map.put(self.a, fe.var_name, b) catch @panic("OOM");
+                self.collectInferLets(fe.body, map);
+            },
+            .match_expr => |mm| {
+                for (self.tree.extraSlice(mm.arms)) |ai| {
+                    const arm = self.tree.node(ai).match_arm;
+                    self.collectInferLets(arm.body, map);
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Tipos de los `return` del cuerpo (incluidos los anidados). Los brazos
+    /// de un match/if se recorren porque un `return` puede vivir dentro.
+    fn scanReturns(self: *Emitter, idx: u32, ri: *RetScan) void {
+        switch (self.tree.node(idx)) {
+            .block => |b| {
+                for (self.tree.extraSlice(b.stmts)) |st| self.scanReturns(st, ri);
+            },
+            .return_stmt => |rv| {
+                const v = rv orelse {
+                    ri.bare = true;
+                    return;
+                };
+                const t = self.inferStaticTy(v) orelse {
+                    ri.conflict = true;
+                    return;
+                };
+                if (ri.ty) |prev| {
+                    if (prev != t) ri.conflict = true;
+                } else {
+                    ri.ty = t;
+                    ri.node = v;
+                }
+            },
+            .if_expr => |ie| {
+                self.scanReturns(ie.then_block, ri);
+                if (ie.else_block) |eb| self.scanReturns(eb, ri);
+            },
+            .while_expr => |we| self.scanReturns(we.body, ri),
+            .for_expr => |fe| self.scanReturns(fe.body, ri),
+            .match_expr => |mm| {
+                for (self.tree.extraSlice(mm.arms)) |ai| {
+                    const arm = self.tree.node(ai).match_arm;
+                    self.scanReturns(arm.body, ri);
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Consulta el scope temporal de inferencia (solo tipos; declareFn corre
+    /// antes que los allocas reales).
+    fn tmpBinding(self: *Emitter, name: []const u8) ?InferBinding {
+        const m = self.infer_tmp orelse return null;
+        return m.get(name);
+    }
+
     fn inferBoxPayload(self: *Emitter, idx: u32) ?Ty {
         switch (self.tree.node(idx)) {
             .some_expr, .ok_expr, .err_expr => |inner| return self.inferStaticTy(inner),
@@ -2652,6 +2840,7 @@ pub const Emitter = struct {
             .identifier => |name| {
                 if (self.lookupLocal(name)) |l| return l.payload_ty;
                 if (self.globals.get(name)) |g| return g.payload_ty;
+                if (self.tmpBinding(name)) |b| return b.payload;
                 return null;
             },
             .call_expr => |call| switch (self.tree.node(call.callee)) {
@@ -2707,7 +2896,20 @@ pub const Emitter = struct {
             .identifier => |name| {
                 if (self.lookupLocal(name)) |l| return l.ty;
                 if (self.globals.get(name)) |g| return g.ty;
+                if (self.tmpBinding(name)) |b| return b.ty;
                 return null;
+            },
+            // `xs[i]`: el tipo de elemento del array. El objeto tiene que ser
+            // nominal (identificador) — un literal de array se infiere por su
+            // primer elemento en los contextos donde el emitter lo necesita.
+            .index_expr => |ix| switch (self.tree.node(ix.object)) {
+                .identifier => |nm| {
+                    if (self.lookupLocal(nm)) |l| return if (l.ty == .arr_) l.payload_ty else null;
+                    if (self.globals.get(nm)) |g| return if (g.ty == .arr_) g.payload_ty else null;
+                    if (self.tmpBinding(nm)) |b| return if (b.ty == .arr_) b.payload else null;
+                    return null;
+                },
+                else => return null,
             },
             .unary_expr => |u| switch (u.op) {
                 .bang => return .bool_,
@@ -2753,6 +2955,7 @@ pub const Emitter = struct {
             .identifier => |nm| {
                 if (self.lookupLocal(nm)) |l| return l.sname;
                 if (self.globals.get(nm)) |g| return g.sname;
+                if (self.tmpBinding(nm)) |b| return b.sname;
                 return null;
             },
             else => return null,

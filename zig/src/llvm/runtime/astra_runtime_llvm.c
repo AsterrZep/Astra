@@ -322,6 +322,13 @@ void astra_llvm_index_fail(unsigned line, int64_t idx, int64_t len) {
     astra_llvm_fail(line, buf);
 }
 
+/* Nil receiver (VM OPCODE_INDEX): `let a: [i32]` with no initializer is nil
+ * (NULL in this model), and `a[i]` must report `cannot index nil` — the same
+ * guard audit §5.3 added to the C backend — instead of GEPping NULL. */
+void astra_llvm_index_nil_fail(unsigned line) {
+    astra_llvm_fail(line, "cannot index nil");
+}
+
 /* ---- structs (M2.b) ----------------------------------------------------- */
 
 /* Structs are heap handles like arrays (aliasing, Hallazgo G) but printed and
