@@ -10,6 +10,7 @@ const diagnostics = @import("diagnostics.zig");
 const c = @import("llvm/c_api.zig").c;
 
 pub const Emitter = @import("llvm/emitter.zig").Emitter;
+pub const Sanitizer = @import("llvm/emitter.zig").Emitter.Sanitizer;
 pub const Instance = @import("llvm/emitter.zig").Instance;
 pub const Rewrite = @import("llvm/emitter.zig").Rewrite;
 pub const StructInstance = @import("llvm/emitter.zig").StructInstance;
@@ -124,6 +125,42 @@ pub fn pipelineForLevel(level: u8) ?[:0]const u8 {
     };
 }
 
+/// Instrumenta el módulo con un sanitizer (M4.d) mediante la pasada de módulo
+/// del new PM (`asan` / `ubsan`): el atributo `sanitize_*` que pone el emisor
+/// sólo *marca* las funciones; la pasada es la que inserta los checks de
+/// shadow memory y las llamadas a `__asan_*` / `__ubsan_*`. Se corre antes de
+/// la optimización, como hace clang, porque el pipeline puede reordenar o
+/// eliminar accesos y la instrumentación debe verlos.
+///
+/// El objeto resultante referencia el runtime del sanitizer: enlazarlo exige
+/// `-fsanitize=<tipo>` (lo hace `zig/tests/llvm_sanitize.sh`). Sin sanitizer el
+/// módulo no se toca.
+pub fn instrumentSanitizer(
+    mod: c.LLVMModuleRef,
+    diag: ?*diagnostics.Sink,
+    file: []const u8,
+    kind: Sanitizer,
+) bool {
+    const pipeline: [:0]const u8 = switch (kind) {
+        .address => "asan",
+    };
+    // La pasada necesita el TargetMachine para la TLI (tamaños de tipo y
+    // librerías de la plataforma); no emite código, sólo instrumenta el IR.
+    const tm = createTargetMachine(diag, file) orelse return false;
+    defer c.LLVMDisposeTargetMachine(tm);
+    const opts = c.LLVMCreatePassBuilderOptions();
+    defer c.LLVMDisposePassBuilderOptions(opts);
+    const err = c.LLVMRunPasses(mod, pipeline.ptr, tm, opts);
+    if (err != null) {
+        const raw = c.LLVMGetErrorMessage(err);
+        defer c.LLVMDisposeErrorMessage(raw);
+        const msg: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+        diagnostics.emit(diag, file, diagnostics.no_span, "LLVM sanitizer pass '{s}' failed: {s}", .{ pipeline, msg });
+        return false;
+    }
+    return true;
+}
+
 /// Corre el pipeline del new PM sobre el módulo antes de verificar/emitir.
 /// Devuelve `false` (y reporta por el sink) si LLVM rechaza el pipeline o una
 /// pasada falla; el llamador sale sin escribir IR ni objeto.
@@ -204,4 +241,50 @@ test "M4: runPasses aplica el pipeline y el módulo sigue verificando" {
     // Nivel 0 no toca nada (el IR de los FileCheck depende de ello).
     try std.testing.expect(pipelineForLevel(0) == null);
     try std.testing.expect(runPasses(mod, null, "opt_smoke.astra", 0));
+}
+
+test "M4.d: instrumentSanitizer inserta checks de ASan en el módulo" {
+    // La pasada `asan` necesita triple y datalayout (los pone el emisor en
+    // `emit`); el módulo lleva una carga de i64 desde un puntero del parámetro,
+    // que es lo que el check de shadow memory debe envolver.
+    const mod = c.LLVMModuleCreateWithName("astra_asan_smoke");
+    defer c.LLVMDisposeModule(mod);
+    const triple = c.LLVMGetDefaultTargetTriple();
+    defer c.LLVMDisposeMessage(triple);
+    c.LLVMSetTarget(mod, triple);
+    const td = c.LLVMCreateTargetData("");
+    defer c.LLVMDisposeTargetData(td);
+    const dl = c.LLVMCopyStringRepOfTargetData(td);
+    defer c.LLVMDisposeMessage(dl);
+    c.LLVMSetDataLayout(mod, dl);
+
+    const i64t = c.LLVMInt64Type();
+    var params = [_]c.LLVMTypeRef{i64t};
+    const fty = c.LLVMFunctionType(i64t, &params, 1, 0);
+    const fnv = c.LLVMAddFunction(mod, "load", fty);
+    const kind = c.LLVMGetEnumAttributeKindForName("sanitize_address", "sanitize_address".len);
+    if (kind != 0) {
+        const attr = c.LLVMCreateEnumAttribute(c.LLVMGetGlobalContext(), kind, 0);
+        const fn_index: c.LLVMAttributeIndex = @bitCast(@as(i32, -1));
+        c.LLVMAddAttributeAtIndex(fnv, fn_index, attr);
+    }
+    const bb = c.LLVMAppendBasicBlock(fnv, "entry");
+    const builder = c.LLVMCreateBuilder();
+    defer c.LLVMDisposeBuilder(builder);
+    c.LLVMPositionBuilderAtEnd(builder, bb);
+    const ptr = c.LLVMBuildIntToPtr(builder, c.LLVMGetParam(fnv, 0), c.LLVMPointerType(i64t, 0), "p");
+    const v = c.LLVMBuildLoad2(builder, i64t, ptr, "v");
+    _ = c.LLVMBuildRet(builder, v);
+    try std.testing.expect(verify(mod, null, "asan_smoke.astra"));
+
+    try std.testing.expect(instrumentSanitizer(mod, null, "asan_smoke.astra", .address));
+    try std.testing.expect(verify(mod, null, "asan_smoke.astra"));
+
+    const ir = c.LLVMPrintModuleToString(mod);
+    defer c.LLVMDisposeMessage(ir);
+    const s = std.mem.span(ir);
+    // El check de la carga es la prueba de que la instrumentación corrió; el
+    // constructor del módulo es lo que inicializa el shadow map en runtime.
+    try std.testing.expect(std.mem.indexOf(u8, s, "__asan_report_load8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "asan.module_ctor") != null);
 }

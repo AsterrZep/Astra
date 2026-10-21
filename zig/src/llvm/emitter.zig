@@ -383,6 +383,9 @@ pub const Emitter = struct {
     debug_wanted: bool = false,
     debug_optimized: bool = false,
 
+    /// Sanitizer (M4.d), sólo con `--sanitize=TYPE`.
+    sanitizer: ?Sanitizer = null,
+
     t_i1: c.LLVMTypeRef,
     t_i8: c.LLVMTypeRef,
     t_i32: c.LLVMTypeRef,
@@ -664,6 +667,29 @@ pub const Emitter = struct {
         self.debug_optimized = opt_level > 0;
     }
 
+    /// Sólo ASan: el rango soportado (LLVM 19..23) no expone la pasada `ubsan`
+    /// en el new PM (`opt-19 --print-passes` no la lista), así que prometer
+    /// `--sanitize=undefined` daría un error de pasada en todo build. El
+    /// atributo `sanitize_undefined` y el enlace con `-fsanitize=undefined`
+    /// quedan para cuando el new PM la publique.
+    pub const Sanitizer = enum {
+        address,
+    };
+
+    /// Activa instrumentación de sanitizers (M4.d). Sólo marca las funciones
+    /// del usuario: la instrumentación real la hace la pasada `asan`/`ubsan`
+    /// del new PM (`llvm.instrumentSanitizer`) antes de optimizar.
+    pub fn enableSanitizer(self: *Emitter, s: Sanitizer) void {
+        self.sanitizer = s;
+    }
+
+    /// Atributo de función que pide a la pasada instrumentar esa función.
+    fn sanitizerAttr(s: Sanitizer) [*:0]const u8 {
+        return switch (s) {
+            .address => "sanitize_address",
+        };
+    }
+
     /// Fija línea/columna del nodo como "current debug location": el IRBuilder
     /// la adjunta a cada instrucción que cree a partir de aquí (no hay que
     /// tocar las llamadas a LLVMBuild*).
@@ -840,6 +866,7 @@ pub const Emitter = struct {
             self.dbg_in_fn = true;
             self.setLoc(idx);
         }
+        if (self.sanitizer) |s| self.addFnAttr(info.val, sanitizerAttr(s));
         self.pushScope();
         defer self.popScope();
         const param_items = self.tree.extraSlice(fd.params);
@@ -955,6 +982,7 @@ pub const Emitter = struct {
             self.dbg_in_fn = true;
             self.setLoc(idx);
         }
+        if (self.sanitizer) |s| self.addFnAttr(fnv, sanitizerAttr(s));
         self.pushScope();
         self.pushCaptures(fv.caps.items);
         for (params, 0..) |pi, i| {
@@ -1433,6 +1461,7 @@ pub const Emitter = struct {
             self.dbg_in_fn = true;
             if (items.len > 0) self.setLoc(items[0]);
         }
+        if (self.sanitizer) |s| self.addFnAttr(mm, sanitizerAttr(s));
         self.pushScope();
         defer self.popScope();
         // Espejo del límite de globales del VM (vm.zig: VM_MAX_GLOBALS = 256):
@@ -1513,6 +1542,7 @@ pub const Emitter = struct {
     fn emitCMain(self: *Emitter) void {
         const imty = c.LLVMFunctionType(c.LLVMInt32TypeInContext(self.ctx), null, 0, 0);
         const mf = c.LLVMAddFunction(self.mod, "main", imty);
+        if (self.sanitizer) |s| self.addFnAttr(mf, sanitizerAttr(s));
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, mf, "entry");
         self.cur_fn = mf;
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
@@ -2948,7 +2978,7 @@ pub const Emitter = struct {
 
     /// Carga el payload (i64 en el offset 8) y lo devuelve con su tipo.
     fn loadBoxPayload(self: *Emitter, box: c.LLVMValueRef, pty: Ty) c.LLVMValueRef {
-        var idxs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i64, 8, 0) };
+        var idxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 8, 0)};
         const pp = c.LLVMBuildGEP2(self.builder, self.t_i8, box, &idxs, 1, "");
         const bits = c.LLVMBuildLoad2(self.builder, self.t_i64, pp, "");
         return self.fromBits(bits, pty);
@@ -4078,4 +4108,44 @@ test "emite DWARF con enableDebugInfo: DICompileUnit, DISubprogram y DILocation 
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "distinct !DICompileUnit") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "distinct !DISubprogram(name: \"add\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "!DILocation(line:") != null);
+}
+
+test "emite atributos de sanitize_address con enableSanitizer" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\fn add(a: i64, b: i64) -> i64 {
+        \\    return a + b
+        \\}
+        \\fn main() {
+        \\    print(add(2, 3))
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "asan_test.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "asan_test.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "asan_test.astra");
+    defer em.deinit();
+    em.enableSanitizer(.address);
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "sanitize_address") != null);
 }

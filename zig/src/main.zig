@@ -24,6 +24,13 @@ const llvm = if (build_options.llvm_enabled) @import("llvm.zig") else void;
 
 const Mode = enum { parse, tokens, ast_dump, bytecode, modules, emit_llvm, emit_llvm_stdout, emit_obj };
 
+/// Sanitizer pedido por CLI (M4.d). Vive aquí, sin el tipo del backend, para
+/// que `astra-zig` sin `-Dllvm` siga compilando: `llvm` es `void` en ese build.
+const Sanitize = enum {
+    none,
+    address,
+};
+
 const usage =
     \\usage: astra-zig [--single-file] [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --emit-obj | --debug] <file.astra>
     \\
@@ -39,6 +46,8 @@ const usage =
     \\  --emit-obj             compile to a native object <file>.o via TargetMachine (requires -Dllvm)
     \\  --opt-level=N          optimize the LLVM module before emitting (N = 0..3; 0 default)
     \\  --debug-info           emit DWARF line tables (lldb/gdb stop on Astra lines)
+    \\  --sanitize=address     instrument the module with AddressSanitizer
+    \\                         (needs an LLVM output mode; link with -fsanitize=address)
     \\  --debug                run under the interactive bytecode debugger (stdin)
     \\
 ;
@@ -53,6 +62,7 @@ pub fn main(init: std.process.Init) !void {
     var single_file = false;
     var opt_level: u8 = 0;
     var debug_info = false;
+    var sanitize: Sanitize = .none;
     var path: ?[]const u8 = null;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -73,6 +83,14 @@ pub fn main(init: std.process.Init) !void {
             single_file = true;
         } else if (std.mem.eql(u8, arg, "--debug-info")) {
             debug_info = true;
+        } else if (std.mem.startsWith(u8, arg, "--sanitize=")) {
+            const val = arg["--sanitize=".len..];
+            if (std.mem.eql(u8, val, "address")) {
+                sanitize = .address;
+            } else {
+                std.debug.print("error: --sanitize expects 'address', got {s}\n{s}", .{ val, usage });
+                std.process.exit(2);
+            }
         } else if (std.mem.startsWith(u8, arg, "--opt-level=")) {
             opt_level = std.fmt.parseInt(u8, arg["--opt-level=".len..], 10) catch {
                 std.debug.print("error: --opt-level expects 0..3, got {s}\n{s}", .{ arg, usage });
@@ -96,6 +114,14 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("{s}", .{usage});
         std.process.exit(2);
     };
+
+    // Un sanitizer sólo tiene sentido sobre un artefacto del backend LLVM; con
+    // el modo por defecto (VM) o los dumps se ignora en silencio, así que se
+    // rechaza explícitamente en vez de aparentar que instrumenta.
+    if (sanitize != .none and mode != .emit_llvm and mode != .emit_llvm_stdout and mode != .emit_obj) {
+        std.debug.print("error: --sanitize requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
+        std.process.exit(2);
+    }
 
     const dir = std.Io.Dir.cwd();
     const source = dir.readFileAlloc(io, file, allocator, .limited(1 << 26)) catch |err| {
@@ -208,7 +234,7 @@ pub fn main(init: std.process.Init) !void {
     // sale. No necesita el emisor de bytecode ni la VM — el emisor LLVM
     // camina el AST.
     if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
-        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info);
+        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info, sanitize);
         return;
     }
 
@@ -284,6 +310,7 @@ fn emitLlvm(
     tc: *typechecker.TypeChecker,
     opt_level: u8,
     debug_info: bool,
+    sanitize: Sanitize,
 ) void {
     // `build_options.llvm_enabled` es comptime: sin -Dllvm solo se analiza esta
     // rama y `llvm.Emitter` (que sería `void`) jamás se referencia.
@@ -292,6 +319,11 @@ fn emitLlvm(
         defer em.deinit();
         em.diag = diag;
         if (debug_info) em.enableDebugInfo(opt_level);
+        const san_kind: ?llvm.Sanitizer = switch (sanitize) {
+            .none => null,
+            .address => .address,
+        };
+        if (san_kind) |kind| em.enableSanitizer(kind);
         // Instancias genéricas materializadas por el checker (Phase 2.4
         // steps 2b/3b): wrappers de fn con sus rewrites y un layout por
         // instancia de struct (los ptypes de print/eq difieren).
@@ -313,6 +345,11 @@ fn emitLlvm(
         }
         em.emit(root);
         if (em.error_count > 0) std.process.exit(1);
+        // M4.d: instrumentación antes del pipeline de optimización (el orden de
+        // clang) para que las pasadas vean los accesos que el asan/ubsan marca.
+        if (san_kind) |kind| {
+            if (!llvm.instrumentSanitizer(em.mod, diag, file, kind)) std.process.exit(1);
+        }
         // M4: pipeline del new PM antes de verificar/emitir. Nivel 0 (default)
         // deja el módulo intacto: los gates de IR y paridad no cambian.
         if (!llvm.runPasses(em.mod, diag, file, opt_level)) std.process.exit(1);
