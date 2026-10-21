@@ -123,3 +123,9 @@ jobs:
         run: ./zig/tests/llvm_parity.sh
       - name: IR shape checks (FileCheck)
         run: ./zig/tests/llvm_filecheck.sh
+      # Differential fuzz (M3): generated programs through the zig VM and the
+      # LLVM route, byte-identical stdout/stderr/exit code. The seed routes
+      # self-skip here (no seed build in this job); they run locally and in
+      # the seed job's sweep. Fixed seed so a failure is reproducible.
+      - name: Differential fuzz (VM <-> LLVM)
+        run: ./zig/tests/llvm_fuzz.sh -n 20 -s 1
