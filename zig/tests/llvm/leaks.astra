@@ -1,0 +1,54 @@
+// Refcount ownership fixture (v1): strings, Option/Result boxes, arrays,
+// structs, enums, closures and globals all allocate on the heap. Parity runs
+// it like any other case; llvm_sanitize.sh runs it under LSan with
+// detect_leaks=1 and requires zero leaks, so a missing retain/release or a
+// destructor that forgets a child fails the gate.
+struct Item {
+    name: string
+    tags: [string]
+}
+
+enum Msg {
+    Text(string)
+    Pair(string, i32)
+}
+
+let gname = "glob" + "al"
+let gtags = ["g1", "g2"]
+
+fn maybe(flag: bool) -> string? {
+    if flag {
+        return some("v" + "al")
+    }
+    return none
+}
+
+fn chain(flag: bool) -> string? {
+    let v = maybe(flag)?
+    return some(v + "!")
+}
+
+fn make(prefix: string) -> fn(i32) -> string {
+    return |x: i32| -> string { return prefix + "!" }
+}
+
+fn main() {
+    let mut i = 0
+    let mut last = "start"
+    while i < 40 {
+        let item = Item { name: "i" + "tem", tags: ["a", "b"] }
+        let m = Pair(item.name, i)
+        last = match m {
+            Msg.Text(t) => t,
+            Msg.Pair(s, n) => s,
+        }
+        let f = make(item.name)
+        print(f(i))
+        print(chain(i % 2 == 0))
+        print(item.tags)
+        i = i + 1
+    }
+    print(last)
+    print(gname)
+    print(gtags)
+}

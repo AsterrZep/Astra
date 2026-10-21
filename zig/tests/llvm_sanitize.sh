@@ -16,9 +16,12 @@
 #   ./zig/tests/llvm_sanitize.sh     # exit 1 on any failure
 #
 # Requires the compiler built with -Dllvm and ${CC:-cc} with libasan (default
-# toolchain on Linux). Leak detection stays off: v1 values are not freed by
-# design (like the VM's arena), so LSan reports are out of scope here and would
-# only mask the memory-safety gate.
+# toolchain on Linux). The parity sweep runs with leak detection off (it
+# includes fatal-error programs, whose exit path is not an ownership test);
+# step 5 exercises leak detection explicitly on tests/llvm/leaks.astra, which
+# allocates every heap kind in a loop and must end with zero leaks. The v1
+# ownership model is refcount-based, so a missing retain/release or a
+# destructor that forgets a child fails that step.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -138,5 +141,34 @@ echo "---- paridad LLVM bajo ASan y -O2 ----"
 if ! ASTRA_LLVM_SAN=address ASTRA_LLVM_OPT=2 "$here/llvm_parity.sh"; then
     fail "llvm_parity.sh diverged under ASan at -O2"
 fi
+
+# ---- 5. Fugas: LSan sobre todos los tipos heap -------------------------
+# Un programa que asigna strings, cajas, arrays, structs, enums, closures y
+# globales en un bucle debe terminar sin fugas. Es el gate del modelo de
+# refcount: si un store no retiene, un return no retiene o un destructor no
+# libera sus hijos, LSan lo reporta como "directly/indirectly leaked".
+cp "$zigdir/tests/llvm/leaks.astra" "$work/leaks.astra"
+"$ASTRA_ZIG" --emit-obj --sanitize=address "$work/leaks.astra" \
+    || fail "cannot emit leaks.astra with ASan"
+"$CC_BIN" -fsanitize=address "$work/leaks.o" "$work/runtime_asan.o" -o "$work/leaks" -lm \
+    || fail "ASan link failed for leaks.astra"
+"$ASTRA_ZIG" "$work/leaks.astra" >"$work/leaks.vm.out" 2>"$work/leaks.vm.err"
+vm_rc=$?
+ASAN_OPTIONS="detect_leaks=1" "$work/leaks" >"$work/leaks.out" 2>"$work/leaks.err"
+leak_rc=$?
+[ "$vm_rc" = "$leak_rc" ] || fail "leaks.astra exit differs (vm=$vm_rc lsan=$leak_rc)"
+cmp -s "$work/leaks.vm.out" "$work/leaks.out" || {
+    diff "$work/leaks.vm.out" "$work/leaks.out" | sed 's/^/    out: /'
+    fail "leaks.astra stdout differs from the VM"
+}
+if grep -q "LeakSanitizer" "$work/leaks.err"; then
+    sed 's/^/    /' "$work/leaks.err"
+    fail "LeakSanitizer reported leaks in leaks.astra"
+fi
+[ ! -s "$work/leaks.err" ] || {
+    sed 's/^/    /' "$work/leaks.err"
+    fail "leaks.astra wrote unexpected stderr"
+}
+echo "ok   LSan: sin fugas en strings/cajas/arrays/structs/enums/closures/globales"
 
 echo "llvm_sanitize: ok"
