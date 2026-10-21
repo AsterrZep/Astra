@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `for..in`/`break`/`continue`, genéricos monomorfizados, traits/impls,
   retornos sin anotar y `let` sin inicializador de tipos con puntero. Gate
   de paridad `zig/tests/llvm_parity.sh` (salida de la VM ↔ ruta LLVM byte a
-  byte): **132 casos — 132 ok, 0 skip, 0 excl, 0 fail**; `llvm_filecheck.sh`
+  byte): **145 casos — 145 ok, 0 skip, 0 excl, 0 fail**; `llvm_filecheck.sh`
   fija la forma del IR (guards con `cold noreturn` y pesos de rama fría,
   match, guard de profundidad, `?`) y `llvm_fuzz.sh` compara programas
   generados por las cuatro rutas (VM seed / C / VM zig / LLVM). Jobs CI
@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `&&`/`||` en call-args (ambos emitters VM, heredado por el C) y alineado
   el dump AST (`BinaryOp(&&/||)`). M4 (calidad) añade `--opt-level=N` (new
   PM: `default<O2>` + LICM/simple-loop-unswitch/IRCE), verificado corriendo
-  el gate de paridad también con `-O2` (132/132), `llvm_bench.sh`, que
+  el gate de paridad también con `-O2` (145/145), `llvm_bench.sh`, que
   publica tiempos VM/C/LLVM (el nativo optimizado va 10–17x por delante del
   backend C y 68–1200x de la VM), y `--debug-info` (M4.c, DWARF line tables
   y subprogramas para funciones, métodos y lambdas, verificado con `lldb`
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   módulo antes de optimizar; `llvm_sanitize.sh` comprueba la instrumentación
   en IR y objeto, que el enlace sin `-fsanitize=address` falla, un control
   negativo con heap-buffer-overflow y la suite completa bajo ASan
-  (**132/132** a `-O0` y `-O2`). UBSan no se ofrece: LLVM 19..23 no registra
+  (**145/145** a `-O0` y `-O2`). UBSan no se ofrece: LLVM 19..23 no registra
   `ubsan` en el new PM. Detalle: `Documentacion/PHASE_LLVM_PROGRESS.md`.
 - **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
   el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,
@@ -298,6 +298,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dentro de una función
 
 ### Fixed
+- **Backend LLVM: auditoría post-M4 (memoria y salida)**: `==` de arrays de
+  `bool` leía fuera del heap (stride 8 fijo sobre elementos de 1 byte; ASan
+  `heap-buffer-overflow`) y los valores nil (`string`/struct/array/enum/fn sin
+  inicializador) segfaulteaban en `print`, `==`, `match`, `+`, `for..in`,
+  acceso/escritura de campo y llamada indirecta, donde la VM imprime `nil` o
+  da un diagnóstico concreto. El runtime es ahora nil-safe y el emisor
+  comprueba el receptor en field access, `for` y llamadas dinámicas. También
+  se corrigieron el espacio extra de `print(f())` (el argumento se evalúa
+  antes de `print_begin`), los campos/payloads de tipo `fn` (caían a
+  `PTY_BOOL` y se imprimían `true`; ahora `PTY_FN`, `<fn>` e igualdad por
+  identidad) y el mensaje de ordenación de un string nil (`nil and string`).
+  Regresiones en 12 casos de conformidad + `zig/tests/llvm/fn_values.astra`;
+  paridad **145/145** a `-O0`, `-O2` y bajo ASan. Sigue sin haber `free`
+  (objetos de vida de proceso; LSan reporta las concatenaciones) y `a[0][1]`
+  / `a[0](x)` siguen siendo rechazos limpios por falta de metadatos del
+  elemento; detalle en `PHASE_LLVM_PROGRESS.md` §11.
 - **C backend: el contexto `?` ya no sobrevive a las llamadas**:
   `astra_error_jmp`/`astra_error_active` son un par de globales y cada
   callee con `?` instalaba su setjmp encima del del caller dejándolo

@@ -163,8 +163,9 @@ Ordenado por dependencia y valor para el bootstrap.
   DWARF, depurador de bytecode) y las decisiones abiertas; el backend nativo
   está en su §11 (fase 2.6) — **implementado y cerrado**: la Fase LLVM (M0–M4)
   vive en `zig/src/llvm/` con su propio log (`PHASE_LLVM_PROGRESS.md`, opt-in
-  `-Dllvm`, gate `zig/tests/llvm_parity.sh`, **132/132 casos ok** a
-  2026-10-21, también bajo ASan con `zig/tests/llvm_sanitize.sh`).
+  `-Dllvm`, gate `zig/tests/llvm_parity.sh`, **145/145 casos ok** a
+  2026-10-21, también bajo ASan con `zig/tests/llvm_sanitize.sh`; la auditoría
+  post-M4 y sus correcciones están en `PHASE_LLVM_PROGRESS.md` §11).
 - `research/001`, `research/002`, `research/003` — gramática, diseño del seed y
   backend C, que siguen siendo la especificación de comportamiento.
 

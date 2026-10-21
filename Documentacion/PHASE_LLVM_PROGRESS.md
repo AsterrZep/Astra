@@ -36,7 +36,7 @@ a LLVM IR verificado, lo baja a objeto nativo con `--emit-obj`
 (TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo enlaza contra el
 runtime compartido del seed y produce binarios cuya salida (stdout, stderr y
 código de salida) es **byte-idéntica a la VM** para **todos** los casos del
-gate de paridad: **132 — 132 ok, 0 skip, 0 excl, 0 fail**.
+gate de paridad: **145 — 145 ok, 0 skip, 0 excl, 0 fail**.
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -364,7 +364,7 @@ FileCheck y el binario por defecto no cambian.
 
 El optimizador **no puede cambiar la semántica observable**: `llvm_parity.sh`
 acepta `ASTRA_LLVM_OPT` y CI corre el gate dos veces, sin pipeline y con
-`-O2`; **132/132 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
+`-O2`; **145/145 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
 
 | bench | llvm -O0 | llvm -O2 |
 |:------|---------:|---------:|
@@ -414,7 +414,7 @@ más el `asan.module_ctor`.
 - Gate `zig/tests/llvm_sanitize.sh`: IR y `.o` instrumentados; enlace plano
   fallido por símbolos `__asan_*`; control negativo (heap-buffer-overflow
   aborta con reporte de ASan); y la suite completa vía
-  `ASTRA_LLVM_SAN=address` — **132/132 a -O0 y a -O2**, con el runtime
+  `ASTRA_LLVM_SAN=address` — **145/145 a -O0 y a -O2**, con el runtime
   compilado también con ASan. `llvm_parity.sh` acepta `ASTRA_LLVM_SAN=<tipo>`
   (flag + runtime + enlace) para no duplicar el runner.
 - LSan (`detect_leaks`) va apagado en el gate: v1 no libera valores (como la
@@ -552,8 +552,59 @@ repros en `/tmp/opencode/`, cifras del gate re-ejecutado):
 | M4.d doc | _(este commit)_ | `docs(llvm): M4.d — sanitizers sobre los artefactos` |
 
 Gates en cada commit de M4: `zig build test` 73/73 (88/88 con `-Dllvm`),
-dump_parity 132/0, suite seed 245/245, `sweep_emit_c` 0 fail,
+dump_parity 144/0, suite seed 257/257, `sweep_emit_c` 0 fail,
 `ui_message_parity` 0 fail, `llvm_filecheck` 5/5, `llvm_dwarf_test.sh` OK,
-`llvm_sanitize.sh` OK y `llvm_parity.sh` **132 casos — 132 ok, 0 skip, 0 excl,
+`llvm_sanitize.sh` OK y `llvm_parity.sh` **145 casos — 145 ok, 0 skip, 0 excl,
 0 fail** tanto a `-O0` como a `-O2`, también bajo ASan (`ASTRA_LLVM_SAN=address`).
 Fuzz diferencial de 4 rutas `llvm_fuzz.sh` limpio (0 fail).
+
+---
+
+## 11. Auditoría post-M4 y correcciones (2026-10-21)
+
+Revisión completa de `zig/src/llvm/` (emisor, runtime C, DWARF, fachada y
+CLI) y de los scripts del gate, con repros ejecutados contra la VM zig, la VM
+del seed y `--emit-c`. **Todos los fallos confirmados eran exclusivos de la
+ruta LLVM**: la VM y el backend C ya daban la salida o el diagnóstico
+correctos.
+
+### 11.1 Fallos corregidos
+
+| # | Tipo | Síntoma (antes) | Causa | Fix |
+|:-:|:-----|:----------------|:------|:----|
+| A1 | Memoria | `==` de arrays de `bool` leía fuera del heap (ASan: `heap-buffer-overflow`, 5 bytes tras una región de 19) y podía dar un resultado arbitrario | `astra_llvm_array_eq` avanzaba con stride 8 fijo, pero los bool ocupan 1 byte (`arr_slot`/`elemSlotSize`) | `f356e18`: mismo stride que print |
+| A2 | Memoria | SEGV con `let s: string` / `let p: P` / `let a: [i32]` / `let f: fn(...)`: print, `==`, `match` con literal, `+`, `for..in`, lectura/escritura de campo, método con nil, llamada dinámica, y nil dentro de Option/array/payload | runtime desreferenciaba NULL; el emisor no comprobaba nil en field access, `for` ni llamada indirecta | `f356e18` + `2ecdcc3`: print/eq/concat nil-safe y guards en el emisor con los mensajes exactos del VM |
+| A3 | Correctitud | `print(f())` con `f` imprimiendo daba `1\n 2` (espacio de más) | `print_begin` se emitía antes de evaluar el argumento; el print interno dejaba el separador armado | `2ecdcc3`: evaluar el argumento primero |
+| A4 | Correctitud | Campo/payload de tipo `fn` se imprimía como `true` y se comparaba como bool (`PTY_BOOL` de fallback) | `boxPTy(.fn_)` era `null` y el layout caía a `PTY_BOOL` | `f356e18`/`2ecdcc3`: `PTY_FN` (9), print `<fn>` e igualdad por identidad; `print(f)` y `f == g` también soportados |
+| B1 | Correctitud | `print` de array/enum nil daba `[]`/`?`; struct nil y payload string nil daban SEGV | el runtime no contemplaba nil en esos cuerpos | `f356e18`: `nil` en string/array/struct/enum y en elementos/payloads |
+| B2 | Diagnóstico | `s < "x"` con `s` nil decía `cannot compare string and string` | mensaje constante por tipo | `f356e18`/`2ecdcc3`: `astra_llvm_str_order_fail` nombra los operandos (`nil and string`) |
+
+Commits: `f356e18` (runtime), `2ecdcc3` (emisor), `b9fa176` (tests).
+
+### 11.2 Cobertura nueva
+
+Doce casos de conformidad (se ejecutan en la VM seed, la VM zig y la ruta
+LLVM) más `zig/tests/llvm/fn_values.astra` (sólo LLVM: el C del seed imprime
+`fn`): `arrays/bool_equality`, `types/nil_string`, `types/nil_aggregates`,
+`types/nil_string_concat{,_right,_both}`, `types/nil_fn_call`,
+`types/string_order_nil`, `structs/nil_field{,_assign}`, `loops/for_nil`,
+`expressions/nested_print` y `llvm/fn_values`. El gate pasó de 132 a **145
+casos** (145/145 a `-O0`, `-O2` y bajo ASan); suite seed **257/257** y
+dump_parity **144/0**.
+
+### 11.3 Limitaciones que siguen (documentadas, no silenciosas)
+
+- **Sin ownership (fugas)**: el runtime no libera cajas, arrays, structs,
+enums, envs de closures ni concatenaciones (lifetime de proceso, como la
+arena de la VM). Medido con LSan: 100 concatenaciones de 10 bytes dejan
+51.400 bytes. Es el modelo v1; el gate ASan corre con `detect_leaks=0`.
+- **Metadatos derivados de un elemento**: `a[0][1]` y llamar `a[0](x)` sobre
+un array de funciones se rechazan con diagnóstico limpio porque `Val` no
+conserva el tipo interno del elemento. Caps que la VM no tiene: >64 campos
+de struct, >64 variantes, >32 brazos de match y >15 params (la VM acepta un
+struct de 65 campos; LLVM lo rechaza).
+- **UBSan** no se ofrece: LLVM 19..23 no registra la pasada `ubsan` en el new
+PM. La verificación de UB se limita a ASan y a la seguridad del build Zig debug.
+- El generador del fuzz diferencial no produce nil ni arrays de `bool`, así
+que estas regresiones viven en la suite de conformidad (que el gate barre) y
+no en el fuzz.
