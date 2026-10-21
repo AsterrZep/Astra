@@ -1,0 +1,20 @@
+// Benchmark: array indexing with bounds checks + struct field traffic (M4).
+struct P {
+    x: i32
+    y: i32
+}
+
+fn main() {
+    let mut xs = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597]
+    let mut p = P { x: 3, y: 4 }
+    let mut i: i32 = 0
+    let mut acc: i32 = 0
+    while i < 2000000 {
+        let idx = i % 16
+        acc = acc + xs[idx] + p.x - p.y
+        p.x = p.x + 1
+        p.y = p.y + (i % 3)
+        i = i + 1
+    }
+    print(acc)
+}

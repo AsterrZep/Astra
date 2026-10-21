@@ -1,0 +1,10 @@
+// Benchmark: tight integer loop with the div/mod guards in the hot path (M4).
+fn main() {
+    let mut i: i32 = 0
+    let mut acc: i32 = 0
+    while i < 3000000 {
+        acc = acc + (i % 7) * 3 - (i / 5) % 11
+        i = i + 1
+    }
+    print(acc)
+}

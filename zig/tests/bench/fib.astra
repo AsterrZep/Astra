@@ -1,0 +1,10 @@
+// Benchmark: recursive calls (M4). Prints a checksum only, so VM, C and LLVM
+// outputs are directly comparable.
+fn fib(n: i32) -> i32 {
+    if n < 2 { return n }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    print(fib(27))
+}
