@@ -134,7 +134,7 @@ The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
 progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
 build and binary are byte-identical and none of the existing gates change.
-**M0–M3 are closed** (2026-10-20): the emitter compiles the Astra-0 subset —
+**M0–M4 are closed** (2026-10-21): the emitter compiles the Astra-0 subset —
 scalars, floats, strings, Option/Result with `match`/`?`, closures,
 arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
@@ -146,13 +146,17 @@ fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
 `llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
 multi-module programs stay out of scope (the emitter is single-file; the
 driver rejects them cleanly with exit 2); `--single-file` reproduces the
-seed's inert-import semantics for the `module/` fixtures. M4 (quality) is in
-progress: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
+seed's inert-import semantics for the `module/` fixtures. M4 (quality) is
+closed: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
 simple-loop-unswitch / IRCE for N=2), `--debug-info` emits source-mapped DWARF
 (verified via `tests/llvm_dwarf_test.sh` under `lldb`), and the parity gate is
 run both plain and with `ASTRA_LLVM_OPT=2` (132/132 in both); `zig/tests/llvm_bench.sh`
-publishes VM/C/LLVM timings. Sanitizers (M4.d) are the remaining M4 step; see
-`PHASE_LLVM_PROGRESS.md` §8.
+publishes VM/C/LLVM timings. `--sanitize=address` marks functions and runs the
+new-PM `asan` pass before the optimizer; `zig/tests/llvm_sanitize.sh` proves
+the artifacts are instrumented, that a plain link fails without
+`-fsanitize=address`, and runs the whole 132-case suite under ASan at `-O0` and
+`-O2`. UBSan is not offered because LLVM 19..23 does not register a `ubsan`
+new-PM pass (`opt-19 --print-passes`); see `PHASE_LLVM_PROGRESS.md` §8.
 
 ```bash
 cd zig
@@ -164,6 +168,7 @@ zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
 ./tests/llvm_parity.sh                  # VM <-> --emit-obj -> link runtime
 ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh # same gate through default<O2>+extras
 ./tests/llvm_filecheck.sh               # IR shapes (FileCheck-19..23)
+./tests/llvm_sanitize.sh                # ASan artifacts + parity under ASan (M4.d)
 ./tests/llvm_fuzz.sh -n 40 -s 1         # differential fuzz, 4 routes
 ./tests/llvm_bench.sh -n 3 -O 2         # VM / C / LLVM timings (M4)
 ```

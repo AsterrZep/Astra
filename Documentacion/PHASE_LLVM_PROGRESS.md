@@ -24,11 +24,11 @@ por la VM.
 
 ---
 
-## 1. Estado actual (2026-10-21, M3 cerrado; M4 en curso)
+## 1. Estado actual (2026-10-21, M4 cerrado)
 
-**M0 (infraestructura), M1 (núcleo completo), M2 (valores y patrones) y M3
-(paridad total y robustez) están terminados; M4 (calidad) tiene cerrados el
-pipeline `-O2`, los benchmarks y DWARF, con sanitizers pendiente.** El emisor compila Astra-0 —
+**M0 (infraestructura), M1 (núcleo completo), M2 (valores y patrones), M3
+(paridad total y robustez) y M4 (calidad) están terminados: pipeline `-O2`,
+benchmarks, DWARF y sanitizers ASan.** El emisor compila Astra-0 —
 escalares, floats, strings, Option/Result con `match`/`?`, closures,
 arrays/structs/enums de usuario, `for..in`/`break`/`continue`, genéricos
 monomorfizados, traits/impls, `let` sin inicializador y retornos sin anotar —
@@ -48,7 +48,7 @@ gate de paridad: **132 — 132 ok, 0 skip, 0 excl, 0 fail**.
 | **M1** | floats, strings, Option/Result + `?` + `match`, closures | ✅ |
 | **M2** | arrays/structs (GEP), enums de usuario + `match`, `for..in`, `--emit-obj` | ✅ |
 | **M3** | paridad total, guard de profundidad, atributos/pesos, fuzz, FileCheck | ✅ |
-| **M4** | calidad: pipeline `-O2` + benchmarks + DWARF ✅; sanitizers ⬜ | 🟡 |
+| **M4** | calidad: pipeline `-O2` + benchmarks + DWARF + sanitizers ASan | ✅ |
 
 ---
 
@@ -305,7 +305,8 @@ su commit y los gates verdes (detalle de commits en §9):
 | M3.h | `--single-file` (semántica del seed: `import`/`from`/`use` inertes) y los 3 fixtures de `module/` en el gate; el emisor LLVM deja de rechazar declaraciones de módulo. |
 | M3.i | Canario CI no bloqueante con el LLVM stable más reciente (`llvm-canario`, `continue-on-error`). |
 
-**Gate final: `llvm_parity.sh` 131 casos — 131 ok, 0 skip, 0 excl, 0 fail.**
+**Gate final de M3: `llvm_parity.sh` 131 casos — 131 ok, 0 skip, 0 excl, 0 fail
+(132 desde el fixture `check_debug` de M4.c).**
 El resto de gates: `zig build test` 73/73 (84/84 con `-Dllvm`), dump_parity
 132/0, suite seed 245/245, `sweep_emit_c` 0 fail, `ui_message_parity`
 `accept_fail=0 first_fail=0`, `llvm_filecheck` 4/4 y fuzz 480/480.
@@ -315,13 +316,13 @@ El resto de gates: `zig build test` 73/73 (84/84 con `-Dllvm`), dump_parity
 - **Programas multi-módulo reales** (loader, mangling entre módulos, orden de
   dependencias): el emisor es de fichero único. `--single-file` reproduce la
   semántica del seed para los fixtures que declaran imports inertes.
-- `@cImport`/translate-c, DWARF y sanitizers: M4.
+- `@cImport`/translate-c: no implementado en v1.
 
 ### Diferido a M4 / M5
 
 | Qué | Hito |
 |:----|:-----|
-| Sanitizers sobre artefactos (ASan/UBSan) | M4.d |
+| UBSan (`ubsan` no existe como pasada del new PM en LLVM 19..23) | cuando lo publique LLVM |
 | Remarks del pipeline (medir las adiciones de `-O2`) | M4 (opcional) |
 | Multi-target / cross-compilation (`-mtriple`) | M5 |
 
@@ -331,7 +332,7 @@ reproduce con el contador interno y los fixtures de módulo corren con
 
 ---
 
-## 8. M4 — calidad (en curso, 2026-10-20)
+## 8. M4 — calidad (cerrado 2026-10-21)
 
 ### M4.a — Benchmarks (cerrado)
 
@@ -363,7 +364,7 @@ FileCheck y el binario por defecto no cambian.
 
 El optimizador **no puede cambiar la semántica observable**: `llvm_parity.sh`
 acepta `ASTRA_LLVM_OPT` y CI corre el gate dos veces, sin pipeline y con
-`-O2`; **131/131 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
+`-O2`; **132/132 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
 
 | bench | llvm -O0 | llvm -O2 |
 |:------|---------:|---------:|
@@ -394,11 +395,35 @@ opt-in con `--debug-info`:
     cursor de columna y backtrace limpio a través de marcos.
   - Paridad: `llvm_parity.sh` total **132 ok / 0 fail** tanto a `-O0` como a `-O2`.
 
-### Pendiente de M4
+### M4.d — Sanitizers sobre los artefactos (cerrado 2026-10-21)
 
-- **M4.d — Sanitizers sobre artefactos**: instrumentar el IR generado
-  (`asan` en el pipeline) y enlazar el runtime con ASan/UBSan para correr
-  la suite completa bajo ellos.
+`--sanitize=address` instrumenta el módulo con la pasada `asan` del new PM
+(`instrumentSanitizer` en `src/llvm.zig`) **antes** del pipeline de
+optimización, como hace clang: el emisor sólo marca las funciones
+(`sanitize_address` en nombradas, métodos de `impl`, lambdas,
+`astra_module_main` y `main`) y la pasada inserta los checks de shadow memory
+más el `asan.module_ctor`.
+
+- El flag exige un modo de salida LLVM (con la VM no hay artefacto que
+  instrumentar: exit 2). **`--sanitize=undefined` no se acepta**: LLVM 19..23
+  no registra `ubsan` en el new PM (`opt-19 --print-passes` no la lista), así
+  que prometerlo daría un error de pasada en todo build del rango soportado;
+  el atributo `sanitize_undefined` queda para cuando LLVM la publique.
+- El objeto referencia `__asan_*`: enlazarlo sin `-fsanitize=address` falla, y
+  el gate lo exige (un flag ignorado en silencio no pasaría).
+- Gate `zig/tests/llvm_sanitize.sh`: IR y `.o` instrumentados; enlace plano
+  fallido por símbolos `__asan_*`; control negativo (heap-buffer-overflow
+  aborta con reporte de ASan); y la suite completa vía
+  `ASTRA_LLVM_SAN=address` — **132/132 a -O0 y a -O2**, con el runtime
+  compilado también con ASan. `llvm_parity.sh` acepta `ASTRA_LLVM_SAN=<tipo>`
+  (flag + runtime + enlace) para no duplicar el runner.
+- LSan (`detect_leaks`) va apagado en el gate: v1 no libera valores (como la
+  arena de la VM), así que los leaks no son el objetivo y su ruido taparía la
+  comprobación de seguridad de memoria.
+
+Tests: `src/llvm.zig` («instrumentSanitizer inserta checks de ASan») y
+`src/llvm/emitter.zig` («emite atributos de sanitize_address»); `zig build test
+-Dllvm` **88/88**.
 
 ---
 
@@ -521,10 +546,14 @@ repros en `/tmp/opencode/`, cifras del gate re-ejecutado):
 | M4.b | `8a0aad9` | `feat(llvm): pipeline de optimización --opt-level y gate a -O2 (M4.b)` |
 | M4.doc | `3f9e704` | `docs(llvm): M4.a/M4.b — benchmarks y pipeline -O2` |
 | M4.c | `43b0837` | `feat(llvm): emisión de DWARF con --debug-info y verificación lldb (M4.c)` |
-| M4.cdoc | _(este commit)_ | `docs(llvm): M4.c — soporte DWARF y depuración por línea Astra` |
+| M4.cdoc | `d004711` | `docs(llvm): M4.c — soporte DWARF y depuración por línea Astra` |
+| M4.d | `50ec20b` | `feat(llvm): instrumentación ASan con --sanitize=address (M4.d)` |
+| M4.d test | `7cd6f6a` | `test(llvm): gate de sanitizers sobre los artefactos (M4.d)` |
+| M4.d doc | _(este commit)_ | `docs(llvm): M4.d — sanitizers sobre los artefactos` |
 
-Gates en cada commit de M4: `zig build test` 73/73 (85/85 con `-Dllvm`),
+Gates en cada commit de M4: `zig build test` 73/73 (88/88 con `-Dllvm`),
 dump_parity 132/0, suite seed 245/245, `sweep_emit_c` 0 fail,
-`ui_message_parity` 0 fail, `llvm_filecheck` 5/5, `llvm_dwarf_test.sh` OK y
-`llvm_parity.sh` **132 casos — 132 ok, 0 skip, 0 excl, 0 fail** tanto a `-O0`
-como a `-O2`. Fuzz diferencial de 4 rutas `llvm_fuzz.sh` limpio (0 fail).
+`ui_message_parity` 0 fail, `llvm_filecheck` 5/5, `llvm_dwarf_test.sh` OK,
+`llvm_sanitize.sh` OK y `llvm_parity.sh` **132 casos — 132 ok, 0 skip, 0 excl,
+0 fail** tanto a `-O0` como a `-O2`, también bajo ASan (`ASTRA_LLVM_SAN=address`).
+Fuzz diferencial de 4 rutas `llvm_fuzz.sh` limpio (0 fail).

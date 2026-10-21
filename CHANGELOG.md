@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `for..in`/`break`/`continue`, genéricos monomorfizados, traits/impls,
   retornos sin anotar y `let` sin inicializador de tipos con puntero. Gate
   de paridad `zig/tests/llvm_parity.sh` (salida de la VM ↔ ruta LLVM byte a
-  byte): **131 casos — 131 ok, 0 skip, 0 excl, 0 fail**; `llvm_filecheck.sh`
+  byte): **132 casos — 132 ok, 0 skip, 0 excl, 0 fail**; `llvm_filecheck.sh`
   fija la forma del IR (guards con `cold noreturn` y pesos de rama fría,
   match, guard de profundidad, `?`) y `llvm_fuzz.sh` compara programas
   generados por las cuatro rutas (VM seed / C / VM zig / LLVM). Jobs CI
@@ -35,8 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publica tiempos VM/C/LLVM (el nativo optimizado va 10–17x por delante del
   backend C y 68–1200x de la VM), y `--debug-info` (M4.c, DWARF line tables
   y subprogramas para funciones, métodos y lambdas, verificado con `lldb`
-  en `tests/llvm_dwarf_test.sh` y `check_debug.astra`). Detalle:
-  `Documentacion/PHASE_LLVM_PROGRESS.md`.
+  en `tests/llvm_dwarf_test.sh` y `check_debug.astra`), y `--sanitize=address`
+  (M4.d): el emisor marca las funciones y la pasada `asan` instrumenta el
+  módulo antes de optimizar; `llvm_sanitize.sh` comprueba la instrumentación
+  en IR y objeto, que el enlace sin `-fsanitize=address` falla, un control
+  negativo con heap-buffer-overflow y la suite completa bajo ASan
+  (**132/132** a `-O0` y `-O2`). UBSan no se ofrece: LLVM 19..23 no registra
+  `ubsan` en el new PM. Detalle: `Documentacion/PHASE_LLVM_PROGRESS.md`.
 - **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
   el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,
   unwind de frame, setjmp del C backend); ahora el typechecker de ambos
