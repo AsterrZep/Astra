@@ -218,8 +218,11 @@ static void dump_node(Node *node, int indent) {
         case OP_GT:       op = ">";  break;
         case OP_LE:       op = "<="; break;
         case OP_GE:       op = ">="; break;
-        case OP_AND:      op = "and"; break;
-        case OP_OR:       op = "or";  break;
+        /* `&&`/`||` are the operators ARCH §34.2 promises; the old "and"/"or"
+         * spellings here named the dead keywords (audit §A3) and diverged
+         * from the zig AST dump (`BinaryOp(&&)`). */
+        case OP_AND:      op = "&&"; break;
+        case OP_OR:       op = "||"; break;
         case OP_BIT_AND:  op = "&";  break;
         case OP_BIT_OR:   op = "|";  break;
         case OP_BIT_XOR:  op = "^";  break;
