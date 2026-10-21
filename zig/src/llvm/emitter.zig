@@ -36,6 +36,7 @@ const ast = @import("../ast/ast.zig");
 const diagnostics = @import("../diagnostics.zig");
 const tc_types = @import("../typechecker/types.zig");
 const c = @import("c_api.zig").c;
+const debug_mod = @import("debug.zig");
 
 /// Tipos escalares que el subconjunto actual representa sin boxing, más los
 /// tipos con heap: `i64` para todos los tipos enteros de Astra, `bool` como
@@ -372,6 +373,16 @@ pub const Emitter = struct {
     mod: c.LLVMModuleRef,
     builder: c.LLVMBuilderRef,
 
+    /// DWARF (M4.c), sólo con `--debug-info`: `dbg_scope` es el DISubprogram
+    /// de la función en curso y `dbg_in_fn` separa los cuerpos de función del
+    /// código de nivel superior (declaraciones de globales, `@main`), que se
+    /// emite sin location.
+    dbg: ?*debug_mod.DebugInfo = null,
+    dbg_scope: c.LLVMMetadataRef = undefined,
+    dbg_in_fn: bool = false,
+    debug_wanted: bool = false,
+    debug_optimized: bool = false,
+
     t_i1: c.LLVMTypeRef,
     t_i8: c.LLVMTypeRef,
     t_i32: c.LLVMTypeRef,
@@ -519,6 +530,7 @@ pub const Emitter = struct {
     }
 
     pub fn deinit(self: *Emitter) void {
+        if (self.dbg) |d| d.deinit();
         c.LLVMDisposeBuilder(self.builder);
         c.LLVMDisposeModule(self.mod);
         c.LLVMContextDispose(self.ctx);
@@ -645,8 +657,32 @@ pub const Emitter = struct {
         self.struct_instances = instances;
     }
 
+    /// Activa DWARF (M4.c). Llamar antes de `emit`. `opt_level > 0` sólo marca
+    /// el CU como optimizado (lldb lo refleja en la info de compilación).
+    pub fn enableDebugInfo(self: *Emitter, opt_level: u8) void {
+        self.debug_wanted = true;
+        self.debug_optimized = opt_level > 0;
+    }
+
+    /// Fija línea/columna del nodo como "current debug location": el IRBuilder
+    /// la adjunta a cada instrucción que cree a partir de aquí (no hay que
+    /// tocar las llamadas a LLVMBuild*).
+    fn setLoc(self: *Emitter, idx: u32) void {
+        const d = self.dbg orelse return;
+        if (!self.dbg_in_fn) return;
+        const l = self.tree.loc(idx);
+        c.LLVMSetCurrentDebugLocation2(self.builder, d.location(l.line, l.col, self.dbg_scope));
+    }
+
     pub fn emit(self: *Emitter, root: u32) void {
         const items = self.tree.extraSlice(self.tree.node(root).source_file);
+        // DWARF (M4.c): el DIBuilder necesita el módulo ya creado (init) y
+        // debe finalizar después de emitir todos los cuerpos (paso 6).
+        if (self.debug_wanted) {
+            const d = self.a.create(debug_mod.DebugInfo) catch @panic("OOM");
+            d.* = debug_mod.DebugInfo.init(self.ctx, self.mod, self.file, self.debug_optimized);
+            self.dbg = d;
+        }
         // 0: registra los layouts de structs y enums (los annotations, los
         // accesos a campo y los constructores de variantes se resuelven
         // contra estos mapas, y los descriptores del runtime se emiten aquí
@@ -706,6 +742,8 @@ pub const Emitter = struct {
         self.emitCMain();
         // 6: triple y datalayout del host (024 §2).
         self.setTarget();
+        // 7: cierra el CU (lo engancha a !llvm.dbg.cu y pone los module flags).
+        if (self.dbg) |d| d.finalize();
     }
 
     // ── Firma de funciones y globales ───────────────────────────────────────
@@ -797,6 +835,11 @@ pub const Emitter = struct {
         self.cur_returns_value = info.returns_value;
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, info.val, "entry");
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
+        if (self.dbg) |d| {
+            self.dbg_scope = d.subprogram(info.val, fd.name, self.tree.loc(idx).line);
+            self.dbg_in_fn = true;
+            self.setLoc(idx);
+        }
         self.pushScope();
         defer self.popScope();
         const param_items = self.tree.extraSlice(fd.params);
@@ -896,6 +939,8 @@ pub const Emitter = struct {
         const saved_block = c.LLVMGetInsertBlock(self.builder);
         const prev_fn = self.cur_fn;
         const prev_ret = self.cur_returns_value;
+        const prev_scope = self.dbg_scope;
+        const prev_in_fn = self.dbg_in_fn;
         const saved_scopes = self.scopes;
         const saved_captures = self.captures;
         self.scopes = .empty;
@@ -904,6 +949,12 @@ pub const Emitter = struct {
         self.cur_returns_value = true;
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, fnv, "entry");
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
+        if (self.dbg) |d| {
+            const dbg_name = std.fmt.allocPrint(self.a, "lambda@{d}", .{self.tree.loc(idx).line}) catch @panic("OOM");
+            self.dbg_scope = d.subprogram(fnv, dbg_name, self.tree.loc(idx).line);
+            self.dbg_in_fn = true;
+            self.setLoc(idx);
+        }
         self.pushScope();
         self.pushCaptures(fv.caps.items);
         for (params, 0..) |pi, i| {
@@ -925,6 +976,8 @@ pub const Emitter = struct {
         self.popScope();
         self.cur_fn = prev_fn;
         self.cur_returns_value = prev_ret;
+        self.dbg_scope = prev_scope;
+        self.dbg_in_fn = prev_in_fn;
         self.scopes = saved_scopes;
         self.captures = saved_captures;
         c.LLVMPositionBuilderAtEnd(self.builder, saved_block);
@@ -1374,6 +1427,12 @@ pub const Emitter = struct {
         self.cur_fn = mm;
         self.cur_returns_value = false;
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
+        if (self.dbg) |d| {
+            const line: u32 = if (items.len > 0) self.tree.loc(items[0]).line else 1;
+            self.dbg_scope = d.subprogram(mm, "main", line);
+            self.dbg_in_fn = true;
+            if (items.len > 0) self.setLoc(items[0]);
+        }
         self.pushScope();
         defer self.popScope();
         // Espejo del límite de globales del VM (vm.zig: VM_MAX_GLOBALS = 256):
@@ -1457,6 +1516,12 @@ pub const Emitter = struct {
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, mf, "entry");
         self.cur_fn = mf;
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
+        // `@main` es sintético (sin línea Astra): se emite sin !dbg para no
+        // atribuir sus instrucciones al último cuerpo emitido.
+        if (self.dbg != null) {
+            self.dbg_in_fn = false;
+            c.LLVMSetCurrentDebugLocation(self.builder, null);
+        }
         const fp = c.LLVMBuildGlobalStringPtr(self.builder, self.file_z, "");
         var fargs = [_]c.LLVMValueRef{fp};
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_set_file), self.r_set_file, &fargs, 1, "");
@@ -1497,6 +1562,7 @@ pub const Emitter = struct {
     }
 
     fn emitStmt(self: *Emitter, idx: u32) void {
+        self.setLoc(idx);
         switch (self.tree.node(idx)) {
             .expr_stmt => |e| _ = self.emitExpr(e),
             .var_decl, .const_decl => self.emitLocalDecl(idx),
@@ -1728,6 +1794,7 @@ pub const Emitter = struct {
     // ── Expresiones ─────────────────────────────────────────────────────────
 
     fn emitExpr(self: *Emitter, idx: u32) ?Val {
+        self.setLoc(idx);
         switch (self.tree.node(idx)) {
             .int_literal => |v| return .{ .ref = c.LLVMConstInt(self.t_i64, @as(u64, @bitCast(v)), 0), .ty = .i64_ },
             .float_literal => |v| return .{ .ref = c.LLVMConstReal(self.t_f64, v), .ty = .f64_ },
@@ -3968,4 +4035,47 @@ test "emite for..in con break/continue: cond al frente e incremento en continue"
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "for_next") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "for_exit") != null);
     try std.testing.expect(std.mem.indexOf(u8, ir_str, "wh_cond") != null);
+}
+
+test "emite DWARF con enableDebugInfo: DICompileUnit, DISubprogram y DILocation por instrucción" {
+    const parser = @import("../parser/parser.zig");
+    const typechecker = @import("../typechecker/typechecker.zig");
+    const src =
+        \\fn add(a: i64, b: i64) -> i64 {
+        \\    return a + b
+        \\}
+        \\fn main() {
+        \\    print(add(2, 3))
+        \\}
+    ;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var tree = ast.Tree.init(a, src);
+    defer tree.deinit();
+    var p = parser.Parser.init(a, src, &tree);
+    p.filename = "debug_test.astra";
+    const root = p.parse() catch unreachable;
+    var tc = try typechecker.TypeChecker.init(a, &tree, "debug_test.astra");
+    tc.check(root);
+    try std.testing.expectEqual(@as(u32, 0), tc.error_count);
+
+    var em = Emitter.init(a, &tree, "debug_test.astra");
+    defer em.deinit();
+    em.enableDebugInfo(0);
+    em.emit(root);
+    try std.testing.expectEqual(@as(u32, 0), em.error_count);
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, 0), c.LLVMVerifyModule(em.mod, c.LLVMReturnStatusAction, &err));
+    if (err != null) c.LLVMDisposeMessage(err);
+
+    const ir = c.LLVMPrintModuleToString(em.mod);
+    defer c.LLVMDisposeMessage(ir);
+    const ir_str = std.mem.span(ir);
+
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "!llvm.dbg.cu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "distinct !DICompileUnit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "distinct !DISubprogram(name: \"add\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ir_str, "!DILocation(line:") != null);
 }

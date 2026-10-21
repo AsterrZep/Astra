@@ -16,6 +16,8 @@ pub const c = @cImport({
     // PassBuilder.h (M4): LLVMRunPasses sobre el pipeline textual del new PM
     // (`default<O2>`, …) antes de emitir el objeto.
     @cInclude("llvm-c/Transforms/PassBuilder.h");
+    // DebugInfo.h (M4.c): DIBuilder/DISubprogram/DILocation para `-g`.
+    @cInclude("llvm-c/DebugInfo.h");
 });
 
 test "smoke: módulo i64 add(i64,i64) verifica e imprime IR" {

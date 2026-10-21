@@ -1,0 +1,20 @@
+// Shape de metadatos DWARF (LLVM_BACKEND_PLAN.md §6 M4.c).
+// FLAGS: --debug-info
+//
+// CHECK: define i64 @astra_fn_add(ptr %{{[0-9]+}}, i64 %{{[0-9]+}}, i64 %{{[0-9]+}}) !dbg ![[SP_ADD:[0-9]+]]
+// CHECK: %{{[0-9]+}} = add i64 %{{[0-9]+}}, %{{[0-9]+}}, !dbg ![[LOC_ADD:[0-9]+]]
+// CHECK: !llvm.dbg.cu = !{![[CU:[0-9]+]]}
+// CHECK: ![[CU]] = distinct !DICompileUnit(language: DW_LANG_C, file: ![[FILE:[0-9]+]], producer: "astra-zig"
+// CHECK: ![[FILE]] = !DIFile(filename: "check_debug.astra"
+// CHECK: ![[SP_ADD]] = distinct !DISubprogram(name: "add", linkageName: "add", scope: null, file: ![[FILE]], line: 14
+// CHECK: ![[LOC_ADD]] = !DILocation(line: 15
+// CHECK: distinct !DISubprogram(name: "main", linkageName: "main", scope: null, file: ![[FILE]], line: 18
+// CHECK: !DILocation(line: 19
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn main() {
+    print(add(2, 3))
+}

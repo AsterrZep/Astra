@@ -58,7 +58,8 @@ for f in "$zigdir"/tests/llvm/check_*.astra; do
     [ -e "$f" ] || continue
     total=$((total + 1))
     rel=${f#"$zigdir/"}
-    if ! "$ASTRA_ZIG" --emit-llvm-stdout "$f" >"$work/ir.ll" 2>"$work/emit.err"; then
+    extra_flags=$(sed -n 's|^// FLAGS: *||p' "$f" | head -n1)
+    if ! "$ASTRA_ZIG" --emit-llvm-stdout $extra_flags "$f" >"$work/ir.ll" 2>"$work/emit.err"; then
         echo "FAIL $rel: emit"
         sed 's/^/    /' "$work/emit.err"
         fail=$((fail + 1))

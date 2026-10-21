@@ -38,6 +38,7 @@ const usage =
     \\  --emit-llvm-stdout     print LLVM IR to stdout (requires -Dllvm)
     \\  --emit-obj             compile to a native object <file>.o via TargetMachine (requires -Dllvm)
     \\  --opt-level=N          optimize the LLVM module before emitting (N = 0..3; 0 default)
+    \\  --debug-info           emit DWARF line tables (lldb/gdb stop on Astra lines)
     \\  --debug                run under the interactive bytecode debugger (stdin)
     \\
 ;
@@ -51,6 +52,7 @@ pub fn main(init: std.process.Init) !void {
     var debug = false;
     var single_file = false;
     var opt_level: u8 = 0;
+    var debug_info = false;
     var path: ?[]const u8 = null;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -69,6 +71,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .emit_obj;
         } else if (std.mem.eql(u8, arg, "--single-file")) {
             single_file = true;
+        } else if (std.mem.eql(u8, arg, "--debug-info")) {
+            debug_info = true;
         } else if (std.mem.startsWith(u8, arg, "--opt-level=")) {
             opt_level = std.fmt.parseInt(u8, arg["--opt-level=".len..], 10) catch {
                 std.debug.print("error: --opt-level expects 0..3, got {s}\n{s}", .{ arg, usage });
@@ -204,7 +208,7 @@ pub fn main(init: std.process.Init) !void {
     // sale. No necesita el emisor de bytecode ni la VM — el emisor LLVM
     // camina el AST.
     if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
-        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level);
+        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info);
         return;
     }
 
@@ -279,6 +283,7 @@ fn emitLlvm(
     diag: *diagnostics.Sink,
     tc: *typechecker.TypeChecker,
     opt_level: u8,
+    debug_info: bool,
 ) void {
     // `build_options.llvm_enabled` es comptime: sin -Dllvm solo se analiza esta
     // rama y `llvm.Emitter` (que sería `void`) jamás se referencia.
@@ -286,6 +291,7 @@ fn emitLlvm(
         var em = llvm.Emitter.init(a, tree, file);
         defer em.deinit();
         em.diag = diag;
+        if (debug_info) em.enableDebugInfo(opt_level);
         // Instancias genéricas materializadas por el checker (Phase 2.4
         // steps 2b/3b): wrappers de fn con sus rewrites y un layout por
         // instancia de struct (los ptypes de print/eq difieren).
