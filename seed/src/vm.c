@@ -318,9 +318,14 @@ static bool value_eq(Value a, Value b) {
     case VAL_FLOAT:  return a.as.float_val == b.as.float_val;
     case VAL_STRING:
         if (a.as.string_val.str == b.as.string_val.str) return true;
+        if (a.as.string_val.len != b.as.string_val.len) return false;
+        /* Two empty strings are equal even when one came from a literal
+         * (interned with str == NULL) and the other from a concatenation
+         * (allocated, len 0). The old NULL check returned false here, so
+         * `"" == "" + ""` diverged from the zig VM (M3 differential fuzz). */
+        if (a.as.string_val.len == 0) return true;
         if (!a.as.string_val.str || !b.as.string_val.str) return false;
-        return a.as.string_val.len == b.as.string_val.len &&
-               memcmp(a.as.string_val.str, b.as.string_val.str,
+        return memcmp(a.as.string_val.str, b.as.string_val.str,
                       a.as.string_val.len) == 0;
     case VAL_ARRAY:  return a.as.array_val == b.as.array_val;
     case VAL_STRUCT: {
@@ -762,8 +767,12 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                     vm_runtime_error(vm, line, "out of memory");
                     return VM_RUNTIME_ERROR;
                 }
-                memcpy(buf, a.as.string_val.str, len_a);
-                memcpy(buf + len_a, b.as.string_val.str, len_b);
+                /* An empty literal is interned with str == NULL (len 0): a
+                 * zero-length memcpy from NULL is still UB per the nonnull
+                 * attribute, and UBSan flagged it on `"" + ""` (M3
+                 * differential fuzz). */
+                if (len_a > 0) memcpy(buf, a.as.string_val.str, len_a);
+                if (len_b > 0) memcpy(buf + len_a, b.as.string_val.str, len_b);
                 buf[len_a + len_b] = '\0';
                 if (!vm_push(vm, value_string(buf, len_a + len_b))) return VM_RUNTIME_ERROR;
             } else {

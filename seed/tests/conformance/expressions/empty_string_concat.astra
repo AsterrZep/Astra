@@ -1,0 +1,15 @@
+// Empty strings concatenate without touching NULL: the seed's empty literal
+// is interned with str == NULL and len 0, and the string-concat path passed
+// it to memcpy anyway — UB per the nonnull attribute (UBSan), found by the
+// M3 differential fuzzer (`"" + ""`). The zig VM was already safe
+// (std.mem.concat); this pins both.
+// EXPECT: x
+// EXPECT:
+// EXPECT: x
+// EXPECT: true
+let empty = ""
+let x = "x"
+print(empty + x)
+print(empty + empty)
+print(x + empty)
+print(empty == "")

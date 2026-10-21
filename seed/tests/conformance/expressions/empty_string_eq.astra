@@ -1,0 +1,14 @@
+// Empty strings compare by content, not by storage: the seed interns `""` as
+// str == NULL while a concatenation allocates a len-0 buffer, and value_eq
+// used to answer false for `"" == "" + ""` (zig compared by content and said
+// true). Found by the M3 differential fuzzer.
+// EXPECT: true
+// EXPECT: true
+// EXPECT: true
+// EXPECT: true
+let e = ""
+let x = "x"
+print(e == (e + e))
+print((e + e) == e)
+print(e == "")
+print(x == (e + x))
