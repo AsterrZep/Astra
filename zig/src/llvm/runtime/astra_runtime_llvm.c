@@ -99,8 +99,11 @@ void astra_llvm_print_end(void) {
 typedef struct { int64_t len; char data[]; } AstraLLVMStr;
 
 void astra_llvm_print_str(const void *p) {
-    const AstraLLVMStr *s = (const AstraLLVMStr *)p;
     if (astra_llvm_printed_any++) putchar(' ');
+    /* `let s: string` sin inicializador es nil (NULL), igual que en el VM:
+     * print lo escribe como `nil` en vez de desreferenciar el puntero. */
+    if (!p) { fputs("nil", stdout); return; }
+    const AstraLLVMStr *s = (const AstraLLVMStr *)p;
     fwrite(s->data, 1, (size_t)s->len, stdout);
 }
 
@@ -108,6 +111,11 @@ void astra_llvm_print_str(const void *p) {
  * fresh block, NUL-terminated for C convenience. The line rides along so the
  * only failure mode (OOM) reports `file:line:` like the VM's arena_alloc. */
 void *astra_llvm_str_concat(unsigned line, const void *pa, const void *pb) {
+    /* `+` con un string nil no es IEEE ni basura: el VM aborta nombrando los
+     * dos operandos (`cannot add nil and string`). */
+    if (!pa && !pb) astra_llvm_fail(line, "cannot add nil and nil");
+    if (!pa) astra_llvm_fail(line, "cannot add nil and string");
+    if (!pb) astra_llvm_fail(line, "cannot add string and nil");
     const AstraLLVMStr *a = (const AstraLLVMStr *)pa;
     const AstraLLVMStr *b = (const AstraLLVMStr *)pb;
     int64_t n = a->len + b->len;
@@ -121,15 +129,26 @@ void *astra_llvm_str_concat(unsigned line, const void *pa, const void *pb) {
 }
 
 /* `==`/`!=` for strings: content equality — VM value_eq's string arm (pointer
- * fast path, then length + memcmp). Ordering is deliberately absent: the VM
- * rejects `"a" < "b"` at runtime ("cannot compare string and string") and the
- * emitter reproduces that, so no compare function lives here. */
+ * fast path, then length + memcmp). nil is the NULL string: nil == nil and
+ * nil != any string. Ordering is always rejected, but its message names the
+ * real operands, so `astra_llvm_str_order_fail` below is the only entry. */
 int32_t astra_llvm_str_eq(const void *pa, const void *pb) {
+    if (pa == pb) return 1; /* incluye nil == nil */
+    if (!pa || !pb) return 0; /* nil vs string: false, como value_eq */
     const AstraLLVMStr *a = (const AstraLLVMStr *)pa;
     const AstraLLVMStr *b = (const AstraLLVMStr *)pb;
-    if (a == b) return 1;
     if (a->len != b->len) return 0;
     return memcmp(a->data, b->data, (size_t)a->len) == 0;
+}
+
+/* Ordenación de strings: el VM la rechaza siempre, pero nombra los tipos
+ * reales de los operandos (`cannot compare nil and string` para un string
+ * nil), así que el emisor pasa ambos valores en vez de un mensaje fijo. */
+void astra_llvm_str_order_fail(unsigned line, const void *pa, const void *pb) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "cannot compare %s and %s",
+             pa ? "string" : "nil", pb ? "string" : "nil");
+    astra_llvm_fail(line, buf);
 }
 
 /* ---- Option/Result (boxed) --------------------------------------------- */
@@ -180,11 +199,13 @@ static void astra_llvm_boxed_body(const void *p) {
         case 2: printf("%ld", (long)b->payload); break;
         case 3: { double d; memcpy(&d, &b->payload, sizeof d); printf("%g", d); break; }
         case 4: { const AstraLLVMStr *s = (const AstraLLVMStr *)b->payload;
+                  if (!s) { fputs("nil", stdout); break; }
                   fwrite(s->data, 1, (size_t)s->len, stdout); break; }
         case 5: astra_llvm_boxed_body((const void *)b->payload); break;
         case 6: astra_llvm_array_body((const void *)b->payload); break;
         case 7: astra_llvm_struct_body((const void *)b->payload); break;
         case 8: astra_llvm_enum_body((const void *)b->payload); break;
+        case 9: fputs("<fn>", stdout); break;
         default: fputc('?', stdout); break;
     }
     fputc(')', stdout);
@@ -245,9 +266,10 @@ void astra_llvm_boxed_order_fail(unsigned line, const void *pa, const void *pb) 
  * with elements at offset 16 in their static LLVM type (8 bytes for
  * i64/f64/pointers, 1 byte for bool). `elem_pty` lets print dispatch when the
  * static type is gone (an array inside an array, a boxed payload):
- * 1=bool 2=i64 3=f64 4=str 5=boxed 6=array. `==` is pointer identity (VM
- * value_eq: a.as.array_val == b.as.array_val) and ordering is rejected by the
- * emitter ("cannot compare array and array"), so no cmp lives here. */
+ * 1=bool 2=i64 3=f64 4=str 5=boxed 6=array 7=struct 8=enum 9=fn. `==` is
+ * structural by element (VM value_eq's early array arm), so array_eq lives in
+ * this file and walks elements with the same slot size `arr_slot` returns;
+ * ordering is rejected by the emitter ("cannot compare array and array"). */
 #define ASTRA_LLVM_ARR_HDR 16
 
 static int astra_llvm_arr_slot(int32_t pty) { return pty == 1 ? 1 : 8; }
@@ -255,7 +277,10 @@ static int astra_llvm_arr_slot(int32_t pty) { return pty == 1 ? 1 : 8; }
 static void astra_llvm_elem_print(int32_t pty, const char *slot);
 
 static void astra_llvm_array_body(const void *p) {
-    if (!p) { fputs("[]", stdout); return; } /* VM prints a NULL array as [] */
+    /* El VM imprime `nil` para un array nil (`let a: [i32]`); `[]` sería
+     * indistinguible de un array vacío, que en Astra-0 no existe (el literal
+     * vacío se rechaza por falta de tipo de elemento). */
+    if (!p) { fputs("nil", stdout); return; }
     const char *base = (const char *)p;
     int64_t len;
     int32_t pty;
@@ -276,11 +301,13 @@ static void astra_llvm_elem_print(int32_t pty, const char *slot) {
         case 2: { int64_t v; memcpy(&v, slot, sizeof v); printf("%ld", (long)v); break; }
         case 3: { double d; memcpy(&d, slot, sizeof d); printf("%g", d); break; }
         case 4: { const AstraLLVMStr *s; memcpy(&s, slot, sizeof s);
+                  if (!s) { fputs("nil", stdout); break; }
                   fwrite(s->data, 1, (size_t)s->len, stdout); break; }
         case 5: { const void *b; memcpy(&b, slot, sizeof b); astra_llvm_boxed_body(b); break; }
         case 6: { const void *a; memcpy(&a, slot, sizeof a); astra_llvm_array_body(a); break; }
         case 7: { const void *s; memcpy(&s, slot, sizeof s); astra_llvm_struct_body(s); break; }
         case 8: { const void *e; memcpy(&e, slot, sizeof e); astra_llvm_enum_body(e); break; }
+        case 9: fputs("<fn>", stdout); break;
         default: fputc('?', stdout); break;
     }
 }
@@ -303,10 +330,15 @@ int32_t astra_llvm_array_eq(const void *pa, const void *pb) {
     memcpy(&ea, (const char *)pa + 8, sizeof ea);
     memcpy(&eb, (const char *)pb + 8, sizeof eb);
     if (la != lb || ea != eb) return 0;
+    /* El stride depende del ptype: los bool viven en 1 byte (arr_slot), no en
+     * el slot de 8 de los demás. Con `8 * i` fijo, comparar dos arrays de bool
+     * leía fuera del objeto (ASan: heap-buffer-overflow) y podía devolver un
+     * resultado arbitrario. */
+    const int slot = astra_llvm_arr_slot(ea);
     for (int64_t i = 0; i < la; i++) {
         if (!astra_llvm_value_eq_pty(ea,
-                (const char *)pa + 16 + 8 * (size_t)i,
-                (const char *)pb + 16 + 8 * (size_t)i))
+                (const char *)pa + 16 + (size_t)slot * (size_t)i,
+                (const char *)pb + 16 + (size_t)slot * (size_t)i))
             return 0;
     }
     return 1;
@@ -350,6 +382,8 @@ typedef struct {
 /* VM value_print's struct arm: `Name { f: v, f: v }` (def is always present
  * for objects the emitter builds; the NULL branch mirrors `<struct>`). */
 static void astra_llvm_struct_body(const void *p) {
+    /* `let p: P` sin inicializador es nil: el VM imprime `nil`. */
+    if (!p) { fputs("nil", stdout); return; }
     const AstraLLVMStructDef *def;
     memcpy(&def, p, sizeof def);
     if (!def) { fputs("<struct>", stdout); return; }
@@ -366,6 +400,14 @@ static void astra_llvm_struct_body(const void *p) {
 void astra_llvm_print_struct(const void *p) {
     if (astra_llvm_printed_any++) putchar(' ');
     astra_llvm_struct_body(p);
+}
+
+/* print de un valor-función: el VM imprime `<fn>` (value_print VAL_FN) sin
+ * mirar el objeto, así que no hace falta desreferenciarlo (puede ser nil). */
+void astra_llvm_print_fn(const void *p) {
+    (void)p;
+    if (astra_llvm_printed_any++) putchar(' ');
+    fputs("<fn>", stdout);
 }
 
 /* Per-slot equality by ptype, shared by struct fields and boxed payloads:
@@ -393,6 +435,9 @@ static int32_t astra_llvm_value_eq_pty(int32_t pty, const char *a, const char *b
         case 8: { const void *x, *y;
                   memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
                   return astra_llvm_enum_eq(x, y); }
+        case 9: { const void *x, *y;
+                  memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
+                  return x == y; }
         default: { int64_t x, y;
                    memcpy(&x, a, sizeof x); memcpy(&y, b, sizeof y);
                    return x == y; }
@@ -444,7 +489,8 @@ typedef struct {
 /* VM value_print: VAL_ENUM → `Enum.Variant`; VAL_ENUM_DATA → the same plus
  * `(p)` / `(p1, p2)` when the variant carries payload. */
 static void astra_llvm_enum_body(const void *p) {
-    if (!p) { fputs("?", stdout); return; }
+    /* `let e: C` sin inicializador es nil: el VM imprime `nil`. */
+    if (!p) { fputs("nil", stdout); return; }
     const AstraLLVMEnumDef *def;
     int32_t vi, kind;
     memcpy(&def, p, sizeof def);
