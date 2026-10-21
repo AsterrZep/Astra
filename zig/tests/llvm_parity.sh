@@ -63,12 +63,10 @@ if ! "${CC:-cc}" -c -O2 -std=c11 -I"$root/seed/src" "$RUNTIME_SRC" -o "$work/run
     exit 2
 fi
 
-# Cases in M0 emitter scope that still cannot be compared to the VM: they pin a
-# VM-only runtime guard (the VM_CALL_DEPTH limit) that native code does not
-# reproduce — the VM errors where the native binary legitimately completes.
-# Paths are relative to conformance/, or prefixed codegen/ for the C-codegen
-# suite. Revisit when the LLVM route grows its own call-depth guard (M3 traps).
-EXCLUDE="expressions/recursion_depth_limit.astra codegen/frame_overflow.astra"
+# M3: the LLVM route reproduces the VM's VM_CALL_DEPTH bound with its own
+# `call depth exceeded` trap at the same call site (recursion_depth_limit and
+# frame_overflow now run through both routes), so no case is excluded.
+EXCLUDE=""
 
 total=0
 skip=0

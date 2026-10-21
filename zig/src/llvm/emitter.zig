@@ -332,6 +332,10 @@ const TAG_SOME: u32 = 2;
 /// declaración de nivel superior aborta en runtime — emitModuleMain emite el
 /// mismo trap en el mismo orden de fuente.
 const VM_MAX_GLOBALS: u32 = 256;
+/// Límite de profundidad de llamada (vm.zig VM_CALL_DEPTH, espejo del
+/// ASTRA_CALL_DEPTH del backend C): la llamada 257 aborta con
+/// `call depth exceeded` en el sitio de llamada.
+const VM_CALL_DEPTH: u64 = 256;
 const PTY_BOOL: u32 = 1;
 const PTY_I64: u32 = 2;
 const PTY_F64: u32 = 3;
@@ -439,6 +443,10 @@ pub const Emitter = struct {
     current_instance: ?*const Instance = null,
     /// Layouts por instancia de struct genérico (Phase 2.4 step 3b).
     struct_instances: []const StructInstance = &.{},
+    /// Contador de llamadas de usuario anidadas (guard `VM_CALL_DEPTH`): el
+    /// VM rechaza la llamada 257 con `call depth exceeded` y el C backend
+    /// replica el mismo límite (ASTRA_CALL_DEPTH); esta ruta también.
+    depth_global: c.LLVMValueRef = undefined,
     /// Contador para nombrar los globales de literales de string únicos.
     str_seq: u32 = 0,
     // `astra_module_main`: el código de nivel superior, invocado desde @main.
@@ -547,6 +555,12 @@ pub const Emitter = struct {
         self.r_print_enum = self.declVoid("astra_llvm_print_enum", &.{self.t_ptr});
         self.r_enum_eq = self.declRet(self.t_i32, "astra_llvm_enum_eq", &.{ self.t_ptr, self.t_ptr });
         self.r_array_eq = self.declRet(self.t_i32, "astra_llvm_array_eq", &.{ self.t_ptr, self.t_ptr });
+
+        // Contador de profundidad de llamada (guard VM_CALL_DEPTH): global
+        // interno, cero-inicializado; el backend C usa `astra_depth` igual.
+        self.depth_global = c.LLVMAddGlobal(self.mod, self.t_i64, "astra_llvm_depth");
+        c.LLVMSetInitializer(self.depth_global, c.LLVMConstInt(self.t_i64, 0, 0));
+        c.LLVMSetLinkage(self.depth_global, c.LLVMInternalLinkage);
     }
 
     fn declRet(self: *Emitter, ret: c.LLVMTypeRef, name: [*:0]const u8, params: []const c.LLVMTypeRef) c.LLVMValueRef {
@@ -2399,12 +2413,45 @@ pub const Emitter = struct {
                     const av = self.emitExpr(ai) orelse return null;
                     abuf[i + 1] = av.ref;
                 }
+                self.emitDepthGuard(self.tree.loc(idx).line);
                 const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, &abuf, @intCast(args.len + 1), "");
+                self.emitDepthPop();
                 if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
                 return null;
             },
             else => return self.emitDynamicCall(idx, call.callee),
         }
+    }
+
+    /// Guard de profundidad (espejo de VM OPCODE_CALL / C OPCODE_CALL): con
+    /// 256 llamadas de usuario ya vivas, la siguiente aborta con
+    /// `call depth exceeded` en la línea del call site. Sin esto la ruta
+    /// nativa corre hasta el límite del stack del SO y muere por señal
+    /// (frame_overflow), donde el VM da un diagnóstico limpio.
+    fn emitDepthGuard(self: *Emitter, line: u32) void {
+        const cur = c.LLVMBuildLoad2(self.builder, self.t_i64, self.depth_global, "");
+        const limit = c.LLVMConstInt(self.t_i64, VM_CALL_DEPTH, 0);
+        const over = c.LLVMBuildICmp(self.builder, c.LLVMIntUGE, cur, limit, "");
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "depth_fail");
+        const ok_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "depth_ok");
+        _ = c.LLVMBuildCondBr(self.builder, over, fail_bb, ok_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        const linev = c.LLVMConstInt(self.t_i32, line, 0);
+        const msgp = c.LLVMBuildGlobalStringPtr(self.builder, "call depth exceeded", "");
+        var fargs = [_]c.LLVMValueRef{ linev, msgp };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_fail), self.r_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+        const inc = c.LLVMBuildAdd(self.builder, cur, c.LLVMConstInt(self.t_i64, 1, 0), "");
+        _ = c.LLVMBuildStore(self.builder, inc, self.depth_global);
+    }
+
+    /// Sale del frame de usuario recién llamado (el error es fatal y termina
+    /// el proceso, así que el contador nunca necesita deshacerse por longjmp).
+    fn emitDepthPop(self: *Emitter) void {
+        const cur = c.LLVMBuildLoad2(self.builder, self.t_i64, self.depth_global, "");
+        const dec = c.LLVMBuildSub(self.builder, cur, c.LLVMConstInt(self.t_i64, 1, 0), "");
+        _ = c.LLVMBuildStore(self.builder, dec, self.depth_global);
     }
 
     /// Nombre efectivo de un callee: dentro del wrapper de una instancia, el
@@ -2440,7 +2487,9 @@ pub const Emitter = struct {
             const av = self.emitExpr(ai) orelse return null;
             abuf[i + 2] = av.ref;
         }
+        self.emitDepthGuard(self.tree.loc(idx).line);
         const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, &abuf, @intCast(args.len + 2), "");
+        self.emitDepthPop();
         if (info.returns_value) return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
         return null;
     }
@@ -2480,7 +2529,9 @@ pub const Emitter = struct {
         abuf[0] = env;
         const ret_lty = if (fv.payload_ty) |rt| self.llvmTy(rt) else self.t_void;
         const fty = c.LLVMFunctionType(ret_lty, &fbuf, @intCast(args.len + 1), 0);
+        self.emitDepthGuard(self.tree.loc(idx).line);
         const rv = c.LLVMBuildCall2(self.builder, fty, code, &abuf, @intCast(args.len + 1), "");
+        self.emitDepthPop();
         if (fv.payload_ty) |rt| return .{ .ref = rv, .ty = rt, .sname = fv.sname };
         return null;
     }
