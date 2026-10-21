@@ -31,9 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `&&`/`||` en call-args (ambos emitters VM, heredado por el C) y alineado
   el dump AST (`BinaryOp(&&/||)`). M4 (calidad) añade `--opt-level=N` (new
   PM: `default<O2>` + LICM/simple-loop-unswitch/IRCE), verificado corriendo
-  el gate de paridad también con `-O2` (131/131), y `llvm_bench.sh`, que
+  el gate de paridad también con `-O2` (132/132), `llvm_bench.sh`, que
   publica tiempos VM/C/LLVM (el nativo optimizado va 10–17x por delante del
-  backend C y 68–1200x de la VM). Detalle:
+  backend C y 68–1200x de la VM), y `--debug-info` (M4.c, DWARF line tables
+  y subprogramas para funciones, métodos y lambdas, verificado con `lldb`
+  en `tests/llvm_dwarf_test.sh` y `check_debug.astra`). Detalle:
   `Documentacion/PHASE_LLVM_PROGRESS.md`.
 - **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
   el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,

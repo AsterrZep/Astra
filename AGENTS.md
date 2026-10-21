@@ -140,17 +140,18 @@ arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
 — straight from the typed AST (no bytecode/VM) to a native object via
 TargetMachine (`--emit-obj`, M2.e). `zig/tests/llvm_parity.sh` gates it
-against the zig VM: **131 cases — 131 ok, 0 skip, 0 excl, 0 fail**.
-`zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`
+against the zig VM: **132 cases — 132 ok, 0 skip, 0 excl, 0 fail**.
+`zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`/debug
 fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
 `llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
 multi-module programs stay out of scope (the emitter is single-file; the
 driver rejects them cleanly with exit 2); `--single-file` reproduces the
 seed's inert-import semantics for the `module/` fixtures. M4 (quality) is in
 progress: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
-simple-loop-unswitch / IRCE for N=2) and the parity gate is run both plain and
-with `ASTRA_LLVM_OPT=2` (131/131 in both); `zig/tests/llvm_bench.sh` publishes
-VM/C/LLVM timings. DWARF and sanitizers are the remaining M4 steps; see
+simple-loop-unswitch / IRCE for N=2), `--debug-info` emits source-mapped DWARF
+(verified via `tests/llvm_dwarf_test.sh` under `lldb`), and the parity gate is
+run both plain and with `ASTRA_LLVM_OPT=2` (132/132 in both); `zig/tests/llvm_bench.sh`
+publishes VM/C/LLVM timings. Sanitizers (M4.d) are the remaining M4 step; see
 `PHASE_LLVM_PROGRESS.md` §8.
 
 ```bash

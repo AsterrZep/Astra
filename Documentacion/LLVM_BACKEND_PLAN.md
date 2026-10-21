@@ -227,12 +227,13 @@ benchmarks (fib, bucles, match) vs VM y backend C; sanitizers sobre
 artefactos. **Gate**: números publicados en el progress log; lldb depura por
 línea Astra.
 
-**Hecho (2026-10-20)**: M4.a (suite `zig/tests/bench/` + `llvm_bench.sh`,
-números en `PHASE_LLVM_PROGRESS.md` §8) y M4.b (`--opt-level=N` con
+**Hecho (2026-10-21)**: M4.a (suite `zig/tests/bench/` + `llvm_bench.sh`,
+números en `PHASE_LLVM_PROGRESS.md` §8), M4.b (`--opt-level=N` con
 `LLVMRunPasses`; `-O2` = `default<O2>` + `loop-mssa(licm)` +
 `simple-loop-unswitch` + `irce`; el gate de paridad corre también con
-`ASTRA_LLVM_OPT=2`: **131/131**). Pendiente: M4.c DWARF y M4.d sanitizers
-sobre los artefactos.
+`ASTRA_LLVM_OPT=2`: **132/132**), y M4.c (`--debug-info` con `DebugInfo.h`,
+subprograms y locations por instrucción, verificado con `llvm_dwarf_test.sh` y
+`lldb-19` en líneas Astra). Pendiente: M4.d sanitizers sobre los artefactos.
 
 ### M5 — Targets y release
 Cruzado `-mtriple=aarch64-linux-gnu` (+ wasm si se quiere), artefactos,
