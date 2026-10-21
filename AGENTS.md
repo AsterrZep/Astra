@@ -134,14 +134,20 @@ The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
 progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
 build and binary are byte-identical and none of the existing gates change.
-**M0–M2 are closed** (2026-10-17): the emitter compiles the Astra-0 subset —
+**M0–M3 are closed** (2026-10-20): the emitter compiles the Astra-0 subset —
 scalars, floats, strings, Option/Result with `match`/`?`, closures,
-arrays/structs/enums, `for..in`/`break`/`continue` — straight from the typed
-AST (no bytecode/VM) to a native object via TargetMachine (`--emit-obj`,
-M2.e), and `zig/tests/llvm_parity.sh` gates it against the zig VM: **121
-cases — 103 ok, 16 skip (M3: genéricos/traits/módulos), 2 excl (guard
-VM-only de profundidad de llamada), 0 fail**. M3 (paridad total + fuzz
-diferencial + FileCheck) is next; see `PHASE_LLVM_PROGRESS.md` §7.
+arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
+traits/impls, unannotated returns and pointer-typed `let` without initializer
+— straight from the typed AST (no bytecode/VM) to a native object via
+TargetMachine (`--emit-obj`, M2.e). `zig/tests/llvm_parity.sh` gates it
+against the zig VM: **131 cases — 131 ok, 0 skip, 0 excl, 0 fail**.
+`zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`
+fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
+`llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
+multi-module programs stay out of scope (the emitter is single-file; the
+driver rejects them cleanly with exit 2); `--single-file` reproduces the
+seed's inert-import semantics for the `module/` fixtures. M4 (DWARF, `-O2`
+pipeline + remarks, benchmarks) is next; see `PHASE_LLVM_PROGRESS.md` §7.
 
 ```bash
 cd zig
@@ -150,6 +156,8 @@ zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
 ./zig-out/bin/astra-zig --emit-llvm-stdout file.astra   # print IR (for tests)
 ./zig-out/bin/astra-zig --emit-obj file.astra           # native <file>.o via TargetMachine (M2.e)
 ./tests/llvm_parity.sh                  # VM <-> --emit-obj -> link runtime
+./tests/llvm_filecheck.sh               # IR shapes (FileCheck-19..23)
+./tests/llvm_fuzz.sh -n 40 -s 1         # differential fuzz, 4 routes
 ```
 
 Gotchas that will bite you:

@@ -8,18 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Backend nativo LLVM (Fase LLVM, M0–M2, opt-in `-Dllvm`)**: tercera ruta
+- **Backend nativo LLVM (Fase LLVM, M0–M3, opt-in `-Dllvm`)**: tercera ruta
   de codegen del compilador zig — AST tipado → LLVM IR (C API `llvm-c`,
   LLVM 19..23 vía `llvm-config`) → `.o` nativo con TargetMachineEmitToFile
   (`--emit-obj`), enlazado contra el runtime compartido del seed. Cubre el
-  subconjunto Astra-0 sin heap de usuario: escalars, floats, strings,
+  subconjunto Astra-0 sin heap de usuario: escalares, floats, strings,
   Option/Result con `match`/`?`, closures, arrays/structs/enums,
-  `for..in`/`break`/`continue`. Gate de paridad `zig/tests/llvm_parity.sh`
-  (salida de la VM ↔ ruta LLVM byte a byte): **121 casos — 103 ok, 0 fail**;
-  job CI `llvm` con LLVM 19. La contra-investigación post-M2 (2026-10-20)
-  verificó docs contra código, localizó y cerró un bug pre-existente de
-  `&&`/`||` en call-args (doble push del short-circuit en ambos emitters
-  VM, heredado por el C) y alineó el dump AST (`BinaryOp(&&/||)`). Detalle:
+  `for..in`/`break`/`continue`, genéricos monomorfizados, traits/impls,
+  retornos sin anotar y `let` sin inicializador de tipos con puntero. Gate
+  de paridad `zig/tests/llvm_parity.sh` (salida de la VM ↔ ruta LLVM byte a
+  byte): **131 casos — 131 ok, 0 skip, 0 excl, 0 fail**; `llvm_filecheck.sh`
+  fija la forma del IR (guards con `cold noreturn` y pesos de rama fría,
+  match, guard de profundidad, `?`) y `llvm_fuzz.sh` compara programas
+  generados por las cuatro rutas (VM seed / C / VM zig / LLVM). Jobs CI
+  `llvm` (pinado a 19) y `llvm-canario` (latest, no bloqueante). Los
+  programas multi-módulo reales quedan fuera del backend (exit 2 limpio);
+  `--single-file` reproduce la semántica del seed para los fixtures de
+  `module/`. El fuzz diferencial encontró dos bugs pre-existentes del seed
+  (concatenación/comparación de strings vacíos y línea del error de runtime
+  en ramas del C backend), corregidos con sus casos de conformidad; la
+  contra-investigación post-M2 previa había cerrado el doble push de
+  `&&`/`||` en call-args (ambos emitters VM, heredado por el C) y alineado
+  el dump AST (`BinaryOp(&&/||)`). Detalle:
   `Documentacion/PHASE_LLVM_PROGRESS.md`.
 - **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
   el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,

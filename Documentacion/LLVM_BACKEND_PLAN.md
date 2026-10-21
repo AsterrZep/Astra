@@ -151,9 +151,11 @@ opt -passes=verify file.ll                         # sanity fuera de proceso
    las cuatro rutas con salida idéntica (patrón del sweep VM↔C, ampliado).
 5. **El seed no se toca** en esta fase; si la ruta LLVM descubre un bug real
    del seed, se arregla con el espejo zig como siempre (fix(seed)+fix(zig)).
-6. **Fuzzing diferencial**: ampliar el harness mental (patrón
-   `sweep_emit_c.sh`) a VM↔C↔zig↔LLVM; `LLVMVerifyModule` fallando = crash
-   de fuzz.
+6. **Fuzzing diferencial**: `zig/tests/llvm_fuzz_gen.py` genera programas
+   deterministas por (semilla, índice) y `zig/tests/llvm_fuzz.sh` los pasa
+   por VM↔C↔zig↔LLVM comparando stdout, stderr y exit code byte a byte
+   (`LLVMVerifyModule` fallando = crash de fuzz). CI corre una campaña corta
+   con semilla fija en el job `llvm`.
 7. **Handoff por workstream** con sus tres obligaciones: `zig build -Dllvm`
    sin warnings, gates verdes, tests/pin añadidos.
 
@@ -209,12 +211,14 @@ Arrays/structs (GEP estáticos por layout del typechecker), enums+`match`
 paridad 119 casos = 101 ok / 16 skip (M3) / 2 excl / 0 fail. Ver
 `PHASE_LLVM_PROGRESS.md` §6 para las decisiones de layout y lowering.
 
-### M3 — Paridad total y robustez
+### M3 — Paridad total y robustez (✅ cerrado 2026-10-20)
 Cierra los 16 skip restantes (genéricos, traits/impls, módulos con
 import), la guarda de profundidad de llamada que hoy se excluye (los 2
 `excl`), más atributos de helpers, pesos de rama fríos en traps, fuzz
 diferencial cuádruple y FileCheck para shapes críticos (guards, match).
-**Gate**: **definición de "hecho"** de §0 alcanzada; la fase es usable.
+**Gate alcanzado**: `llvm_parity.sh` **131 casos — 131 ok, 0 skip, 0 excl,
+0 fail**, `llvm_filecheck.sh` 4/4, fuzz de cuatro rutas 480/480 y canario CI
+no bloqueante. Detalle por paso en `PHASE_LLVM_PROGRESS.md` §7/§9.
 
 ### M4 — Calidad (benchmark + debug)
 DWARF (`DebugInfo.h`, Kaleidoscope ch. 9), pipeline `-O2` + adiciones
@@ -252,9 +256,10 @@ llvm-canario:                                        # no bloqueante (continue-o
 
 - El job principal **fija LLVM 19** (reproducible; `apt.llvm.org/llvm.sh 19`
   quedó verificado en CI — era la única pieza "[a verificar]" en M0); el
-  canario usa latest para adelantar el churn de la C API hacia el rango
-  19..23. **El job `llvm` está implementado; el canario aún no existe en
-  `ci.yml` (pendiente, M3-llvm-testing).**
+  canario usa el stable más reciente (`llvm.sh` sin argumentos) para
+  adelantar el churn de la C API hacia el rango 19..23. **Ambos jobs existen
+  en `ci.yml`**: `llvm` (gate, pinado a 19) y `llvm-canario`
+  (`continue-on-error`, M3).
 - Los jobs actuales (seed, zig, parity) **no cambian**: `-Dllvm` es opt-in.
 
 ---
@@ -275,13 +280,15 @@ llvm-canario:                                        # no bloqueante (continue-o
 
 ## 9. Próximo paso
 
-Estado: **M0–M2 completados** (ver `PHASE_LLVM_PROGRESS.md`). El backend
-compila el subconjunto de Astra-0 (escalars, floats, strings,
+Estado: **M0–M3 completados** (ver `PHASE_LLVM_PROGRESS.md`). El backend
+compila el subconjunto de Astra-0 (escalares, floats, strings,
 Option/Result+`match`/`?`, closures, arrays/structs/enums, `for..in`,
-`break`/`continue`) a `.o` nativo vía TargetMachineEmitToFile y reproduce la
-salida de la VM byte a byte en 103/121 casos; los 16 skip son genéricos /
-traits / módulos con import y los 2 excl fijan la guarda de profundidad de
-llamada de la VM — todo eso es M3. Los hitos siguen el patrón workstream →
+`break`/`continue`, genéricos, traits/impls) a `.o` nativo vía
+TargetMachineEmitToFile y reproduce la salida de la VM byte a byte en
+**131/131 casos** (0 skip, 0 excl); el fuzz diferencial de cuatro rutas y
+FileCheck cierran el gate de M3, y el canario CI vigila el churn de LLVM.
+Lo siguiente es **M4** (DWARF, pipeline `-O2` con remarks, benchmarks vs VM
+y C, sanitizers sobre artefactos). Los hitos siguen el patrón workstream →
 commit probado → gate verde.
 
 Pendiente confirmado y cerrado: la instalación de `llvm-19-dev` en CI vía

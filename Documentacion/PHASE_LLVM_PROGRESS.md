@@ -24,19 +24,18 @@ por la VM.
 
 ---
 
-## 1. Estado actual (2026-10-20, contra-investigación post-M2)
+## 1. Estado actual (2026-10-20, M3 cerrado)
 
-**M0 (infraestructura), M1 (núcleo completo) y M2 (valores y patrones) están
-terminados.** El emisor compila Astra-0 — escalars, floats, strings,
-Option/Result con `match`/`?`, closures, arrays/structs/enums de usuario y
-`for..in`/`break`/`continue` — a LLVM IR verificado, lo baja a objeto nativo
-con `--emit-obj` (TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo
-enlaza contra el runtime compartido del seed y produce binarios cuya salida
-(stdout, stderr y código de salida) es **byte-idéntica a la VM** para todos
-los casos en alcance (103 de los 121 casos del gate de paridad tras la
-contra-investigación del 2026-10-20; los 16 skip restantes son
-genéricos/traits/módulos de M3 y los 2 excluidos fijan guardas VM-only de
-profundidad de llamada).
+**M0 (infraestructura), M1 (núcleo completo), M2 (valores y patrones) y M3
+(paridad total y robustez) están terminados.** El emisor compila Astra-0 —
+escalares, floats, strings, Option/Result con `match`/`?`, closures,
+arrays/structs/enums de usuario, `for..in`/`break`/`continue`, genéricos
+monomorfizados, traits/impls, `let` sin inicializador y retornos sin anotar —
+a LLVM IR verificado, lo baja a objeto nativo con `--emit-obj`
+(TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo enlaza contra el
+runtime compartido del seed y produce binarios cuya salida (stdout, stderr y
+código de salida) es **byte-idéntica a la VM** para **todos** los casos del
+gate de paridad: **131 — 131 ok, 0 skip, 0 excl, 0 fail**.
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -47,7 +46,7 @@ profundidad de llamada).
 | **M0.5** | `PHASE_LLVM_PROGRESS.md` + AGENTS.md (build `-Dllvm`, `-lc`) | ✅ |
 | **M1** | floats, strings, Option/Result + `?` + `match`, closures | ✅ |
 | **M2** | arrays/structs (GEP), enums de usuario + `match`, `for..in`, `--emit-obj` | ✅ |
-| **M3** | paridad total, fuzz diferencial, FileCheck | ⬜ |
+| **M3** | paridad total, guard de profundidad, atributos/pesos, fuzz, FileCheck | ✅ |
 | **M4** | calidad: DWARF, pipeline `-O2` + remarks, benchmarks | ⬜ |
 
 ---
@@ -71,8 +70,12 @@ zig build -Dllvm                        # -> zig-out/bin/astra-zig (con emit-llv
 cc -c -O2 -std=c11 -I../seed/src src/llvm/runtime/astra_runtime_llvm.c -o runtime.o
 cc file.o runtime.o -o program -lm && ./program
 
-# Gate de paridad (VM <-> ruta LLVM)
+# Gate de paridad (VM <-> ruta LLVM) y forma del IR
 ./tests/llvm_parity.sh
+./tests/llvm_filecheck.sh
+
+# Fuzz diferencial de cuatro rutas (seed VM / --emit-c / zig VM / LLVM)
+./tests/llvm_fuzz.sh -n 40 -s 1
 ```
 
 Sin `-Dllvm`, `--emit-llvm`/`--emit-llvm-stdout` terminan con un error
@@ -109,7 +112,9 @@ accionable (exit 2); la ejecución normal y los dumps no se ven afectados.
    escribir IR.
 7. **CLI**: `--emit-llvm` (`.ll` junto al input) y `--emit-llvm-stdout` (para
    tests). Ambos exigen `-Dllvm`; sobre un programa **multi-módulo** se rechazan
-   limpio (exit 2) — el emisor M0 es de fichero único.
+   limpio (exit 2) — el emisor es de fichero único. `--single-file` fuerza la
+   semántica del seed (imports parseados y descartados), que es lo que usan
+   los fixtures de `module/` y el runner de paridad.
 
 ---
 
@@ -275,23 +280,44 @@ pendientes.
 
 ---
 
-## 7. Diferido a M3+
+## 7. M3 — paridad total y robustez (2026-10-20)
+
+Los 16 skips y los 2 `excl` de M2 se cerraron en nueve pasos, cada uno con
+su commit y los gates verdes (detalle de commits en §9):
+
+| # | Contenido |
+|:-:|:----------|
+| M3.a | Retornos sin anotar (inferidos de los `return` + cola, como la VM) y `let` sin inicializador para tipos respaldados por puntero (`nil`). |
+| M3.b | Traits e `impl`: los métodos se declaran y emiten como globales manglados y `trait_decl` es inerte. |
+| M3.c | Genéricos: monomorfización en el typechecker (instancias con tipos concretos, AST anotado) y un descriptor por instancia en LLVM con el nombre fuente para que `print` coincida. |
+| M3.d | Guard de profundidad: `astra_llvm_depth` global, comprobación `>= 256` antes de cada llamada de usuario (nombrada/método/dinámica) con el mismo mensaje y línea que la VM; los 2 `excl` pasan a ok. |
+| M3.e | `nounwind` en los helpers del runtime, `cold noreturn` en los de fallo y pesos de rama fría (`1 : 1048576`) en el edge de error de todos los traps. |
+| M3.f | FileCheck: 4 fixtures `zig/tests/llvm/check_*.astra` (guards, match, profundidad, `?`) fijan la FORMA del IR; `llvm_filecheck.sh` localiza `FileCheck` o `FileCheck-19..23`. |
+| M3.g | Fuzz diferencial de cuatro rutas (`llvm_fuzz_gen.py` + `llvm_fuzz.sh`): 480 programas (12 semillas × 40) con stdout/stderr/exit idénticos. Encontró y motivó dos fixes reales del seed (strings vacíos en concat/eq y la línea del error en `--emit-c`). |
+| M3.h | `--single-file` (semántica del seed: `import`/`from`/`use` inertes) y los 3 fixtures de `module/` en el gate; el emisor LLVM deja de rechazar declaraciones de módulo. |
+| M3.i | Canario CI no bloqueante con el LLVM stable más reciente (`llvm-canario`, `continue-on-error`). |
+
+**Gate final: `llvm_parity.sh` 131 casos — 131 ok, 0 skip, 0 excl, 0 fail.**
+El resto de gates: `zig build test` 73/73 (84/84 con `-Dllvm`), dump_parity
+132/0, suite seed 245/245, `sweep_emit_c` 0 fail, `ui_message_parity`
+`accept_fail=0 first_fail=0`, `llvm_filecheck` 4/4 y fuzz 480/480.
+
+### Fuera del alcance del backend LLVM v1 (se rechaza limpio, exit 2)
+
+- **Programas multi-módulo reales** (loader, mangling entre módulos, orden de
+  dependencias): el emisor es de fichero único. `--single-file` reproduce la
+  semántica del seed para los fixtures que declaran imports inertes.
+- `@cImport`/translate-c, DWARF y optimización: M4+.
+
+### Diferido a M4
 
 | Qué | Hito |
 |:----|:-----|
-| Paridad total: genéricos, traits/impls, módulos con import (los 16 skip) | M3 |
-| Guard de profundidad de llamada espejando `VM_CALL_DEPTH` (los 2 excl) | M3 |
-| Atributos de helpers, pesos de rama fría en traps, fuzz diferencial, FileCheck | M3 |
-| DWARF (`DebugInfo.h`), pipeline `-O2` + remarks, benchmarks | M4 |
+| DWARF (`DebugInfo.h`), pipeline `-O2` + remarks, benchmarks vs VM/C, sanitizers sobre artefactos | M4 |
 
-Exclusiones del runner de paridad (con commentario en el propio script):
-
-- **`expressions/recursion_depth_limit.astra`** y
-  **`codegen/frame_overflow.astra`** — fijan el guard de profundidad de
-  llamada de la VM (`VM_CALL_DEPTH`); el código nativo no lo reproduce y
-  completa legítimamente, así que no son comparables hasta que la ruta LLVM
-  crece su propio guard (M3, con pesos de rama fría).
-- Los casos con `import`/`from`/`use` se saltan (emisor de fichero único).
+El runner de paridad **no excluye ningún caso**: el guard de profundidad se
+reproduce con el contador interno y los fixtures de módulo corren con
+`--single-file` en ambas rutas.
 
 ---
 
@@ -388,3 +414,27 @@ repros en `/tmp/opencode/`, cifras del gate re-ejecutado):
 - Documentación corregida en el mismo pase: erratas del plan (§9
   "traits/traits"), el canario CI descrito pero aún no implementado, AGENTS.md
   en estado post-M2, CHANGELOG con la fase, PHASE2_PROGRESS con el puntero.
+
+### M3
+
+| # | Commit | Mensaje |
+|:-:|:-------|:--------|
+| M3.a | `2fd85d1` | `feat(llvm): retornos sin anotar y \`let\` sin inicializador nil (M3.a)` |
+| M3.b | `8c070db` | `feat(llvm): dispatch de métodos y bloques impl (M3.b)` |
+| M3.c | `bc4b3cb` | `feat(llvm): monomorfización de genéricos (M3.c)` |
+| M3.d | `c4913be` | `feat(llvm): guard de profundidad de llamada (M3.d)` |
+| M3.e | `4283487` | `feat(llvm): atributos de helpers y pesos de rama fría (M3.e)` |
+| M3.f | `b35f601` | `test(llvm): FileCheck de shapes críticos del IR (M3.f)` |
+| fix | `bf2d2af` | `fix(seed): strings vacíos en concat y eq (UB + divergencia con zig)` |
+| fix | `7a49169` | `fix(seed): línea del error de runtime dentro de una rama (--emit-c)` |
+| M3.g | `18558da` | `test(llvm): fuzz diferencial de cuatro rutas (M3.g)` |
+| M3.h | `661b7cd` | `feat(llvm): fichero único explícito y fixtures de módulo en paridad (M3.h)` |
+| M3.i | `a6a9672` | `ci(llvm): canario no bloqueante con LLVM latest (M3.i)` |
+| M3.doc | _(este commit)_ | `docs(llvm): cierre de M3 — paridad total, fuzz y FileCheck` |
+
+Gates en cada commit de M3: `zig build test` 73/73 (84/84 con `-Dllvm`),
+dump_parity 132/0, suite seed 245/245, `sweep_emit_c` 0 fail,
+`ui_message_parity` 0 fail, `llvm_filecheck` 4/4 y `llvm_parity.sh` creciendo
+de 121 a **131 casos — 131 ok, 0 skip, 0 excl, 0 fail**. Los dos `fix(seed)`
+son hallazgos del fuzz (M3.g) y llevan su caso de conformidad; el VM de zig
+ya era correcto en ambos.
