@@ -36,7 +36,7 @@ a LLVM IR verificado, lo baja a objeto nativo con `--emit-obj`
 (TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo enlaza contra el
 runtime compartido del seed y produce binarios cuya salida (stdout, stderr y
 código de salida) es **byte-idéntica a la VM** para **todos** los casos del
-gate de paridad: **145 — 145 ok, 0 skip, 0 excl, 0 fail**.
+gate de paridad: **146 — 146 ok, 0 skip, 0 excl, 0 fail**.
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -364,7 +364,7 @@ FileCheck y el binario por defecto no cambian.
 
 El optimizador **no puede cambiar la semántica observable**: `llvm_parity.sh`
 acepta `ASTRA_LLVM_OPT` y CI corre el gate dos veces, sin pipeline y con
-`-O2`; **145/145 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
+`-O2`; **146/146 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
 
 | bench | llvm -O0 | llvm -O2 |
 |:------|---------:|---------:|
@@ -413,13 +413,16 @@ más el `asan.module_ctor`.
   el gate lo exige (un flag ignorado en silencio no pasaría).
 - Gate `zig/tests/llvm_sanitize.sh`: IR y `.o` instrumentados; enlace plano
   fallido por símbolos `__asan_*`; control negativo (heap-buffer-overflow
-  aborta con reporte de ASan); y la suite completa vía
-  `ASTRA_LLVM_SAN=address` — **145/145 a -O0 y a -O2**, con el runtime
-  compilado también con ASan. `llvm_parity.sh` acepta `ASTRA_LLVM_SAN=<tipo>`
+  aborta con reporte de ASan); la suite completa vía
+  `ASTRA_LLVM_SAN=address` — **146/146 a -O0 y a -O2**, con el runtime
+  compilado también con ASan; y un paso final de LSan (§12, M4.e) sobre
+  `tests/llvm/leaks.astra`. `llvm_parity.sh` acepta `ASTRA_LLVM_SAN=<tipo>`
   (flag + runtime + enlace) para no duplicar el runner.
-- LSan (`detect_leaks`) va apagado en el gate: v1 no libera valores (como la
-  arena de la VM), así que los leaks no son el objetivo y su ruido taparía la
-  comprobación de seguridad de memoria.
+- LSan (`detect_leaks`) va apagado **en el barrido de paridad**: ese gate
+  incluye programas que terminan por un error fatal, cuyo camino de salida no
+  es un test de ownership. Las fugas se miden en el paso dedicado de
+  `llvm_sanitize.sh` (M4.e): `detect_leaks=1` sobre `tests/llvm/leaks.astra`
+  debe terminar con cero fugas.
 
 Tests: `src/llvm.zig` («instrumentSanitizer inserta checks de ASan») y
 `src/llvm/emitter.zig` («emite atributos de sanitize_address»); `zig build test
@@ -590,14 +593,11 @@ LLVM) más `zig/tests/llvm/fn_values.astra` (sólo LLVM: el C del seed imprime
 `types/string_order_nil`, `structs/nil_field{,_assign}`, `loops/for_nil`,
 `expressions/nested_print` y `llvm/fn_values`. El gate pasó de 132 a **145
 casos** (145/145 a `-O0`, `-O2` y bajo ASan); suite seed **257/257** y
-dump_parity **144/0**.
+dump_parity **144/0**.### 11.3 Limitaciones que siguen (documentadas, no silenciosas)
 
-### 11.3 Limitaciones que siguen (documentadas, no silenciosas)
-
-- **Sin ownership (fugas)**: el runtime no libera cajas, arrays, structs,
-enums, envs de closures ni concatenaciones (lifetime de proceso, como la
-arena de la VM). Medido con LSan: 100 concatenaciones de 10 bytes dejan
-51.400 bytes. Es el modelo v1; el gate ASan corre con `detect_leaks=0`.
+- ~~**Sin ownership (fugas)**~~: **cerrado en M4.e (§12)** — el runtime ya
+  libera todo lo que el programa no conserva; el repro de 100 concatenaciones
+  que dejaba 51.400 bytes termina ahora con LSan limpio.
 - **Metadatos derivados de un elemento**: `a[0][1]` y llamar `a[0](x)` sobre
 un array de funciones se rechazan con diagnóstico limpio porque `Val` no
 conserva el tipo interno del elemento. Caps que la VM no tiene: >64 campos
@@ -608,3 +608,93 @@ PM. La verificación de UB se limita a ASan y a la seguridad del build Zig debug
 - El generador del fuzz diferencial no produce nil ni arrays de `bool`, así
 que estas regresiones viven en la suite de conformidad (que el gate barre) y
 no en el fuzz.
+
+## 12. M4.e — Ownership y fugas (cerrado 2026-10-21)
+
+M4.d cerró la seguridad de memoria con `detect_leaks=0`; el modelo de
+**liberación** llega aquí, como **refcount v1** en `astra_runtime_llvm.c` +
+`emitter.zig`. El objetivo era eliminar la fuga medida en §11.3 (100
+concatenaciones de 10 bytes → 51.400 bytes retenidos) sin tocar el modelo de
+valores de la VM (arrays/structs con identidad compartida) y sin cambiar ni
+un byte de la salida observable — el gate de paridad es la prueba.
+
+### 12.1 Cabecera de refcount
+
+Todo objeto con heap lleva **8 bytes antes del puntero** que el IR manipula:
+
+```c
+typedef struct { int32_t rc; int32_t kind; } AstraLLVMHdr;  // kind: 1=str 2=box
+                                                             // 3=arr 4=struct 5=enum
+                                                             // 6=fn 7=env
+```
+
+Como el header vive *delante* del payload, **los layouts no se mueven**: `len`
+sigue en el offset 0 del array, `def` en el 0 del struct/enum, tag/ptype en la
+caja. Todos los GEP en línea del emisor y todas las lecturas del runtime
+(imprimir/igualdad) siguen igual; sólo cambia `astra_llvm_alloc` (calloc +
+header) y los dos helpers `retain`/`release`.
+
+Los objetos **estáticos** (literales de string, constantes kind-0 de enum)
+llevan el mismo header con `rc = -1` (**inmortal**), emitido en
+`emitStringLit` y en el bloque de `unit_const`. Así `release` de cualquier
+puntero de valor es uniforme sin rastrear procedencia: `rc < 0` es no-op. El
+valor de un literal de string pasa a ser un `GEP` constante al campo `len`
+(y no al global entero), lo que además obligó a fijar la inferencia de tipo
+de un global `let g = "a" + "b"` (se infería `i64` e imprimía el puntero).
+
+### 12.2 Reglas de ownership (lo que emite el emisor)
+
+| Sitio | Regla |
+|:------|:------|
+| asignación heap (`emitAlloc`, `wrap`, concat, resultado de llamada puntero) | `rc = 1` y **registro como temporal** |
+| store en local/global/campo/elemento/box/env (`emitStoreOwned`) | **libera** el valor anterior y **retiene** el nuevo |
+| parámetros | el callee **retiene** al entrar y libera al salir (asignar a un parámetro es seguro) |
+| `return` / propagación de `?` | **retiene** el valor, libera los locales del frame y sus temporales (`emitFrameCleanup`) |
+| `break` / `continue` | limpia los temporales al mark del frame antes del salto |
+| fin de sentencia (`emitStmt`) | `tmp_clear(mark)`: se libera lo que no acabó almacenado |
+| fin de función (cuerpo de cola) | `emitFrameRelease` + `ret` |
+| `@main` | libera todos los globales y `astra_llvm_runtime_cleanup` libera el buffer |
+
+El **destructor recursivo** (`astra_llvm_destroy`) recorre cada objeto por su
+`kind` usando los mismos ptypes de print/eq: elementos de array (stride real,
+bool = 1 byte), campos de struct por descriptor, payloads de enum kind-1,
+payload de caja y **capturas de closure** — el objeto `{code, env}` crece a
+`{code, env, cap_ptypes, ncaps}` (32 bytes) para que el destructor sepa qué
+slots del env son punteros. El env no es un temporal: su dueño es el closure.
+
+### 12.3 Verificación
+
+| Check | Resultado |
+|:------|:----------|
+| `llvm_parity.sh` (146 casos, VM ↔ LLVM byte a byte) | **146/146** a `-O0` y `-O2` |
+| `llvm_sanitize.sh` (suite bajo ASan + paso LSan nuevo) | OK, **sin fugas** |
+| `llvm_fuzz.sh -n 40` (VM↔C↔zig↔LLVM) | 0 fail |
+| Repros de mano (concat en bucle, structs con array de strings, enums con payload, closures que capturan strings, `?`, `match`, `for..in`, `break`/`continue`, globales) | idénticos a la VM y **LSan limpio** |
+| `zig build test -Dllvm` | 88/88 |
+| Suite seed | 257/257 |
+| Presión de memoria (medida) | 10 000 vs 1 000 000 concatenaciones en un bucle: RSS pico **11,1 / 11,2 MB** — plano. Antes, por la medición de §11.3 (51.400 B por 100), ese mismo programa habría crecido ~5 MB por cada 10 000 iteraciones. |
+
+El **gate de fugas** es `zig/tests/llvm/leaks.astra`, recogido además por el
+barrido de paridad (145 → 146 casos): 40 iteraciones de un bucle que asigna
+strings, cajas, arrays, structs, enums, closures y globales, corrido con
+`--sanitize=address` + runtime con ASan y `ASAN_OPTIONS=detect_leaks=1`;
+`llvm_sanitize.sh` exige exit 0, stdout idéntico a la VM y stderr sin
+`LeakSanitizer`. Un store sin `retain`, un `return` sin `retain` o un
+destructor que olvide un hijo hacen fallar ese paso.
+
+### 12.4 Limitaciones del modelo v1
+
+- **Ciclos**: un closure cuyo env alcanza al propio closure (o structs que se
+  contienen mutuamente) no se colecciona — como en ARC/ORC de Rust/Swift. La
+  Astra-0 no tiene punteros mutables ni referencias, así que el único camino
+  conocido es un closure almacenado en un campo/elemento de un objeto que el
+  closure capture.
+- **Salidas por error fatal**: `astra_llvm_fail` termina el proceso con
+  `exit(1)` sin recorrer el cleanup de frames; los valores vivos en ese
+  instante no se liberan. Es el camino del trap (no del programa correcto), y
+  por eso el barrido de paridad corre con `detect_leaks=0` y el gate de fugas
+  usa un programa que termina limpio.
+- La **presión de memoria** por iteración de bucle depende de que cada
+  sentencia limpie sus temporales; los locales de un bucle se reutilizan (el
+  store libera el anterior) y sólo conservan el último valor hasta el `return`
+  del frame.

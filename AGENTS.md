@@ -140,7 +140,7 @@ arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
 — straight from the typed AST (no bytecode/VM) to a native object via
 TargetMachine (`--emit-obj`, M2.e). `zig/tests/llvm_parity.sh` gates it
-against the zig VM: **145 cases — 145 ok, 0 skip, 0 excl, 0 fail**.
+against the zig VM: **146 cases — 146 ok, 0 skip, 0 excl, 0 fail**.
 `zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`/debug
 fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
 `llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
@@ -150,16 +150,20 @@ seed's inert-import semantics for the `module/` fixtures. M4 (quality) is
 closed: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
 simple-loop-unswitch / IRCE for N=2), `--debug-info` emits source-mapped DWARF
 (verified via `tests/llvm_dwarf_test.sh` under `lldb`), and the parity gate is
-run both plain and with `ASTRA_LLVM_OPT=2` (145/145 in both); `zig/tests/llvm_bench.sh`
+run both plain and with `ASTRA_LLVM_OPT=2` (146/146 in both); `zig/tests/llvm_bench.sh`
 publishes VM/C/LLVM timings. `--sanitize=address` marks functions and runs the
 new-PM `asan` pass before the optimizer; `zig/tests/llvm_sanitize.sh` proves
 the artifacts are instrumented, that a plain link fails without
-`-fsanitize=address`, and runs the whole 145-case suite under ASan at `-O0` and
-`-O2`. UBSan is not offered because LLVM 19..23 does not register a `ubsan`
-new-PM pass (`opt-19 --print-passes`); see `PHASE_LLVM_PROGRESS.md` §8. The
-post-M4 audit (§11) closed nil-related SEGVs, bool-array equality and
-function-value printing; v1 still never frees values (process-lifetime
-objects, like the VM's arena) and derived element metadata is not carried
+`-fsanitize=address`, runs the whole 146-case suite under ASan at `-O0` and
+`-O2`, and closes with an LSan step (`detect_leaks=1`) on
+`zig/tests/llvm/leaks.astra`. UBSan is not offered because LLVM 19..23 does
+not register a `ubsan` new-PM pass (`opt-19 --print-passes`); see
+`PHASE_LLVM_PROGRESS.md` §8. The post-M4 audit (§11) closed nil-related SEGVs,
+bool-array equality and function-value printing. Values are owned by
+**reference counting** (M4.e, §12): every heap object carries an `{rc, kind}`
+header, stores/returns/params retain, locals/globals/temporaries release, and
+the generated code frees everything it allocates except cycles (a closure
+whose env reaches the closure). Derived element metadata is still not carried
 (`a[0][1]`, `a[0](x)` are clean rejections).
 
 ```bash
