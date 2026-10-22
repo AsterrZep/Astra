@@ -148,6 +148,38 @@ jobs:
       - name: Differential fuzz (VM <-> LLVM)
         run: ./zig/tests/llvm_fuzz.sh -n 20 -s 1
 
+  # M5 cross-compilation gate (LLVM_BACKEND_PLAN.md §6 M5): the same suite
+  # compiled for aarch64-linux-gnu (`--target`), linked with the cross
+  # toolchain, and cross-run under qemu-user; stdout/stderr/exit must match the
+  # native zig VM byte-for-byte. This is the "cross-run en CI" the milestone is
+  # gated on — a real foreign-target ABI/codegen check, not just an object
+  # sniff. Blocking: the cross-run is deterministic under qemu-user.
+  llvm-cross:
+    name: llvm-cross (aarch64) — cross-run bajo qemu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install LLVM 19 (apt.llvm.org, pinned)
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo DEBIAN_FRONTEND=noninteractive ./llvm.sh 19
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-19-dev
+      # Cross toolchain (aarch64-linux-gnu-gcc links the foreign object with
+      # the runtime TU) and qemu-user-static (runs the aarch64 binary on the
+      # x86-64 runner via binfmt).
+      - name: Install cross toolchain + qemu
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      - name: Build zig with the LLVM backend
+        run: zig build -Dllvm
+        working-directory: zig
+      - name: Cross-route parity (VM <-> --emit-obj --target=aarch64 -> qemu)
+        run: ./zig/tests/llvm_cross.sh
+
   # Canario no bloqueante (LLVM_BACKEND_PLAN.md §2/§7): la misma ruta con el
   # LLVM stable más reciente de apt.llvm.org (llvm.sh sin argumentos usa su
   # CURRENT_LLVM_STABLE). Adelanta el churn de la C API hacia el rango
