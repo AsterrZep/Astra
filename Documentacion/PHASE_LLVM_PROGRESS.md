@@ -698,3 +698,65 @@ destructor que olvide un hijo hacen fallar ese paso.
   sentencia limpie sus temporales; los locales de un bucle se reutilizan (el
   store libera el anterior) y sólo conservan el último valor hasta el `return`
   del frame.
+
+---
+
+## 13. M5 — Targets y cross-compilation (cerrado 2026-10-22)
+
+M5 cierra el plan (`LLVM_BACKEND_PLAN.md` §6): el backend emite para un
+target **extranjero**, no sólo el host. El gate que pedía el plan —
+*cross-run en CI* — está alcanzado: las **154** fixtures de paridad
+compilan para `aarch64-linux-gnu`, se enlazan con el toolchain cruzado y
+corren bajo `qemu-aarch64` produciendo salida idéntica, byte a byte, a la VM
+nativa.
+
+### 13.1 `--target=<triple>`
+
+- Flag CLI `--target=<triple>` (p. ej. `aarch64-linux-gnu`), coherente con
+  `--sanitize=`/`--opt-level=`. Exige un modo de salida LLVM (`--emit-llvm`,
+  `--emit-llvm-stdout`, `--emit-obj`); con la VM o los dumps se rechaza
+  (exit 2) en vez de aparentar que cambia el target. Sin `--target`, el
+  comportamiento es exactamente el del host (los gates nativos no cambian).
+- El triple se hila por toda la ruta LLVM: el emisor (`setTargetTriple`)
+  fija el triple **y el datalayout del destino** en el módulo, y la fachada
+  (`emitObjectFile`/`instrumentSanitizer`/`runPasses`) recibe el mismo triple
+  para crear el TargetMachine. Con un datalayout del host, un objeto aarch64
+  saldría malformado (tamaños/alignments de `i64`, GEPs), de ahí que el
+  módulo lleve el layout del objetivo.
+
+### 13.2 `src/llvm/target.zig` — TargetMachine compartido
+
+Nuevo módulo `src/llvm/target.zig` con `create(diag, file, triple?)`: registra
+**todos** los targets de la lib LLVM (`LLVMInitializeAllTargets` y hermanos,
+`static inline` de `llvm-c/Target.h`) y resuelve el triple pedido (o el host).
+Antes de M5 sólo se inicializaba el target nativo, así que
+`LLVMGetTargetFromTriple` rechazaba cualquier triple no-nativo. Lo comparten
+el emisor (datalayout) y la fachada (emitir/correr pasadas) para no duplicar
+la lógica; no importa al emisor, así que no hay ciclo de imports.
+
+### 13.3 Gate y verificación
+
+- **`zig/tests/llvm_cross.sh`** (nuevo): el mismo barrido de fixtures que
+  `llvm_parity.sh` pero con `--emit-obj --target=<triple>`, enlace con
+  `<triple>-gcc` y corrida bajo `qemu-<arch>-static -L /usr/<triple>`,
+  comparando stdout/stderr/exit contra la VM nativa. Por defecto
+  `aarch64-linux-gnu`; triple/toolchain/emulador/sysroot sobreribles por env
+  (`ASTRA_CROSS_TRIPLE`, `ASTRA_CROSS_CC`, `ASTRA_QEMU`, `ASTRA_QEMU_SYSROOT`).
+  **154/154 ok, 0 skip, 0 fail.**
+- CI: job **`llvm-cross`** (verbloqueante) instala LLVM 19 +
+  `gcc-aarch64-linux-gnu` + `qemu-user-static` y corre `llvm_cross.sh` — el
+  «cross-run en CI» que exige el plan.
+- Tests unitarios: `target.zig` (host + aarch64 + triple inventado → null) y
+  `llvm.zig` («produce un ELF aarch64 cuando `--target` lo fija», verifica
+  `e_machine` = EM_AARCH64 = 183). `zig build test -Dllvm` en verde.
+- Sin regresión nativa: paridad 154/154 (host), FileCheck 5/5, dump_parity
+  145/0, sanitizers sin regresión — el camino host de `setTarget` es
+  byte-idéntico al de antes de M5.
+
+### 13.4 wasm (diferido)
+
+El plan lista wasm como opcional («+ wasm si se quiere»). No entra en el gate
+de M5: además del target, wasm exige un sysroot de wasi y un runtime que los
+objetos enlazados puedan usar (el runtime actual usa libc). queda para cuando
+se decida un story de wasm de punta a punta; el plumbing de `--target` ya lo
+admite (cualquier triple registrado en la lib LLVM).

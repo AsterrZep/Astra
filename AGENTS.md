@@ -164,7 +164,13 @@ bool-array equality and function-value printing. Values are owned by
 header, stores/returns/params retain, locals/globals/temporaries release, and
 the generated code frees everything it allocates except cycles (a closure
 whose env reaches the closure). Derived element metadata is still not carried
-(`a[0][1]`, `a[0](x)` are clean rejections).
+(`a[0][1]`, `a[0](x)` are clean rejections). M5 (cross-compilation) is closed:
+`--target=<triple>` (e.g. `aarch64-linux-gnu`) emits a foreign object — the
+module carries the target's triple and datalayout, and `src/llvm/target.zig`
+registers every target (`LLVMInitializeAllTargets`) — and
+`zig/tests/llvm_cross.sh` gates it by cross-linking with `<triple>-gcc` and
+cross-running under `qemu-<arch>-static`: **154/154**, byte-identical to the
+native VM (CI job `llvm-cross`); wasm stays deferred (progress §13.4).
 
 ```bash
 cd zig
@@ -173,10 +179,12 @@ zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
 ./zig-out/bin/astra-zig --emit-llvm-stdout file.astra   # print IR (for tests)
 ./zig-out/bin/astra-zig --emit-obj file.astra           # native <file>.o via TargetMachine (M2.e)
 ./zig-out/bin/astra-zig --emit-obj --opt-level=2 file.astra  # new-PM pipeline (M4)
+./zig-out/bin/astra-zig --emit-obj --target=aarch64-linux-gnu file.astra  # cross aarch64 object (M5)
 ./tests/llvm_parity.sh                  # VM <-> --emit-obj -> link runtime
 ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh # same gate through default<O2>+extras
 ./tests/llvm_filecheck.sh               # IR shapes (FileCheck-19..23)
 ./tests/llvm_sanitize.sh                # ASan artifacts + parity under ASan (M4.d)
+./tests/llvm_cross.sh                   # cross aarch64 -> qemu, vs VM (M5; needs gcc-aarch64-linux-gnu + qemu-user-static)
 ./tests/llvm_fuzz.sh -n 40 -s 1         # differential fuzz, 4 routes
 ./tests/llvm_bench.sh -n 3 -O 2         # VM / C / LLVM timings (M4)
 ```

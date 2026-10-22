@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend LLVM: cross-compilation a aarch64 (M5)**: el backend ya no
+  emite sólo para el host. El flag `--target=<triple>` (p. ej.
+  `aarch64-linux-gnu`, exigido a un modo de salida LLVM) fija el triple de
+  destino, y el módulo LLVM lo lleva a él **y su datalayout** (no los del
+  host — con el layout del host un objeto cruzado saldría malformado). Nuevo
+  módulo `src/llvm/target.zig` comparte la creación del TargetMachine entre
+  el emisor y la fachada y registra **todos** los targets de la lib LLVM
+  (`LLVMInitializeAllTargets`; antes sólo el nativo, así que cualquier triple
+  no-nativo se rechazaba). Gate `zig/tests/llvm_cross.sh` (nuevo): las 154
+  fixtures se emiten para aarch64, se enlazan con `gcc-aarch64-linux-gnu` y
+  corren bajo `qemu-aarch64-static`, comparadas byte a byte contra la VM
+  nativa — **154/154, 0 skip, 0 fail**; CI gana el job bloqueante
+  `llvm-cross`. Tests unitarios: TargetMachine de host + aarch64 + triple
+  inventado (rechazo limpio) y verificación de `e_machine` = EM_AARCH64 en el
+  `.o` cruzado. wasm queda diferido (sysroot wasi + runtime; el plumbing ya
+  acepta cualquier triple). Detalle en `PHASE_LLVM_PROGRESS.md` §13.
 - **Backend LLVM: ownership por refcount y cero fugas (M4.e)**: los valores
   de la ruta LLVM ya no viven todo el proceso. Cada objeto heap lleva una
   cabecera `{rc, kind}` justo antes del puntero (los layouts de array/struct/
