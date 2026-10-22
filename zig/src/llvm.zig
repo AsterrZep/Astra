@@ -15,6 +15,9 @@ pub const Sanitizer = @import("llvm/emitter.zig").Emitter.Sanitizer;
 pub const Instance = @import("llvm/emitter.zig").Instance;
 pub const Rewrite = @import("llvm/emitter.zig").Rewrite;
 pub const StructInstance = @import("llvm/emitter.zig").StructInstance;
+// M6.a: LLJIT (ejecución in-process) — `--jit` compila y corre el módulo en el
+// propio proceso, cimiento del REPL/eval futuro.
+pub const jit = @import("llvm/jit.zig");
 
 /// Verifica el módulo y, si el verificador falla, reporta el error a través del
 /// sink de diagnósticos. Devuelve `true` cuando el módulo es válido (listo para

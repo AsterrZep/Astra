@@ -22,6 +22,15 @@ pub const c = @cImport({
     @cInclude("llvm-c/Transforms/PassBuilder.h");
     // DebugInfo.h (M4.c): DIBuilder/DISubprogram/DILocation para `-g`.
     @cInclude("llvm-c/DebugInfo.h");
+    // LLJIT.h (M6.a): ORC/LLJIT para ejecución in-process (el REPL/eval del
+    // plan). Trae Orc.h (DefinitionGenerator, ThreadSafeModule, JITDylib) y
+    // Error.h (LLVMErrorRef) — el JIT resuelve `astra_llvm_*`+libc vía el
+    // generador de símbolos de proceso.
+    @cInclude("llvm-c/LLJIT.h");
+    // IRReader.h (M6.a): LLVMParseIRInContext — el módulo se re-analiza en el
+    // contexto del ThreadSafeContext del JIT (LLJIT exige coincidencia de
+    // contexto), desacoplando el ciclo de vida del emisor del del JIT.
+    @cInclude("llvm-c/IRReader.h");
 });
 
 test "smoke: módulo i64 add(i64,i64) verifica e imprime IR" {

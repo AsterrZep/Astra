@@ -22,7 +22,7 @@ const dump_mod = @import("dump.zig");
 // llvm-c jamás se traduce — `astra-zig` sin LLVM sigue compilando igual.
 const llvm = if (build_options.llvm_enabled) @import("llvm.zig") else void;
 
-const Mode = enum { parse, tokens, ast_dump, bytecode, modules, emit_llvm, emit_llvm_stdout, emit_obj };
+const Mode = enum { parse, tokens, ast_dump, bytecode, modules, emit_llvm, emit_llvm_stdout, emit_obj, jit };
 
 /// Sanitizer pedido por CLI (M4.d). Vive aquí, sin el tipo del backend, para
 /// que `astra-zig` sin `-Dllvm` siga compilando: `llvm` es `void` en ese build.
@@ -32,7 +32,7 @@ const Sanitize = enum {
 };
 
 const usage =
-    \\usage: astra-zig [--single-file] [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --emit-obj | --debug] <file.astra>
+    \\usage: astra-zig [--single-file] [--dump-tokens | --dump-ast | --dump-modules | --dump-bytecode | --emit-llvm | --emit-llvm-stdout | --emit-obj | --jit | --debug] <file.astra>
     \\
     \\  (no flag)              compile and run, exit 1 on a compile or runtime error
     \\  --single-file          ignore `import`/`from`/`use` and compile only the entry
@@ -44,6 +44,7 @@ const usage =
     \\  --emit-llvm            write LLVM IR to <file>.ll (requires -Dllvm)
     \\  --emit-llvm-stdout     print LLVM IR to stdout (requires -Dllvm)
     \\  --emit-obj             compile to a native object <file>.o via TargetMachine (requires -Dllvm)
+    \\  --jit                  compile and run in-process via ORC/LLJIT (requires -Dllvm; host-only)
     \\  --opt-level=N          optimize the LLVM module before emitting (N = 0..3; 0 default)
     \\  --debug-info           emit DWARF line tables (lldb/gdb stop on Astra lines)
     \\  --sanitize=address     instrument the module with AddressSanitizer
@@ -82,6 +83,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .emit_llvm_stdout;
         } else if (std.mem.eql(u8, arg, "--emit-obj")) {
             mode = .emit_obj;
+        } else if (std.mem.eql(u8, arg, "--jit")) {
+            mode = .jit;
         } else if (std.mem.eql(u8, arg, "--single-file")) {
             single_file = true;
         } else if (std.mem.eql(u8, arg, "--debug-info")) {
@@ -122,17 +125,28 @@ pub fn main(init: std.process.Init) !void {
 
     // Un sanitizer sólo tiene sentido sobre un artefacto del backend LLVM; con
     // el modo por defecto (VM) o los dumps se ignora en silencio, así que se
-    // rechaza explícitamente en vez de aparentar que instrumenta.
+    // rechaza explícitamente en vez de aparentar que instrumenta. `--jit` es
+    // una salida LLVM pero no admite sanitizer (el código ASan necesita el
+    // runtime del sanitizer enlazado al proceso, que el compilador no lleva).
     if (sanitize != .none and mode != .emit_llvm and mode != .emit_llvm_stdout and mode != .emit_obj) {
-        std.debug.print("error: --sanitize requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
+        if (mode == .jit) {
+            std.debug.print("error: --jit cannot be combined with --sanitize (the ASan runtime is not linked into the compiler process)\n{s}", .{usage});
+        } else {
+            std.debug.print("error: --sanitize requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
+        }
         std.process.exit(2);
     }
 
     // `--target` fija un triple cruzado (M5); sólo tiene sentido sobre un
     // artefacto del backend LLVM, igual que --sanitize. Con la VM o los dumps
-    // se rechaza en vez de aparentar que cambia el target.
+    // se rechaza en vez de aparentar que cambia el target. `--jit` sólo puede
+    // correr en el host (ejecuta en el propio proceso), no un triple cruzado.
     if (target_triple != null and mode != .emit_llvm and mode != .emit_llvm_stdout and mode != .emit_obj) {
-        std.debug.print("error: --target requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
+        if (mode == .jit) {
+            std.debug.print("error: --jit runs on the host and cannot be combined with --target\n{s}", .{usage});
+        } else {
+            std.debug.print("error: --target requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
+        }
         std.process.exit(2);
     }
 
@@ -245,8 +259,9 @@ pub fn main(init: std.process.Init) !void {
 
     // Backend LLVM (opt-in, M0.3): tras el typecheck, genera IR u objeto y
     // sale. No necesita el emisor de bytecode ni la VM — el emisor LLVM
-    // camina el AST.
-    if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
+    // camina el AST. `--jit` (M6.a) compila y corre en el proceso vía LLJIT
+    // por la misma vía (emisor LLVM → JIT), sin escribir IR ni objeto.
+    if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj or mode == .jit) {
         emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info, sanitize, target_triple);
         return;
     }
@@ -379,6 +394,13 @@ fn emitLlvm(
             var stdout_writer = stdout_file.writer(io, &stdout_buf);
             stdout_writer.interface.writeAll(ir) catch {};
             stdout_writer.interface.flush() catch {};
+        } else if (mode == .jit) {
+            // M6.a: compila y corre el módulo en el propio proceso vía LLJIT,
+            // sin `cc`+enlace. Salida idéntica a la ruta AOT (mismo runtime C
+            // resolviendo `astra_llvm_*`); el código de salida (0, o exit(1) en
+            // un error de runtime dentro del runtime) se propaga tal cual.
+            const code = llvm.jit.run(em.mod, diag, file);
+            std.process.exit(@intCast(code));
         } else {
             const base = if (std.mem.endsWith(u8, file, ".astra")) file[0 .. file.len - ".astra".len] else file;
             if (mode == .emit_obj) {
@@ -393,7 +415,7 @@ fn emitLlvm(
         }
     } else {
         std.debug.print(
-            "error: the LLVM backend output modes (--emit-llvm / --emit-llvm-stdout / --emit-obj) require the compiler to be built with `-Dllvm` (LLVM 19..23 via llvm-config)\n",
+            "error: the LLVM backend output modes (--emit-llvm / --emit-llvm-stdout / --emit-obj / --jit) require the compiler to be built with `-Dllvm` (LLVM 19..23 via llvm-config)\n",
             .{},
         );
         std.process.exit(2);

@@ -14,6 +14,21 @@ const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
 const c = @import("c_api.zig").c;
 
+/// Registra todos los targets de la lib LLVM en el TargetRegistry (M5/M6.a).
+/// Los init son idempotentes (re-registrar no duplica); sin ellos el
+/// TargetRegistry sólo contiene el host y `LLVMGetTargetFromTriple` /
+/// LLJIT `detectHost` fallarían. Lo usan `create` (emitir objeto / correr
+/// pasadas) y `jit.run` — el camino del host por defecto del emisor NO llama
+/// `create`, así que sin esta llamada LLJIT detectHost no encontraría ningún
+/// target registrado.
+pub fn registerAll() void {
+    c.LLVMInitializeAllTargetInfos();
+    c.LLVMInitializeAllTargets();
+    c.LLVMInitializeAllTargetMCs();
+    c.LLVMInitializeAllAsmPrinters();
+    c.LLVMInitializeAllAsmParsers();
+}
+
 /// Crea el TargetMachine para `triple` (o el del host si es null), en modo PIC
 /// (lo pide el `cc` default-PIE de la distro al enlazar) y con CPU/features por
 /// defecto del triple. Devuelve null (y reporta por el sink) si el triple no
@@ -26,11 +41,7 @@ pub fn create(
     // Registra todos los targets de la lib LLVM (M5). Los init son idempotentes
     // (re-registrar no duplica); sin ellos el TargetRegistry sólo contiene el
     // host y `LLVMGetTargetFromTriple` rechazaría `aarch64-linux-gnu`.
-    c.LLVMInitializeAllTargetInfos();
-    c.LLVMInitializeAllTargets();
-    c.LLVMInitializeAllTargetMCs();
-    c.LLVMInitializeAllAsmPrinters();
-    c.LLVMInitializeAllAsmParsers();
+    registerAll();
 
     // El triple pedido, o el del host si no hay `--target`. El default viene de
     // LLVM (liberarlo); el pedido es del llamador (no liberar).

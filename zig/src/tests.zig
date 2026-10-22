@@ -21,6 +21,9 @@ pub const llvm_c_api = if (build_options.llvm_enabled) @import("llvm/c_api.zig")
 /// Fachata + emisor LLVM (Fase LLVM M0.3): igual gating comptime que arriba.
 pub const llvm = if (build_options.llvm_enabled) @import("llvm.zig") else void;
 pub const llvm_emitter = if (build_options.llvm_enabled) @import("llvm/emitter.zig") else void;
+/// M6.a: LLJIT (ejecución in-process). Se referencia explícito para que el
+/// test-runner descubra sus `test` blocks vía el root.
+pub const llvm_jit = if (build_options.llvm_enabled) @import("llvm/jit.zig") else void;
 
 test {
     _ = lexer;
@@ -37,4 +40,5 @@ test {
     _ = llvm_c_api;
     _ = llvm;
     _ = llvm_emitter;
+    _ = llvm_jit;
 }

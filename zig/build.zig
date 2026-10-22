@@ -126,7 +126,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addOptions("build_options", llvm_opts);
-    if (llvm_info) |info| linkLlvm(exe.root_module, info);
+    if (llvm_info) |info| {
+        linkLlvm(exe.root_module, info);
+        // M6.a (LLJIT): el runtime C se linkea al propio proceso compilador y
+        // se exportan sus símbolos (`-rdynamic`) para que el generador de
+        // símbolos de proceso de LLJIT (`dlsym`) resuelva `astra_llvm_*` y las
+        // globales del runtime desde el código JITeado. `codegen_runtime.h`
+        // (incluido aquí una sola vez, que *define* las globales) vive en
+        // seed/src y se trae vía -I.
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("src/llvm/runtime/astra_runtime_llvm.c"),
+            .flags = &.{ "-std=c11", "-O2" },
+        });
+        exe.root_module.addIncludePath(b.path("../seed/src"));
+        exe.rdynamic = true;
+    }
     b.installArtifact(exe);
 
     // ── Run command ──
