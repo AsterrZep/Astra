@@ -128,10 +128,17 @@ jobs:
         run: ASTRA_LLVM_OPT=2 ./zig/tests/llvm_parity.sh
       - name: IR shape checks (FileCheck)
         run: ./zig/tests/llvm_filecheck.sh
+      # M4.c: DWARF (`--debug-info`). El script degrada a readelf (secciones
+      # .debug_line/.debug_info) cuando lldb no está instalado — CI no lleva
+      # lldb, así que aquí corre la ruta de secciones; el breakpoint por
+      # línea Astra se verifica localmente con lldb (llvm_dwarf_test.sh).
+      - name: DWARF debug info (sections)
+        run: ./zig/tests/llvm_dwarf_test.sh
       # M4.d: ASan sobre los artefactos (IR instrumentado, enlace forzado con
       # -fsanitize=address, control negativo y la suite completa bajo ASan a
-      # -O0 y -O2). LeakSanitizer va apagado: v1 no libera valores, igual que
-      # la arena de la VM, así que los leaks no son el objetivo del gate.
+      # -O0 y -O2). M4.e añadió un paso final de LSan (detect_leaks=1) sobre
+      # `leaks.astra`: el código generado ahora libera por refcount, así que
+      # las fugas SÍ son objetivo del gate.
       - name: Sanitizers (ASan over the artifacts)
         run: ./zig/tests/llvm_sanitize.sh
       # Differential fuzz (M3): generated programs through the zig VM and the
