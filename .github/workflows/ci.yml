@@ -126,6 +126,13 @@ jobs:
       # semántica observable: stdout, stderr y exit siguen byte a byte.
       - name: LLVM-route parity (optimized, -O2)
         run: ASTRA_LLVM_OPT=2 ./zig/tests/llvm_parity.sh
+      # M6.a: el mismo gate de paridad pero por la ruta LLJIT in-process
+      # (--jit), sin objeto ni enlace. Corre en el propio proceso, así que
+      # valida que ejecutar en memoria reproduce la VM byte a byte.
+      - name: LLVM-route JIT parity (VM <-> --jit, in-process)
+        run: ./zig/tests/llvm_jit.sh
+      - name: LLVM-route JIT parity (optimized, -O2)
+        run: ASTRA_LLVM_OPT=2 ./zig/tests/llvm_jit.sh
       - name: IR shape checks (FileCheck)
         run: ./zig/tests/llvm_filecheck.sh
       # M4.c: DWARF (`--debug-info`). El script degrada a readelf (secciones
