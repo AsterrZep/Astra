@@ -1,0 +1,66 @@
+// Shared references under refcount (M4.e): arrays/structs reachable from
+// locals, fields, enums and a captured snapshot; overwriting one path must not
+// free the value another path still holds (use-after-free would fail ASan).
+struct S {
+    label: string
+    a: [string]
+}
+enum E {
+    Boxed(S)
+    Tagged(string)
+}
+let mut global_box = some("gb" + "!")
+
+fn main() {
+    // array compartido entre local y campo: sobrescribir el campo no debe
+    // destruir el array mientras el local lo tenga
+    let arr = ["x" + "!", "y"]
+    let mut s = S { label: "L" + "0", a: arr }
+    let s_alias = s
+    s.a = ["new" + "!"]
+    s.label = "L" + "1"
+    print(arr)
+    print(s)
+    print(s_alias)
+
+    // mutar el objeto a través de un alias hecho con let mut
+    let mut inner = s_alias
+    inner.label = "mutated" + "!"
+    print(s)
+    print(inner)
+
+    // enum con payload struct: alias y sobrescritura
+    let mut e = Boxed(inner)
+    let e2 = e
+    e = Tagged("plain" + "!")
+    print(e)
+    print(e2)
+    match e2 {
+        E.Boxed(sk) => print(sk.label),
+        E.Tagged(t) => print(t),
+    }
+
+    // caja global reasignada con payloads temporales
+    global_box = some("tmp" + "!")
+    match global_box {
+        some(v) => print(v + "?"),
+        none => print("none"),
+    }
+    global_box = none
+    print(global_box)
+
+    // closure que comparte un array con el frame que la crea
+    let mut shared = ["sh" + "1", "sh" + "2"]
+    let reader = |i: i32| -> string {
+        let mut out = ""
+        let mut k = 0
+        while k < 2 {
+            out = out + shared[0]
+            k = k + 1
+        }
+        return out
+    }
+    print(reader(0))
+    shared[0] = "changed" + "!"
+    print(reader(0))
+}

@@ -14,7 +14,7 @@ enum Msg {
 }
 
 let gname = "glob" + "al"
-let gtags = ["g1", "g2"]
+let gtags = ["g" + "1", "g2"]
 
 fn maybe(flag: bool) -> string? {
     if flag {
@@ -36,7 +36,7 @@ fn main() {
     let mut i = 0
     let mut last = "start"
     while i < 40 {
-        let item = Item { name: "i" + "tem", tags: ["a", "b"] }
+        let item = Item { name: "i" + "tem", tags: ["a" + "!", "b"] }
         let m = Pair(item.name, i)
         last = match m {
             Msg.Text(t) => t,

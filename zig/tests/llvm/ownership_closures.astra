@@ -1,0 +1,76 @@
+// Closures under refcount (M4.e): returned closures, closures capturing
+// closures, boxes and globals, plus a closure built per loop iteration — the
+// env owns its captures and is released with the closure object.
+let mut saved = "seed" + "!"
+
+fn make_adder(base: string) -> fn(string) -> string {
+    return |x: string| -> string { return base + "+" + x }
+}
+
+fn make_pair(prefix: string) -> fn(i32) -> string {
+    let mid = prefix + "/"
+    return |x: i32| -> string {
+        let inner = mid + "#"
+        return inner + "!"
+    }
+}
+
+fn main() {
+    let mut i = 0
+    while i < 15 {
+        let add = make_adder("a" + i_to_s(i))
+        print(add("z"))
+        let p = make_pair("p" + i_to_s(i))
+        print(p(3))
+        i = i + 1
+    }
+
+    // closure que captura un closure (env anidado) y otro que captura array/box/enum
+    let outer = make_adder("o" + "!")
+    let nested = |x: i32| -> string {
+        let e = outer("inner" + i_to_s(x))
+        return e + "?"
+    }
+    print(nested(9))
+
+    let arr = ["n1", "n2" + "!"]
+    print(arr)
+    let opt = some("boxed" + "!")
+    let grab = |x: i32| -> string {
+        match opt {
+            some(v) => v + "#",
+            none => "nil",
+        }
+    }
+    print(grab(0))
+
+    // closure guardado en global y reasignado
+    saved = "changed" + "!"
+    let use_global = |x: i32| -> string { return saved + i_to_s(x) }
+    print(use_global(5))
+}
+
+fn i_to_s(n: i32) -> string {
+    let mut out = ""
+    let mut v = n
+    if v == 0 { return "0" }
+    while v > 0 {
+        let d = v % 10
+        out = digit(d) + out
+        v = v / 10
+    }
+    return out
+}
+
+fn digit(d: i32) -> string {
+    if d == 0 { return "0" }
+    if d == 1 { return "1" }
+    if d == 2 { return "2" }
+    if d == 3 { return "3" }
+    if d == 4 { return "4" }
+    if d == 5 { return "5" }
+    if d == 6 { return "6" }
+    if d == 7 { return "7" }
+    if d == 8 { return "8" }
+    return "9"
+}

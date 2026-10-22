@@ -1,0 +1,66 @@
+// Methods, generics, loops and guards under refcount (M4.e): `impl` methods on
+// structs with heap fields, a monomorphized generic over string, for..in over
+// an array of structs, a while condition that allocates and match guards.
+struct Tagged {
+    name: string
+    n: i32
+}
+
+impl Tagged {
+    fn label(self) -> string {
+        return self.name + "#" + "!"
+    }
+    fn rename(self) -> Tagged {
+        return Tagged { name: self.name + "-", n: self.n }
+    }
+}
+
+fn id<T>(x: T) -> T {
+    return x
+}
+
+fn make(i: i32) -> Tagged {
+    return Tagged { name: "t" + "-", n: i }
+}
+
+fn main() {
+    let t = make(1)
+    print(t.label())
+    let t2 = t.rename()
+    print(t2.label())
+
+    // for..in sobre array de structs: el elemento se reasigna cada iteración
+    let items = [make(1), make(2), make(3)]
+    for it in items {
+        print(it.label())
+    }
+
+    // while cuya condición ALLOCA (temporales por iteración)
+    let mut k = 0
+    while ("k" + "-") == ("k" + "-") {
+        k = k + 1
+        if k > 3 { break }
+        print("iter" + "!")
+    }
+
+    // match con GUARDE sobre strings y bindings
+    let mut i = 0
+    while i < 6 {
+        let s = "v" + "0"
+        match s {
+            "v0" if i % 2 == 0 => print("even" + "0"),
+            "v0" => print("odd" + "0"),
+            _ => print("never"),
+        }
+        i = i + 1
+    }
+
+    // genérico con string (wrapper monomorfizado)
+    print(id("g" + "1"))
+    print(id("g" + "2") + "x")
+
+    // estructura devuelta por método dentro de array, sobrescrita
+    let mut arr = [make(7)]
+    arr[0] = t2.rename()
+    print(arr[0])
+}

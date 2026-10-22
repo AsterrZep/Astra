@@ -1,0 +1,42 @@
+// Scale/pressure fixture (M4.e): deep concatenation chains (deep temporary
+// stack), arrays rewritten in a loop, 2000 discarded aggregates per run and
+// recursive string building — memory must stay flat and leak-free.
+fn concat10(a: string) -> string {
+    return a + "1" + "2" + "3" + "4" + "5" + "6" + "7" + "8" + "9" + "0"
+}
+
+fn main() {
+    // cadena profunda en una sola expresión (pila de temporales)
+    let deep = "s" + "t" + "r" + concat10("x") + concat10("y") + concat10("z") + "!"
+    print(deep)
+
+    // array grande de strings creados con concat
+    let mut big = ["0" + "!", "1" + "!", "2" + "!", "3" + "!", "4" + "!"]
+    let mut i = 0
+    while i < 5 {
+        big[i] = concat10(big[i])
+        i = i + 1
+    }
+    print(big)
+
+    // 2000 iteraciones creando y descartando agregados
+    let mut k = 0
+    let mut acc = ""
+    while k < 2000 {
+        let s = concat10("k")
+        let arr = [s, s]
+        acc = arr[0]
+        k = k + 1
+    }
+    print(acc)
+
+    // fib con strings para ejercitar frames profundos
+    print(fib_s(10))
+}
+
+fn fib_s(n: i32) -> string {
+    if n < 2 {
+        return "f" + "0"
+    }
+    return "f" + fib_s(n - 1) + fib_s(n - 2)
+}

@@ -1,0 +1,76 @@
+// Globals and parameters under refcount (M4.e): a parameter stored into a
+// global, recursive struct building (one allocation per frame), `?` chains
+// returning structs and a closure assigned into a global.
+struct Node {
+    name: string
+    kids: [string]
+}
+let mut stash = "initial" + "!"
+let mut stash_arr: [string] = ["s0"]
+
+fn keep(v: string) -> string {
+    stash = v            // guarda en global desde un parámetro
+    return stash
+}
+
+fn rebind(v: string) -> string {
+    let mut x = v        // aliasa el argumento
+    x = x + "/x"
+    let y = v
+    return x + y         // el caller libera su temp tras la llamada
+}
+
+fn build(i: i32) -> Node {
+    if i == 0 {
+        return Node { name: "leaf" + "!", kids: ["a"] }
+    }
+    let inner = build(i - 1)
+    return Node { name: "n" + inner.name, kids: inner.kids }
+}
+
+fn optional_node(flag: bool) -> Node? {
+    if flag {
+        return some(build(2))
+    }
+    return none
+}
+
+fn unwrap_node(flag: bool) -> Node? {
+    let n = optional_node(flag)?
+    return some(n)
+}
+
+fn main() {
+    print(keep("k" + "1"))
+    print(stash)
+    print(rebind("p" + "0"))
+
+    stash_arr = ["s1" + "!"]
+    stash_arr[0] = stash_arr[0] + "?"
+    print(stash_arr)
+
+    let n = build(3)
+    print(n)
+
+    let o = unwrap_node(true)
+    match o {
+        some(v) => print(v),
+        none => print("none"),
+    }
+    let none_o = unwrap_node(false)
+    print(none_o)
+
+    // recursión con allocations en cada frame
+    let big = build(12)
+    print(big.name)
+
+    // closure almacenada en global con captura de string
+    let base = "base" + "!"
+    stash = "before" + "!"
+    let setter = |x: i32| -> string {
+        stash = base + "!"
+        return stash
+    }
+    print(setter(1))
+    print(stash)
+}

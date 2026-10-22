@@ -1,0 +1,64 @@
+// Nested containers under refcount (M4.e): struct arrays, enum payloads
+// carrying structs and arrays, shared objects through bindings, and the
+// structural ==/print of freshly built aggregates.
+struct Inner {
+    label: string
+    more: [i32]
+}
+enum Wrap {
+    One(Inner)
+    Many([string])
+    None
+}
+struct Outer {
+    tag: Wrap
+    items: [Inner]
+    flag: bool
+}
+
+fn make(i: i32) -> Outer {
+    let inner = Inner { label: "i" + "-", more: [i, i + 1] }
+    let items = [inner, inner]
+    let tag = One(inner)
+    return Outer { tag: tag, items: items, flag: i > 0 }
+}
+
+fn main() {
+    let mut i = 0
+    while i < 25 {
+        let o = make(i)
+        print(o.flag)
+        let label = o.items[0]
+        print(label)
+        match o.tag {
+            Wrap.One(x) => print(x.label),
+            Wrap.Many(ms) => print(ms),
+            Wrap.None => print("none"),
+        }
+        i = i + 1
+    }
+
+    // array de structs con sobrescritura de campo vía alias
+    let mut arr = [make(1), make(2)]
+    arr[0] = make(3)
+    print(arr[0])
+    print(arr[1])
+
+    // many(string[]) con elemento sobrescrito
+    let m = Many(["a" + "1", "b" + "2"])
+    match m {
+        Wrap.Many(ms) => print(ms),
+        Wrap.One(x) => print(x.label),
+        Wrap.None => print("none"),
+    }
+
+    // bool array + equality + print
+    let ba = [true, false, true]
+    let bb = ba
+    print(ba == bb)
+
+    // equality de structs con payloads nuevos vs literales
+    let eq1 = Inner { label: "same", more: [1, 2] }
+    let eq2 = Inner { label: "same", more: [1, 2] }
+    print(eq1 == eq2)
+}

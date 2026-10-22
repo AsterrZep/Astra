@@ -1,0 +1,75 @@
+// Ownership/aliasing fixture (M4.e refcount): writes through an alias are
+// visible everywhere, and overwriting a local/field/element releases only the
+// replaced reference (the aliased object survives). Parity pins the output;
+// llvm_sanitize.sh runs it under LSan with detect_leaks=1.
+struct Box {
+    s: string
+    a: [string]
+}
+enum Tag {
+    One(string)
+    Two(string, i32)
+}
+
+fn main() {
+    // aliasing de arrays: escribir a través de un alias se ve en todos
+    let a = ["p", "q", "r"]
+    let mut b = a
+    b[1] = "Q" + "!"
+    print(a)
+    print(b)
+
+    // sobrescritura de local: el valor viejo debe liberarse sin romper alias
+    let mut s = "one" + "!"
+    let keep = s
+    s = s + " two"
+    s = s + " three"
+    print(s)
+    print(keep)
+
+    // sobrescritura de campo con alias del objeto
+    let mut bx = Box { s: "old" + "!", a: ["x"] }
+    let mut bx2 = bx
+    bx.s = "new" + "!"
+    bx.a[0] = "X" + "!"
+    print(bx)
+    print(bx2)
+
+    // sobrescritura de elemento con el valor nuevo derivado del viejo
+    let mut arr = ["a" + "1", "b" + "2"]
+    arr[0] = arr[0] + arr[1]
+    print(arr)
+
+    // enum con payload sobrescrito
+    let mut t = One("first" + "!")
+    t = Two("second" + "?", 7)
+    t = One(t_to_one(t))
+    print(t)
+
+    // array de strings reasignado en bucle con break/continue
+    let mut i = 0
+    while i < 20 {
+        let w = "w" + "!"
+        if i % 5 == 0 {
+            i = i + 1
+            continue
+        }
+        let arr2 = [w, "k"]
+        if i > 10 { break }
+        i = i + 1
+    }
+    print("after-loop")
+
+    // globales con alias mutuo
+    let g1 = "g" + "1"
+    let g2 = g1
+    print(g1)
+    print(g2)
+}
+
+fn t_to_one(t: Tag) -> string {
+    match t {
+        Tag.One(s) => s + "@",
+        Tag.Two(s, n) => s + "-",
+    }
+}
