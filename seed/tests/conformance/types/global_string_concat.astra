@@ -1,0 +1,19 @@
+// A top-level binding infers its type from the initializer: `let mut g = "glob" + "al"`
+// is a STRING, not an integer. The LLVM backend used to fall through the
+// arithmetic inference to `i64` and printed the raw pointer as a number, so
+// this pins the inference on every route (seed VM, C codegen, zig VM, LLVM).
+// The reassignment also pins that a global store releases the previous value.
+// EXPECT: global
+// EXPECT: [a!, b]
+// EXPECT: global!
+// EXPECT: globalx
+let mut g = "glob" + "al"
+let arr = ["a" + "!", "b"]
+
+fn main() {
+    print(g)
+    print(arr)
+    print(g + "!")
+    g = g + "x"
+    print(g)
+}
