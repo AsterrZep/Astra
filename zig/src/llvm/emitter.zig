@@ -1095,6 +1095,15 @@ pub const Emitter = struct {
         self.cur_returns_value = prev_ret;
         self.dbg_scope = prev_scope;
         self.dbg_in_fn = prev_in_fn;
+        // Reaplica la location del builder en el scope del frame exterior: el
+        // IRBuilder guarda su "current debug location" como estado global y la
+        // emisión de la lambda la dejó apuntando al subprograma de la lambda.
+        // Sin esto, el `ret`/cleanup que sigue en el frame exterior se queda con
+        // la location de la lambda y el verificador rechaza el módulo
+        // ("!dbg attachment points at wrong subprogram for function"). `setLoc`
+        // es no-op si DWARF está apagado o el frame exterior no es un cuerpo de
+        // función.
+        self.setLoc(idx);
         self.scopes = saved_scopes;
         self.captures = saved_captures;
         c.LLVMPositionBuilderAtEnd(self.builder, saved_block);

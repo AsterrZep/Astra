@@ -26,6 +26,16 @@ fn compute(x: i32) -> i32 {
 
 fn main() {
     print(compute(5))
+    let add = make_adder(7)
+    print(add(3))
+}
+
+// Regresión M4.c: una función que devuelve un closure. Sin reaplicar la
+// location del builder al restaurar el scope del frame exterior en `emitLambda`,
+// el `ret` de `make_adder` heredaba la location de la lambda y el verificador
+// rechazaba el módulo ("!dbg attachment points at wrong subprogram").
+fn make_adder(base: i32) -> fn(i32) -> i32 {
+    return |x: i32| -> i32 { return base + x }
 }
 EOF
 
@@ -51,7 +61,7 @@ fi
 
 # Comprobación de ejecución normal
 out=$("$work/prog")
-[ "$out" = "20" ] || { echo "error: expected '20', got '$out'" >&2; exit 1; }
+[ "$out" = $'20\n10' ] || { echo "error: expected '20\\n10', got '$out'" >&2; exit 1; }
 
 # 4. Inspección con lldb si está disponible
 LLDB=""
