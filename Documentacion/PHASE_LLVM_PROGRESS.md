@@ -36,7 +36,7 @@ a LLVM IR verificado, lo baja a objeto nativo con `--emit-obj`
 (TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo enlaza contra el
 runtime compartido del seed y produce binarios cuya salida (stdout, stderr y
 código de salida) es **byte-idéntica a la VM** para **todos** los casos del
-gate de paridad: **146 — 146 ok, 0 skip, 0 excl, 0 fail**.
+gate de paridad: **154 — 154 ok, 0 skip, 0 excl, 0 fail**.
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -364,7 +364,7 @@ FileCheck y el binario por defecto no cambian.
 
 El optimizador **no puede cambiar la semántica observable**: `llvm_parity.sh`
 acepta `ASTRA_LLVM_OPT` y CI corre el gate dos veces, sin pipeline y con
-`-O2`; **146/146 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
+`-O2`; **154/154 en ambos**. Números O0 → O2 (mismos fixtures, mínimos):
 
 | bench | llvm -O0 | llvm -O2 |
 |:------|---------:|---------:|
@@ -414,7 +414,7 @@ más el `asan.module_ctor`.
 - Gate `zig/tests/llvm_sanitize.sh`: IR y `.o` instrumentados; enlace plano
   fallido por símbolos `__asan_*`; control negativo (heap-buffer-overflow
   aborta con reporte de ASan); la suite completa vía
-  `ASTRA_LLVM_SAN=address` — **146/146 a -O0 y a -O2**, con el runtime
+  `ASTRA_LLVM_SAN=address` — **154/154 a -O0 y a -O2**, con el runtime
   compilado también con ASan; y un paso final de LSan (§12, M4.e) sobre
   `tests/llvm/leaks.astra`. `llvm_parity.sh` acepta `ASTRA_LLVM_SAN=<tipo>`
   (flag + runtime + enlace) para no duplicar el runner.
@@ -666,16 +666,16 @@ slots del env son punteros. El env no es un temporal: su dueño es el closure.
 
 | Check | Resultado |
 |:------|:----------|
-| `llvm_parity.sh` (146 casos, VM ↔ LLVM byte a byte) | **146/146** a `-O0` y `-O2` |
+| `llvm_parity.sh` (154 casos, VM ↔ LLVM byte a byte) | **154/154** a `-O0` y `-O2` |
 | `llvm_sanitize.sh` (suite bajo ASan + paso LSan nuevo) | OK, **sin fugas** |
 | `llvm_fuzz.sh -n 40` (VM↔C↔zig↔LLVM) | 0 fail |
 | Repros de mano (concat en bucle, structs con array de strings, enums con payload, closures que capturan strings, `?`, `match`, `for..in`, `break`/`continue`, globales) | idénticos a la VM y **LSan limpio** |
 | `zig build test -Dllvm` | 88/88 |
-| Suite seed | 257/257 |
+| Suite seed | 258/258 |
 | Presión de memoria (medida) | 10 000 vs 1 000 000 concatenaciones en un bucle: RSS pico **11,1 / 11,2 MB** — plano. Antes, por la medición de §11.3 (51.400 B por 100), ese mismo programa habría crecido ~5 MB por cada 10 000 iteraciones. |
 
 El **gate de fugas** es `zig/tests/llvm/leaks.astra`, recogido además por el
-barrido de paridad (145 → 146 casos): 40 iteraciones de un bucle que asigna
+barrido de paridad (145 → 154 casos: `leaks.astra`, los siete fixtures `ownership_*` y `types/global_string_concat.astra`): 40 iteraciones de un bucle que asigna
 strings, cajas, arrays, structs, enums, closures y globales, corrido con
 `--sanitize=address` + runtime con ASan y `ASAN_OPTIONS=detect_leaks=1`;
 `llvm_sanitize.sh` exige exit 0, stdout idéntico a la VM y stderr sin

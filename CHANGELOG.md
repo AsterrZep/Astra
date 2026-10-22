@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `detect_leaks=1` dentro de `llvm_sanitize.sh` — el repro de la auditoría
   (100 concatenaciones = 51.400 bytes) termina ahora con LSan limpio. Fijado
   también que un global `let g = "a" + "b"` se infería `i64` e imprimía el
-  puntero. Paridad **146/146** a `-O0`, `-O2` y bajo ASan; ciclos de
+  puntero. Paridad **154/154** a `-O0`, `-O2` y bajo ASan; ciclos de
   closures/structs siguen sin coleccionarse (limitación documentada,
   `PHASE_LLVM_PROGRESS.md` §12).
 - **Backend nativo LLVM (Fase LLVM, M0–M3, opt-in `-Dllvm`)**: tercera ruta
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `for..in`/`break`/`continue`, genéricos monomorfizados, traits/impls,
   retornos sin anotar y `let` sin inicializador de tipos con puntero. Gate
   de paridad `zig/tests/llvm_parity.sh` (salida de la VM ↔ ruta LLVM byte a
-  byte): **146 casos — 146 ok, 0 skip, 0 excl, 0 fail**; `llvm_filecheck.sh`
+  byte): **154 casos — 154 ok, 0 skip, 0 excl, 0 fail**; `llvm_filecheck.sh`
   fija la forma del IR (guards con `cold noreturn` y pesos de rama fría,
   match, guard de profundidad, `?`) y `llvm_fuzz.sh` compara programas
   generados por las cuatro rutas (VM seed / C / VM zig / LLVM). Jobs CI
@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `&&`/`||` en call-args (ambos emitters VM, heredado por el C) y alineado
   el dump AST (`BinaryOp(&&/||)`). M4 (calidad) añade `--opt-level=N` (new
   PM: `default<O2>` + LICM/simple-loop-unswitch/IRCE), verificado corriendo
-  el gate de paridad también con `-O2` (146/146), `llvm_bench.sh`, que
+  el gate de paridad también con `-O2` (154/154), `llvm_bench.sh`, que
   publica tiempos VM/C/LLVM (el nativo optimizado va 10–17x por delante del
   backend C y 68–1200x de la VM), y `--debug-info` (M4.c, DWARF line tables
   y subprogramas para funciones, métodos y lambdas, verificado con `lldb`
@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   módulo antes de optimizar; `llvm_sanitize.sh` comprueba la instrumentación
   en IR y objeto, que el enlace sin `-fsanitize=address` falla, un control
   negativo con heap-buffer-overflow y la suite completa bajo ASan
-  (**146/146** a `-O0` y `-O2`). UBSan no se ofrece: LLVM 19..23 no registra
+  (**154/154** a `-O0` y `-O2`). UBSan no se ofrece: LLVM 19..23 no registra
   `ubsan` en el new PM. Detalle: `Documentacion/PHASE_LLVM_PROGRESS.md`.
 - **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
   el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,

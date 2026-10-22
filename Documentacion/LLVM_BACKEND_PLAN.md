@@ -231,12 +231,12 @@ línea Astra.
 números en `PHASE_LLVM_PROGRESS.md` §8), M4.b (`--opt-level=N` con
 `LLVMRunPasses`; `-O2` = `default<O2>` + `loop-mssa(licm)` +
 `simple-loop-unswitch` + `irce`; el gate de paridad corre también con
-`ASTRA_LLVM_OPT=2`: **146/146**), y M4.c (`--debug-info` con `DebugInfo.h`,
+`ASTRA_LLVM_OPT=2`: **154/154**), y M4.c (`--debug-info` con `DebugInfo.h`,
 subprograms y locations por instrucción, verificado con `llvm_dwarf_test.sh` y
 `lldb-19` en líneas Astra), y M4.d (`--sanitize=address`: el emisor marca las
 funciones y la pasada `asan` del new PM instrumenta antes del pipeline;
 `llvm_sanitize.sh` exige instrumentación en IR y objeto, el enlace con
-`-fsanitize=address`, corre la suite completa bajo ASan: **146/146 a -O0 y
+`-fsanitize=address`, corre la suite completa bajo ASan: **154/154 a -O0 y
 -O2**, y cierra con un gate de fugas LSan sobre `tests/llvm/leaks.astra`).
 La auditoría post-M4 (2026-10-21) cerró los SEGV con nil, la igualdad
 de arrays de bool y los valores-función (`PHASE_LLVM_PROGRESS.md` §11), y
@@ -303,10 +303,10 @@ compila el subconjunto de Astra-0 (escalares, floats, strings,
 Option/Result+`match`/`?`, closures, arrays/structs/enums, `for..in`,
 `break`/`continue`, genéricos, traits/impls) a `.o` nativo vía
 TargetMachineEmitToFile y reproduce la salida de la VM byte a byte en
-**146/146 casos** (0 skip, 0 excl); el fuzz diferencial de cuatro rutas y
+**154/154 casos** (0 skip, 0 excl); el fuzz diferencial de cuatro rutas y
 FileCheck cierran el gate de M3, y el canario CI vigila el churn de LLVM.
 **M4 está cerrado**: benchmarks y pipeline `-O2` medidos (§8 del progress
-log, gate repetido a `-O2`: 146/146), DWARF verificado con `lldb` y ASan sobre
+log, gate repetido a `-O2`: 154/154), DWARF verificado con `lldb` y ASan sobre
 los artefactos (`llvm_sanitize.sh`, suite completa a `-O0` y `-O2`
 instrumentada). Lo siguiente es **M5**: multi-target/cross-compilation. Los
 hitos siguen el patrón workstream → commit probado → gate verde.
