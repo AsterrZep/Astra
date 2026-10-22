@@ -48,6 +48,8 @@ const usage =
     \\  --debug-info           emit DWARF line tables (lldb/gdb stop on Astra lines)
     \\  --sanitize=address     instrument the module with AddressSanitizer
     \\                         (needs an LLVM output mode; link with -fsanitize=address)
+    \\  --target=<triple>      cross-compile for <triple>, e.g. aarch64-linux-gnu
+    \\                         (needs an LLVM output mode; default = host triple)
     \\  --debug                run under the interactive bytecode debugger (stdin)
     \\
 ;
@@ -63,6 +65,7 @@ pub fn main(init: std.process.Init) !void {
     var opt_level: u8 = 0;
     var debug_info = false;
     var sanitize: Sanitize = .none;
+    var target_triple: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     for (argv[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -100,6 +103,8 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("error: --opt-level expects 0..3, got {d}\n{s}", .{ opt_level, usage });
                 std.process.exit(2);
             }
+        } else if (std.mem.startsWith(u8, arg, "--target=")) {
+            target_triple = arg["--target=".len..];
         } else if (std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -120,6 +125,14 @@ pub fn main(init: std.process.Init) !void {
     // rechaza explícitamente en vez de aparentar que instrumenta.
     if (sanitize != .none and mode != .emit_llvm and mode != .emit_llvm_stdout and mode != .emit_obj) {
         std.debug.print("error: --sanitize requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
+        std.process.exit(2);
+    }
+
+    // `--target` fija un triple cruzado (M5); sólo tiene sentido sobre un
+    // artefacto del backend LLVM, igual que --sanitize. Con la VM o los dumps
+    // se rechaza en vez de aparentar que cambia el target.
+    if (target_triple != null and mode != .emit_llvm and mode != .emit_llvm_stdout and mode != .emit_obj) {
+        std.debug.print("error: --target requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
         std.process.exit(2);
     }
 
@@ -234,7 +247,7 @@ pub fn main(init: std.process.Init) !void {
     // sale. No necesita el emisor de bytecode ni la VM — el emisor LLVM
     // camina el AST.
     if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj) {
-        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info, sanitize);
+        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info, sanitize, target_triple);
         return;
     }
 
@@ -311,6 +324,7 @@ fn emitLlvm(
     opt_level: u8,
     debug_info: bool,
     sanitize: Sanitize,
+    target: ?[]const u8,
 ) void {
     // `build_options.llvm_enabled` es comptime: sin -Dllvm solo se analiza esta
     // rama y `llvm.Emitter` (que sería `void`) jamás se referencia.
@@ -318,6 +332,10 @@ fn emitLlvm(
         var em = llvm.Emitter.init(a, tree, file);
         defer em.deinit();
         em.diag = diag;
+        // M5: `--target=<triple>` fija el triple de destino (host si es null).
+        // El slice sentinel-terminated vive en la arena mientras el emisor.
+        const target_z: ?[:0]const u8 = if (target) |t| a.dupeZ(u8, t) catch @panic("OOM") else null;
+        em.setTargetTriple(target_z);
         if (debug_info) em.enableDebugInfo(opt_level);
         const san_kind: ?llvm.Sanitizer = switch (sanitize) {
             .none => null,
@@ -348,11 +366,11 @@ fn emitLlvm(
         // M4.d: instrumentación antes del pipeline de optimización (el orden de
         // clang) para que las pasadas vean los accesos que el asan/ubsan marca.
         if (san_kind) |kind| {
-            if (!llvm.instrumentSanitizer(em.mod, diag, file, kind)) std.process.exit(1);
+            if (!llvm.instrumentSanitizer(em.mod, diag, file, kind, target_z)) std.process.exit(1);
         }
         // M4: pipeline del new PM antes de verificar/emitir. Nivel 0 (default)
         // deja el módulo intacto: los gates de IR y paridad no cambian.
-        if (!llvm.runPasses(em.mod, diag, file, opt_level)) std.process.exit(1);
+        if (!llvm.runPasses(em.mod, diag, file, opt_level, target_z)) std.process.exit(1);
         if (!llvm.verify(em.mod, diag, file)) std.process.exit(1);
         if (mode == .emit_llvm_stdout) {
             const ir = llvm.printToString(a, em.mod);
@@ -367,7 +385,7 @@ fn emitLlvm(
                 // M2.e: TargetMachineEmitToFile produce el .o directamente —
                 // la ruta LLVM ya no subprocesa `llc`.
                 const out_path = std.fmt.allocPrintSentinel(a, "{s}.o", .{base}, 0) catch @panic("OOM");
-                if (!llvm.emitObjectFile(em.mod, diag, file, out_path)) std.process.exit(1);
+                if (!llvm.emitObjectFile(em.mod, diag, file, out_path, target_z)) std.process.exit(1);
             } else {
                 const out_path = std.fmt.allocPrintSentinel(a, "{s}.ll", .{base}, 0) catch @panic("OOM");
                 llvm.writeToFile(em.mod, out_path) catch std.process.exit(1);

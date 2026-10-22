@@ -13,6 +13,10 @@ pub const c = @cImport({
     // llevar triple y datalayout (024 §2), y el triple del host se obtiene aquí
     // sin construir un TargetMachine.
     @cInclude("llvm-c/TargetMachine.h");
+    // Target.h (M5): LLVMInitializeAllTargets y hermanos (static inline que
+    // registran cada backend en el TargetRegistry). Sin registrarlos,
+    // LLVMGetTargetFromTriple falla para cualquier triple no-nativo (cross).
+    @cInclude("llvm-c/Target.h");
     // PassBuilder.h (M4): LLVMRunPasses sobre el pipeline textual del new PM
     // (`default<O2>`, …) antes de emitir el objeto.
     @cInclude("llvm-c/Transforms/PassBuilder.h");

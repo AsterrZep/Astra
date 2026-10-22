@@ -36,6 +36,7 @@ const ast = @import("../ast/ast.zig");
 const diagnostics = @import("../diagnostics.zig");
 const tc_types = @import("../typechecker/types.zig");
 const c = @import("c_api.zig").c;
+const target_mod = @import("target.zig");
 const debug_mod = @import("debug.zig");
 
 /// Tipos escalares que el subconjunto actual representa sin boxing, más los
@@ -410,6 +411,11 @@ pub const Emitter = struct {
     /// Sanitizer (M4.d), sólo con `--sanitize=TYPE`.
     sanitizer: ?Sanitizer = null,
 
+    /// Triple de destino (M5), sólo con `--target=<triple>`: si está fijado,
+    /// el módulo lleva ese triple y su datalayout en vez de los del host, y el
+    /// objeto emitido apunta a ese target cruzado. Null = host (el default).
+    target_triple: ?[:0]const u8 = null,
+
     t_i1: c.LLVMTypeRef,
     t_i8: c.LLVMTypeRef,
     t_i32: c.LLVMTypeRef,
@@ -740,6 +746,13 @@ pub const Emitter = struct {
     /// del new PM (`llvm.instrumentSanitizer`) antes de optimizar.
     pub fn enableSanitizer(self: *Emitter, s: Sanitizer) void {
         self.sanitizer = s;
+    }
+
+    /// Fija el triple de destino (M5). Llamar antes de `emit`. Con un triple,
+    /// el módulo lo lleva a él y su datalayout (no los del host); sin él, el
+    /// host como siempre. `triple` debe vivir mientras el emisor (arena).
+    pub fn setTargetTriple(self: *Emitter, triple: ?[:0]const u8) void {
+        self.target_triple = triple;
     }
 
     /// Atributo de función que pide a la pasada instrumentar esa función.
@@ -3949,10 +3962,24 @@ pub const Emitter = struct {
     }
 
     fn setTarget(self: *Emitter) void {
-        const triple = c.LLVMGetDefaultTargetTriple();
-        defer c.LLVMDisposeMessage(triple);
-        c.LLVMSetTarget(self.mod, triple);
-        const td = c.LLVMCreateTargetData("");
+        // M5: con `--target`, el módulo lleva ese triple y su datalayout (no
+        // los del host) — el layout del objeto emitido se calcula con el
+        // datalayout del módulo, así que uno del host produciría un objeto
+        // cruzado malformado (tamaños/alignments de i64, GEPs). Sin `--target`,
+        // el host como siempre (los gates de IR no cambian).
+        var td: c.LLVMTargetDataRef = undefined;
+        if (self.target_triple) |t| {
+            c.LLVMSetTarget(self.mod, t.ptr);
+            // El datalayout del triple de destino sale de su TargetMachine.
+            const tm = target_mod.create(self.diag, self.file, t) orelse return;
+            defer c.LLVMDisposeTargetMachine(tm);
+            td = c.LLVMCreateTargetDataLayout(tm);
+        } else {
+            const triple = c.LLVMGetDefaultTargetTriple();
+            defer c.LLVMDisposeMessage(triple);
+            c.LLVMSetTarget(self.mod, triple);
+            td = c.LLVMCreateTargetData("");
+        }
         defer c.LLVMDisposeTargetData(td);
         const dl = c.LLVMCopyStringRepOfTargetData(td);
         defer c.LLVMDisposeMessage(dl);

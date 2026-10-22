@@ -8,6 +8,7 @@
 const std = @import("std");
 const diagnostics = @import("diagnostics.zig");
 const c = @import("llvm/c_api.zig").c;
+const target = @import("llvm/target.zig");
 
 pub const Emitter = @import("llvm/emitter.zig").Emitter;
 pub const Sanitizer = @import("llvm/emitter.zig").Emitter.Sanitizer;
@@ -50,54 +51,20 @@ pub fn writeToFile(mod: c.LLVMModuleRef, path_z: [*:0]const u8) !void {
     }
 }
 
-/// Crea el TargetMachine del host (triple y features por defecto, PIC) que
-/// comparten la emisión de objeto y el pipeline de optimización. Devuelve null
-/// (y reporta por el sink) si el target no existe. El llamador lo libera.
-fn createTargetMachine(diag: ?*diagnostics.Sink, file: []const u8) ?c.LLVMTargetMachineRef {
-    // El target del host debe estar registrado en libLLVM antes de crear un
-    // TargetMachine. Los init son un static inline de llvm-c/Target.h que
-    // translate-c sí traduce (llvm-config.h los expande al target nativo).
-    _ = c.LLVMInitializeNativeTarget();
-    _ = c.LLVMInitializeNativeAsmPrinter();
-
-    const triple = c.LLVMGetDefaultTargetTriple();
-    defer c.LLVMDisposeMessage(triple);
-    var target: c.LLVMTargetRef = undefined;
-    var err: [*c]u8 = null;
-    if (c.LLVMGetTargetFromTriple(triple, &target, &err) != 0) {
-        const msg: []const u8 = if (err != null) std.mem.span(@as([*:0]const u8, @ptrCast(err))) else "unknown target";
-        diagnostics.emit(diag, file, diagnostics.no_span, "cannot find target for '{s}': {s}", .{ std.mem.span(@as([*:0]const u8, @ptrCast(triple))), msg });
-        if (err != null) c.LLVMDisposeMessage(err);
-        return null;
-    }
-    const tm = c.LLVMCreateTargetMachine(
-        target,
-        triple,
-        "", // CPU: el default del triple
-        "", // features: las del default del triple
-        c.LLVMCodeGenLevelDefault,
-        c.LLVMRelocPIC,
-        c.LLVMCodeModelDefault,
-    );
-    if (tm == null) {
-        diagnostics.emit(diag, file, diagnostics.no_span, "cannot create target machine", .{});
-        return null;
-    }
-    return tm;
-}
-
 /// Compila el módulo a un objeto nativo vía TargetMachineEmitToFile
 /// (LLVM_BACKEND_PLAN.md §6 M2.e): el backend deja de depender del subproceso
-/// `llc` — mismo TargetMachine del host, PIC como pide el enlazador por
-/// defecto (sin `-relocation-model=pic` el default-PIE `cc` rechaza el
-/// objeto). Devuelve `false` y reporta el motivo cuando LLVM no puede.
+/// `llc` — mismo TargetMachine, PIC como pide el enlazador por defecto (sin
+/// `-relocation-model=pic` el default-PIE `cc` rechaza el objeto). Con `triple`
+/// (M5) el objeto se emite para ese target cruzado; sin él, para el host.
+/// Devuelve `false` y reporta el motivo cuando LLVM no puede.
 pub fn emitObjectFile(
     mod: c.LLVMModuleRef,
     diag: ?*diagnostics.Sink,
     file: []const u8,
     path_z: [*:0]const u8,
+    triple: ?[:0]const u8,
 ) bool {
-    const tm = createTargetMachine(diag, file) orelse return false;
+    const tm = target.create(diag, file, triple) orelse return false;
     defer c.LLVMDisposeTargetMachine(tm);
     var err: [*c]u8 = null;
     if (c.LLVMTargetMachineEmitToFile(tm, mod, path_z, c.LLVMObjectFile, &err) != 0) {
@@ -140,13 +107,14 @@ pub fn instrumentSanitizer(
     diag: ?*diagnostics.Sink,
     file: []const u8,
     kind: Sanitizer,
+    triple: ?[:0]const u8,
 ) bool {
     const pipeline: [:0]const u8 = switch (kind) {
         .address => "asan",
     };
     // La pasada necesita el TargetMachine para la TLI (tamaños de tipo y
     // librerías de la plataforma); no emite código, sólo instrumenta el IR.
-    const tm = createTargetMachine(diag, file) orelse return false;
+    const tm = target.create(diag, file, triple) orelse return false;
     defer c.LLVMDisposeTargetMachine(tm);
     const opts = c.LLVMCreatePassBuilderOptions();
     defer c.LLVMDisposePassBuilderOptions(opts);
@@ -169,11 +137,12 @@ pub fn runPasses(
     diag: ?*diagnostics.Sink,
     file: []const u8,
     level: u8,
+    triple: ?[:0]const u8,
 ) bool {
     const pipeline = pipelineForLevel(level) orelse return true;
     // El TargetMachine aporta el target de las pasadas (vectorización, costes);
     // no se usa para emitir, sólo para correr el pipeline.
-    const tm = createTargetMachine(diag, file) orelse return false;
+    const tm = target.create(diag, file, triple) orelse return false;
     defer c.LLVMDisposeTargetMachine(tm);
     const opts = c.LLVMCreatePassBuilderOptions();
     defer c.LLVMDisposePassBuilderOptions(opts);
@@ -211,12 +180,45 @@ test "emit-obj: TargetMachineEmitToFile produce un ELF de host" {
     // tmpDir vive en .zig-cache/tmp/<aleatorio> (std.testing.tmpDir).
     const out = try std.fmt.allocPrintSentinel(std.testing.allocator, ".zig-cache/tmp/{s}/smoke.o", .{tmp.sub_path}, 0);
     defer std.testing.allocator.free(out);
-    try std.testing.expect(emitObjectFile(mod, null, "obj_smoke.astra", out));
+    try std.testing.expect(emitObjectFile(mod, null, "obj_smoke.astra", out, null));
 
     const data = try std.Io.Dir.cwd().readFileAlloc(io, out, std.testing.allocator, .limited(1 << 20));
     defer std.testing.allocator.free(data);
     try std.testing.expect(data.len > 16);
     try std.testing.expectEqualStrings("\x7fELF", data[0..4]);
+}
+
+test "M5: emitObjectFile produce un ELF aarch64 cuando --target lo fija" {
+    // Mismo módulo `i64 add(i64,i64)` pero emitido para aarch64-linux-gnu: el
+    // objeto debe ser ELF de 64 bits con e_machine = EM_AARCH64 (183), no el
+    // del host. Es el gate de cross-compilation de M5 en una sola aserción.
+    const mod = c.LLVMModuleCreateWithName("astra_cross_smoke");
+    defer c.LLVMDisposeModule(mod);
+    const i64t = c.LLVMInt64Type();
+    var params = [_]c.LLVMTypeRef{ i64t, i64t };
+    const fty = c.LLVMFunctionType(i64t, &params, 2, 0);
+    const fnv = c.LLVMAddFunction(mod, "add", fty);
+    const bb = c.LLVMAppendBasicBlock(fnv, "entry");
+    const builder = c.LLVMCreateBuilder();
+    defer c.LLVMDisposeBuilder(builder);
+    c.LLVMPositionBuilderAtEnd(builder, bb);
+    _ = c.LLVMBuildRet(builder, c.LLVMBuildAdd(builder, c.LLVMGetParam(fnv, 0), c.LLVMGetParam(fnv, 1), "sum"));
+    try std.testing.expect(verify(mod, null, "cross_smoke"));
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const out = try std.fmt.allocPrintSentinel(std.testing.allocator, ".zig-cache/tmp/{s}/cross.o", .{tmp.sub_path}, 0);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(emitObjectFile(mod, null, "cross_smoke.astra", out, "aarch64-linux-gnu"));
+
+    const data = try std.Io.Dir.cwd().readFileAlloc(io, out, std.testing.allocator, .limited(1 << 20));
+    defer std.testing.allocator.free(data);
+    try std.testing.expect(data.len > 20);
+    try std.testing.expectEqualStrings("\x7fELF", data[0..4]);
+    // e_machine (u16 little-endian en el offset 18 del ELF64) == EM_AARCH64.
+    const e_machine = std.mem.readInt(u16, data[18..20], .little);
+    try std.testing.expectEqual(@as(u16, 183), e_machine);
 }
 
 test "M4: runPasses aplica el pipeline y el módulo sigue verificando" {
@@ -236,11 +238,11 @@ test "M4: runPasses aplica el pipeline y el módulo sigue verificando" {
     defer c.LLVMDisposeBuilder(builder);
     c.LLVMPositionBuilderAtEnd(builder, bb);
     _ = c.LLVMBuildRet(builder, c.LLVMBuildAdd(builder, c.LLVMGetParam(fnv, 0), c.LLVMGetParam(fnv, 1), "sum"));
-    try std.testing.expect(runPasses(mod, null, "opt_smoke.astra", 2));
+    try std.testing.expect(runPasses(mod, null, "opt_smoke.astra", 2, null));
     try std.testing.expect(verify(mod, null, "opt_smoke.astra"));
     // Nivel 0 no toca nada (el IR de los FileCheck depende de ello).
     try std.testing.expect(pipelineForLevel(0) == null);
-    try std.testing.expect(runPasses(mod, null, "opt_smoke.astra", 0));
+    try std.testing.expect(runPasses(mod, null, "opt_smoke.astra", 0, null));
 }
 
 test "M4.d: instrumentSanitizer inserta checks de ASan en el módulo" {
@@ -277,7 +279,7 @@ test "M4.d: instrumentSanitizer inserta checks de ASan en el módulo" {
     _ = c.LLVMBuildRet(builder, v);
     try std.testing.expect(verify(mod, null, "asan_smoke.astra"));
 
-    try std.testing.expect(instrumentSanitizer(mod, null, "asan_smoke.astra", .address));
+    try std.testing.expect(instrumentSanitizer(mod, null, "asan_smoke.astra", .address, null));
     try std.testing.expect(verify(mod, null, "asan_smoke.astra"));
 
     const ir = c.LLVMPrintModuleToString(mod);
