@@ -316,6 +316,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dentro de una función
 
 ### Fixed
+- **Backend LLVM: `--debug-info` con closures (M4.c)**: una función que
+  devuelve un closure hacía fallar la verificación del módulo (`--debug-info`
+  rechazaba el programa con "!dbg attachment points at wrong subprogram"):
+  `emitLambda` restauraba el scope del frame exterior pero no la current
+  debug location del builder, y el `ret` del caller heredaba la location de la
+  lambda. El gate `llvm_dwarf_test.sh` ahora incluye una función que devuelve
+  un closure, así que esta ruta corre en cada gate.
 - **Backend LLVM: auditoría post-M4 (memoria y salida)**: `==` de arrays de
   `bool` leía fuera del heap (stride 8 fijo sobre elementos de 1 byte; ASan
   `heap-buffer-overflow`) y los valores nil (`string`/struct/array/enum/fn sin
