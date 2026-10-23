@@ -1,0 +1,33 @@
+// FLAGS: --fast-math
+//
+// Shapes de --fast-math (M6.b): toda aritmética FP sale marcada con los
+// siete flags fast-math (el IR textual lo imprime como «fast») — fadd, fsub,
+// fmul, fdiv, frem y fneg — mientras el FCmp del guard de división cero
+// queda SIN marcar: dividir entre cero sigue siendo el error del VM.
+// FileCheck exige los patrones en orden.
+//
+// CHECK: fadd fast double
+// CHECK: fsub fast double
+// CHECK: fmul fast double
+// CHECK: fcmp oeq double
+// CHECK: fdiv fast double
+// CHECK: fcmp oeq double
+// CHECK: frem fast double
+// CHECK: fneg fast double
+
+fn main() {
+    let a = 1.5
+    let b = 2.25
+    let s = a + b
+    let d = a - b
+    let m = a * b
+    let q = a / b
+    let r = a % b
+    let n = -s
+    print(s)
+    print(d)
+    print(m)
+    print(q)
+    print(r)
+    print(n)
+}

@@ -408,6 +408,10 @@ pub const Emitter = struct {
     debug_wanted: bool = false,
     debug_optimized: bool = false,
 
+    /// `--fast-math` (M6.b): marcar toda aritmética FP con los flags
+    /// fast-math. Opt-in; sin él el IR no cambia ni un byte.
+    fast_math: bool = false,
+
     /// Sanitizer (M4.d), sólo con `--sanitize=TYPE`.
     sanitizer: ?Sanitizer = null,
 
@@ -758,6 +762,23 @@ pub const Emitter = struct {
     /// host como siempre. `triple` debe vivir mientras el emisor (arena).
     pub fn setTargetTriple(self: *Emitter, triple: ?[:0]const u8) void {
         self.target_triple = triple;
+    }
+
+    /// M6.b — `--fast-math`: la aritmética FP del módulo se marca con todos
+    /// los flags fast-math («fast» en el IR textual). Opt-in; sin la marca el
+    /// IR —y por tanto todos los gates— no cambia ni un byte.
+    pub fn enableFastMath(self: *Emitter) void {
+        self.fast_math = true;
+    }
+
+    /// Marca una instrucción FP con todos los flags fast-math. El C API los
+    /// tipa como `unsigned` sin nombres en LLVM 19 y como enum
+    /// LLVMFastMathFlags en 22+, con el mismo mapa de bits:
+    /// reassoc|nnan|ninf|nsz|arcp|contract|afn = 0x7F (el «fast» del IR).
+    /// Sólo en instrucciones FP: el FCmp del guard de división cero no se
+    /// marca, así que dividir entre cero sigue siendo el error del VM.
+    fn setFastMath(self: *Emitter, inst: c.LLVMValueRef) void {
+        if (self.fast_math) c.LLVMSetFastMathFlags(inst, 0x7F);
     }
 
     /// ¿El destino es un triple wasm? (M5) Sólo con `--target=<triple>` explícito:
@@ -2608,6 +2629,7 @@ pub const Emitter = struct {
                         .percent => self.emitDivRem(lhs.ref, rhs.ref, line, true, .f64_),
                         else => unreachable,
                     };
+                    self.setFastMath(r);
                     return .{ .ref = r, .ty = .f64_ };
                 }
                 if (lhs.ty != .i64_) {
@@ -2652,7 +2674,9 @@ pub const Emitter = struct {
         switch (u.op) {
             .minus => {
                 if (v.ty == .f64_) {
-                    return .{ .ref = c.LLVMBuildFNeg(self.builder, v.ref, ""), .ty = .f64_ };
+                    const neg = c.LLVMBuildFNeg(self.builder, v.ref, "");
+                    self.setFastMath(neg);
+                    return .{ .ref = neg, .ty = .f64_ };
                 }
                 if (v.ty != .i64_) {
                     self.unsupported(idx, "negation requires a number");
@@ -3003,8 +3027,14 @@ pub const Emitter = struct {
             const fzero = c.LLVMConstReal(self.t_f64, 0.0);
             const b_fzero = c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, b, fzero, "");
             self.emitGuardTrue(b_fzero, line, if (is_rem) "modulo by zero" else "division by zero");
-            if (is_rem) return c.LLVMBuildFRem(self.builder, a, b, "");
-            return c.LLVMBuildFDiv(self.builder, a, b, "");
+            if (is_rem) {
+                const r = c.LLVMBuildFRem(self.builder, a, b, "");
+                self.setFastMath(r);
+                return r;
+            }
+            const d = c.LLVMBuildFDiv(self.builder, a, b, "");
+            self.setFastMath(d);
+            return d;
         }
         const zero = c.LLVMConstInt(self.t_i64, 0, 0);
         const b_zero = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, b, zero, "");

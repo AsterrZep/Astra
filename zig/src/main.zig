@@ -51,6 +51,8 @@ const usage =
     \\                         (needs an LLVM output mode; link with -fsanitize=address)
     \\  --target=<triple>      cross-compile for <triple>, e.g. aarch64-linux-gnu
     \\                         (needs an LLVM output mode; default = host triple)
+    \\  --fast-math            mark FP arithmetic with fast-math flags (NaN/Inf/
+    \\                         reassociation allowed; needs an LLVM output mode)
     \\  --debug                run under the interactive bytecode debugger (stdin)
     \\
 ;
@@ -66,6 +68,7 @@ pub fn main(init: std.process.Init) !void {
     var opt_level: u8 = 0;
     var debug_info = false;
     var sanitize: Sanitize = .none;
+    var fast_math = false;
     var target_triple: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     for (argv[1..]) |arg| {
@@ -108,6 +111,8 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.startsWith(u8, arg, "--target=")) {
             target_triple = arg["--target=".len..];
+        } else if (std.mem.eql(u8, arg, "--fast-math")) {
+            fast_math = true;
         } else if (std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -147,6 +152,14 @@ pub fn main(init: std.process.Init) !void {
         } else {
             std.debug.print("error: --target requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout or --emit-obj)\n{s}", .{usage});
         }
+        std.process.exit(2);
+    }
+
+    // `--fast-math` (M6.b) sólo cambia el IR del backend LLVM; con la VM o
+    // los dumps no hay nada que marcar, así que se rechaza en vez de
+    // aparentar que optimiza. `--jit` sí lo admite (mismo pipeline LLVM).
+    if (fast_math and mode != .emit_llvm and mode != .emit_llvm_stdout and mode != .emit_obj and mode != .jit) {
+        std.debug.print("error: --fast-math requires an LLVM output mode (--emit-llvm, --emit-llvm-stdout, --emit-obj or --jit)\n{s}", .{usage});
         std.process.exit(2);
     }
 
@@ -262,7 +275,7 @@ pub fn main(init: std.process.Init) !void {
     // camina el AST. `--jit` (M6.a) compila y corre en el proceso vía LLJIT
     // por la misma vía (emisor LLVM → JIT), sin escribir IR ni objeto.
     if (mode == .emit_llvm or mode == .emit_llvm_stdout or mode == .emit_obj or mode == .jit) {
-        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info, sanitize, target_triple);
+        emitLlvm(a, io, file, &tree, root, mode, &diag, &tc, opt_level, debug_info, sanitize, fast_math, target_triple);
         return;
     }
 
@@ -339,6 +352,7 @@ fn emitLlvm(
     opt_level: u8,
     debug_info: bool,
     sanitize: Sanitize,
+    fast_math: bool,
     target: ?[]const u8,
 ) void {
     // `build_options.llvm_enabled` es comptime: sin -Dllvm solo se analiza esta
@@ -357,6 +371,8 @@ fn emitLlvm(
             .address => .address,
         };
         if (san_kind) |kind| em.enableSanitizer(kind);
+        // M6.b: `--fast-math` marca la aritmética FP al construirla (emisor).
+        if (fast_math) em.enableFastMath();
         // Instancias genéricas materializadas por el checker (Phase 2.4
         // steps 2b/3b): wrappers de fn con sus rewrites y un layout por
         // instancia de struct (los ptypes de print/eq difieren).
