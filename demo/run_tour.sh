@@ -111,7 +111,9 @@ if [ -n "$have_llvm" ]; then
         fails=$((fails+1))
     fi
 
-    # 5. JIT: en proceso, sin cc ni enlace.
+    # 5. JIT: en proceso, sin cc ni enlace. Ojo al medir exit codes con pipes:
+    # `cmd | head; echo $?` reporta el exit de head (siempre 0), no el de cmd.
+    # `--jit` sí propaga bien sus fallos (compilación y runtime -> 1).
     "$ASTRA_ZIG" --jit $opt_args "$TOUR" >"$work/jit.out" 2>"$work/jit.err"; rc=$?
     compare "llvm-jit" "$work/jit.out" "$work/jit.err" "$rc"
 else

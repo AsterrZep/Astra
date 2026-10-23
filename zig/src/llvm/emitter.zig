@@ -415,6 +415,10 @@ pub const Emitter = struct {
     /// el módulo lleva ese triple y su datalayout en vez de los del host, y el
     /// objeto emitido apunta a ese target cruzado. Null = host (el default).
     target_triple: ?[:0]const u8 = null,
+    /// TargetData del destino (creado en `setTarget`), para calcular offsets de
+    /// struct según el datalayout real (p. ej. el puntero de 4 bytes en wasm32
+    /// vs 8 en el host). Vive mientras el emisor (se libera en `deinit`).
+    target_td: ?c.LLVMTargetDataRef = null,
 
     t_i1: c.LLVMTypeRef,
     t_i8: c.LLVMTypeRef,
@@ -585,6 +589,7 @@ pub const Emitter = struct {
 
     pub fn deinit(self: *Emitter) void {
         if (self.dbg) |d| d.deinit();
+        if (self.target_td) |td| c.LLVMDisposeTargetData(td);
         c.LLVMDisposeBuilder(self.builder);
         c.LLVMDisposeModule(self.mod);
         c.LLVMContextDispose(self.ctx);
@@ -755,6 +760,14 @@ pub const Emitter = struct {
         self.target_triple = triple;
     }
 
+    /// ¿El destino es un triple wasm? (M5) Sólo con `--target=<triple>` explícito:
+    /// sin él el destino es el host y esto es false. Se usa para las piezas de
+    /// arranque que la ABI wasm exige (el `.hidden` del `main` del crt1).
+    fn targetIsWasm(self: *const Emitter) bool {
+        const t = self.target_triple orelse return false;
+        return std.mem.startsWith(u8, t, "wasm");
+    }
+
     /// Atributo de función que pide a la pasada instrumentar esa función.
     fn sanitizerAttr(s: Sanitizer) [*:0]const u8 {
         return switch (s) {
@@ -781,6 +794,11 @@ pub const Emitter = struct {
             d.* = debug_mod.DebugInfo.init(self.ctx, self.mod, self.file, self.debug_optimized);
             self.dbg = d;
         }
+        // M5 (movido al inicio): fija triple y datalayout del destino ANTES de
+        // registrar layouts. Los literales estáticos de enum calculan su
+        // padding con el tamaño del puntero del datalayout, así que el
+        // TargetData debe existir ya.
+        self.setTarget();
         // 0: registra los layouts de structs y enums (los annotations, los
         // accesos a campo y los constructores de variantes se resuelven
         // contra estos mapas, y los descriptores del runtime se emiten aquí
@@ -838,8 +856,8 @@ pub const Emitter = struct {
         if (self.error_count > 0) return;
         // 5: el entry point C (`@main`) que fija el archivo y llama a módulo+init.
         self.emitCMain();
-        // 6: triple y datalayout del host (024 §2).
-        self.setTarget();
+        // 6: triple y datalayout ya fijados al inicio (setTarget); aquí sólo
+        // se cierra el CU.
         // 7: cierra el CU (lo engancha a !llvm.dbg.cu y pone los module flags).
         if (self.dbg) |d| d.finalize();
     }
@@ -1676,6 +1694,22 @@ pub const Emitter = struct {
     fn emitCMain(self: *Emitter) void {
         const imty = c.LLVMFunctionType(c.LLVMInt32TypeInContext(self.ctx), null, 0, 0);
         const mf = c.LLVMAddFunction(self.mod, "main", imty);
+        // wasm: el crt1 de wasi llama a `main` a través de un weak alias
+        // (`undefined_weak:main`) que wasm-ld sólo resuelve con un símbolo
+        // `.hidden`. Con visibilidad por defecto el alias queda colgando en el
+        // stub `unreachable` y el módulo truena en `RuntimeError` al arrancar
+        // (clang marca `main` `.hidden` exactamente por esto).
+        if (self.targetIsWasm()) {
+            c.LLVMSetVisibility(mf, c.LLVMHiddenVisibility);
+            // El crt1 de wasi arranca llamando a `__main_void` (símbolo débil,
+            // undefined en crt1.o). clang emite para wasm el alias oculto
+            // `@__main_void = hidden alias i32(), ptr @main`; sin él el weak
+            // alias queda colgando en el stub `unreachable` y el módulo truena
+            // en `RuntimeError` al arrancar. Lo replicamos aquí.
+            // local unnamed_addr no es necesario: el alias hereda la visibilidad
+            // oculta del `main` al que apunta vía la resolución de wasm-ld.
+            _ = c.LLVMAddAlias2(self.mod, imty, 0, mf, "__main_void");
+        }
         if (self.sanitizer) |s| self.addFnAttr(mf, sanitizerAttr(s));
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, mf, "entry");
         self.cur_fn = mf;
@@ -3928,34 +3962,45 @@ pub const Emitter = struct {
             // basura fuera del objeto.
             for (variants, 0..) |*vl, i| {
                 const np: usize = vl.fields.len;
-                const obj_ty = blk: {
-                    var of: [5]c.LLVMTypeRef = undefined;
-                    of[0] = self.t_i64; // header de refcount (inmortal)
-                    of[1] = self.t_ptr;
-                    of[2] = self.t_i32;
-                    of[3] = self.t_i32;
-                    if (np > 0) {
-                        of[4] = c.LLVMArrayType(self.t_i64, @intCast(np));
-                        break :blk c.LLVMStructTypeInContext(self.ctx, &of, 5, 0);
-                    }
-                    break :blk c.LLVMStructTypeInContext(self.ctx, &of, 4, 0);
+                // Bytes de padding tras `def` para que `variant` caiga a +8 del
+                // value-struct (el layout que `enum_eq`/`enum_print` leen:
+                // def@0, variant@8, kind@12, payload@16 respecto al puntero).
+                // El host (ptr=8) no necesita padding; en wasm32 (ptr=4) hacen
+                // falta 4 para que `variant` no caiga a +4 y rompa el match.
+                const pad: usize = if (self.targetPointerBytes()) |pb| (8 -| pb) else 0;
+                const value_ty = blk: {
+                    var of: [6]c.LLVMTypeRef = undefined;
+                    var n: usize = 0;
+                    of[n] = self.t_ptr; n += 1; // def@0
+                    if (pad > 0) { of[n] = c.LLVMArrayType(self.t_i8, @intCast(pad)); n += 1; }
+                    of[n] = self.t_i32; n += 1; // variant@8
+                    of[n] = self.t_i32; n += 1; // kind@12
+                    if (np > 0) { of[n] = c.LLVMArrayType(self.t_i64, @intCast(np)); n += 1; } // payload@16
+                    break :blk c.LLVMStructTypeInContext(self.ctx, &of, @intCast(n), 0);
                 };
+                // El objeto global lleva delante el header de refcount (i64,
+                // inmortal) para que `astra_llvm_hdr(p) = p - 8` caiga al
+                // header y `rc < 0` lo trate como no-op.
+                var ot: [2]c.LLVMTypeRef = undefined;
+                ot[0] = self.t_i64; ot[1] = value_ty;
+                const obj_ty = c.LLVMStructTypeInContext(self.ctx, &ot, 2, 0);
                 const cv = c.LLVMAddGlobal(self.mod, obj_ty, "");
-                var ov: [5]c.LLVMValueRef = undefined;
+                var vv: [5]c.LLVMValueRef = undefined;
+                var vi: usize = 0;
+                vv[vi] = def; vi += 1;
+                if (pad > 0) { vv[vi] = c.LLVMConstNull(c.LLVMArrayType(self.t_i8, @intCast(pad))); vi += 1; }
+                vv[vi] = c.LLVMConstInt(self.t_i32, @intCast(i), 0); vi += 1; // variant
+                vv[vi] = c.LLVMConstInt(self.t_i32, 0, 0); vi += 1; // kind (0 = nombre)
+                if (np > 0) { vv[vi] = c.LLVMConstNull(c.LLVMArrayType(self.t_i64, @intCast(np))); vi += 1; }
+                var ov: [2]c.LLVMValueRef = undefined;
                 ov[0] = c.LLVMConstInt(self.t_i64, @bitCast(HDR_IMMORTAL), 0);
-                ov[1] = def;
-                ov[2] = c.LLVMConstInt(self.t_i32, @intCast(i), 0);
-                ov[3] = c.LLVMConstInt(self.t_i32, 0, 0);
-                var n_init: c_uint = 4;
-                if (np > 0) {
-                    ov[4] = c.LLVMConstNull(c.LLVMArrayType(self.t_i64, @intCast(np)));
-                    n_init = 5;
-                }
-                c.LLVMSetInitializer(cv, c.LLVMConstNamedStruct(obj_ty, &ov, n_init));
+                ov[1] = c.LLVMConstNamedStruct(value_ty, &vv, @intCast(vi));
+                c.LLVMSetInitializer(cv, c.LLVMConstNamedStruct(obj_ty, &ov, 2));
                 c.LLVMSetLinkage(cv, c.LLVMPrivateLinkage);
-                // El valor apunta al payload (def@0), no al header.
-                var idxs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, 0, 0), c.LLVMConstInt(self.t_i32, 1, 0) };
-                vl.unit_const = c.LLVMConstGEP2(obj_ty, cv, &idxs, 2);
+                // El valor apunta al sub-struct (campo 1), que empieza a offset
+                // 8 = tras el header i64.
+                var pidxs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, 0, 0), c.LLVMConstInt(self.t_i32, 1, 0) };
+                vl.unit_const = c.LLVMConstGEP2(obj_ty, cv, &pidxs, 2);
             }
             self.enums.put(ed.name, .{ .name = ed.name, .variants = variants, .def = def }) catch @panic("OOM");
         }
@@ -3980,10 +4025,19 @@ pub const Emitter = struct {
             c.LLVMSetTarget(self.mod, triple);
             td = c.LLVMCreateTargetData("");
         }
-        defer c.LLVMDisposeTargetData(td);
+        // El TargetData queda en el emisor (target_td) para calcular offsets
+        // de struct según el datalayout del destino; se libera en `deinit`.
+        self.target_td = td;
         const dl = c.LLVMCopyStringRepOfTargetData(td);
         defer c.LLVMDisposeMessage(dl);
         c.LLVMSetDataLayout(self.mod, dl);
+    }
+
+    /// Tamaño del puntero en bytes segun el datalayout del destino (8 en el
+    /// host x86-64, 4 en wasm32). Null si aún no se fijó target (host default).
+    fn targetPointerBytes(self: *const Emitter) ?usize {
+        const td = self.target_td orelse return null;
+        return @intCast(c.LLVMPointerSize(td));
     }
 
     fn unsupported(self: *Emitter, idx: u32, what: []const u8) void {
