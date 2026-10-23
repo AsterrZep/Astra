@@ -10,6 +10,11 @@
 # Toolchain knobs (each with a default):
 #   ASTRA_WASM_LD       wasm-ld   (default: wasm-ld, wasm-ld-19, /usr/lib/llvm-19/bin/wasm-ld)
 #   ASTRA_WASI_SYSROOT  sysroot   (default: /usr/lib/wasm32-wasi, /usr/share/wasi-sysroot)
+#                                 must hold libc.a+crt1.o AND a sibling
+#                                 include/<triple> with a usable <setjmp.h>;
+#                                 Ubuntu's apt wasi-libc ships no setjmp.h —
+#                                 use the wasi-sysroot tarball from
+#                                 github.com/WebAssembly/wasi-sdk/releases
 #   ASTRA_WASM_NODE     node      (default: node; needs >= 22 for wasm Exception Handling)
 #   ASTRA_WASM_CLANG    clang     (default: clang; compiles the runtime TU for wasm32)
 #
@@ -95,13 +100,29 @@ cp -r "$root/seed/tests/conformance/." "$work/conf/"
 cp -r "$zigdir/tests/llvm/." "$work/llvm/"
 cp "$root"/seed/tests/codegen/*.astra "$work/cg/" 2>/dev/null || true
 
+# wasi headers, derived from the sysroot (…/lib/<triple> -> …/include/<triple>,
+# the layout Debian and wasi-sdk/wasi-sysroot share). They are passed with an
+# explicit -I so ANY clang resolves them: apt.llvm.org's clang carries no
+# Debian-style /usr/include/wasm32-wasi search path and would silently fall
+# back to the host glibc headers (fatal: 'bits/setjmp.h' file not found).
+WASI_INCLUDE="$(cd "$SYSROOT/../.." && pwd)/include/$(basename "$SYSROOT")"
+[ -d "$WASI_INCLUDE" ] ||
+    die "$SYSROOT has no sibling include/$(basename "$SYSROOT") — headers missing from the sysroot"
+
 # Compile the runtime TU once for wasm32-wasi. `-mllvm -wasm-enable-sjlj` is
 # mandatory: wasi-libc's setjmp.h refuses to compile without it, and Astra's
 # error path is setjmp/longjmp (exercised by every runtime-error fixture).
 if ! "$CLANG" --target=wasm32-wasi -c -O2 -std=c11 -mllvm -wasm-enable-sjlj \
-        -I"$root/seed/src" "$RUNTIME_SRC" -o "$work/runtime.o" 2>"$work/rt.err"; then
+        -I"$WASI_INCLUDE" -I"$root/seed/src" "$RUNTIME_SRC" -o "$work/runtime.o" 2>"$work/rt.err"; then
     echo "llvm_wasm: cannot compile the LLVM runtime TU for $TRIPLE"
     sed 's/^/    /' "$work/rt.err"
+    if grep -q "setjmp" "$work/rt.err"; then
+        echo "    hint: this sysroot's <setjmp.h> is unusable — Ubuntu noble's"
+        echo "    wasi-libc ships no setjmp.h at all and pre-EH builds have no"
+        echo "    jmp_buf for wasm. Use the official tarball instead:"
+        echo "    https://github.com/WebAssembly/wasi-sdk/releases (wasi-sysroot-*.tar.gz)"
+        echo "    and point ASTRA_WASI_SYSROOT at its lib/wasm32-wasi."
+    fi
     exit 2
 fi
 

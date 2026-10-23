@@ -214,10 +214,20 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive ./llvm.sh 19
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-19-dev
       # clang-19 compila el TU del runtime para wasm32-wasi; lld-19 aporta
-      # wasm-ld-19 (enlace); wasi-libc es el sysroot (crt1.o + libc.a).
-      - name: Install wasm toolchain (clang/lld 19 + wasi-libc)
+      # wasm-ld-19 (enlace). El sysroot WASI se descarga en vez de instalar
+      # el paquete wasi-libc de Ubuntu: noble (git20230113) se empaquetó sin
+      # <setjmp.h> y es anterior al setjmp EH de wasi-libc, y el TU del
+      # runtime necesita el tipo jmp_buf (codegen_runtime.h lo incluye).
+      # El gate pasa include/<triple> con -I explícito (cualquier clang vale),
+      # así que basta el sysroot — 31 MB, pinado a la release wasi-sdk-23.
+      - name: Install clang/lld 19 + WASI sysroot
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang-19 lld-19 wasi-libc
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang-19 lld-19
+          curl -fsSL -o "$RUNNER_TEMP/wasi-sysroot.tar.gz" \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-23/wasi-sysroot-23.0.tar.gz
+          mkdir -p "$RUNNER_TEMP/wasi-sysroot"
+          tar xzf "$RUNNER_TEMP/wasi-sysroot.tar.gz" -C "$RUNNER_TEMP/wasi-sysroot" --strip-components=1
+          echo "ASTRA_WASI_SYSROOT=$RUNNER_TEMP/wasi-sysroot/lib/wasm32-wasi" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
