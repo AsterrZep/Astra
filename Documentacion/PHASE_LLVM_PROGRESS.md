@@ -78,6 +78,11 @@ cc file.o runtime.o -o program -lm && ./program
 # El mismo gate con el optimizador (M4): no puede cambiar la semántica.
 ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh
 
+# Ruta wasm32-wasi (§13.4): emitir -> wasm-ld + wasi-libc -> Node WASI.
+# Requiere wasm-ld (lld), sysroot wasi-libc y Node >= 22.
+./tests/llvm_wasm.sh
+ASTRA_LLVM_OPT=2 ./tests/llvm_wasm.sh
+
 # Fuzz diferencial de cuatro rutas (seed VM / --emit-c / zig VM / LLVM)
 ./tests/llvm_fuzz.sh -n 40 -s 1
 
@@ -753,13 +758,55 @@ la lógica; no importa al emisor, así que no hay ciclo de imports.
   145/0, sanitizers sin regresión — el camino host de `setTarget` es
   byte-idéntico al de antes de M5.
 
-### 13.4 wasm (diferido)
+### 13.4 wasm32-wasi (gate formalizado 2026-10-23)
 
-El plan lista wasm como opcional («+ wasm si se quiere»). No entra en el gate
-de M5: además del target, wasm exige un sysroot de wasi y un runtime que los
-objetos enlazados puedan usar (el runtime actual usa libc). queda para cuando
-se decida un story de wasm de punta a punta; el plumbing de `--target` ya lo
-admite (cualquier triple registrado en la lib LLVM).
+El plan lista wasm como opcional («+ wasm si se quiere»); en vez de quedar
+diferido, se formaliza como ruta completa con gate y job de CI, apoyado en el
+plumbing de `--target` de M5 (cualquier triple registrado en la lib LLVM):
+
+```
+.astra → --emit-obj --target=wasm32-wasi → wasm-ld (crt1.o + wasi-libc) → node WASI
+```
+
+- **Gate `zig/tests/llvm_wasm.sh`** (nuevo): espejo de `llvm_parity.sh` —
+  referencia = zig VM, comparación byte a byte de stdout/stderr/exit, mismo
+  criterio de skip («not supported by the LLVM backend») y honra
+  `ASTRA_LLVM_OPT`. Sustituye el enlace nativo por `wasm-ld $SYSROOT/crt1.o
+  <base>.o runtime.o -L$SYSROOT -lc` y la corrida por `node --no-warnings
+  demo/wasi_run.mjs` (`--no-warnings` para que la nota experimental de Node
+  no ensucie stderr). **154/154 ok, 0 skip, 0 fail**, sin y con
+  `ASTRA_LLVM_OPT=2`.
+- **Prerrequisitos**: `wasm-ld` (paquete `lld`), sysroot de wasi-libc
+  (`/usr/lib/wasm32-wasi`, sobrerrible con `ASTRA_WASI_SYSROOT`) y **Node
+  >= 22** (V8 con Exception Handling). El TU del runtime se compila con
+  `clang --target=wasm32-wasi -mllvm -wasm-enable-sjlj`: los wasi-libc
+  modernos `#error`-an en `setjmp.h` sin EH (el TU incluye
+  `codegen_runtime.h`, que lo incluye) y el lowering sjlj que exige ese flag
+  necesita un motor con la propuesta EH. Knobs del gate: `ASTRA_WASM_LD`,
+  `ASTRA_WASI_SYSROOT`, `ASTRA_WASM_NODE`, `ASTRA_WASM_CLANG`;
+  `ASTRA_LLVM_SAN` se ignora (no hay ASan en esta ruta).
+- **Dos bugs que el gate encontró y cerró**:
+  1. *Padding del literal de enum* (`92ba823`): `match` sobre enum con
+     payload leía basura — wasm32 alinea `i64` a 4 y el host a 8, y el
+     literal empaquetado no respetaba el layout del value-struct. Fix:
+     value-struct acolchado + `target_td`/`targetPointerBytes` con
+     `setTarget()` al inicio de `emit()`, y `main` `.hidden` con alias
+     `__main_void` (lo que el crt1 de wasi-libc invoca).
+  2. *Impresión de i64 truncada* (`3c7f1e4`): `printf("%ld", (long)v)` es
+     64-bit en LP64 pero **32-bit en wasm32** (ILP32), así que `i64` máx
+     salía `-1` y `i64` min `0`. Fix: `%lld` + `(long long)` — 64 bits en
+     LP64/ILP32/LLP64, salida nativa idéntica.
+- **CI: job `llvm-wasm`** (tras `llvm-cross`): LLVM 19 +
+  `clang-19 lld-19 wasi-libc` + Node 24 (setup-node), gate plano y con
+  `ASTRA_LLVM_OPT=2`.
+- **Sysroot de Ubuntu noble verificado, no supuesto**: el gate corrió
+  **154/154** contra el sysroot extraído del `.deb` noble (wasi-libc
+  git20230113, anterior a `libsetjmp`): su `setjmp.h` sólo `#warning`-a y el
+  TU del runtime no acaba necesitando símbolos `setjmp`/`longjmp`, así que
+  `crt1.o` + `libc.a` bastan — que es exactamente lo que `ubuntu-latest`
+  instala.
+- Alcance: como el resto, emisor single-file (los fixtures de `module/`
+  corren con `--single-file`); wasm multi-module real sigue fuera de alcance.
 
 ## 14. M6.a — LLJIT, ejecución in-process (implementado 2026-10-22)
 

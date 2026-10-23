@@ -248,9 +248,12 @@ código generado (`PHASE_LLVM_PROGRESS.md` §12).
 ### M5 — Targets y release (cerrado 2026-10-22)
 Cruzado `-mtriple=aarch64-linux-gnu` vía el flag `--target=<triple>`, gate
 cross-run en CI (job `llvm-cross`: emitir para aarch64, enlazar con el
-toolchain cruzado y correr bajo qemu — **154/154** idénticos a la VM). wasm
-queda diferido (§13.4 de `PHASE_LLVM_PROGRESS.md`); el plumbing de `--target`
-ya acepta cualquier triple registrado. Detalle en `PHASE_LLVM_PROGRESS.md` §13.
+toolchain cruzado y correr bajo qemu — **154/154** idénticos a la VM). wasm,
+opcional en el plan, se formalizó tras M5 como `wasm32-wasi` de punta a
+punta: gate `zig/tests/llvm_wasm.sh` (emitir → `wasm-ld`+wasi-libc → Node
+WASI, **154/154** sin y con `-O2`) + job CI `llvm-wasm` (§13.4 del progress
+log). El plumbing de `--target` acepta cualquier triple registrado en la lib
+LLVM. Detalle en `PHASE_LLVM_PROGRESS.md` §13.
 
 ### M6 — Opcional / futuro
 **M6.a (LLJIT) está implementado** (`--jit`, `PHASE_LLVM_PROGRESS.md` §14):
@@ -285,6 +288,16 @@ llvm-cross:                                          # gate cross-run de M5 (aar
     - sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
     - zig build -Dllvm
     - ./zig/tests/llvm_cross.sh                       # --emit-obj --target -> qemu
+llvm-wasm:                                           # gate wasm32-wasi (§13.4)
+  name: llvm-wasm (wasm32-wasi) — suite bajo Node WASI
+  runs-on: ubuntu-latest
+  env: { ASTRA_WASM_CLANG: clang-19 }
+  steps:
+    - LLVM 19 (igual que el job llvm)
+    - sudo apt-get install -y clang-19 lld-19 wasi-libc
+    - actions/setup-node node 24                      # >= 22 (V8 con EH)
+    - zig build -Dllvm
+    - ./zig/tests/llvm_wasm.sh                        # y con ASTRA_LLVM_OPT=2
 llvm-canario:                                        # no bloqueante (continue-on-error)
   … misma instalación con latest (23) …              # churn de API detectado antes
 ```
@@ -292,11 +305,12 @@ llvm-canario:                                        # no bloqueante (continue-o
 - El job principal **fija LLVM 19** (reproducible; `apt.llvm.org/llvm.sh 19`
   quedó verificado en CI — era la única pieza "[a verificar]" en M0); el
   canario usa el stable más reciente (`llvm.sh` sin argumentos) para
-  adelantar el churn de la C API hacia el rango 19..23. **Tres jobs existen
+  adelantar el churn de la C API hacia el rango 19..23. **Cuatro jobs existen
   en `ci.yml`**: `llvm` (gate x86-64, pinado a 19 — corre la paridad AOT, la
   paridad JIT de M6.a, FileCheck, DWARF, sanitizers y fuzz), `llvm-cross`
-  (gate cross-run aarch64 de M5, `gcc-aarch64-linux-gnu` + `qemu-user-static`)
-  y `llvm-canario` (`continue-on-error`, M3).
+  (gate cross-run aarch64 de M5, `gcc-aarch64-linux-gnu` + `qemu-user-static`),
+  `llvm-wasm` (gate wasm32-wasi, `clang-19 lld-19 wasi-libc` + Node 24) y
+  `llvm-canario` (`continue-on-error`, M3).
 - Los jobs actuales (seed, zig, parity) **no cambian**: `-Dllvm` es opt-in.
 
 ---

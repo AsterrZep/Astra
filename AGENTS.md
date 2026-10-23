@@ -170,7 +170,11 @@ module carries the target's triple and datalayout, and `src/llvm/target.zig`
 registers every target (`LLVMInitializeAllTargets`) — and
 `zig/tests/llvm_cross.sh` gates it by cross-linking with `<triple>-gcc` and
 cross-running under `qemu-<arch>-static`: **154/154**, byte-identical to the
-native VM (CI job `llvm-cross`); wasm stays deferred (progress §13.4). M6.a
+native VM (CI job `llvm-cross`). The wasm route (progress §13.4) is likewise
+formal: `zig/tests/llvm_wasm.sh` compiles every fixture with `--emit-obj
+--target=wasm32-wasi`, links with `wasm-ld` + wasi-libc (crt1) and runs it
+under Node's WASI — **154/154**, plain and `-O2` (CI job `llvm-wasm`; needs
+`lld`, a wasi-libc sysroot and Node >= 22). M6.a
 (LLJIT, progress §14) adds `--jit`: the emitted module is compiled and run
 **in-process** via ORC/LLJIT (no cc/link step — the runtime TU is linked into
 the `astra-zig` binary with `-rdynamic` so LLJIT's process-symbol generator
@@ -196,6 +200,7 @@ ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh # same gate through default<O2>+extras
 ./tests/llvm_filecheck.sh               # IR shapes (FileCheck-19..23)
 ./tests/llvm_sanitize.sh                # ASan artifacts + parity under ASan (M4.d)
 ./tests/llvm_cross.sh                   # cross aarch64 -> qemu, vs VM (M5; needs gcc-aarch64-linux-gnu + qemu-user-static)
+./tests/llvm_wasm.sh                    # wasm32-wasi -> wasm-ld -> Node WASI, vs VM (needs lld + wasi-libc + node >= 22)
 ./tests/llvm_fuzz.sh -n 40 -s 1         # differential fuzz, 4 routes
 ./tests/llvm_bench.sh -n 3 -O 2         # VM / C / LLVM timings (M4)
 ```
