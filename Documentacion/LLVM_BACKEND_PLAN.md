@@ -253,9 +253,15 @@ queda diferido (§13.4 de `PHASE_LLVM_PROGRESS.md`); el plumbing de `--target`
 ya acepta cualquier triple registrado. Detalle en `PHASE_LLVM_PROGRESS.md` §13.
 
 ### M6 — Opcional / futuro
-LLJIT (REPL/eval), des-boxing de escalares (el premio real de rendimiento,
-023 §1.2), fast-math opt-in, error-union para `?` si el JIT lo pide.
-Cada uno se planifica al llegar; M6 no bloquea el cierre de la fase.
+**M6.a (LLJIT) está implementado** (`--jit`, `PHASE_LLVM_PROGRESS.md` §14):
+ejecución in-process vía ORC/LLJIT, cimiento del REPL/eval, con paridad
+**154/154** contra la VM (`zig/tests/llvm_jit.sh`). El des-boxing de escalares
+que 023 §1.2 apunta ya está entregado dentro de v1 — el emisor camina el AST
+tipado y emite `i64`/`f64`/`i8` nativos en SSA, y `llvm_bench.sh` mide la ruta
+LLVM 2-8× más rápida que el backend C boxed. Quedan opcionales el des-boxing de
+Option/Result (tag entero, arriesgado: colisiones de sentinel), fast-math
+opt-in y error-union para `?` si el JIT lo pide. Cada uno se planifica al
+llegar; M6 no bloquea el cierre de la fase.
 
 ---
 
@@ -287,9 +293,10 @@ llvm-canario:                                        # no bloqueante (continue-o
   quedó verificado en CI — era la única pieza "[a verificar]" en M0); el
   canario usa el stable más reciente (`llvm.sh` sin argumentos) para
   adelantar el churn de la C API hacia el rango 19..23. **Tres jobs existen
-  en `ci.yml`**: `llvm` (gate x86-64, pinado a 19), `llvm-cross` (gate
-  cross-run aarch64 de M5, `gcc-aarch64-linux-gnu` + `qemu-user-static`) y
-  `llvm-canario` (`continue-on-error`, M3).
+  en `ci.yml`**: `llvm` (gate x86-64, pinado a 19 — corre la paridad AOT, la
+  paridad JIT de M6.a, FileCheck, DWARF, sanitizers y fuzz), `llvm-cross`
+  (gate cross-run aarch64 de M5, `gcc-aarch64-linux-gnu` + `qemu-user-static`)
+  y `llvm-canario` (`continue-on-error`, M3).
 - Los jobs actuales (seed, zig, parity) **no cambian**: `-Dllvm` es opt-in.
 
 ---

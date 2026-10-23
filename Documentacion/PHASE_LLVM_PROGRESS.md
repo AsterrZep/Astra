@@ -760,3 +760,74 @@ de M5: además del target, wasm exige un sysroot de wasi y un runtime que los
 objetos enlazados puedan usar (el runtime actual usa libc). queda para cuando
 se decida un story de wasm de punta a punta; el plumbing de `--target` ya lo
 admite (cualquier triple registrado en la lib LLVM).
+
+## 14. M6.a — LLJIT, ejecución in-process (implementado 2026-10-22)
+
+M6 es opcional (`LLVM_BACKEND_PLAN.md` §6) y su ancla es **LLJIT (REPL/eval)**.
+M6.a lo implementa: `--jit` compila el módulo emitido en el **propio proceso**
+vía ORC/LLJIT y ejecuta su `main`, sin el paso `cc`+enlace de la ruta AOT. Es
+el cimiento del REPL/eval futuro — misma semántica que AOT (mismo runtime C
+resolviendo `astra_llvm_*`), y la paridad con la VM se reproduce byte a byte
+corriendo en el compilador.
+
+Nota sobre el «des-boxing de escalares» que 023 §1.2 lista como el premio de
+M6: **ya está entregado dentro de v1**. Este backend camina el AST tipado (no
+el `AstraValue` del VM), así que emite `i64`/`f64`/`i8` nativos en SSA — `+` de
+enteros es `LLVMBuildAdd` con guard de overflow, no una llamada al runtime. Lo
+confirma `llvm_bench.sh`: la ruta LLVM va 2-8× más rápida que el backend C
+boxed y 58-338× más que la VM. El des-boxing que aún queda es el de
+Option/Result (tag entero), arriesgado para la semántica y con visibilidad
+mínima en los benchmarks actuales, así que no entra en M6.a.
+
+### 14.1 Cómo funciona (`src/llvm/jit.zig`)
+
+- `run(mod, diag, file)`: crea un LLJIT para el host (tras registrar todos los
+  targets — ver §14.3), adjunta el **generador de símbolos de proceso**
+  (`LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess`, `dlsym(RTLD_DEFAULT)`),
+  añade el módulo al JITDylib principal, hace `LLVMOrcLLJITLookup` de `main` y
+  lo llama. `main` es el C entry autocontenido que emite el backend
+  (`astra_set_file` → `astra_init` → `astra_module_main` → release de globales
+  → `astra_llvm_runtime_cleanup` → return 0).
+- **Resolución de símbolos**: el código JITeado referencia `astra_llvm_*` (y
+  las globales del runtime) + libc. El runtime se linkea al binario `astra-zig`
+  bajo `-Dllvm` (`build.zig`) y se exporta con `-rdynamic`, de modo que el
+  generador de proceso los encuentra. libc (malloc/printf) vive en el proceso.
+- **Propiedad del módulo**: LLJIT exige que el contexto del módulo y el
+  ThreadSafeContext coincidan, y el emisor usa el suyo propio. `run`
+  serializa el IR y lo **re-analiza** en un contexto fresco propiedad del JIT
+  (`LLVMParseIRInContext`, que consume el buffer), desacoplando el ciclo de
+  vida del emisor del del JIT (sin use-after-free de contexto). El emisor
+  sigue disposal su módulo con normalidad.
+- **Errores de runtime**: un `?` que propague o un fallo (índice fuera de
+  rango, overflow) llaman `exit(1)`/longjmp dentro del runtime — igual que la
+  ruta AOT (proceso sale con 1). `--jit` es one-shot por proceso, así que no
+  hay estado que reiniciar. Un `fflush(NULL)` vierte el buffer stdio antes de
+  salir (el `main` JITeado devuelve 0).
+
+### 14.2 `--jit` en el CLI (`main.zig`)
+
+Modo `--jit` ruteado por `emitLlvm` como los demás modos LLVM, tras el
+typecheck y el pipeline de optimización. Exige `-Dllvm` (sin él, mensaje
+accionable). Rechaza `--sanitize` (el runtime ASan no está enlazado al
+proceso) y `--target` (sólo host). Con `--opt-level=N` corre el pipeline del
+new PM antes de JITear.
+
+### 14.3 Registro de targets (`target.zig`)
+
+`registerAll()` (extraído de `create`) llama los `LLVMInitializeAll*`
+idempotentes. El camino del host por defecto del emisor **no** llama
+`target.create`, así que sin esta llamada en `jit.run` el `detectHost` de
+LLJIT fallaría con «no targets are registered» — bug encontrado y corregido
+en M6.a.
+
+### 14.4 Gate y verificación
+
+- **`zig/tests/llvm_jit.sh`** (nuevo): espejo de `llvm_parity.sh` pero con
+  `--jit` (sin objeto que enlazar ni `${CC}`). **154/154 ok, 0 skip, 0 fail**,
+  sin y con `ASTRA_LLVM_OPT=2` — el mismo recuento que la paridad AOT, lo que
+  confirma que la ruta JIT acepta el mismo subconjunto y reproduce la VM.
+- Tests unitarios: `jit.zig` JITea un módulo `i64 add(i64,i64)` (create → add
+  → lookup → call). `zig build test -Dllvm` en verde (91/91).
+- Sin regresión: paridad AOT 154/154, FileCheck 5/5, dump_parity 145/0,
+  sanitizers (ASan `-O2` + LSan) sin regresión — la ruta AOT no cambia.
+- CI: el job `llvm` corre `llvm_jit.sh` sin y con `ASTRA_LLVM_OPT=2`.

@@ -134,7 +134,7 @@ The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
 progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
 build and binary are byte-identical and none of the existing gates change.
-**M0–M4 are closed** (2026-10-21): the emitter compiles the Astra-0 subset —
+**M0–M5 and M6.a are closed** (2026-10-22): the emitter compiles the Astra-0 subset —
 scalars, floats, strings, Option/Result with `match`/`?`, closures,
 arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
@@ -170,7 +170,16 @@ module carries the target's triple and datalayout, and `src/llvm/target.zig`
 registers every target (`LLVMInitializeAllTargets`) — and
 `zig/tests/llvm_cross.sh` gates it by cross-linking with `<triple>-gcc` and
 cross-running under `qemu-<arch>-static`: **154/154**, byte-identical to the
-native VM (CI job `llvm-cross`); wasm stays deferred (progress §13.4).
+native VM (CI job `llvm-cross`); wasm stays deferred (progress §13.4). M6.a
+(LLJIT, progress §14) adds `--jit`: the emitted module is compiled and run
+**in-process** via ORC/LLJIT (no cc/link step — the runtime TU is linked into
+the `astra-zig` binary with `-rdynamic` so LLJIT's process-symbol generator
+resolves `astra_llvm_*`+libc); `zig/tests/llvm_jit.sh` gates it against the VM
+with the same 154 cases (154/154, plain and `-O2`) — the foundation for a
+future REPL/eval. The remaining M6 items (Option/Result unboxing, fast-math,
+error-union for `?`) stay optional; scalar unboxing is already delivered (the
+backend walks the typed AST and emits native `i64`/`f64`/`i8` in SSA — 2-8×
+faster than the boxed C backend per `llvm_bench.sh`).
 
 ```bash
 cd zig
@@ -180,8 +189,10 @@ zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
 ./zig-out/bin/astra-zig --emit-obj file.astra           # native <file>.o via TargetMachine (M2.e)
 ./zig-out/bin/astra-zig --emit-obj --opt-level=2 file.astra  # new-PM pipeline (M4)
 ./zig-out/bin/astra-zig --emit-obj --target=aarch64-linux-gnu file.astra  # cross aarch64 object (M5)
+./zig-out/bin/astra-zig --jit file.astra               # compile + run in-process via LLJIT (M6.a)
 ./tests/llvm_parity.sh                  # VM <-> --emit-obj -> link runtime
 ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh # same gate through default<O2>+extras
+./tests/llvm_jit.sh                     # VM <-> --jit, in-process (M6.a)
 ./tests/llvm_filecheck.sh               # IR shapes (FileCheck-19..23)
 ./tests/llvm_sanitize.sh                # ASan artifacts + parity under ASan (M4.d)
 ./tests/llvm_cross.sh                   # cross aarch64 -> qemu, vs VM (M5; needs gcc-aarch64-linux-gnu + qemu-user-static)
