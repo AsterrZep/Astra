@@ -344,16 +344,14 @@ y en verde: nativa (`llvm`), cross aarch64 bajo qemu (`llvm-cross`, M5),
 wasm32-wasi bajo Node WASI (`llvm-wasm`, §13.4) y `--jit` in-process
 (`llvm`, M6.a); el job `llvm` añade FileCheck, DWARF, sanitizers y el
 fuzz diferencial de cuatro rutas. M4 cerró con benchmarks y pipeline
-`-O2` (154/154 también en `-O2`).
+`-O2` (154/154 también en `-O2`). La compatibilidad con LLVM 22 (churn de ORC que señaló el
+canario) quedó corregida y verificada con el canario en verde
+(`PHASE_LLVM_PROGRESS.md` §14.5).
 
 Lo que queda es **opcional** (§6, «M6 — Opcional / futuro»), y cada
 entrada se planifica al entrar: des-boxing de Option/Result (tag entero),
-fast-math opt-in y error-union para `?`. Único rojo conocido y no
-bloqueante: el canario `llvm-canario` en LLVM 22 (`jit.zig` usa
-`LLVMOrcThreadSafeContextGetContext`, eliminado de la C API de ORC — el
-churn que el canario existe para adelantar); arreglarlo antes de los
-items de M6 mantiene viva la compatibilidad hacia el rango 19..23. Los
-hitos siguen el patrón workstream → commit probado → gate verde.
+fast-math opt-in y error-union para `?`. Los hitos siguen el patrón
+workstream → commit probado → gate verde.
 
 Pendiente confirmado y cerrado: la instalación de `llvm-19-dev` en CI vía
 `apt.llvm.org/llvm.sh 19` quedó verificada con el job `llvm` en verde desde

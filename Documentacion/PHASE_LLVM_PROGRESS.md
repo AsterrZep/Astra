@@ -58,10 +58,8 @@ planas y con `ASTRA_LLVM_OPT=2`.
 
 Queda, todo opcional y sin bloquear el cierre de la fase (plan §6): el
 des-boxing de Option/Result, fast-math opt-in y error-union para `?`.
-Único rojo conocido: el canario no bloqueante `llvm-canario` con LLVM 22
-(`jit.zig` usa `LLVMOrcThreadSafeContextGetContext`, eliminado en LLVM 22
-— el churn que el canario existe para adelantar); su fix es el siguiente
-paso, antes de los items de M6.
+La compatibilidad con LLVM 22 (churn que señaló el canario) quedó
+corregida y verificada — §14.5.
 
 ---
 
@@ -902,3 +900,30 @@ en M6.a.
 - Sin regresión: paridad AOT 154/154, FileCheck 5/5, dump_parity 145/0,
   sanitizers (ASan `-O2` + LSan) sin regresión — la ruta AOT no cambia.
 - CI: el job `llvm` corre `llvm_jit.sh` sin y con `ASTRA_LLVM_OPT=2`.
+
+### 14.5 Churn de LLVM 22 y su shim (cerrado 2026-10-23)
+
+El canario `llvm-canario` (LLVM latest) empezó a fallar al salir LLVM 22:
+**`LLVMOrcThreadSafeContextGetContext` fue eliminada de la C API de ORC**
+(el contexto de un ThreadSafeContext ya no se extrae) e invirtió la
+operación con `LLVMOrcCreateNewThreadSafeContextFromLLVMContext`, que
+crea el TSC a partir de un contexto propio **del que toma propiedad** (no
+se dispala). Era el churn exacto para el que el canario existe.
+
+- **Alcance real del churn, auditado en seco**: contra los headers
+  `llvm-c/` de la rama `release/22.x`, los 190 identificadores LLVM que
+  usa el backend (`grep -o 'c\.LLVM…'` sobre `src/llvm/`) tienen **una
+  sola** ausencia en 22 — ésta. No hubo que tocar emisor, targets ni
+  runtime.
+- **Fix** (`jit.zig`, `ba70878`): `parseIntoFreshContext()` centraliza
+  «crear contexto JITeado + parsear el IR dentro» y elige la rama en
+  **comptime con `@hasDecl`**: 19..21 usan `CreateNewThreadSafeContext` +
+  `GetContext`; 22+ crean el contexto con `LLVMContextCreate` y lo
+  envuelven con `FromLLVMContext`. Ownership idéntico en ambos lados: el
+  caller dispone su ref del TSC (`defer`) y el `ThreadSafeModule` mantiene
+  la suya compartida; en el camino de fallo del parse se dispala el TSC
+  (rama 19) o el contexto (rama 22).
+- **Verificación**: en LLVM 19 (pinado) `zig build -Dllvm`, `build test
+  -Dllvm` y `llvm_jit.sh` 154/154 plano y `-O2`; en CI el canario pasó a
+  **verde** (run 39954279053) — la rama 22+ compiló y corrió la suite
+  completa bajo LLVM latest, no sólo el shim aislado.
