@@ -294,7 +294,8 @@ llvm-wasm:                                           # gate wasm32-wasi (§13.4)
   env: { ASTRA_WASM_CLANG: clang-19 }
   steps:
     - LLVM 19 (igual que el job llvm)
-    - sudo apt-get install -y clang-19 lld-19 wasi-libc
+    - sudo apt-get install -y clang-19 lld-19
+    - curl wasi-sysroot-23.0.tar.gz (release wasi-sdk-23) -> ASTRA_WASI_SYSROOT
     - actions/setup-node node 24                      # >= 22 (V8 con EH)
     - zig build -Dllvm
     - ./zig/tests/llvm_wasm.sh                        # y con ASTRA_LLVM_OPT=2
@@ -309,7 +310,9 @@ llvm-canario:                                        # no bloqueante (continue-o
   en `ci.yml`**: `llvm` (gate x86-64, pinado a 19 — corre la paridad AOT, la
   paridad JIT de M6.a, FileCheck, DWARF, sanitizers y fuzz), `llvm-cross`
   (gate cross-run aarch64 de M5, `gcc-aarch64-linux-gnu` + `qemu-user-static`),
-  `llvm-wasm` (gate wasm32-wasi, `clang-19 lld-19 wasi-libc` + Node 24) y
+  `llvm-wasm` (gate wasm32-wasi, `clang-19` + `lld-19` + el tarball
+  `wasi-sysroot` de la release `wasi-sdk-23` — el `wasi-libc` de Ubuntu
+  noble no trae `<setjmp.h>`, §13.4 del progress — + Node 24) y
   `llvm-canario` (`continue-on-error`, M3).
 - Los jobs actuales (seed, zig, parity) **no cambian**: `-Dllvm` es opt-in.
 

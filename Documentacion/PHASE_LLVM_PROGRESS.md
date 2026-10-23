@@ -776,15 +776,19 @@ plumbing de `--target` de M5 (cualquier triple registrado en la lib LLVM):
   demo/wasi_run.mjs` (`--no-warnings` para que la nota experimental de Node
   no ensucie stderr). **154/154 ok, 0 skip, 0 fail**, sin y con
   `ASTRA_LLVM_OPT=2`.
-- **Prerrequisitos**: `wasm-ld` (paquete `lld`), sysroot de wasi-libc
-  (`/usr/lib/wasm32-wasi`, sobrerrible con `ASTRA_WASI_SYSROOT`) y **Node
+- **Prerrequisitos**: `wasm-ld` (paquete `lld`), un sysroot WASI con
+  `crt1.o`+`libc.a` **y** un `<setjmp.h>` usable (con `jmp_buf`), y **Node
   >= 22** (V8 con Exception Handling). El TU del runtime se compila con
-  `clang --target=wasm32-wasi -mllvm -wasm-enable-sjlj`: los wasi-libc
-  modernos `#error`-an en `setjmp.h` sin EH (el TU incluye
-  `codegen_runtime.h`, que lo incluye) y el lowering sjlj que exige ese flag
-  necesita un motor con la propuesta EH. Knobs del gate: `ASTRA_WASM_LD`,
-  `ASTRA_WASI_SYSROOT`, `ASTRA_WASM_NODE`, `ASTRA_WASM_CLANG`;
-  `ASTRA_LLVM_SAN` se ignora (no hay ASan en esta ruta).
+  `clang --target=wasm32-wasi -mllvm -wasm-enable-sjlj -I<sysroot>/include/<triple>`
+  — el `-I` es explícito, así que sirve cualquier clang sin depender de
+  parches del driver: los wasi-libc modernos `#error`-an en `setjmp.h` sin
+  EH (el flag lo satisface) porque `codegen_runtime.h` lo incluye. Ojo con
+  el sysroot del SO: el paquete `wasi-libc` de Ubuntu noble **no contiene
+  `setjmp.h`** (y los pre-EH no definen `jmp_buf` para wasm), así que en
+  Ubuntu/CI se usa el tarball oficial `wasi-sysroot-*.tar.gz`. Knobs del
+  gate: `ASTRA_WASM_LD`, `ASTRA_WASI_SYSROOT`, `ASTRA_WASM_NODE`,
+  `ASTRA_WASM_CLANG`; `ASTRA_LLVM_SAN` se ignora (no hay ASan en esta
+  ruta).
 - **Dos bugs que el gate encontró y cerró**:
   1. *Padding del literal de enum* (`92ba823`): `match` sobre enum con
      payload leía basura — wasm32 alinea `i64` a 4 y el host a 8, y el
@@ -796,15 +800,21 @@ plumbing de `--target` de M5 (cualquier triple registrado en la lib LLVM):
      64-bit en LP64 pero **32-bit en wasm32** (ILP32), así que `i64` máx
      salía `-1` y `i64` min `0`. Fix: `%lld` + `(long long)` — 64 bits en
      LP64/ILP32/LLP64, salida nativa idéntica.
-- **CI: job `llvm-wasm`** (tras `llvm-cross`): LLVM 19 +
-  `clang-19 lld-19 wasi-libc` + Node 24 (setup-node), gate plano y con
-  `ASTRA_LLVM_OPT=2`.
-- **Sysroot de Ubuntu noble verificado, no supuesto**: el gate corrió
-  **154/154** contra el sysroot extraído del `.deb` noble (wasi-libc
-  git20230113, anterior a `libsetjmp`): su `setjmp.h` sólo `#warning`-a y el
-  TU del runtime no acaba necesitando símbolos `setjmp`/`longjmp`, así que
-  `crt1.o` + `libc.a` bastan — que es exactamente lo que `ubuntu-latest`
-  instala.
+- **CI: job `llvm-wasm`** (tras `llvm-cross`): LLVM 19 + `clang-19` +
+  `lld-19` (wasm-ld) + `wasi-sysroot-23.0.tar.gz` de la release oficial
+  `wasi-sdk-23` (31 MB, pinado — el paquete de Ubuntu no sirve) + Node 24
+  (setup-node), gate plano y con `ASTRA_LLVM_OPT=2`.
+- **El primer run de CI encontró lo que la verificación local no podía
+  ver** (`ac91a9e`): en local el `clang` de Debian añade
+  `/usr/include/wasm32-wasi` por sí solo, mientras que `clang-19` de
+  apt.llvm.org (vanilla) cae a los headers glibc del host y moría en
+  `bits/setjmp.h` no encontrado; y el `.deb` de Ubuntu noble, examinado a
+  fondo, **no contiene `setjmp.h`** — la verificación noble previa sólo
+  cubría enlace y corrida, porque los headers en local los aportaba Debian,
+  no noble. Corregido con `-I` explícito en el gate (cualquier clang vale)
+  + sysroot wasi-sysroot en CI: **154/154** contra sdk-23 (y en -O2), y el
+  sysroot de noble queda validado para enlace+corrida (`crt1` con
+  `__main_void`, salida idéntica).
 - Alcance: como el resto, emisor single-file (los fixtures de `module/`
   corren con `--single-file`); wasm multi-module real sigue fuera de alcance.
 
