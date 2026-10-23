@@ -1,0 +1,297 @@
+// tour.astra — recorrido por todas las funcionalidades de Astra-0.
+//
+// El mismo programa corre en las cinco rutas del toolchain:
+//   1. VM seed        (seed/astra-seed)
+//   2. Backend C      (--emit-c -> gcc)
+//   3. VM zig         (zig/zig-out/bin/astra-zig)
+//   4. LLVM AOT       (--emit-obj -> enlace con runtime -> ejecutar)
+//   5. LLVM JIT       (--jit, en proceso vía LLJIT)
+// y debe producir EXACTAMENTE la misma salida en todas. `demo/run_tour.sh`
+// lo verifica: la salida de la VM seed es la referencia y las otras cuatro
+// rutas se diffean contra ella.
+//
+// Estructura: helpers de nivel superior + un `main()` que orquesta. Es el
+// patrón que las cinco rutas aceptan — el emisor LLVM compila funciones de
+// nivel superior pero rechaza `fn` declaradas dentro de otra función, y el
+// backend C empaqueta el código en `main`.
+
+// ── structs, enums y traits (nivel superior) ────────────────────────
+struct Punto {
+    x: i32
+    y: i32
+}
+
+impl Punto {
+    fn suma(self) -> i32 {
+        return self.x + self.y
+    }
+    fn movido(self, dx: i32) -> Punto {
+        return Punto { x: self.x + dx, y: self.y }
+    }
+}
+
+trait Saludo {
+    fn saludo(self) -> string
+}
+
+impl Saludo for Punto {
+    fn saludo(self) -> string {
+        return "hola desde punto"
+    }
+}
+
+struct Registro {
+    nombre: string
+    nota: i32?
+}
+
+enum Forma {
+    Circulo(i32)
+    Rect(i32, i32)
+    Nada
+}
+
+enum Color {
+    Rojo
+    Verde
+}
+
+impl Color {
+    fn nombre(self) -> string {
+        return match self {
+            Color.Rojo => "rojo",
+            Color.Verde => "verde",
+        };
+    }
+}
+
+enum Accion {
+    Mover(i32)
+    Pintar(Color)
+    Quedarse
+}
+
+struct Caja<T> {
+    valor: T
+}
+
+// ── funciones (nivel superior) ──────────────────────────────────────
+fn fib(n: i32) -> i32 {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn aplicar(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn area(f: Forma) -> i32 {
+    return match f {
+        Forma.Circulo(r) => 3 * r * r,
+        Forma.Rect(a, b) => a * b,
+        Forma.Nada => 0,
+    };
+}
+
+fn clasificar(n: i32) -> string {
+    return match n {
+        1 | 2 | 3 => "pequeno",
+        4 | 5 => "medio",
+        _ => "grande",
+    };
+}
+
+fn describir(a: Accion) {
+    match a {
+        Accion.Mover(n) => print(n),
+        Accion.Pintar(c) => {
+            match c {
+                Color.Rojo => print("pinta rojo"),
+                Color.Verde => print("pinta verde"),
+            }
+        },
+        Accion.Quedarse => print("quieto"),
+    }
+}
+
+fn mitad(x: i32) -> i32? {
+    if x % 2 != 0 { return none }
+    return some(x / 2)
+}
+
+// `?` desempaqueta o retorna temprano el none: la ausencia se propaga a
+// través de dos marcos sin código explícito.
+fn cuarta(x: i32) -> i32? {
+    let a = mitad(x)?
+    let b = mitad(a)?
+    return some(b)
+}
+
+fn identidad<T>(x: T) -> T {
+    return x
+}
+
+fn main() {
+    print("== aritmetica ==")
+    print(6 * 7)             // 42
+    print(7 / 2)             // 3   (división entera, trunca hacia cero)
+    print(7 % 2)             // 1
+    print(2 + 3 * 4)         // 14  (precedencia: * sobre +)
+    print(10 - 2 - 3)        // 5   (asociatividad izquierda)
+    print(-7)                // -7  (unario menos)
+    print(7.5 / 2.0)         // 3.75
+    print(7.5 % 2.0)         // 1.5 (fmod en floats)
+
+    print("== bitwise ==")
+    print(12 & 10)           // 8
+    print(12 | 10)           // 14
+    print(12 ^ 10)           // 6
+    print(1 << 4)            // 16
+    print(256 >> 4)          // 16
+
+    print("== comparaciones y logica ==")
+    print(3 < 4)             // true
+    print(3 >= 4)            // false
+    print(1 == 1 && 2 != 3)  // true
+    print(!false)            // true
+    print(true || false)     // true
+
+    print("== cadenas ==")
+    print("hola" + " " + "mundo")
+    let saludo = "adios"
+    print(saludo + "!")
+    print("abc" == "abc")    // true
+    print("" == "")          // true
+
+    print("== mutabilidad ==")
+    let mut contador = 0
+    contador = contador + 1
+    contador = contador + 1
+    print(contador)          // 2
+
+    print("== control ==")
+    let maximo = if 3 > 4 { 3 } else { 4 }
+    print(maximo)            // 4   (if como expresión)
+
+    let mut total = 0
+    for i in 0..5 {
+        if i == 2 { continue }
+        total = total + i
+    }
+    print(total)             // 8   (0+1+3+4, salta el 2)
+
+    let mut cuenta = 3
+    while cuenta > 0 {
+        cuenta = cuenta - 1
+    }
+    print(cuenta)            // 0
+
+    let mut hasta = 0
+    for i in 0..100 {
+        if i == 7 { break }
+        hasta = i
+    }
+    print(hasta)             // 6   (break en el 7)
+
+    print("== arrays ==")
+    let mut arr = [10, 20, 30]
+    print(arr)               // [10, 20, 30]
+    print(arr[1])            // 20
+    arr[1] = 99
+    print(arr[1])            // 99
+    let mut suma = 0
+    for x in arr {
+        suma = suma + x
+    }
+    print(suma)              // 139 (10+99+30)
+
+    print("== funciones y recursion ==")
+    print(fib(10))           // 55
+
+    print("== closures y orden superior ==")
+    let n = 5
+    let f = |x: i32| -> i32 { x + n }
+    print(f(1))              // 6 (captura n por valor)
+
+    let doble = |x: i32| -> i32 { x * 2 }
+    print(aplicar(doble, 21))    // 42
+    print(aplicar(|x: i32| -> i32 { x + 1 }, 5))   // 6 (lambda literal como argumento)
+
+    // Captura por valor = instantánea al construir: reasignar n DESPUÉS no
+    // alcanza al closure (6, no 11).
+    let mut m = 5
+    let g = |x: i32| -> i32 { x + m }
+    m = 10
+    print(g(1))              // 6
+
+    // Closure anidado: el interno ve las dos capas.
+    let a = 1
+    let externa = |x: i32| -> i32 {
+        let interna = |y: i32| -> i32 { x + y + a }
+        return interna(10)
+    }
+    print(externa(100))      // 111
+
+    print("== structs y metodos ==")
+    let p = Punto { x: 3, y: 4 }
+    print(p)                 // Punto { x: 3, y: 4 }
+    print(p.suma())          // 7
+    print(p.movido(10).x)    // 13 (cadena de métodos)
+    let mut q = Punto { x: 0, y: 0 }
+    q.x = 5
+    print(q.x)               // 5  (escritura de campo)
+
+    // Struct con campo opcional.
+    let reg = Registro { nombre: "ana", nota: some(9) }
+    match reg.nota {
+        some(v) => print(v),
+        none => print("sin nota"),
+    }
+
+    print("== enums y match ==")
+    print(area(Circulo(2)))     // 12  (payload de 1 campo)
+    print(area(Rect(3, 4)))     // 12  (payload de 2 campos)
+    print(area(Forma.Nada))     // 0
+    print(Color.Rojo.nombre())  // rojo (método sobre enum)
+
+    // Match con guards, or-patterns y wildcard.
+    print(clasificar(2))        // pequeno
+    print(clasificar(5))        // medio
+    print(clasificar(99))       // grande
+
+    // Match anidado en un brazo con bloque.
+    describir(Mover(5))             // 5
+    describir(Pintar(Color.Verde))  // pinta verde
+    describir(Accion.Quedarse)      // quieto
+
+    print("== option, result y el operador ? ==")
+    print(mitad(10))            // some(5)
+    print(mitad(3))             // nil
+    print(cuarta(16))           // some(4)
+    print(cuarta(6))            // nil (mitad(6)=3, mitad(3)=none -> sale aquí)
+
+    let r = ok(42)
+    match r {
+        ok(v) => print(v),      // 42
+        err(e) => print(e),
+        none => print("none"),
+    }
+    let e = err("fallo")
+    match e {
+        ok(v) => print(v),
+        err(m) => print(m),     // fallo
+        none => print("none"),
+    }
+
+    print("== generics (monomorfizacion) ==")
+    let entera: Caja<i32> = Caja { valor: 42 }
+    let texto = Caja { valor: "hola" }
+    print(entera)               // Caja { valor: 42 }
+    print(texto)                // Caja { valor: hola }
+    print(Caja { valor: 3.5 })  // Caja { valor: 3.5 }
+    print(identidad(7))         // 7   (inferido desde el argumento)
+    print(identidad("z"))       // z
+
+    print("== traits e impls ==")
+    print(p.saludo())           // hola desde punto
+}
