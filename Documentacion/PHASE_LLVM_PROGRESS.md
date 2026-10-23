@@ -24,19 +24,23 @@ por la VM.
 
 ---
 
-## 1. Estado actual (2026-10-21, M4 cerrado)
+## 1. Estado actual (2026-10-23, M0–M6.a cerrados)
 
 **M0 (infraestructura), M1 (núcleo completo), M2 (valores y patrones), M3
-(paridad total y robustez) y M4 (calidad) están terminados: pipeline `-O2`,
-benchmarks, DWARF y sanitizers ASan.** El emisor compila Astra-0 —
+(paridad total y robustez), M4 (calidad), M5 (targets) y M6.a (LLJIT)
+están terminados: pipeline `-O2`, benchmarks, DWARF, sanitizers ASan,
+cross aarch64, wasm32-wasi y ejecución in-process.** El emisor compila
+Astra-0 —
 escalares, floats, strings, Option/Result con `match`/`?`, closures,
 arrays/structs/enums de usuario, `for..in`/`break`/`continue`, genéricos
 monomorfizados, traits/impls, `let` sin inicializador y retornos sin anotar —
-a LLVM IR verificado, lo baja a objeto nativo con `--emit-obj`
-(TargetMachineEmitToFile, M2.e — sin subproceso `llc`), lo enlaza contra el
-runtime compartido del seed y produce binarios cuya salida (stdout, stderr y
-código de salida) es **byte-idéntica a la VM** para **todos** los casos del
-gate de paridad: **154 — 154 ok, 0 skip, 0 excl, 0 fail**.
+a LLVM IR verificado y lo baja a objeto con `--emit-obj`
+(TargetMachineEmitToFile, M2.e — sin subproceso `llc`). En las cuatro
+rutas — nativa, cross aarch64 (`--target=<triple>`, §13), wasm32-wasi
+(§13.4) y `--jit` in-process (§14) — la salida (stdout, stderr y código
+de salida) es **byte-idéntica a la VM** para **todos** los casos del gate
+correspondiente: **154 — 154 ok, 0 skip, 0 excl, 0 fail** en cada ruta,
+planas y con `ASTRA_LLVM_OPT=2`.
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -49,6 +53,15 @@ gate de paridad: **154 — 154 ok, 0 skip, 0 excl, 0 fail**.
 | **M2** | arrays/structs (GEP), enums de usuario + `match`, `for..in`, `--emit-obj` | ✅ |
 | **M3** | paridad total, guard de profundidad, atributos/pesos, fuzz, FileCheck | ✅ |
 | **M4** | calidad: pipeline `-O2` + benchmarks + DWARF + sanitizers ASan | ✅ |
+| **M5** | `--target=<triple>` (cross aarch64) + `src/llvm/target.zig` + ruta wasm32-wasi formalizada (§13) | ✅ |
+| **M6.a** | `--jit`: ejecución in-process vía ORC/LLJIT (§14) | ✅ |
+
+Queda, todo opcional y sin bloquear el cierre de la fase (plan §6): el
+des-boxing de Option/Result, fast-math opt-in y error-union para `?`.
+Único rojo conocido: el canario no bloqueante `llvm-canario` con LLVM 22
+(`jit.zig` usa `LLVMOrcThreadSafeContextGetContext`, eliminado en LLVM 22
+— el churn que el canario existe para adelantar); su fix es el siguiente
+paso, antes de los items de M6.
 
 ---
 
@@ -79,7 +92,8 @@ cc file.o runtime.o -o program -lm && ./program
 ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh
 
 # Ruta wasm32-wasi (§13.4): emitir -> wasm-ld + wasi-libc -> Node WASI.
-# Requiere wasm-ld (lld), sysroot wasi-libc y Node >= 22.
+# Requiere wasm-ld (lld), un sysroot wasi-libc con <setjmp.h> usable
+# (el de Ubuntu no lo trae; ver §13.4) y Node >= 22.
 ./tests/llvm_wasm.sh
 ASTRA_LLVM_OPT=2 ./tests/llvm_wasm.sh
 

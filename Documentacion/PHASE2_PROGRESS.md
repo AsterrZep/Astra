@@ -161,13 +161,15 @@ Ordenado por dependencia y valor para el bootstrap.
   completo (genéricos, traits, comptime, módulos, FFI…). Su **§12** fija el plan
   de *debugging e inspección de bajo nivel* (flags `--emit-llvm`/`--emit-asm`,
   DWARF, depurador de bytecode) y las decisiones abiertas; el backend nativo
-  está en su §11 (fase 2.6) — **implementado y cerrado**: la Fase LLVM (M0–M4)
-  vive en `zig/src/llvm/` con su propio log (`PHASE_LLVM_PROGRESS.md`, opt-in
-  `-Dllvm`, gate `zig/tests/llvm_parity.sh`, **146/146 casos ok** a
-  2026-10-21, también bajo ASan con `zig/tests/llvm_sanitize.sh`; la auditoría
-  post-M4 y sus correcciones están en `PHASE_LLVM_PROGRESS.md` §11 y el
-  modelo de ownership por refcount que elimina las fugas del código generado
-  en §12, con su gate de LSan en `tests/llvm/leaks.astra`).
+  está en su §11 (fase 2.6) — **implementado y cerrado**: la Fase LLVM
+  (M0–M6.a: nativo, cross aarch64, wasm32-wasi y `--jit`) vive en
+  `zig/src/llvm/` con su propio log (`PHASE_LLVM_PROGRESS.md`, opt-in
+  `-Dllvm`, gates `zig/tests/llvm_{parity,jit,cross,wasm}.sh`, **154/154
+  casos ok en cada una de las cuatro rutas** a 2026-10-23, también bajo
+  ASan con `zig/tests/llvm_sanitize.sh`; la auditoría post-M4 y sus
+  correcciones están en `PHASE_LLVM_PROGRESS.md` §11 y el modelo de
+  ownership por refcount que elimina las fugas del código generado en §12,
+  con su gate de LSan en `tests/llvm/leaks.astra`).
 - `research/001`, `research/002`, `research/003` — gramática, diseño del seed y
   backend C, que siguen siendo la especificación de comportamiento.
 

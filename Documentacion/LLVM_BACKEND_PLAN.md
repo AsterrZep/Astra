@@ -334,17 +334,25 @@ llvm-canario:                                        # no bloqueante (continue-o
 
 ## 9. Próximo paso
 
-Estado: **M0–M4 completados** (ver `PHASE_LLVM_PROGRESS.md`). El backend
+Estado: **M0–M6.a completados** (ver `PHASE_LLVM_PROGRESS.md`). El backend
 compila el subconjunto de Astra-0 (escalares, floats, strings,
 Option/Result+`match`/`?`, closures, arrays/structs/enums, `for..in`,
 `break`/`continue`, genéricos, traits/impls) a `.o` nativo vía
 TargetMachineEmitToFile y reproduce la salida de la VM byte a byte en
-**154/154 casos** (0 skip, 0 excl); el fuzz diferencial de cuatro rutas y
-FileCheck cierran el gate de M3, y el canario CI vigila el churn de LLVM.
-**M4 está cerrado**: benchmarks y pipeline `-O2` medidos (§8 del progress
-log, gate repetido a `-O2`: 154/154), DWARF verificado con `lldb` y ASan sobre
-los artefactos (`llvm_sanitize.sh`, suite completa a `-O0` y `-O2`
-instrumentada). Lo siguiente es **M5**: multi-target/cross-compilation. Los
+**154/154 casos** (0 skip, 0 excl). Las cuatro rutas están gateadas en CI
+y en verde: nativa (`llvm`), cross aarch64 bajo qemu (`llvm-cross`, M5),
+wasm32-wasi bajo Node WASI (`llvm-wasm`, §13.4) y `--jit` in-process
+(`llvm`, M6.a); el job `llvm` añade FileCheck, DWARF, sanitizers y el
+fuzz diferencial de cuatro rutas. M4 cerró con benchmarks y pipeline
+`-O2` (154/154 también en `-O2`).
+
+Lo que queda es **opcional** (§6, «M6 — Opcional / futuro»), y cada
+entrada se planifica al entrar: des-boxing de Option/Result (tag entero),
+fast-math opt-in y error-union para `?`. Único rojo conocido y no
+bloqueante: el canario `llvm-canario` en LLVM 22 (`jit.zig` usa
+`LLVMOrcThreadSafeContextGetContext`, eliminado de la C API de ORC — el
+churn que el canario existe para adelantar); arreglarlo antes de los
+items de M6 mantiene viva la compatibilidad hacia el rango 19..23. Los
 hitos siguen el patrón workstream → commit probado → gate verde.
 
 Pendiente confirmado y cerrado: la instalación de `llvm-19-dev` en CI vía
