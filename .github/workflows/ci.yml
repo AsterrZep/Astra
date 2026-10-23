@@ -187,6 +187,50 @@ jobs:
       - name: Cross-route parity (VM <-> --emit-obj --target=aarch64 -> qemu)
         run: ./zig/tests/llvm_cross.sh
 
+  # M5b gate wasm32-wasi (LLVM_BACKEND_PLAN.md §6, §4.4): la misma suite
+  # compilada para wasm32-wasi (--target), enlazada con wasm-ld + wasi-libc
+  # (crt1), y ejecutada bajo el WASI de Node; stdout/stderr/exit deben
+  # coincidir byte a byte con la zig VM nativa. Verificado también contra el
+  # sysroot exacto de Ubuntu noble (wasi-libc git20230113: su setjmp.h no
+  # exige EH y el TU del runtime no emite setjmp/longjmp, sólo crt1 + libc).
+  # El TU del runtime se compila con -mllvm -wasm-enable-sjlj (los wasi-libc
+  # modernos #error-en setjmp.h sin EH), así que el motor necesita Node >= 22
+  # (V8 con Exception Handling); setup-node fija 24, el mismo con que se
+  # verificó localmente.
+  llvm-wasm:
+    name: llvm-wasm (wasm32-wasi) — suite bajo Node WASI
+    runs-on: ubuntu-latest
+    env:
+      ASTRA_WASM_CLANG: clang-19
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install LLVM 19 (apt.llvm.org, pinned)
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo DEBIAN_FRONTEND=noninteractive ./llvm.sh 19
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-19-dev
+      # clang-19 compila el TU del runtime para wasm32-wasi; lld-19 aporta
+      # wasm-ld-19 (enlace); wasi-libc es el sysroot (crt1.o + libc.a).
+      - name: Install wasm toolchain (clang/lld 19 + wasi-libc)
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang-19 lld-19 wasi-libc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build zig with the LLVM backend
+        run: zig build -Dllvm
+        working-directory: zig
+      - name: wasm parity (VM <-> --emit-obj --target=wasm32-wasi -> Node WASI)
+        run: ./zig/tests/llvm_wasm.sh
+      # M4: el mismo gate con el pipeline del new PM (default<O2>), igual que
+      # los gates nativo y cross.
+      - name: wasm parity (optimized, -O2)
+        run: ASTRA_LLVM_OPT=2 ./zig/tests/llvm_wasm.sh
+
   # Canario no bloqueante (LLVM_BACKEND_PLAN.md §2/§7): la misma ruta con el
   # LLVM stable más reciente de apt.llvm.org (llvm.sh sin argumentos usa su
   # CURRENT_LLVM_STABLE). Adelanta el churn de la C API hacia el rango
