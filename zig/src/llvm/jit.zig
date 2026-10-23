@@ -64,14 +64,12 @@ pub fn run(
     c.LLVMOrcJITDylibAddGenerator(c.LLVMOrcLLJITGetMainJITDylib(jit), gen);
 
     // 3. Re-analizar el IR en un contexto fresco propiedad del JIT.
-    const tsc = c.LLVMOrcCreateNewThreadSafeContext();
-    defer c.LLVMOrcDisposeThreadSafeContext(tsc);
-    const tsc_ctx = c.LLVMOrcThreadSafeContextGetContext(tsc);
-    const jit_mod = parseInto(jit, tsc_ctx, mod, diag, file) orelse return 1;
+    const fresh = parseIntoFreshContext(jit, mod, diag, file) orelse return 1;
+    defer c.LLVMOrcDisposeThreadSafeContext(fresh.tsc);
 
     // 4. Envolver + transferir la propiedad al JIT (que libera el módulo y el
     //    contexto del ThreadSafeContext al disposal).
-    const tsm = c.LLVMOrcCreateNewThreadSafeModule(jit_mod, tsc);
+    const tsm = c.LLVMOrcCreateNewThreadSafeModule(fresh.jit_mod, fresh.tsc);
     err = c.LLVMOrcLLJITAddLLVMIRModule(jit, c.LLVMOrcLLJITGetMainJITDylib(jit), tsm);
     if (err != null) return fail(diag, file, err, "cannot add module to JIT");
 
@@ -119,6 +117,49 @@ fn parseInto(
     return jit_mod;
 }
 
+/// Contexto fresco de JITeo + su ThreadSafeContext, con `mod` ya parseado
+/// dentro. El caller dispone del `tsc` (defer); el ThreadSafeModule posterior
+/// mantiene su propia referencia compartida.
+const FreshContext = struct {
+    tsc: c.LLVMOrcThreadSafeContextRef,
+    jit_mod: c.LLVMModuleRef,
+};
+
+/// Crea el contexto fresco donde re-analizar el IR y parsea `mod` dentro.
+///
+/// LLVM 19..21 exponen el contexto de un ThreadSafeContext vía
+/// `LLVMOrcThreadSafeContextGetContext`; **LLVM 22 la eliminó** (el contexto
+/// ya no se extrae de un TSC) e invierte la operación: crear el contexto
+/// primero y envolverlo con
+/// `LLVMOrcCreateNewThreadSafeContextFromLLVMContext` — que toma propiedad
+/// del contexto, así que no se dispala. La rama se elige en comptime con
+/// `@hasDecl`; la semántica de ownership es la misma en ambos lados. El
+/// churn lo señaló el canario `llvm-canario` (CI, LLVM latest).
+fn parseIntoFreshContext(
+    jit: c.LLVMOrcLLJITRef,
+    mod: c.LLVMModuleRef,
+    diag: ?*diagnostics.Sink,
+    file: []const u8,
+) ?FreshContext {
+    if (@hasDecl(c, "LLVMOrcThreadSafeContextGetContext")) {
+        const tsc = c.LLVMOrcCreateNewThreadSafeContext();
+        const ctx = c.LLVMOrcThreadSafeContextGetContext(tsc);
+        const jit_mod = parseInto(jit, ctx, mod, diag, file) orelse {
+            c.LLVMOrcDisposeThreadSafeContext(tsc);
+            return null;
+        };
+        return .{ .tsc = tsc, .jit_mod = jit_mod };
+    } else {
+        const ctx = c.LLVMContextCreate();
+        const jit_mod = parseInto(jit, ctx, mod, diag, file) orelse {
+            c.LLVMContextDispose(ctx);
+            return null;
+        };
+        const tsc = c.LLVMOrcCreateNewThreadSafeContextFromLLVMContext(ctx);
+        return .{ .tsc = tsc, .jit_mod = jit_mod };
+    }
+}
+
 /// Consume un LLVMErrorRef reportándolo por el sink; devuelve 1 (fallo JIT).
 fn fail(
     diag: ?*diagnostics.Sink,
@@ -161,11 +202,9 @@ test "M6.a: LLJIT compila y ejecuta un módulo i64 add(i64,i64)" {
     var err = c.LLVMOrcCreateLLJIT(&jit, jb);
     try std.testing.expect(err == null);
     defer _ = c.LLVMOrcDisposeLLJIT(jit);
-    const tsc = c.LLVMOrcCreateNewThreadSafeContext();
-    defer c.LLVMOrcDisposeThreadSafeContext(tsc);
-    const tsc_ctx = c.LLVMOrcThreadSafeContextGetContext(tsc);
-    const jit_mod = parseInto(jit, tsc_ctx, mod, null, "jit_smoke.astra") orelse return error.ParseFailed;
-    const tsm = c.LLVMOrcCreateNewThreadSafeModule(jit_mod, tsc);
+    const fresh = parseIntoFreshContext(jit, mod, null, "jit_smoke.astra") orelse return error.ParseFailed;
+    defer c.LLVMOrcDisposeThreadSafeContext(fresh.tsc);
+    const tsm = c.LLVMOrcCreateNewThreadSafeModule(fresh.jit_mod, fresh.tsc);
     err = c.LLVMOrcLLJITAddLLVMIRModule(jit, c.LLVMOrcLLJITGetMainJITDylib(jit), tsm);
     try std.testing.expect(err == null);
     var addr: c.LLVMOrcExecutorAddress = 0;
