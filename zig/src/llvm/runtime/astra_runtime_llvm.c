@@ -174,7 +174,10 @@ void astra_llvm_print_begin(void) {
 
 void astra_llvm_print_i64(int64_t v) {
     if (astra_llvm_printed_any++) putchar(' ');
-    printf("%ld", (long)v);
+    /* %lld + long long:64 bits en LP64 (host), ILP32 (wasm32-wasi) y LLP64.
+     * `%ld` con (long) sólo es 64-bit en LP64; en wasm32 long mide 32 y cada
+     * entero grande se trunca (i64 max -> -1), roto el contrato byte a byte. */
+    printf("%lld", (long long)v);
 }
 
 /* Floats print with C's %g, the exact formatting builtin_print (VM) and the
@@ -308,7 +311,7 @@ static void astra_llvm_boxed_body(const void *p) {
     fputs(b->tag == 0 ? "ok(" : b->tag == 1 ? "err(" : "some(", stdout);
     switch (b->ptype) {
         case 1: fputs(b->payload ? "true" : "false", stdout); break;
-        case 2: printf("%ld", (long)b->payload); break;
+        case 2: printf("%lld", (long long)b->payload); break;
         case 3: { double d; memcpy(&d, &b->payload, sizeof d); printf("%g", d); break; }
         case 4: { const AstraLLVMStr *s = (const AstraLLVMStr *)b->payload;
                   if (!s) { fputs("nil", stdout); break; }
@@ -410,7 +413,7 @@ static void astra_llvm_array_body(const void *p) {
 static void astra_llvm_elem_print(int32_t pty, const char *slot) {
     switch (pty) {
         case 1: fputs(*(const int8_t *)slot ? "true" : "false", stdout); break;
-        case 2: { int64_t v; memcpy(&v, slot, sizeof v); printf("%ld", (long)v); break; }
+        case 2: { int64_t v; memcpy(&v, slot, sizeof v); printf("%lld", (long long)v); break; }
         case 3: { double d; memcpy(&d, slot, sizeof d); printf("%g", d); break; }
         case 4: { const AstraLLVMStr *s; memcpy(&s, slot, sizeof s);
                   if (!s) { fputs("nil", stdout); break; }
@@ -461,8 +464,8 @@ int32_t astra_llvm_array_eq(const void *pa, const void *pb) {
  * icmp + load/store in the IR; only the failing arm calls here. */
 void astra_llvm_index_fail(unsigned line, int64_t idx, int64_t len) {
     char buf[96];
-    snprintf(buf, sizeof buf, "index %ld out of bounds (len %ld)",
-             (long)idx, (long)len);
+    snprintf(buf, sizeof buf, "index %lld out of bounds (len %lld)",
+             (long long)idx, (long long)len);
     astra_llvm_fail(line, buf);
 }
 
