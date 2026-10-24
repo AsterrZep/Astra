@@ -398,6 +398,52 @@ Every workstream must, before handing off:
 3. add or update conformance cases for the behaviour it introduced;
 4. commit a single, focused change.
 
+## GitHub workflow — rulesets, PRs, signed commits
+
+`main` is protected by two active repository rulesets (GitHub → Settings →
+Rules → Rulesets). Read this section before touching the remote; it is their
+operational summary:
+
+- **`integridad-main`** — *no bypass actors*. Every commit landing on `main`
+  must be **signed**: SSH signing is configured locally (`commit.gpgsign=true`,
+  `gpg.format=ssh`, `user.signingkey=~/.ssh/id_ed25519_astra_signing`), so a
+  plain `git commit` signs automatically — never pass `--no-verify`, and if a
+  push is rejected as unsigned check the signing config instead of forcing.
+  Force-push and branch deletion are rejected. Merges additionally require
+  **three status checks green** — the CI contexts
+  `seed (C) — ASan/UBSan/LSan + suite`, `zig (Phase 2) — zig build test` and
+  `dump parity (seed <-> zig)`.
+- **`proceso-pull-requests`** — changes reach `main` through a pull request
+  with **1 approving review**, every review thread resolved, and stale
+  approvals dismissed on new pushes. Allowed merge methods: `merge`,
+  `squash`, `rebase`. The **admin role is a bypass actor**, so as a solo
+  author (you cannot self-approve) merge with the admin bypass:
+  `gh pr merge --admin`.
+
+The loop for agents — **never push to `main` directly**:
+
+```bash
+git switch -c feat/<slug>        # from an up-to-date main; also fix/, docs/, test/
+git commit -m "feat(...): ..."   # signed automatically, conventional style
+git push -u origin feat/<slug>
+gh pr create --title "..." --body-file <body>   # follow .github/PULL_REQUEST_TEMPLATE.md
+gh pr checks --watch             # CI (seed / zig / parity / llvm*) + CodeQL
+gh pr merge --admin --squash --delete-branch
+```
+
+- The PR template (`.github/PULL_REQUEST_TEMPLATE.md`) demands: local gates
+  green for the areas the PR touches (`make test` / `zig build test` /
+  `zig build -Dllvm && ./tests/llvm_parity.sh`), signed commits, **no
+  secrets** (secret-scanning push protection blocks the push if any leak),
+  tests for every new language behaviour, docs updated, and an «Evidencia de
+  verificación» section quoting the actual gate outputs.
+- CI (`ci.yml`) runs on `push` to `main` **and** on every pull request;
+  `codeql.yml` additionally analyzes the C compiler (`seed/`) on PRs, pushes
+  and weekly. Only the three contexts above gate merges, but keep every job
+  green — `llvm (latest) — canario no bloqueante` is `continue-on-error` by
+  design (it exists to alarm on LLVM-latest churn, as in §14.5 of
+  `Documentacion/PHASE_LLVM_PROGRESS.md`).
+
 ## Conventions
 
 - C11, Clang for development, `-Wall -Wextra -Wpedantic` must stay warning-free.
