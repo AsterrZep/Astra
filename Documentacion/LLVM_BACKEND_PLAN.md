@@ -267,7 +267,10 @@ El des-boxing de escalares
 que 023 §1.2 apunta ya está entregado dentro de v1 — el emisor camina el AST
 tipado y emite `i64`/`f64`/`i8` nativos en SSA, y `llvm_bench.sh` mide la ruta
 LLVM 2-8× más rápida que el backend C boxed. Quedan opcionales el des-boxing de
-Option/Result (tag entero, arriesgado: colisiones de sentinel) y error-union
+Option/Result — diseño cerrado en `PHASE_LLVM_PROGRESS.md` §16: par
+`{i8 tag, i64 payload}` en SSA con boxing en fronteras de contenedor; la
+opción sentinel i64 quedó **descartada** (el dominio de i64 es completo,
+cualquier sentinel colisiona) — y error-union
 para `?` si el JIT lo pide. Cada uno se planifica al
 llegar; M6 no bloquea el cierre de la fase.
 
@@ -355,7 +358,8 @@ canario) quedó corregida y verificada con el canario en verde
 mismo log), opt-in puro sin mover la semántica por defecto.
 
 Lo que queda es **opcional** (§6, «M6 — Opcional / futuro»), y cada
-entrada se planifica al entrar: des-boxing de Option/Result (tag entero) y
+entrada se planifica al entrar: des-boxing de Option/Result (diseño
+cerrado en `PHASE_LLVM_PROGRESS.md` §16, pendiente de implementar) y
 error-union para `?`. Los hitos siguen el patrón
 workstream → commit probado → gate verde.
 

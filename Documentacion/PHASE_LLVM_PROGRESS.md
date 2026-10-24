@@ -987,3 +987,81 @@ históricos de los hitos anteriores conservan su 154 fechado.
   que sólo habilita *optimizaciones* permitidas).
 - Rechazo: `astra-zig --fast-math file.astra` (modo VM) →
   `error: --fast-math requires an LLVM output mode …`, exit 2.
+
+## 16. M6.c — des-boxing de Option/Result (diseño, no implementado)
+
+Segundo item opcional de M6 (plan §6). Este §16 es el **contrato de diseño**
+que precede a la implementación — la convención «cada item se planifica al
+entrar» aplica con fuerza aquí: es el cambio con más riesgo semántico de la
+fase (touchpoints: ~40 sitios sustantivos de `emitter.zig` + el contrato de
+runtime), y el benchmark actual le da «visibilidad mínima» (§14). Se escribe
+primero para que la implementación tenga la decisión de representación
+cerrada y no se improvisen conversiones a mitad de ruta.
+
+### Qué cuesta hoy
+
+Todo `Option/Result` es una **caja heap** `{ i32 tag; i32 ptype; i64 payload }`
+asignada por `astra_llvm_wrap` en cada `some(x)`/`ok(x)`/`err(x)`, con `none`
+como puntero NULL (§4, M1). `?`, `match`, print e igualdad la leen con
+`loadBoxTag`/`loadBoxPayload`. En código escalar caliente (`f()?` en bucle),
+cada construcción paga malloc + header rc + dos loads, y M4.e añade el
+release correspondiente.
+
+### Decisión de representación: par `{i8 tag, i64 payload}` en SSA
+
+- **NO sentinel i64** (la opción que los docs previos llamaban «tag entero,
+  arriesgado: colisiones de sentinel»): el dominio de payload de `i64` es
+  completo — cualquier valor que se reserve como «none» colisiona con un
+  programa legal. El análisis cierra esa opción: sentinel es incorrecto,
+  no arriesgado.
+- Sí **par des-boxado** en valores SSA: `{ i8 tag; i64 payload }` (el payload
+  sigue el mismo transporte de bits de `toBits`/`fromBits` de hoy; `f64` por
+  bitcast, `bool` 0/1, payloads de puntero — `str_`/`fn_`/`arr_`/`struct_`/
+  `enum_` — caben en el i64). `none` = `{ 3, 0 }` (tag 3, el «nil» del VM),
+  sin puntero NULL que testear. Sin heap, sin rc, sin loads: el `?` sobre
+  par es `icmp tag == err` + rama; el payload es `extractvalue`.
+- **Tag en i8** (no i32): el par vive en registros/stack; el layout de caja
+  heap NO se toca.
+
+### Frontera de conversión (lo que acota el riesgo)
+
+El par sólo vive en **SSA: temporales, `let` locales, parámetros y retornos**
+con tipo estático conocido de optional escalar (`i64`/`f64`/`bool`). En
+cualquier frontera que hoy exige 8 bytes crudos — elementos de array, campos
+de struct, payloads de enum, slots de captura de lambda — se **caja en el
+sitio** (llamada a `astra_llvm_wrap`, exactamente hoy) y las cargas desde
+esos contenedores devuelven caja como ahora. Invariant: **la semántica no
+cambia ni un byte**; el des-boxing es pura representación. Consecuencias
+delimitadas documentadas:
+
+- `print`/`igualdad` de un par se **inlinean en el emisor** con ramas de tag
+  (hoy van a `astra_llvm_print_boxed`/`astra_llvm_boxed_eq` con puntero): el
+  emisor ya conoce el payload estático, así que cada rama usa el print/eq
+  existente de ese Ty. La caja cargada desde contenedor conserva el camino
+  runtime actual.
+- Las **llamadas a fn conocidas** firman con el par (ambos lados son emisor,
+  el `FnInfo` cachea el LLVM type); las **llamadas dinámicas** (`fn_` con
+  parámetro optional) y los retornos a través de `fn_` caen al camino cajado
+  (firma runtime genérica de hoy).
+- `some(some(x))` ya es rechazo limpio hoy (`boxPTy(boxed_)` = null); se
+  conserva.
+
+### Etapas y gates
+
+| Etapa | Contenido | Gate |
+|:------|:----------|:-----|
+| **c.1** | par en SSA para construcción + `?` + `match` + print/igualdad inline, con boxing en fronteras | paridad **155/155** (la paridad ES el gate: si la representación cambia la salida, hay bug), filecheck nuevo de formas del par, fuzz 4 rutas |
+| **c.2** (opcional) | ampliar a payloads `str_` (par con puntero) sin boxing en fronteras de string | igual |
+
+Sin flag opt-in: a diferencia de fast-math, aquí no hay cambio semántico que
+proteger — la corrección se demuestra con las rutas gateadas existentes
+(parity/jit/cross/wasm + ASan/LSan: el par no asigna, así que las fugas sólo
+pueden bajar). Los tests unitarios existentes de `emitter.zig` (§4157:
+«match de Option: TAG_IS inline…») se ajustan a las formas nuevas y fijan
+los shapes viejos que dejen de aplicar.
+
+**Estado: diseño cerrado, implementación no empezada.** Riesgo residual
+conocido: el peaje de conversiones en frontera (caja↔par) debe ser
+exhaustivo — un sitio que olvide una de las dos direcciones es un use-after-
+free de rc o un tag ilegible; la auditoría será por `grep boxed_` (los ~40
+sitios de hoy) antes de declarar la etapa c.1 cerrada.
