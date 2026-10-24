@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend LLVM: `--fast-math` opt-in (M6.b)**: el flag nuevo —exigido a un
+  modo de salida LLVM (`--emit-llvm`, `--emit-llvm-stdout`, `--emit-obj` o
+  `--jit`); con la VM o los dumps sale un error accionable— marca toda la
+  aritmética FP (`fadd`, `fsub`, `fmul`, `fdiv`, `frem`, `fneg`) con los
+  siete flags fast-math (`reassoc|nnan|ninf|nsz|arcp|contract|afn`, el
+  «fast» del IR textual). Portátil sobre el rango LLVM 19..23: el C API
+  los tipa como `unsigned` sin nombres en 19 y como enum en 22+, con el
+  mismo mapa de bits, y `LLVMSetFastMathFlags` existe en ambos. Opt-in
+  estricto: sin el flag el IR queda byte-idéntico (0 marcas `fast`), así
+  que ningún gate existente se mueve. El `fcmp` del guard de división cero
+  no se marca — dividir entre cero sigue siendo el error del VM, no `inf`.
+  Fixture `zig/tests/llvm/check_fast_math.astra` (`// FLAGS: --fast-math`)
+  fija la forma del IR con FileCheck (6/6); al vivir en `tests/llvm/`
+  entra también en paridad y la suite crece de 154 a **155** (añade
+  paridad real de `%` float VM↔LLVM): **155/155** en paridad, JIT, cross
+  y wasm, plano y `-O2`. Detalle: `PHASE_LLVM_PROGRESS.md` §15.
+- **Backend LLVM: ruta wasm32-wasi formalizada**: lo que el plan listaba
+  como «+ wasm si se quiere» (§6 M5) quedó formal: `--emit-obj
+  --target=wasm32-wasi` emite el objeto, `zig/tests/llvm_wasm.sh` (nuevo)
+  lo enlaza con `wasm-ld` + wasi-libc (`crt1`) y lo corre bajo el WASI de
+  Node (>= 22), comparado byte a byte contra la VM — **154/154 sin y con
+  `-O2`** en su cierre, hoy **155/155**. CI gana el job `llvm-wasm`. El
+  sysroot debe traer un `<setjmp.h>` moderno (el TU del runtime incluye
+  `codegen_runtime.h`, que lo incluye): **el `wasi-libc` de apt en Ubuntu
+  no lo trae**, así que CI fija el tarball `wasi-sysroot-23.0` de la
+  release `wasi-sdk-23` y el gate pasa el `include/<triple>` con `-I`
+  explícito (cualquier clang sirve). El intento previo con el sysroot de
+  noble falló en CI exactamente por eso; la historia está contada en
+  `PHASE_LLVM_PROGRESS.md` §13.4.
+- **Backend LLVM: `--jit` — ejecución in-process (M6.a)**: el módulo
+  emitido se compila y corre en el propio proceso vía ORC/LLJIT, sin paso
+  `cc`+enlace — cimiento del REPL/eval futuro. Resolución de símbolos
+  `astra_llvm_*`+libc por el generador de proceso de LLJIT (`-rdynamic` en
+  el binario); paridad **154/154** contra la VM en su cierre (hoy 155/155)
+  sin y con `-O2` (`zig/tests/llvm_jit.sh`), test unitario de
+  create→add→lookup→call, y `registerAll()` en el camino del host para que
+  `detectHost` no falle con «no targets are registered». Detalle:
+  `PHASE_LLVM_PROGRESS.md` §14.
 - **Backend LLVM: cross-compilation a aarch64 (M5)**: el backend ya no
   emite sólo para el host. El flag `--target=<triple>` (p. ej.
   `aarch64-linux-gnu`, exigido a un modo de salida LLVM) fija el triple de
@@ -22,8 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nativa — **154/154, 0 skip, 0 fail**; CI gana el job bloqueante
   `llvm-cross`. Tests unitarios: TargetMachine de host + aarch64 + triple
   inventado (rechazo limpio) y verificación de `e_machine` = EM_AARCH64 en el
-  `.o` cruzado. wasm queda diferido (sysroot wasi + runtime; el plumbing ya
-  acepta cualquier triple). Detalle en `PHASE_LLVM_PROGRESS.md` §13.
+  `.o` cruzado. wasm se formalizó después (ver la entrada «ruta
+  wasm32-wasi» más arriba). Detalle en `PHASE_LLVM_PROGRESS.md` §13.
 - **Backend LLVM: ownership por refcount y cero fugas (M4.e)**: los valores
   de la ruta LLVM ya no viven todo el proceso. Cada objeto heap lleva una
   cabecera `{rc, kind}` justo antes del puntero (los layouts de array/struct/
@@ -332,6 +370,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dentro de una función
 
 ### Fixed
+- **Backend LLVM: churn de LLVM 22 en el JIT (canario)**: LLVM 22 eliminó
+  `LLVMOrcThreadSafeContextGetContext` de la C API de ORC (el contexto de
+  un ThreadSafeContext ya no se extrae) e invirtió la operación con
+  `LLVMOrcCreateNewThreadSafeContextFromLLVMContext`, que crea el TSC a
+  partir de un contexto propio del que toma propiedad — el job
+  `llvm-canario` (no bloqueante) lo señaló. Alcance auditado en seco
+  contra los headers `llvm-c/` de `release/22.x`: de los 190
+  identificadores LLVM que usa el backend, esa era la única ausencia.
+  Fix: `parseIntoFreshContext()` centraliza «crear contexto JITeado +
+  parsear el IR» y elige la rama en comptime con `@hasDecl` (19..21:
+  `GetContext`; 22+: `FromLLVMContext`), con ownership idéntico en ambos
+  lados. Verificado en LLVM 19 (`build`, `build test`, `llvm_jit.sh`
+  154/154 plano y `-O2`) y con el canario en verde en CI bajo LLVM
+  latest. Detalle: `PHASE_LLVM_PROGRESS.md` §14.5.
 - **Backend LLVM: `--debug-info` con closures (M4.c)**: una función que
   devuelve un closure hacía fallar la verificación del módulo (`--debug-info`
   rechazaba el programa con "!dbg attachment points at wrong subprogram"):

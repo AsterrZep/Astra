@@ -134,14 +134,14 @@ The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
 progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
 build and binary are byte-identical and none of the existing gates change.
-**M0–M5 and M6.a are closed** (2026-10-22): the emitter compiles the Astra-0 subset —
+**M0–M5, M6.a and M6.b are closed** (2026-10-23): the emitter compiles the Astra-0 subset —
 scalars, floats, strings, Option/Result with `match`/`?`, closures,
 arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
 — straight from the typed AST (no bytecode/VM) to a native object via
 TargetMachine (`--emit-obj`, M2.e). `zig/tests/llvm_parity.sh` gates it
-against the zig VM: **154 cases — 154 ok, 0 skip, 0 excl, 0 fail**.
-`zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`/debug
+against the zig VM: **155 cases — 155 ok, 0 skip, 0 excl, 0 fail**.
+`zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`/debug/fast-math
 fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
 `llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
 multi-module programs stay out of scope (the emitter is single-file; the
@@ -150,11 +150,11 @@ seed's inert-import semantics for the `module/` fixtures. M4 (quality) is
 closed: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
 simple-loop-unswitch / IRCE for N=2), `--debug-info` emits source-mapped DWARF
 (verified via `tests/llvm_dwarf_test.sh` under `lldb`), and the parity gate is
-run both plain and with `ASTRA_LLVM_OPT=2` (154/154 in both); `zig/tests/llvm_bench.sh`
+run both plain and with `ASTRA_LLVM_OPT=2` (155/155 in both); `zig/tests/llvm_bench.sh`
 publishes VM/C/LLVM timings. `--sanitize=address` marks functions and runs the
 new-PM `asan` pass before the optimizer; `zig/tests/llvm_sanitize.sh` proves
 the artifacts are instrumented, that a plain link fails without
-`-fsanitize=address`, runs the whole 154-case suite under ASan at `-O0` and
+`-fsanitize=address`, runs the whole 155-case suite under ASan at `-O0` and
 `-O2`, and closes with an LSan step (`detect_leaks=1`) on
 `zig/tests/llvm/leaks.astra`. UBSan is not offered because LLVM 19..23 does
 not register a `ubsan` new-PM pass (`opt-19 --print-passes`); see
@@ -169,11 +169,11 @@ whose env reaches the closure). Derived element metadata is still not carried
 module carries the target's triple and datalayout, and `src/llvm/target.zig`
 registers every target (`LLVMInitializeAllTargets`) — and
 `zig/tests/llvm_cross.sh` gates it by cross-linking with `<triple>-gcc` and
-cross-running under `qemu-<arch>-static`: **154/154**, byte-identical to the
+cross-running under `qemu-<arch>-static`: **155/155**, byte-identical to the
 native VM (CI job `llvm-cross`). The wasm route (progress §13.4) is likewise
 formal: `zig/tests/llvm_wasm.sh` compiles every fixture with `--emit-obj
 --target=wasm32-wasi`, links with `wasm-ld` + wasi-libc (crt1) and runs it
-under Node's WASI — **154/154**, plain and `-O2` (CI job `llvm-wasm`; needs
+under Node's WASI — **155/155**, plain and `-O2` (CI job `llvm-wasm`; needs
 `lld`, a wasi-libc sysroot and Node >= 22). The sysroot must ship a modern
 `<setjmp.h>` (the runtime TU includes `codegen_runtime.h`, which includes
 it): **Ubuntu's apt `wasi-libc` predates EH setjmp and ships none**, so CI
@@ -184,9 +184,13 @@ works, no driver patches). M6.a
 **in-process** via ORC/LLJIT (no cc/link step — the runtime TU is linked into
 the `astra-zig` binary with `-rdynamic` so LLJIT's process-symbol generator
 resolves `astra_llvm_*`+libc); `zig/tests/llvm_jit.sh` gates it against the VM
-with the same 154 cases (154/154, plain and `-O2`) — the foundation for a
-future REPL/eval. The remaining M6 items (Option/Result unboxing, fast-math,
-error-union for `?`) stay optional; scalar unboxing is already delivered (the
+with the same 155 cases (155/155, plain and `-O2`) — the foundation for a
+future REPL/eval. M6.b (`--fast-math`, progress §15) marks all FP arithmetic
+(`fadd`/`fsub`/`fmul`/`fdiv`/`frem`/`fneg`) with the seven fast-math flags —
+strictly opt-in: without the flag the IR is byte-identical — and leaves the
+div-by-zero guard unmarked, so dividing by zero stays the VM's error, not
+inf. The remaining M6 items (Option/Result unboxing, error-union for `?`)
+stay optional; scalar unboxing is already delivered (the
 backend walks the typed AST and emits native `i64`/`f64`/`i8` in SSA — 2-8×
 faster than the boxed C backend per `llvm_bench.sh`).
 
@@ -199,6 +203,7 @@ zig build -Dllvm                        # requires LLVM 19..23 via llvm-config
 ./zig-out/bin/astra-zig --emit-obj --opt-level=2 file.astra  # new-PM pipeline (M4)
 ./zig-out/bin/astra-zig --emit-obj --target=aarch64-linux-gnu file.astra  # cross aarch64 object (M5)
 ./zig-out/bin/astra-zig --jit file.astra               # compile + run in-process via LLJIT (M6.a)
+./zig-out/bin/astra-zig --emit-obj --fast-math file.astra  # FP with fast-math flags (M6.b; IR unchanged without it)
 ./tests/llvm_parity.sh                  # VM <-> --emit-obj -> link runtime
 ASTRA_LLVM_OPT=2 ./tests/llvm_parity.sh # same gate through default<O2>+extras
 ./tests/llvm_jit.sh                     # VM <-> --jit, in-process (M6.a)

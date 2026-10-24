@@ -164,7 +164,7 @@ Ordenado por dependencia y valor para el bootstrap.
   está en su §11 (fase 2.6) — **implementado y cerrado**: la Fase LLVM
   (M0–M6.a: nativo, cross aarch64, wasm32-wasi y `--jit`) vive en
   `zig/src/llvm/` con su propio log (`PHASE_LLVM_PROGRESS.md`, opt-in
-  `-Dllvm`, gates `zig/tests/llvm_{parity,jit,cross,wasm}.sh`, **154/154
+  `-Dllvm`, gates `zig/tests/llvm_{parity,jit,cross,wasm}.sh`, **155/155
   casos ok en cada una de las cuatro rutas** a 2026-10-23, también bajo
   ASan con `zig/tests/llvm_sanitize.sh`; la auditoría post-M4 y sus
   correcciones están en `PHASE_LLVM_PROGRESS.md` §11 y el modelo de
