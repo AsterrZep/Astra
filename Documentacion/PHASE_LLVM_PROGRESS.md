@@ -24,12 +24,13 @@ por la VM.
 
 ---
 
-## 1. Estado actual (2026-10-23, M0–M6.a cerrados)
+## 1. Estado actual (2026-10-23, M0–M6.b cerrados)
 
 **M0 (infraestructura), M1 (núcleo completo), M2 (valores y patrones), M3
-(paridad total y robustez), M4 (calidad), M5 (targets) y M6.a (LLJIT)
-están terminados: pipeline `-O2`, benchmarks, DWARF, sanitizers ASan,
-cross aarch64, wasm32-wasi y ejecución in-process.** El emisor compila
+(paridad total y robustez), M4 (calidad), M5 (targets), M6.a (LLJIT) y
+M6.b (fast-math) están terminados: pipeline `-O2`, benchmarks, DWARF,
+sanitizers ASan, cross aarch64, wasm32-wasi, ejecución in-process y flags
+fast-math opt-in.** El emisor compila
 Astra-0 —
 escalares, floats, strings, Option/Result con `match`/`?`, closures,
 arrays/structs/enums de usuario, `for..in`/`break`/`continue`, genéricos
@@ -39,8 +40,9 @@ a LLVM IR verificado y lo baja a objeto con `--emit-obj`
 rutas — nativa, cross aarch64 (`--target=<triple>`, §13), wasm32-wasi
 (§13.4) y `--jit` in-process (§14) — la salida (stdout, stderr y código
 de salida) es **byte-idéntica a la VM** para **todos** los casos del gate
-correspondiente: **154 — 154 ok, 0 skip, 0 excl, 0 fail** en cada ruta,
-planas y con `ASTRA_LLVM_OPT=2`.
+correspondiente: **155 — 155 ok, 0 skip, 0 excl, 0 fail** en cada ruta,
+planas y con `ASTRA_LLVM_OPT=2` (la suite creció de 154 a 155 con el
+fixture de fast-math de M6.b, §15).
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -55,9 +57,10 @@ planas y con `ASTRA_LLVM_OPT=2`.
 | **M4** | calidad: pipeline `-O2` + benchmarks + DWARF + sanitizers ASan | ✅ |
 | **M5** | `--target=<triple>` (cross aarch64) + `src/llvm/target.zig` + ruta wasm32-wasi formalizada (§13) | ✅ |
 | **M6.a** | `--jit`: ejecución in-process vía ORC/LLJIT (§14) | ✅ |
+| **M6.b** | `--fast-math`: flags fast-math opt-in en la aritmética FP (§15) | ✅ |
 
 Queda, todo opcional y sin bloquear el cierre de la fase (plan §6): el
-des-boxing de Option/Result, fast-math opt-in y error-union para `?`.
+des-boxing de Option/Result y error-union para `?`.
 La compatibilidad con LLVM 22 (churn que señaló el canario) quedó
 corregida y verificada — §14.5.
 
@@ -927,3 +930,60 @@ se dispala). Era el churn exacto para el que el canario existe.
   -Dllvm` y `llvm_jit.sh` 154/154 plano y `-O2`; en CI el canario pasó a
   **verde** (run 39954279053) — la rama 22+ compiló y corrió la suite
   completa bajo LLVM latest, no sólo el shim aislado.
+
+## 15. M6.b — `--fast-math` opt-in (implementado 2026-10-23)
+
+Primer item opcional de M6 (`LLVM_BACKEND_PLAN.md` §6). El flag nuevo
+`--fast-math` (exige un modo de salida LLVM: `--emit-llvm`,
+`--emit-llvm-stdout`, `--emit-obj` o `--jit`; con la VM o los dumps se
+rechaza con mensaje accionable) marca toda la aritmética FP del módulo
+con los **siete flags fast-math** — `reassoc|nnan|ninf|nsz|arcp|contract|
+afn`, lo que el IR textual imprime como `fast`.
+
+### Diseño
+
+- **Portabilidad del C API**: en LLVM 19 `LLVMFastMathFlags` es
+  `typedef unsigned` sin nombres de bit; LLVM 22+ añade el enum
+  `LLVMFastMathFlags` con `LLVMFastMathAllowReassoc = 1 << 0` … — **el
+  mapa de bits es el mismo** (orden LangRef: reassoc, nnan, ninf, nsz,
+  arcp, contract, afn), así que la constante `0x7F` se fija en el emisor
+  y compila igual en todo el rango 19..23. La función se llama
+  `LLVMSetFastMathFlags` en ambos.
+- **Opt-in estricto**: sin el flag el emisor no emite ni una marca
+  distinta — el IR de siempre queda **byte-idéntico** (verificado con
+  grep sobre `--emit-llvm-stdout`: 0 ocurrencias de `… fast`), así que
+  ningún gate existente se mueve. El campo `fast_math` vive en el
+  emisor con `enableFastMath()` al estilo de `enableSanitizer()`.
+- **Los cinco puntos de construcción FP** pasan por `setFastMath()`:
+  `fadd`/`fsub`/`fmul` de los binarios, `fneg` del unario y
+  `fdiv`/`frem` de `emitDivRem`.
+- **El guard no se marca**: el `fcmp oeq` del guard de división cero se
+  queda sin FMF — dividir entre cero sigue siendo el error del VM con su
+  texto («division by zero»), no `inf`. Consecuencia de diseño: el fast
+  de `ninf` no convierte en UB el único camino que llega a `fdiv` con
+  divisor cero, porque ese camino ni llega.
+
+### Fixture y crecimiento de la suite
+
+`zig/tests/llvm/check_fast_math.astra` (`// FLAGS: --fast-math`) fija la
+forma del IR con FileCheck: seis ops con `fast` en orden y ambos guards
+sin marcar (`fcmp oeq double` plano). Como `llvm_filecheck.sh` ya
+admitía `// FLAGS:` por fixture, no hubo que tocar el harness.
+
+Al vivir en `tests/llvm/`, el fixture entra también en **todos** los
+gates de paridad (la carpeta se copia entera): la suite crece de **154 a
+155**. Es un crecimiento honesto — el caso añade paridad real de `%`
+sobre floats (`frem` VM↔LLVM) y de `print` de floats, y los registros
+históricos de los hitos anteriores conservan su 154 fechado.
+
+### Verificación
+
+- `llvm_filecheck.sh`: **6/6** (nuevo fixture en verde).
+- `llvm_parity.sh`: **155/155** plano y con `ASTRA_LLVM_OPT=2`.
+- `llvm_jit.sh` / `llvm_cross.sh` / `llvm_wasm.sh`: **155/155** cada uno.
+- Corrida real `--jit --fast-math` sobre el fixture: salida correcta
+  (`3.75 / -0.75 / 3.375 / 0.666667 / 1.5 / -3.75` — valores exactos en
+  binario, indistinguibles con o sin la marca, como corresponde a un flag
+  que sólo habilita *optimizaciones* permitidas).
+- Rechazo: `astra-zig --fast-math file.astra` (modo VM) →
+  `error: --fast-math requires an LLVM output mode …`, exit 2.
