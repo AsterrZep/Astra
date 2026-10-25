@@ -1,0 +1,71 @@
+// Optionals that unify across if/match arms keep their static payload all
+// the way to print and calls: the phi of an if/match expression used to drop
+// payload_ty, so `let c = if … { some(1) } else { none }` followed by print
+// panicked in the LLVM backend (M6.c c.1 regression). Covers box/pair in
+// both arm orders and both runtime paths, param/return pairs and container
+// boundaries.
+// EXPECT: true
+// EXPECT: some(9)
+// EXPECT: some(9)
+// EXPECT: nil
+// EXPECT: nil
+// EXPECT: nil
+// EXPECT: nil
+// EXPECT: nil
+// EXPECT: some(9)
+// EXPECT: some(9)
+// EXPECT: some(3)
+// EXPECT: some(1)
+// EXPECT: some(8)
+// EXPECT: some(3)
+// EXPECT: some(2)
+fn main() {
+    let arr: [i64?] = [some(1), none, some(3)]
+    print(arr[1] == none)
+    // THEN = par, ELSE = caja de contenedor (payload estático desconocido)
+    let c = if arr[1] == none { some(9) } else { arr[2] }
+    print(c)
+    // retorno de función con firma en par
+    let d = dec(some(10))
+    print(d)
+    let n = dec(none)
+    print(n)
+    // slot con anotación + brazos par/caja en ambos órdenes
+    let p: i64? = none
+    print(p)
+    let q = if p == none { none } else { some(1) }
+    print(q)
+    // match como valor: primer brazo par, segundo caja NULL
+    let m = match p { some(v) => some(v + 5), none => none }
+    print(m)
+    // match como valor: primer brazo caja NULL, segundo par
+    let m2 = match p { none => none, some(v) => some(v) }
+    print(m2)
+    // pares de parámetros fluyendo por un if y vuelta a contenedor
+    let r = pick(false, some(2), some(9))
+    print(r)
+    let boxed = [q, r]
+    print(boxed[1])
+    // los mismos caminos con el valor presente
+    let p2: i64? = some(3)
+    print(p2)
+    let q2 = if p2 == none { none } else { some(1) }
+    print(q2)
+    let m3 = match p2 { some(v) => some(v + 5), none => none }
+    print(m3)
+    let m4 = match p2 { none => none, some(v) => some(v) }
+    print(m4)
+    let r2 = pick(true, some(2), some(9))
+    print(r2)
+}
+
+fn dec(o: i64?) -> i64? {
+    match o {
+        some(v) => some(v - 1),
+        none => none,
+    }
+}
+
+fn pick(use_a: bool, a: i64?, b: i64?) -> i64? {
+    if use_a { a } else { b }
+}

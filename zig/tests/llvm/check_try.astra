@@ -1,20 +1,30 @@
-// Shape de `?` (LLVM_BACKEND_PLAN.md §6 M3): `?` es un `ret` local de la
-// caja — NULL o tag err desvían al bloque `try_err`, que devuelve el valor
-// tal cual; el camino ok extrae el payload del slot 8. Sin longjmp.
+// Shape de `?` (M6.c etapa c.1, LLVM_BACKEND_PLAN.md §6): el retorno
+// `i32?` es el par `{ i8 tag; i64 payload }` en SSA — `?` extrae el tag sin
+// heap (err=1 o none=3 desvían a `try_err`, que devuelve el par tal cual),
+// el camino ok extrae el payload del campo 1. Sin longjmp. El lowering a
+// caja (`astra_llvm_wrap`) ocurre sólo en la frontera de `print`.
 //
-// CHECK: define ptr @astra_fn_quarter
-// CHECK: %[[BOX:[0-9]+]] = call ptr @astra_fn_half(ptr null, i64
-// CHECK: %[[NIL:[0-9]+]] = icmp eq ptr %[[BOX]], null
-// CHECK: br i1 %[[NIL]], label %try_err, label %try_tag, !prof
+// CHECK: define { i8, i64 } @astra_fn_half
+// CHECK: define { i8, i64 } @astra_fn_quarter
+// CHECK: %[[PAIR:[0-9]+]] = call { i8, i64 } @astra_fn_half(ptr null, i64
+// CHECK: %[[TAG:[0-9]+]] = extractvalue { i8, i64 } %[[PAIR]], 0
+// CHECK: %[[ISERR:[0-9]+]] = icmp eq i8 %[[TAG]], 1
+// CHECK: %[[ISNONE:[0-9]+]] = icmp eq i8 %[[TAG]], 3
+// CHECK: %[[BAD:[0-9]+]] = or i1 %[[ISERR]], %[[ISNONE]]
+// CHECK: br i1 %[[BAD]], label %try_err, label %try_ok, !prof
 // CHECK: try_err:
-// CHECK: ret ptr %[[BOX]]
-// CHECK: try_tag:
-// CHECK: %[[TAG:[0-9]+]] = load i32, ptr %[[BOX]]
-// CHECK: %[[ISERR:[0-9]+]] = icmp eq i32 %[[TAG]], 1
-// CHECK: br i1 %[[ISERR]], label %try_err, label %try_ok, !prof
+// CHECK: ret { i8, i64 } %[[PAIR]]
 // CHECK: try_ok:
-// CHECK: getelementptr i8, ptr %[[BOX]], i64 8
-// CHECK: call ptr @astra_llvm_wrap(i32 {{[0-9]+}}, i32 2, i32 2, i64
+// CHECK: %[[PAY:[0-9]+]] = extractvalue { i8, i64 } %[[PAIR]], 1
+// CHECK: insertvalue { i8, i64 } { i8 2, i64 undef }, i64
+// CHECK: define void @astra_fn_main
+// CHECK: %[[R:[0-9]+]] = call { i8, i64 } @astra_fn_quarter
+// CHECK: %[[PTAG:[0-9]+]] = extractvalue { i8, i64 } %[[R]], 0
+// CHECK: icmp eq i8 %[[PTAG]], 3
+// CHECK: br i1 {{.*}}, label %pair_none, label %pair_wrap
+// CHECK: pair_wrap:
+// CHECK: call ptr @astra_llvm_wrap(
+// CHECK: call void @astra_llvm_print_boxed(
 
 fn half(x: i32) -> i32? {
     if x % 2 != 0 { return none }

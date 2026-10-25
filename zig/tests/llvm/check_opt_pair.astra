@@ -1,0 +1,43 @@
+// Formas del par Option/Result sin heap (M6.c etapa c.1): construcción
+// (`insertvalue` con tag), `let x: T?` inicializado y ausente (zeroInit =
+// `{ i8 3, i64 0 }`), `?` (`extractvalue` + icmp de tag) y la unificación de
+// brazos de `if` en un phi del par. `astra_llvm_wrap` NO aparece en el hot
+// path — sólo en la frontera de `print`.
+//
+// CHECK: define { i8, i64 } @astra_fn_build
+// CHECK: insertvalue { i8, i64 } { i8 2, i64 undef }, i64
+// CHECK: define { i8, i64 } @astra_fn_pick
+// CHECK: %[[NP:[0-9]+]] = phi { i8, i64 } [ { i8 3, i64 0 }, %box_none ],
+// CHECK: define { i8, i64 } @astra_fn_try_it
+// CHECK: %[[TAG:[0-9]+]] = extractvalue { i8, i64 } {{%[0-9]+}}, 0
+// CHECK: icmp eq i8 %[[TAG]], 1
+// CHECK: icmp eq i8 %[[TAG]], 3
+// CHECK-NOT: astra_llvm_wrap
+// CHECK: define void @astra_fn_main
+// CHECK-NOT: astra_llvm_wrap
+// CHECK: store { i8, i64 } { i8 2, i64 41 }
+// CHECK: br i1 true, label %box_none, label %box_load
+// CHECK: phi { i8, i64 } [ { i8 3, i64 0 }, %box_none ]
+// CHECK: call ptr @astra_llvm_wrap(
+// CHECK: call void @astra_llvm_print_boxed(
+
+fn build(x: i64) -> i64? {
+    some(x + 1)
+}
+
+fn pick(c: bool, x: i64) -> i64? {
+    if c { some(x) } else { none }
+}
+
+fn try_it(o: i64?) -> i64? {
+    let v = o?
+    some(v + 1)
+}
+
+fn main() {
+    let a: i64? = some(41)
+    let b: i64? = none
+    print(try_it(a))
+    print(build(41))
+    print(pick(false, 1))
+}

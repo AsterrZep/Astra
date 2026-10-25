@@ -988,15 +988,21 @@ históricos de los hitos anteriores conservan su 154 fechado.
 - Rechazo: `astra-zig --fast-math file.astra` (modo VM) →
   `error: --fast-math requires an LLVM output mode …`, exit 2.
 
-## 16. M6.c — des-boxing de Option/Result (diseño, no implementado)
+## 16. M6.c — des-boxing de Option/Result (etapa c.1 implementada)
+
+**Estado (2026-10-24): c.1 implementado** — el par `{i8 tag, i64 payload}`
+vive en SSA dentro de funciones nombradas (params, retornos, `let` y
+temporales) con boxing en las fronteras, sin flag opt-in; todos los gates en
+§16.1 están verdes y el contrato de diseño de este §16 quedó cerrado con las
+desviaciones anotadas. Sigue abierto y opcional el paso c.2 (payloads `str_`).
 
 Segundo item opcional de M6 (plan §6). Este §16 es el **contrato de diseño**
-que precede a la implementación — la convención «cada item se planifica al
+que precedió a la implementación — la convención «cada item se planifica al
 entrar» aplica con fuerza aquí: es el cambio con más riesgo semántico de la
 fase (touchpoints: ~40 sitios sustantivos de `emitter.zig` + el contrato de
-runtime), y el benchmark actual le da «visibilidad mínima» (§14). Se escribe
-primero para que la implementación tenga la decisión de representación
-cerrada y no se improvisen conversiones a mitad de ruta.
+runtime), y el benchmark actual le da «visibilidad mínima» (§14). Se escribió
+primero para que la implementación tuviera la decisión de representación
+cerrada y no se improvisaran conversiones a mitad de ruta.
 
 ### Qué cuesta hoy
 
@@ -1050,7 +1056,7 @@ delimitadas documentadas:
 
 | Etapa | Contenido | Gate |
 |:------|:----------|:-----|
-| **c.1** | par en SSA para construcción + `?` + `match` + print/igualdad inline, con boxing en fronteras | paridad **155/155** (la paridad ES el gate: si la representación cambia la salida, hay bug), filecheck nuevo de formas del par, fuzz 4 rutas |
+| **c.1** | par en SSA para construcción + `?` + `match` + print/igualdad inline, con boxing en fronteras | paridad **157/157** (la paridad ES el gate: si la representación cambia la salida, hay bug), filecheck nuevo de formas del par, fuzz 4 rutas |
 | **c.2** (opcional) | ampliar a payloads `str_` (par con puntero) sin boxing en fronteras de string | igual |
 
 Sin flag opt-in: a diferencia de fast-math, aquí no hay cambio semántico que
@@ -1060,8 +1066,70 @@ pueden bajar). Los tests unitarios existentes de `emitter.zig` (§4157:
 «match de Option: TAG_IS inline…») se ajustan a las formas nuevas y fijan
 los shapes viejos que dejen de aplicar.
 
-**Estado: diseño cerrado, implementación no empezada.** Riesgo residual
-conocido: el peaje de conversiones en frontera (caja↔par) debe ser
-exhaustivo — un sitio que olvide una de las dos direcciones es un use-after-
-free de rc o un tag ilegible; la auditoría será por `grep boxed_` (los ~40
-sitios de hoy) antes de declarar la etapa c.1 cerrada.
+**Estado: c.1 implementado (2026-10-24).** Riesgo residual conocido: el
+peaje de conversiones en frontera (caja↔par) debe ser exhaustivo — un sitio
+que olvide una de las dos direcciones es un use-after-free de rc o un tag
+ilegible; la auditoría se hizo por `grep boxed_` (los ~40 sitios) y por una
+batería manual de fronteras (struct/array/capturas/llamadas) VM↔LLVM.
+
+### §16.1 — Registro de implementación de c.1
+
+Lo que entró en `zig/src/llvm/emitter.zig`:
+
+- **Reglas de forma**: el par vive sólo en params/rets/`let`/temporales de
+  **funciones nombradas**; lambdas y valores `fn(...)` conservan la caja (ABI
+  dinámica); contenedores (elems de array, campos de struct/enum, slots de
+  captura) se cajan en el sitio. Una función cuya firma usa par **no puede
+  usarse como valor** — rechazo honesto en `emitIdent` (la ABI dinámica no
+  representa un par).
+- **Conversiones**: `coerceToBox` (par→caja en frontera; `none` → caja NULL,
+  nunca tag 3 — el runtime imprimiría `some(`), `coerceToPair` (caja→par en
+  entrada de firma con par; la caja NULL es `{3, 0}` sin memoria),
+  `coerceVal`/`coerceRet`/`unifyWithFixed` (la caja sin payload estático —
+  p. ej. `none` o un elemento de array — **toma prestado el payload del
+  destino**, sound porque el typechecker garantiza la compatibilidad).
+- **Hot path inline**: construcción (`insertvalue`), `?` (`extractvalue` +
+  `icmp` de tag), `match` y la unificación de brazos no tocan heap ni rc.
+- **`emitIf`/`emitMatch` reestructurados**: los `br merge` se posponen y la
+  coerción de un brazo se emite **en el bloque-unión de su propio brazo**
+  (aún sin terminador); si se emitiera ya en merge, el bloque-unión no sería
+  predecesor del phi («PHI node entries do not match predecessors»).
+
+Desviaciones respecto al contrato de diseño de arriba (todas decisiones, no
+accidentes):
+
+1. **print/igualdad/orden del par**: no se inlinearon el emisor — el par se
+   **convierte a caja en el sitio** y corre el runtime actual
+   (`astra_llvm_print_boxed`/`boxed_eq`). Sí está inline la igualdad
+   par-vs-par (tag `icmp` + payload: `f64` por `fcmp OEQ`, resto por bits —
+   casa con `boxed_eq`). El hot path (?/match/construcción) no paga nada de
+   esto.
+2. **`br i1 true` del `none`**: `none` es una constante NULL, así que
+   `coerceToPair` pliega la condición a `br i1 true, label %box_none, label
+   %box_load` con un bloque muerto `box_load` (`load i32, ptr null`) — seguro
+   porque es inalcanzable y O2 lo elimina. Fijado en `check_opt_pair.astra`.
+3. **Bugs encontrados y cerrados en la auditoría de fronteras**: el phi de
+   `emitIf` y el de `emitMatch` **descartaban `payload_ty`/`sname`**, así que
+   `let c = if … { some(1) } else { none }` seguido de `print(c)` llegaba a
+   `coerceToBox` con un par sin payload y revienta (panic de unwrap). Arreglado
+   en ambos phis + defensa en `coerceToBox` (diagnóstico limpio en vez de
+   unwrap nulo); el caso quedó pinzado por el conformance nuevo
+   `seed/tests/conformance/enums/option_branch_unify.astra` (15 EXPECT).
+
+Gates de c.1 (2026-10-24, todos verdes):
+
+| Gate | Resultado |
+|:-----|:----------|
+| `seed make test` (VM + C codegen, con el conformance nuevo) | **259/259** |
+| `zig build test -Dllvm` (unit, emisor) | **rc=0** |
+| `llvm_parity.sh` plano y `ASTRA_LLVM_OPT=2` | **157/157** y **157/157** |
+| `llvm_jit.sh` plano y O2 | **157/157** ×2 |
+| `llvm_cross.sh` (aarch64→qemu) plano y O2 | **157/157** ×2 |
+| `llvm_wasm.sh` (wasm32-wasi→Node) plano y O2 | **157/157** ×2 |
+| `llvm_filecheck.sh` (`check_try` reescrito + `check_opt_pair` nuevo) | **7/7** |
+| `llvm_sanitize.sh` (ASan + LSan) | **157/157**, sin fugas |
+| `dump_parity.sh` (seed ↔ zig) | **146 archivos, 0 divergent** |
+
+La suite LLVM crece de 156 a **157** (el conformance nuevo entra al glob de
+paridad). Queda abierto y opcional **c.2** (payloads `str_` con puntero) y,
+posterior, el **error-union para `?`** (plan §6).

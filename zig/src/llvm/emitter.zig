@@ -51,7 +51,17 @@ const debug_mod = @import("debug.zig");
 /// `enum_` (M2.c) como puntero al objeto
 /// `{ ptr def; i32 variant; i32 kind; <payload@16> }` (kind 0 = nombre sin
 /// payload / patrón, kind 1 = data construido — los dos kinds del VM).
-const Ty = enum { i64_, bool_, f64_, str_, boxed_, fn_, arr_, struct_, enum_ };
+const Ty = enum { i64_, bool_, f64_, str_, boxed_, pair_, fn_, arr_, struct_, enum_ };
+
+/// Un escalar puede vivir dentro de un par Option/Result sin heap (M6.c):
+/// `i32`/`i64`/`f64`/`bool` — los payloads puntero (string, arrays, structs,
+/// enums, funciones) siguen en la caja.
+fn isScalarPayload(ty: Ty) bool {
+    return switch (ty) {
+        .i64_, .f64_, .bool_ => true,
+        else => false,
+    };
+}
 
 /// Un valor emitido: su representación LLVM y su tipo. Las expresiones sin
 /// valor (void: `print`, `while`, `let` de módulo…) devuelven `null`.
@@ -79,7 +89,13 @@ const FnInfo = struct {
     /// Nombre de struct si el retorno es `struct_` (resultado de una
     /// llamada dinámica vía `fn_` conserva su forma para el acceso a campo).
     ret_sname: ?[]const u8 = null,
+    /// Tipos declarados de los parámetros (M6.c): el sitio de llamada coacciona
+    /// cada argumento a la forma declarada — un par `T?` escalar viaja como par
+    /// y una caja cargada de un contenedor se desempaqueta antes de entrar.
+    params: []const ParamInfo = &.{},
 };
+
+const ParamInfo = struct { ty: Ty, payload: ?Ty = null };
 
 const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
 const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
@@ -334,6 +350,10 @@ const FreeVars = struct {
 const TAG_OK: u32 = 0;
 const TAG_ERR: u32 = 1;
 const TAG_SOME: u32 = 2;
+/// `none` es el VAL_NIL del VM: hoy la caja NULL y, en el par sin heap de
+/// M6.c, `{ tag = 3, payload = 0 }` (el runtime no tiene cuarta variante de
+/// impresión, así que una caja con tag 3 nunca se construye).
+const TAG_NONE: u32 = 3;
 /// Límite de globales de la VM (vm.zig VM_MAX_GLOBALS): una 257ª
 /// declaración de nivel superior aborta en runtime — emitModuleMain emite el
 /// mismo trap en el mismo orden de fuente.
@@ -431,6 +451,10 @@ pub const Emitter = struct {
     t_f64: c.LLVMTypeRef,
     t_ptr: c.LLVMTypeRef,
     t_void: c.LLVMTypeRef,
+    /// `{ i8 tag; i64 payload }` (M6.c): Option/Result con payload escalar
+    /// vive como par valor en SSA — sin heap — en params/rets/lets de las
+    /// funciones nombradas.
+    t_optpair: c.LLVMTypeRef,
 
     // Externos del runtime (astra_runtime_llvm.c).
     r_set_file: c.LLVMValueRef,
@@ -493,6 +517,10 @@ pub const Emitter = struct {
     // Función que se emite actualmente (para allocas y bloques).
     cur_fn: c.LLVMValueRef = undefined,
     cur_returns_value: bool = false,
+    /// Forma del retorno de la función actual (`T?` → par o caja, con su
+    /// payload): `return`, la cola del cuerpo y la propagación de `?` coaccionan
+    /// el valor a esta forma. Una lambda guarda/restaura este campo.
+    cur_ret: ?Annot = null,
     /// Locales con dueño del frame actual (parámetros y bindings incluidos):
     /// se liberan en cada return y al caer el cuerpo. Una lambda guarda y
     /// restaura estos dos campos como hace con `scopes`.
@@ -532,6 +560,11 @@ pub const Emitter = struct {
         const t_f64 = c.LLVMDoubleTypeInContext(ctx);
         const t_ptr = c.LLVMPointerTypeInContext(ctx, 0);
         const t_void = c.LLVMVoidTypeInContext(ctx);
+        // Par Option/Result sin heap (M6.c): { i8 tag; i64 payload }.
+        const t_optpair = blk: {
+            var pf = [_]c.LLVMTypeRef{ t_i8, t_i64 };
+            break :blk c.LLVMStructTypeInContext(ctx, &pf, 2, 0);
+        };
         const file_z = a.allocSentinel(u8, file.len, 0) catch @panic("OOM");
         @memcpy(file_z[0..file.len], file);
         self.* = .{
@@ -549,6 +582,7 @@ pub const Emitter = struct {
             .t_f64 = t_f64,
             .t_ptr = t_ptr,
             .t_void = t_void,
+            .t_optpair = t_optpair,
             .fns = std.StringHashMap(FnInfo).init(a),
             .globals = std.StringHashMap(GlobalInfo).init(a),
             .structs = std.StringHashMap(StructLayout).init(a),
@@ -907,11 +941,15 @@ pub const Emitter = struct {
         // las lambdas leen sus capturas de ahí). Uniformidad = un objeto
         // { code, env } basta para llamar a cualquiera de las dos.
         pbuf[0] = self.t_ptr;
+        const panns = self.a.alloc(ParamInfo, param_items.len) catch @panic("OOM");
         for (param_items, 0..) |pi, i| {
             const p = self.tree.node(pi).param;
             const at = self.annotTy(p.type_node) orelse
                 return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool/string/T?)");
             pbuf[i + 1] = self.llvmTy(at.ty);
+            // La forma declarada viaja al sitio de llamada (M6.c): un `T?`
+            // escalar entra como par y una caja cargada se desempaqueta.
+            panns[i] = .{ .ty = at.ty, .payload = at.payload };
         }
         var ret_ty: c.LLVMTypeRef = self.t_void;
         var ret_m0: ?Ty = null;
@@ -936,7 +974,7 @@ pub const Emitter = struct {
         const fty = c.LLVMFunctionType(ret_ty, &pbuf, @intCast(param_items.len + 1), 0);
         const mangled = std.fmt.allocPrintSentinel(self.a, "astra_fn_{s}", .{fd.name}, 0) catch @panic("OOM");
         const fnv = c.LLVMAddFunction(self.mod, mangled, fty);
-        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload, .ret_sname = ret_sname }) catch @panic("OOM");
+        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload, .ret_sname = ret_sname, .params = panns }) catch @panic("OOM");
     }
 
     fn declareGlobal(self: *Emitter, idx: u32) void {
@@ -970,6 +1008,12 @@ pub const Emitter = struct {
         defer self.current_instance = saved_inst;
         self.cur_fn = info.val;
         self.cur_returns_value = info.returns_value;
+        // Forma del retorno (M6.c): `return`, la cola y la propagación de `?`
+        // coaccionan a par o caja según la firma declarada/inferida.
+        self.cur_ret = if (info.returns_value)
+            .{ .ty = info.ret_ty.?, .payload = info.ret_payload, .sname = info.ret_sname }
+        else
+            null;
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, info.val, "entry");
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
         if (self.dbg) |d| {
@@ -998,8 +1042,10 @@ pub const Emitter = struct {
         const body_val = self.emitBlockValue(fd.body);
         if (!self.isTerminated()) {
             if (info.returns_value) {
-                if (body_val) |v| {
-                    self.emitFrameCleanup(v);
+                if (body_val) |bv0| {
+                    // Cola implícita: coacciona a la forma del retorno (M6.c).
+                    const bv = self.coerceRet(bv0, idx) orelse return;
+                    self.emitFrameCleanup(bv);
                 } else {
                     self.emitFrameRelease();
                     _ = c.LLVMBuildUnreachable(self.builder);
@@ -1033,6 +1079,11 @@ pub const Emitter = struct {
             self.unsupported(idx, "too many captured variables");
             return null;
         }
+        // El env son slots de 8 bytes (M6.c): una captura con forma de par se
+        // captura como caja — el cuerpo la lee como puntero.
+        for (fv.caps.items) |*cp| {
+            if (cp.ty == .pair_) cp.ty = .boxed_;
+        }
 
         // 2: firma — env + params anotados, retorno anotado o inferido.
         var pbuf: [17]c.LLVMTypeRef = undefined;
@@ -1047,12 +1098,15 @@ pub const Emitter = struct {
                 self.unsupported(pi, "lambda parameter without a scalar type annotation");
                 return null;
             };
-            pbuf[i + 1] = self.llvmTy(at.ty);
+            // ABI dinámica (M6.c): los opcionales de una lambda viajan como
+            // caja — el sitio de llamada no conoce la firma real del callee.
+            pbuf[i + 1] = self.llvmTy(boxForm(at).ty);
         }
-        const ret_ty = self.lambdaRetTy(l) orelse {
+        const ret_raw = self.lambdaRetTy(l) orelse {
             self.unsupported(idx, "lambda requires a known return type");
             return null;
         };
+        const ret_ty = boxForm(.{ .ty = ret_raw }).ty;
         const fty = c.LLVMFunctionType(self.llvmTy(ret_ty), &pbuf, @intCast(params.len + 1), 0);
 
         // 3: función LLVM única por lambda.
@@ -1076,7 +1130,9 @@ pub const Emitter = struct {
             c.LLVMSetLinkage(pty_arr, c.LLVMPrivateLinkage);
             cap_ptypes = pty_arr;
             for (fv.caps.items, 0..) |cp, i| {
-                const cv = self.captureValue(cp, idx) orelse return null;
+                var cv = self.captureValue(cp, idx) orelse return null;
+                // Un par se captura como caja (slots de 8 bytes del env).
+                if (cv.ty == .pair_) cv = self.coerceToBox(cv, idx) orelse return null;
                 // El env posee una referencia (snapshot por valor); liberarla
                 // es responsabilidad del destructor del closure.
                 if (isPtrTy(cv.ty)) self.emitRetainRef(cv.ref);
@@ -1096,6 +1152,7 @@ pub const Emitter = struct {
         const saved_block = c.LLVMGetInsertBlock(self.builder);
         const prev_fn = self.cur_fn;
         const prev_ret = self.cur_returns_value;
+        const prev_ret_form = self.cur_ret;
         const prev_scope = self.dbg_scope;
         const prev_in_fn = self.dbg_in_fn;
         const saved_scopes = self.scopes;
@@ -1108,6 +1165,8 @@ pub const Emitter = struct {
         self.frame_mark = null;
         self.cur_fn = fnv;
         self.cur_returns_value = true;
+        // El retorno de una lambda es caja (ABI dinámica); la cola coacciona.
+        self.cur_ret = .{ .ty = ret_ty };
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, fnv, "entry");
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
         if (self.dbg) |d| {
@@ -1122,7 +1181,7 @@ pub const Emitter = struct {
         self.pushCaptures(fv.caps.items);
         for (params, 0..) |pi, i| {
             const p = self.tree.node(pi).param;
-            const at = self.annotTy(p.type_node) orelse return null;
+            const at = boxForm(self.annotTy(p.type_node) orelse return null);
             const alloca = self.buildAlloca(self.llvmTy(at.ty));
             _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(fnv, @intCast(i + 1)), alloca);
             if (isPtrTy(at.ty)) self.emitRetainRef(c.LLVMGetParam(fnv, @intCast(i + 1)));
@@ -1131,8 +1190,9 @@ pub const Emitter = struct {
         }
         const body_val = self.emitBlockValue(l.body);
         if (!self.isTerminated()) {
-            if (body_val) |v| {
-                self.emitFrameCleanup(v);
+            if (body_val) |bv0| {
+                const bv = self.coerceRet(bv0, idx) orelse return null;
+                self.emitFrameCleanup(bv);
             } else {
                 self.emitFrameRelease();
                 _ = c.LLVMBuildUnreachable(self.builder);
@@ -1145,6 +1205,7 @@ pub const Emitter = struct {
         self.popScope();
         self.cur_fn = prev_fn;
         self.cur_returns_value = prev_ret;
+        self.cur_ret = prev_ret_form;
         self.dbg_scope = prev_scope;
         self.dbg_in_fn = prev_in_fn;
         // Reaplica la location del builder en el scope del frame exterior: el
@@ -1261,7 +1322,11 @@ pub const Emitter = struct {
         // conservador: la VM fallaría antes con menos elementos). La
         // emisión posterior sigue en el bloque inalcanzable y es IR válido.
         if (elems.len >= VM_STACK_SIZE + 1) self.emitFailMsg(0, "stack overflow");
-        const ev = self.emitExpr(elems[0]) orelse return null;
+        var ev0 = self.emitExpr(elems[0]) orelse return null;
+        // M6.c: los elementos viven en slots de 8 bytes — un par se baja a
+        // caja antes de entrar al array (el literal es homogéneo boxed_).
+        if (ev0.ty == .pair_) ev0 = self.coerceToBox(ev0, idx) orelse return null;
+        const ev = ev0;
         const ety = ev.ty;
         const pty = boxPTy(ety) orelse {
             self.unsupported(idx, "array of function values");
@@ -1282,7 +1347,8 @@ pub const Emitter = struct {
         _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i32, pty, 0), hp);
         // elementos, en orden de evaluación del literal
         for (elems, 0..) |ei, i| {
-            const v = if (i == 0) ev else (self.emitExpr(ei) orelse return null);
+            var v = if (i == 0) ev else (self.emitExpr(ei) orelse return null);
+            if (v.ty == .pair_) v = self.coerceToBox(v, idx) orelse return null; // slots de 8 bytes
             if (v.ty != ety) {
                 self.unsupported(idx, "heterogeneous array literal");
                 return null;
@@ -1364,7 +1430,7 @@ pub const Emitter = struct {
     /// asignación produce su valor (es expresión: `let y = { xs[1] = 42 }`).
     fn emitElemAssign(self: *Emitter, idx: u32) ?Val {
         const as = self.tree.node(idx).assignment;
-        const val = self.emitExpr(as.value) orelse return null;
+        const val0 = self.emitExpr(as.value) orelse return null;
         const ix = self.tree.node(as.target).index_expr;
         const ov = self.emitExpr(ix.object) orelse return null;
         if (ov.ty != .arr_) {
@@ -1375,6 +1441,9 @@ pub const Emitter = struct {
             self.unsupported(idx, "array without an element type");
             return null;
         };
+        // M6.c: un opcional escalar que entra al array baja a caja (slots
+        // de 8 bytes, elem_pty del header).
+        const val = self.coerceVal(val0, ety, null, idx) orelse return null;
         if (val.ty != ety) {
             self.unsupported(idx, "array element type mismatch");
             return null;
@@ -1432,7 +1501,10 @@ pub const Emitter = struct {
                 self.unsupported(idx, "struct literal field not in the declaration");
                 return null;
             };
-            const fv = self.emitExpr(f.value) orelse return null;
+            var fv = self.emitExpr(f.value) orelse return null;
+            // M6.c: campos en slots de 8 bytes — un par baja a caja.
+            if (fv.ty == .pair_ and layout.fields[si].ty == .boxed_)
+                fv = self.coerceToBox(fv, idx) orelse return null;
             if (fv.ty != layout.fields[si].ty) {
                 self.unsupported(idx, "struct literal field type mismatch");
                 return null;
@@ -1561,7 +1633,11 @@ pub const Emitter = struct {
             self.unsupported(idx, "unknown struct field");
             return null;
         };
-        if (val.ty != layout.fields[si].ty) {
+        // M6.c: campos en slots de 8 bytes — un par baja a caja.
+        var fv = val;
+        if (fv.ty == .pair_ and layout.fields[si].ty == .boxed_)
+            fv = self.coerceToBox(fv, idx) orelse return null;
+        if (fv.ty != layout.fields[si].ty) {
             self.unsupported(idx, "struct field type mismatch");
             return null;
         }
@@ -1593,7 +1669,10 @@ pub const Emitter = struct {
         var kidxs = [_]c.LLVMValueRef{c.LLVMConstInt(self.t_i64, 12, 0)};
         _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i32, 1, 0), c.LLVMBuildGEP2(self.builder, self.t_i8, obj, &kidxs, 1, ""));
         for (args, 0..) |ai, i| {
-            const av = self.emitExpr(ai) orelse return null;
+            var av = self.emitExpr(ai) orelse return null;
+            // Slots de 8 bytes del payload: un par baja a caja (M6.c).
+            if (av.ty == .pair_ and vl.fields[i].ty == .boxed_)
+                av = self.coerceToBox(av, idx) orelse return null;
             if (av.ty != vl.fields[i].ty) {
                 self.unsupported(idx, "enum payload type mismatch");
                 return null;
@@ -1623,6 +1702,7 @@ pub const Emitter = struct {
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, mm, "entry");
         self.cur_fn = mm;
         self.cur_returns_value = false;
+        self.cur_ret = null;
         c.LLVMPositionBuilderAtEnd(self.builder, entry);
         if (self.dbg) |d| {
             const line: u32 = if (items.len > 0) self.tree.loc(items[0]).line else 1;
@@ -1768,7 +1848,9 @@ pub const Emitter = struct {
             return;
         };
         const g = self.globals.get(vd.name) orelse return self.unsupported(idx, "unknown top-level binding");
-        self.emitStoreOwned(g.val, val);
+        // M6.c: el inicializador coacciona a la forma del global (par o caja).
+        const gv = self.coerceVal(val, g.ty, g.payload_ty, idx) orelse return;
+        self.emitStoreOwned(g.val, gv);
     }
 
     // ── Bloques y sentencias ────────────────────────────────────────────────
@@ -1831,23 +1913,28 @@ pub const Emitter = struct {
                 else => {},
             }
             const alloca = self.buildAlloca(self.llvmTy(ann.ty));
-            _ = c.LLVMBuildStore(self.builder, c.LLVMConstPointerNull(self.t_ptr), alloca);
+            // `let x: T?` sin valor: caja NULL / par `none` — el nil del VM.
+            _ = c.LLVMBuildStore(self.builder, self.zeroInit(ann.ty), alloca);
             self.trackOwned(alloca, ann.ty);
             self.addLocal(vd.name, alloca, ann.ty, ann.payload, ann.sname);
             return;
         }
         const vi = vd.value.?;
-        const val = self.emitExpr(vi) orelse {
+        const val0 = self.emitExpr(vi) orelse {
             if (self.error_count == 0) self.unsupported(idx, "initializer produces no value");
             return;
         };
         // La anotación `T?` fija el tipo y su payload; sin anotación, el del
         // valor inferido (un `some(x)` lleva el tipo de x).
         const ann = self.annotTy(vd.type_node);
-        const ty = if (ann) |at| at.ty else val.ty;
-        const payload = if (ann) |at| (at.payload orelse val.payload_ty) else val.payload_ty;
-        const sname = if (ann) |at| (at.sname orelse val.sname) else val.sname;
+        const ty = if (ann) |at| at.ty else val0.ty;
+        const payload = if (ann) |at| (at.payload orelse val0.payload_ty) else val0.payload_ty;
+        const sname = if (ann) |at| (at.sname orelse val0.sname) else val0.sname;
         const alloca = self.buildAlloca(self.llvmTy(ty));
+        // M6.c: `let x: i32? = none` (caja NULL) y `let x: i32? = arr[0]`
+        // coaccionan a la forma del slot; un `let x = some(1)` sin anotación
+        // guarda el par tal cual.
+        const val = self.coerceVal(val0, ty, payload, idx) orelse return;
         self.emitStoreOwned(alloca, val);
         self.trackOwned(alloca, ty);
         self.addLocal(vd.name, alloca, ty, payload, sname);
@@ -1857,7 +1944,8 @@ pub const Emitter = struct {
         const rv = self.tree.node(idx).return_stmt;
         if (self.cur_returns_value) {
             const vi = rv orelse return self.unsupported(idx, "return without a value");
-            const v = self.emitExpr(vi) orelse return;
+            const v0 = self.emitExpr(vi) orelse return;
+            const v = self.coerceRet(v0, idx) orelse return;
             self.emitFrameCleanup(v);
         } else {
             if (rv) |vi| _ = self.emitExpr(vi); // evalúa por efectos y descarta
@@ -2018,8 +2106,7 @@ pub const Emitter = struct {
         c.LLVMPositionBuilderAtEnd(self.builder, then_bb);
         const tval = self.emitBlockValue(ie.then_block);
         const t_term = self.isTerminated();
-        const t_end = c.LLVMGetInsertBlock(self.builder);
-        if (!t_term) _ = c.LLVMBuildBr(self.builder, merge_bb);
+        var t_end = c.LLVMGetInsertBlock(self.builder);
 
         var eval: ?Val = null;
         var e_term = true;
@@ -2029,22 +2116,71 @@ pub const Emitter = struct {
             eval = self.emitBlockValue(ie.else_block.?);
             e_term = self.isTerminated();
             e_end = c.LLVMGetInsertBlock(self.builder);
-            if (!e_term) _ = c.LLVMBuildBr(self.builder, merge_bb);
         }
 
-        c.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
-        if (tval != null and eval != null and !t_term and !e_term) {
-            const tv = tval.?;
-            const ev = eval.?;
+        // Los `br` a merge se posponen hasta aquí (M6.c): la unificación de
+        // un par y una caja (`if c { some(1) } else { none }`) se emite en el
+        // bloque MISMO del brazo que necesita convertirse — si se emitiera ya
+        // en merge, el bloque-unión de la conversión no sería predecesor del
+        // merge y el phi recibiría de bloques que no lo alcanzan.
+        const unify = tval != null and eval != null and !t_term and !e_term;
+        var tv: Val = tval orelse .{ .ref = c.LLVMConstNull(self.t_ptr), .ty = .boxed_ };
+        var ev: Val = eval orelse tv;
+        if (unify) {
+            const Conv = enum { none, box_to_pair, pair_to_box };
+            var conv_t: Conv = .none;
+            var conv_e: Conv = .none;
+            if (tv.ty != ev.ty) {
+                if (tv.ty == .pair_ or ev.ty == .pair_) {
+                    // Sube la caja a par si su payload escalar es estático
+                    // (o es la caja NULL de `none`, que toma prestado el
+                    // payload del otro brazo); si no, baja el par a caja.
+                    if (tv.ty == .boxed_) {
+                        if (tv.payload_ty == null) tv.payload_ty = ev.payload_ty;
+                        conv_t = if (tv.payload_ty) |pty| (if (isScalarPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
+                    } else {
+                        if (ev.payload_ty == null) ev.payload_ty = tv.payload_ty;
+                        conv_e = if (ev.payload_ty) |pty| (if (isScalarPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
+                    }
+                } else {
+                    self.unsupported(idx, "if branches have different types");
+                    return null;
+                }
+            }
+            if (conv_t != .none) {
+                c.LLVMPositionBuilderAtEnd(self.builder, t_end);
+                tv = if (conv_t == .box_to_pair) (self.coerceToPair(tv, idx) orelse return null) else (self.coerceToBox(tv, idx) orelse return null);
+                t_end = c.LLVMGetInsertBlock(self.builder);
+            }
+            if (conv_e != .none) {
+                c.LLVMPositionBuilderAtEnd(self.builder, e_end);
+                ev = if (conv_e == .box_to_pair) (self.coerceToPair(ev, idx) orelse return null) else (self.coerceToBox(ev, idx) orelse return null);
+                e_end = c.LLVMGetInsertBlock(self.builder);
+            }
             if (tv.ty != ev.ty) {
                 self.unsupported(idx, "if branches have different types");
                 return null;
             }
+        }
+        if (!t_term) {
+            c.LLVMPositionBuilderAtEnd(self.builder, t_end);
+            _ = c.LLVMBuildBr(self.builder, merge_bb);
+        }
+        if (!e_term) {
+            c.LLVMPositionBuilderAtEnd(self.builder, e_end);
+            _ = c.LLVMBuildBr(self.builder, merge_bb);
+        }
+
+        c.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
+        if (unify) {
             const phi = c.LLVMBuildPhi(self.builder, self.llvmTy(tv.ty), "");
             var vals = [_]c.LLVMValueRef{ tv.ref, ev.ref };
             var bbs = [_]c.LLVMBasicBlockRef{ t_end, e_end };
             c.LLVMAddIncoming(phi, &vals, &bbs, 2);
-            return .{ .ref = phi, .ty = tv.ty };
+            // El phi hereda el payload (y el sname) del brazo fijado: sin él,
+            // un `let c = if … { some(1) } else { none }` guarda un par sin
+            // payload estático y su print ulterior revienta en coerceToBox.
+            return .{ .ref = phi, .ty = tv.ty, .payload_ty = tv.payload_ty, .sname = tv.sname };
         }
         return null;
     }
@@ -2131,16 +2267,31 @@ pub const Emitter = struct {
     /// setjmp/longjmp: cada `?` cruza exactamente un nivel de marco, y el
     /// caller ve la caja como resultado de la llamada — igual que el VM.
     fn emitTry(self: *Emitter, idx: u32) ?Val {
-        const v = self.emitExpr(self.tree.node(idx).try_expr) orelse return null;
-        if (v.ty != .boxed_ or v.payload_ty == null) {
+        const v0 = self.emitExpr(self.tree.node(idx).try_expr) orelse return null;
+        if (v0.payload_ty == null or (v0.ty != .boxed_ and v0.ty != .pair_)) {
             self.unsupported(idx, "? operator requires a value with a known payload");
             return null;
         }
+        const v = v0;
         const pty = v.payload_ty.?;
-        const line = self.tree.loc(idx).line;
         const err_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_err");
-        const tag_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_tag");
         const ok_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_ok");
+        if (v.ty == .pair_) {
+            // M6.c: el par vive en SSA — el tag decide sin cargar nada. none
+            // (3) o err (1) → propagar el par; ok/some → payload.
+            const tag8 = c.LLVMBuildExtractValue(self.builder, v.ref, 0, "");
+            const iserr = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tag8, c.LLVMConstInt(self.t_i8, TAG_ERR, 0), "");
+            const isnone = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tag8, c.LLVMConstInt(self.t_i8, TAG_NONE, 0), "");
+            const bad = c.LLVMBuildOr(self.builder, iserr, isnone, "");
+            const bad_br = c.LLVMBuildCondBr(self.builder, bad, err_bb, ok_bb);
+            self.coldBranch(bad_br, true);
+            c.LLVMPositionBuilderAtEnd(self.builder, err_bb);
+            if (!self.propagateTry(v, idx)) return null;
+            c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+            const bits = c.LLVMBuildExtractValue(self.builder, v.ref, 1, "");
+            return .{ .ref = self.fromBits(bits, pty), .ty = pty, .payload_ty = null, .sname = v.sname };
+        }
+        const tag_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_tag");
         const isnull = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, v.ref, c.LLVMConstPointerNull(self.t_ptr), "");
         const null_br = c.LLVMBuildCondBr(self.builder, isnull, err_bb, tag_bb);
         self.coldBranch(null_br, true);
@@ -2153,22 +2304,34 @@ pub const Emitter = struct {
         self.coldBranch(err_br, true);
 
         c.LLVMPositionBuilderAtEnd(self.builder, err_bb);
-        const ret_lty = c.LLVMGetReturnType(c.LLVMGlobalGetValueType(self.cur_fn));
-        if (self.cur_returns_value and ret_lty == self.t_ptr) {
-            // El camino de propagación también sale del frame: retiene la caja
-            // antes de liberar locales/temporales, igual que un `return`.
-            self.emitFrameCleanup(v);
-        } else if (!self.cur_returns_value) {
-            // Módulo: el VM dice "try operator outside function" (frame_count
-            // == 0); el typechecker zig lo rechaza antes, defensivo igual.
-            self.emitFailMsg(line, "try operator outside function");
-        } else {
-            self.unsupported(idx, "? operator in a function that does not return an optional");
-            return null;
-        }
+        if (!self.propagateTry(v, idx)) return null;
 
         c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
         return .{ .ref = self.loadBoxPayload(v.ref, pty), .ty = pty, .payload_ty = null, .sname = v.sname };
+    }
+
+    /// Camino de propagación de `?` (abierto en `err_bb`): coacciona el valor
+    /// a la forma del retorno de la función (M6.c: par o caja), retiene si es
+    /// puntero y hace el `ret` local — el mismo efecto que el frame-pop del
+    /// TRY_UNWRAP del VM, sin setjmp/longjmp.
+    fn propagateTry(self: *Emitter, v: Val, idx: u32) bool {
+        const ret_lty = c.LLVMGetReturnType(c.LLVMGlobalGetValueType(self.cur_fn));
+        if (self.cur_returns_value and (ret_lty == self.t_ptr or ret_lty == self.t_optpair)) {
+            // El camino de propagación también sale del frame: retiene la
+            // caja (si la hay) antes de liberar locales/temporales, igual que
+            // un `return`.
+            const pv = self.coerceRet(v, idx) orelse return false;
+            self.emitFrameCleanup(pv);
+            return true;
+        } else if (!self.cur_returns_value) {
+            // Módulo: el VM dice "try operator outside function" (frame_count
+            // == 0); el typechecker zig lo rechaza antes, defensivo igual.
+            self.emitFailMsg(self.tree.loc(idx).line, "try operator outside function");
+            return true;
+        } else {
+            self.unsupported(idx, "? operator in a function that does not return an optional");
+            return false;
+        }
     }
 
     /// Llama a `astra_llvm_fail` sin condición y deja el bloque abierto tras
@@ -2210,6 +2373,7 @@ pub const Emitter = struct {
         var n_ends: usize = 0; // brazos que caen en merge (no terminados)
         var all_valued = true; // todos esos brazos aportan valor
         var value_ty: ?Ty = null;
+        var first_val: ?Val = null; // primer brazo valorado (forma fijada)
 
         for (arms) |ai| {
             const arm = self.tree.node(ai).match_arm;
@@ -2245,21 +2409,36 @@ pub const Emitter = struct {
                 c.LLVMPositionBuilderAtEnd(self.builder, body_bb);
             }
 
-            const av = self.emitExpr(arm.body);
+            const av0 = self.emitExpr(arm.body);
             if (!self.isTerminated()) {
-                end_bbs[n_ends] = c.LLVMGetInsertBlock(self.builder);
-                _ = c.LLVMBuildBr(self.builder, merge_bb);
-                if (av) |v| {
+                var av = av0;
+                if (av) |v0| {
+                    var v = v0;
                     if (value_ty) |vt| {
                         if (vt != v.ty) {
-                            self.unsupported(idx, "match arms have different types");
-                            return null;
+                            // M6.c: par/caja mixtos entre brazos — el brazo
+                            // posterior se coacciona a la forma ya fijada por
+                            // el primero (domina su propio bloque); si no es
+                            // convertible, rechazo honesto. La conversión
+                            // puede abrir bloques (box_none/box_load/box_join),
+                            // así que va ANTES de registrar el origen del phi
+                            // y de ramificar a merge.
+                            const u = self.unifyWithFixed(first_val.?, v, idx);
+                            if (u == null or u.?.ty != vt) {
+                                self.unsupported(idx, "match arms have different types");
+                                return null;
+                            }
+                            v = u.?;
                         }
-                    } else value_ty = v.ty;
-                    end_vals[n_ends] = v.ref;
-                } else {
-                    all_valued = false;
+                    } else {
+                        value_ty = v.ty;
+                        first_val = v;
+                    }
+                    av = v;
                 }
+                end_bbs[n_ends] = c.LLVMGetInsertBlock(self.builder);
+                _ = c.LLVMBuildBr(self.builder, merge_bb);
+                if (av) |v| end_vals[n_ends] = v.ref else all_valued = false;
                 n_ends += 1;
             }
             self.popScope();
@@ -2282,7 +2461,9 @@ pub const Emitter = struct {
             if (value_ty) |vt| {
                 const phi = c.LLVMBuildPhi(self.builder, self.llvmTy(vt), "");
                 c.LLVMAddIncoming(phi, &end_vals, &end_bbs, @intCast(n_ends));
-                return .{ .ref = phi, .ty = vt };
+                // Mismo contrato que el phi de emitIf: el resultado del match
+                // conserva payload/sname del brazo que fijó la forma.
+                return .{ .ref = phi, .ty = vt, .payload_ty = first_val.?.payload_ty, .sname = first_val.?.sname };
             }
         }
         return null;
@@ -2306,7 +2487,7 @@ pub const Emitter = struct {
                 switch (self.tree.node(pi)) {
                     .pattern_wildcard => {},
                     .pattern_bind => |name| {
-                        if (tv.ty != .boxed_) {
+                        if (tv.ty != .boxed_ and tv.ty != .pair_) {
                             self.unsupported(pi, "payload pattern requires an Option/Result target");
                             return;
                         }
@@ -2314,8 +2495,14 @@ pub const Emitter = struct {
                             self.unsupported(pi, "cannot infer the payload type of this pattern");
                             return;
                         };
+                        // Par (M6.c): el payload sale del extractvalue; caja:
+                        // load del slot 8 — sólo en el camino coincidente.
+                        const pv: Val = if (tv.ty == .pair_)
+                            .{ .ref = self.fromBits(c.LLVMBuildExtractValue(self.builder, tv.ref, 1, ""), pty), .ty = pty }
+                        else
+                            .{ .ref = self.loadBoxPayload(tv.ref, pty), .ty = pty };
                         const alloca = self.buildAlloca(self.llvmTy(pty));
-                        self.emitStoreOwned(alloca, .{ .ref = self.loadBoxPayload(tv.ref, pty), .ty = pty });
+                        self.emitStoreOwned(alloca, pv);
                         self.trackOwned(alloca, pty);
                         self.addLocal(name, alloca, pty, null, tv.sname);
                     },
@@ -2374,7 +2561,7 @@ pub const Emitter = struct {
             // `_` y el bind a secas siempre coinciden (el guard refina luego).
             .pattern_wildcard, .pattern_bind => return c.LLVMConstInt(self.t_i1, 1, 0),
             .pattern_builtin_variant => |bv| {
-                if (tv.ty != .boxed_) {
+                if (tv.ty != .boxed_ and tv.ty != .pair_) {
                     self.unsupported(pat, "variant pattern requires an Option/Result target");
                     return null;
                 }
@@ -2382,8 +2569,27 @@ pub const Emitter = struct {
                     .ok => TAG_OK,
                     .err => TAG_ERR,
                     .some => TAG_SOME,
-                    .none => 3, // none es nil en el VM: la caja NULL
+                    .none => TAG_NONE, // none es nil en el VM
                 };
+                if (tv.ty == .pair_) {
+                    // M6.c: el tag vive en el par — sin NULL ni loads, y el
+                    // test de payload literal compara el extractvalue.
+                    const tag8 = c.LLVMBuildExtractValue(self.builder, tv.ref, 0, "");
+                    var test_v = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tag8, c.LLVMConstInt(self.t_i8, kind, 0), "");
+                    if (bv.payload) |pl| {
+                        if (self.isLiteralPat(pl)) {
+                            const pty = tv.payload_ty orelse {
+                                self.unsupported(pat, "literal payload pattern without a known payload type");
+                                return null;
+                            };
+                            const pv = Val{ .ref = self.fromBits(c.LLVMBuildExtractValue(self.builder, tv.ref, 1, ""), pty), .ty = pty };
+                            const lit = self.emitExpr(pl) orelse return null;
+                            const peq = self.emitEqI1(pl, pv, lit) orelse return null;
+                            test_v = c.LLVMBuildAnd(self.builder, test_v, peq, "");
+                        }
+                    }
+                    return test_v;
+                }
                 if (kind == 3) {
                     return c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tv.ref, c.LLVMConstPointerNull(self.t_ptr), "");
                 }
@@ -2459,23 +2665,45 @@ pub const Emitter = struct {
 
     /// `==`/`!=` como i1, compartido con los tests de patrón del match.
     fn emitEqI1(self: *Emitter, idx: u32, a: Val, b: Val) ?c.LLVMValueRef {
-        if (a.ty != b.ty) {
+        // M6.c: par vs caja (p.ej. `a[0] == some(1)`) — el par baja a caja y
+        // la igualdad sigue por el runtime, como el VM.
+        var av = a;
+        var bv = b;
+        if (av.ty == .pair_ and bv.ty == .boxed_) av = self.coerceToBox(av, idx) orelse return null;
+        if (bv.ty == .pair_ and av.ty == .boxed_) bv = self.coerceToBox(bv, idx) orelse return null;
+        if (av.ty != bv.ty) {
             self.unsupported(idx, "comparison of mixed types");
             return null;
         }
-        return switch (a.ty) {
+        return switch (av.ty) {
             .str_ => blk: {
-                var sargs = [_]c.LLVMValueRef{ a.ref, b.ref };
+                var sargs = [_]c.LLVMValueRef{ av.ref, bv.ref };
                 const eqv = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_eq), self.r_str_eq, &sargs, 2, "");
                 break :blk c.LLVMBuildTrunc(self.builder, eqv, self.t_i1, "");
             },
             .boxed_ => blk: {
-                var sargs = [_]c.LLVMValueRef{ a.ref, b.ref };
+                var sargs = [_]c.LLVMValueRef{ av.ref, bv.ref };
                 const eqv = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_boxed_eq), self.r_boxed_eq, &sargs, 2, "");
                 break :blk c.LLVMBuildTrunc(self.builder, eqv, self.t_i1, "");
             },
-            .f64_ => c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, a.ref, b.ref, ""),
-            .i64_, .bool_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, a.ref, b.ref, ""),
+            // Par vs par (M6.c): tag igual && payload igual, sin heap. El
+            // payload compara como el boxed_eq del runtime: f64 por valor
+            // (NaN != NaN), el resto por bits.
+            .pair_ => blk: {
+                const ta = c.LLVMBuildExtractValue(self.builder, av.ref, 0, "");
+                const tb = c.LLVMBuildExtractValue(self.builder, bv.ref, 0, "");
+                const teq = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, ta, tb, "");
+                const ba = c.LLVMBuildExtractValue(self.builder, av.ref, 1, "");
+                const bb = c.LLVMBuildExtractValue(self.builder, bv.ref, 1, "");
+                const pty = av.payload_ty orelse bv.payload_ty;
+                const peq = if (pty == .f64_)
+                    c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, self.fromBits(ba, .f64_), self.fromBits(bb, .f64_), "")
+                else
+                    c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, ba, bb, "");
+                break :blk c.LLVMBuildAnd(self.builder, teq, peq, "");
+            },
+            .f64_ => c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, av.ref, bv.ref, ""),
+            .i64_, .bool_ => c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, av.ref, bv.ref, ""),
             // VM value_eq: estructural por elemento con el ptype del objeto
             // (la rama identidad del switch de vm.c es código muerto para dos
             // arrays; la temprana de value_eq compara elemento a elemento) —
@@ -2523,6 +2751,19 @@ pub const Emitter = struct {
         // Función nombrada usada como valor (argumento, asignación…): se
         // empaqueta en el mismo objeto { code, env = NULL } que una lambda.
         if (self.fns.get(name)) |fi| {
+            // M6.c: la ABI dinámica sólo sabe armar su firma con los tipos
+            // reales del sitio de llamada (todo puntero para heap); una firma
+            // con pares no es representable como valor — rechazo honesto.
+            for (fi.params) |pp| {
+                if (pp.ty == .pair_) {
+                    self.unsupported(idx, "function with an unboxed optional parameter cannot be used as a value");
+                    return null;
+                }
+            }
+            if (fi.ret_ty == .pair_) {
+                self.unsupported(idx, "function with an unboxed optional return cannot be used as a value");
+                return null;
+            }
             const obj = self.buildFnObject(fi.val, c.LLVMConstPointerNull(self.t_ptr), c.LLVMConstPointerNull(self.t_ptr), 0, self.tree.loc(idx).line);
             return .{ .ref = obj, .ty = .fn_, .payload_ty = fi.ret_ty, .sname = fi.ret_sname };
         }
@@ -2534,8 +2775,8 @@ pub const Emitter = struct {
         const b = self.tree.node(idx).binary_expr;
         if (b.op == .and_and) return self.emitShortCircuit(idx, true);
         if (b.op == .or_or) return self.emitShortCircuit(idx, false);
-        const lhs = self.emitExpr(b.left) orelse return null;
-        const rhs = self.emitExpr(b.right) orelse return null;
+        var lhs = self.emitExpr(b.left) orelse return null;
+        var rhs = self.emitExpr(b.right) orelse return null;
         const line = self.tree.loc(idx).line;
         switch (b.op) {
             .eq_eq, .neq => {
@@ -2545,6 +2786,15 @@ pub const Emitter = struct {
                 return .{ .ref = e8, .ty = .bool_ };
             },
             .lt, .gt, .le, .ge => {
+                // M6.c: los pares no se ordenan — el runtime aborta con el
+                // nombre del tag ("cannot compare some and some"), así que
+                // bajan a caja y siguen su camino boxed de siempre.
+                var lv = lhs;
+                var rv = rhs;
+                if (lv.ty == .pair_) lv = self.coerceToBox(lv, idx) orelse return null;
+                if (rv.ty == .pair_) rv = self.coerceToBox(rv, idx) orelse return null;
+                lhs = lv;
+                rhs = rv;
                 if (lhs.ty != rhs.ty) {
                     self.unsupported(idx, "comparison of mixed types");
                     return null;
@@ -2763,7 +3013,11 @@ pub const Emitter = struct {
             },
         };
         if (self.lookupLocal(target_name)) |l| {
-            self.emitStoreOwned(l.alloca, val);
+            // M6.c: la forma del slot manda (par ↔ caja) — `x = arr[0]` sobre
+            // un local par desempaqueta; `x = some(1)` sobre un slot caja
+            // empaqueta.
+            const sv = self.coerceVal(val, l.ty, l.payload_ty, idx) orelse return null;
+            self.emitStoreOwned(l.alloca, sv);
         } else if (self.lookupCapture(target_name) != null) {
             // §30.5: los closures capturan por valor — no hay ninguna celda
             // a la que escribir, el env es un snapshot (el typechecker zig ya
@@ -2771,7 +3025,8 @@ pub const Emitter = struct {
             self.unsupported(idx, "cannot assign to a captured variable (closures capture by value)");
             return null;
         } else if (self.globals.get(target_name)) |g| {
-            self.emitStoreOwned(g.val, val);
+            const sv = self.coerceVal(val, g.ty, g.payload_ty, idx) orelse return null;
+            self.emitStoreOwned(g.val, sv);
         } else {
             self.unsupported(idx, "assignment to an unknown variable");
             return null;
@@ -2815,7 +3070,14 @@ pub const Emitter = struct {
                 // así que su env es NULL (parámetro 0 ignorado en el callee).
                 abuf[0] = c.LLVMConstPointerNull(self.t_ptr);
                 for (args, 0..) |ai, i| {
-                    const av = self.emitExpr(ai) orelse return null;
+                    const av0 = self.emitExpr(ai) orelse return null;
+                    // M6.c: coacciona a la forma declarada del parámetro —
+                    // `f(arr[0])` desempaqueta la caja cargada; `f(none)`
+                    // sube la caja NULL a par sin tocar memoria.
+                    const av = if (i < info.params.len)
+                        (self.coerceVal(av0, info.params[i].ty, info.params[i].payload, ai) orelse return null)
+                    else
+                        av0;
                     abuf[i + 1] = av.ref;
                 }
                 self.emitDepthGuard(self.tree.loc(idx).line);
@@ -2893,7 +3155,13 @@ pub const Emitter = struct {
         const recv = self.emitExpr(recv_node) orelse return null;
         abuf[1] = recv.ref;
         for (args, 0..) |ai, i| {
-            const av = self.emitExpr(ai) orelse return null;
+            const av0 = self.emitExpr(ai) orelse return null;
+            // info.params[0] es el receptor; los reales empiezan en 1 (M6.c).
+            const pi = i + 1;
+            const av = if (pi < info.params.len)
+                (self.coerceVal(av0, info.params[pi].ty, info.params[pi].payload, ai) orelse return null)
+            else
+                av0;
             abuf[i + 2] = av.ref;
         }
         self.emitDepthGuard(self.tree.loc(idx).line);
@@ -2934,7 +3202,10 @@ pub const Emitter = struct {
         }
         fbuf[0] = self.t_ptr; // env
         for (args, 0..) |ai, i| {
-            const av = self.emitExpr(ai) orelse return null;
+            var av = self.emitExpr(ai) orelse return null;
+            // ABI dinámica (M6.c): el callee puede ser cualquier lambda o
+            // fn-value, así que un opcional viaja siempre como caja.
+            if (av.ty == .pair_) av = self.coerceToBox(av, ai) orelse return null;
             abuf[i + 1] = av.ref;
             fbuf[i + 1] = self.llvmTy(av.ty);
         }
@@ -2994,6 +3265,13 @@ pub const Emitter = struct {
                 },
                 .boxed_ => {
                     var xargs = [_]c.LLVMValueRef{av.ref};
+                    _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_boxed), self.r_print_boxed, &xargs, 1, "");
+                },
+                // M6.c: el par baja a caja (tag 3 → NULL → "nil") y el
+                // runtime imprime "some(…)"/ "ok(…)" / "err(…)" como el VM.
+                .pair_ => {
+                    const bx = self.coerceToBox(av, idx) orelse return null;
+                    var xargs = [_]c.LLVMValueRef{bx.ref};
                     _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_boxed), self.r_print_boxed, &xargs, 1, "");
                 },
                 .fn_ => {
@@ -3203,6 +3481,11 @@ pub const Emitter = struct {
             // some/ok/err (no NULL) → true, none (NULL) → false.
             return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, c.LLVMConstPointerNull(self.t_ptr), "");
         }
+        if (v.ty == .pair_) {
+            // M6.c: verdad el par con tag distinto de none (3).
+            const tag8 = c.LLVMBuildExtractValue(self.builder, v.ref, 0, "");
+            return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, tag8, c.LLVMConstInt(self.t_i8, TAG_NONE, 0), "");
+        }
         const zero = switch (v.ty) {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
@@ -3218,7 +3501,7 @@ pub const Emitter = struct {
             // el emisor construye existe (vm.c value_truthy: struct_val != NULL).
             // VAL_ENUM/VAL_ENUM_DATA son truthy incondicionalmente.
             .struct_, .enum_ => return c.LLVMConstInt(self.t_i1, 1, 0),
-            .f64_, .str_, .boxed_, .fn_ => unreachable,
+            .f64_, .str_, .boxed_, .fn_, .pair_ => unreachable,
         };
         return c.LLVMBuildICmp(self.builder, c.LLVMIntNE, v.ref, zero, "");
     }
@@ -3273,6 +3556,7 @@ pub const Emitter = struct {
             .i64_ => self.t_i64,
             .bool_ => self.t_i8,
             .f64_ => self.t_f64,
+            .pair_ => self.t_optpair,
             .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => self.t_ptr,
         };
     }
@@ -3285,6 +3569,16 @@ pub const Emitter = struct {
             .i64_ => c.LLVMConstInt(self.t_i64, 0, 0),
             .bool_ => c.LLVMConstInt(self.t_i8, 0, 0),
             .f64_ => c.LLVMConstReal(self.t_f64, 0.0),
+            // El par sin valor es `none` (el nil del VM), no tag-ok: un
+            // `let x: i32?` sin inicializador y un global opcional arrancan
+            // ausentes, como en `zeroInit` de la caja NULL.
+            .pair_ => blk: {
+                var elts = [_]c.LLVMValueRef{
+                    c.LLVMConstInt(self.t_i8, TAG_NONE, 0),
+                    c.LLVMConstInt(self.t_i64, 0, 0),
+                };
+                break :blk c.LLVMConstNamedStruct(self.t_optpair, &elts, 2);
+            },
             .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => c.LLVMConstPointerNull(self.t_ptr),
         };
     }
@@ -3298,7 +3592,10 @@ pub const Emitter = struct {
             .i64_ => PTY_I64,
             .f64_ => PTY_F64,
             .str_ => PTY_STR,
-            .boxed_ => PTY_BOXED,
+            // Defensivo: un par nunca se guarda en un slot de contenedor —
+            // las fronteras lo bajan a caja antes (`coerceToBox`); si algo lo
+            // alcanza igual, su forma heap es la caja anidada PTY_BOXED.
+            .boxed_, .pair_ => PTY_BOXED,
             .arr_ => PTY_ARRAY,
             .struct_ => PTY_STRUCT,
             .enum_ => PTY_ENUM,
@@ -3313,6 +3610,9 @@ pub const Emitter = struct {
             .bool_ => c.LLVMBuildZExt(self.builder, ref, self.t_i64, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, ref, self.t_i64, ""),
             .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => c.LLVMBuildPtrToInt(self.builder, ref, self.t_i64, ""),
+            // M6.c: un par no se serializa — las fronteras lo bajan a caja
+            // (`coerceToBox`) antes de tocar bits u slots de 8 bytes.
+            .pair_ => unreachable,
         };
     }
 
@@ -3323,6 +3623,7 @@ pub const Emitter = struct {
             .bool_ => c.LLVMBuildTrunc(self.builder, bits, self.t_i8, ""),
             .f64_ => c.LLVMBuildBitCast(self.builder, bits, self.t_f64, ""),
             .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => c.LLVMBuildIntToPtr(self.builder, bits, self.t_ptr, ""),
+            .pair_ => unreachable,
         };
     }
 
@@ -3332,6 +3633,8 @@ pub const Emitter = struct {
     fn elemSlotSize(ty: Ty) i64 {
         return switch (ty) {
             .bool_ => 1,
+            // Inalcanzable con las fronteras de M6.c (los pares se bajan a
+            // caja antes de entrar a un contenedor); 8 es el slot defensivo.
             else => 8,
         };
     }
@@ -3349,10 +3652,19 @@ pub const Emitter = struct {
         return self.fromBits(bits, pty);
     }
 
-    /// `some(x)`/`ok(x)`/`err(x)`: caja con tag, ptype y payload por valor.
+    /// `some(x)`/`ok(x)`/`err(x)`: con payload escalar, par `{ i8 tag; i64
+    /// payload }` en SSA (M6.c — sin heap); con payload puntero, caja como
+    /// siempre. Un payload que ya es par se baja a caja primero (anidamiento:
+    /// el runtime sólo conoce cajas).
     fn emitWrap(self: *Emitter, idx: u32, tag: u32, inner: Val) ?Val {
-        const pty = boxPTy(inner.ty) orelse return self.unsupportedBox(idx);
-        const bits = self.toBits(inner.ref, inner.ty);
+        var iv = inner;
+        if (iv.ty == .pair_) iv = self.coerceToBox(iv, idx) orelse return null;
+        const pty = boxPTy(iv.ty) orelse return self.unsupportedBox(idx);
+        if (isScalarPayload(iv.ty)) {
+            const bits = self.toBits(iv.ref, iv.ty);
+            return self.buildPair(tag, bits, iv.ty, iv.sname);
+        }
+        const bits = self.toBits(iv.ref, iv.ty);
         const line = self.tree.loc(idx).line;
         var args = [_]c.LLVMValueRef{
             c.LLVMConstInt(self.t_i32, line, 0),
@@ -3362,7 +3674,141 @@ pub const Emitter = struct {
         };
         const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_wrap), self.r_wrap, &args, 4, "");
         self.emitTmpPush(r);
-        return .{ .ref = r, .ty = .boxed_, .payload_ty = inner.ty, .sname = inner.sname };
+        return .{ .ref = r, .ty = .boxed_, .payload_ty = iv.ty, .sname = iv.sname };
+    }
+
+    /// Construye el par `T?`/`Result<T, E>` sin heap: `{ tag, bits }`.
+    fn buildPair(self: *Emitter, tag: u32, bits: c.LLVMValueRef, payload: Ty, sname: ?[]const u8) Val {
+        const p0 = c.LLVMBuildInsertValue(self.builder, c.LLVMGetUndef(self.t_optpair), c.LLVMConstInt(self.t_i8, tag, 0), 0, "");
+        const p = c.LLVMBuildInsertValue(self.builder, p0, bits, 1, "");
+        return .{ .ref = p, .ty = .pair_, .payload_ty = payload, .sname = sname };
+    }
+
+    /// Par → caja heap en una frontera (contenedor, captura, ABI dinámica,
+    /// print, igualdad/orden mixtos). `none` (tag 3) se convierte en la caja
+    /// NULL — el VAL_NIL del VM — porque el runtime imprimiría "some(...)"
+    /// sobre una caja con tag 3.
+    fn coerceToBox(self: *Emitter, v: Val, idx: u32) ?Val {
+        if (v.ty != .pair_) return v;
+        // Defensa: todo productor de un par fija su payload; si alguno se
+        // olvida, un diagnóstico limpio siempre es mejor que un unwrap nulo.
+        const pty0 = v.payload_ty orelse {
+            self.unsupported(idx, "optional without a known payload cannot flow unboxed");
+            return null;
+        };
+        const pty = boxPTy(pty0) orelse return self.unsupportedBox(idx);
+        const line = self.tree.loc(idx).line;
+        const tag8 = c.LLVMBuildExtractValue(self.builder, v.ref, 0, "");
+        const bits = c.LLVMBuildExtractValue(self.builder, v.ref, 1, "");
+        const tag32 = c.LLVMBuildZExt(self.builder, tag8, self.t_i32, "");
+        const isnone = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, tag8, c.LLVMConstInt(self.t_i8, TAG_NONE, 0), "");
+        const none_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "pair_none");
+        const wrap_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "pair_wrap");
+        const join_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "pair_join");
+        _ = c.LLVMBuildCondBr(self.builder, isnone, none_bb, wrap_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, none_bb);
+        _ = c.LLVMBuildBr(self.builder, join_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, wrap_bb);
+        var args = [_]c.LLVMValueRef{
+            c.LLVMConstInt(self.t_i32, line, 0),
+            tag32,
+            c.LLVMConstInt(self.t_i32, pty, 0),
+            bits,
+        };
+        const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_wrap), self.r_wrap, &args, 4, "");
+        self.emitTmpPush(r);
+        _ = c.LLVMBuildBr(self.builder, join_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, join_bb);
+        const phi = c.LLVMBuildPhi(self.builder, self.t_ptr, "");
+        var vals = [_]c.LLVMValueRef{ c.LLVMConstPointerNull(self.t_ptr), r };
+        var bbs = [_]c.LLVMBasicBlockRef{ none_bb, wrap_bb };
+        c.LLVMAddIncoming(phi, &vals, &bbs, 2);
+        return .{ .ref = phi, .ty = .boxed_, .payload_ty = v.payload_ty, .sname = v.sname };
+    }
+
+    /// Caja → par en la entrada de una firma con par: la caja NULL (none) es
+    /// `{3, 0}` sin tocar memoria; una caja viva carga tag y payload. El
+    /// payload escalar es estático, así que el load usa el `T` conocido.
+    fn coerceToPair(self: *Emitter, v: Val, idx: u32) ?Val {
+        if (v.ty != .boxed_) return v;
+        const pty = v.payload_ty orelse {
+            self.unsupported(idx, "optional without a known payload cannot flow unboxed");
+            return null;
+        };
+        if (!isScalarPayload(pty)) {
+            self.unsupported(idx, "optional with a pointer payload cannot flow unboxed");
+            return null;
+        }
+        const isnull = c.LLVMBuildIsNull(self.builder, v.ref, "");
+        const none_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "box_none");
+        const load_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "box_load");
+        const join_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "box_join");
+        _ = c.LLVMBuildCondBr(self.builder, isnull, none_bb, load_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, none_bb);
+        _ = c.LLVMBuildBr(self.builder, join_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, load_bb);
+        const tag8 = c.LLVMBuildTrunc(self.builder, self.loadBoxTag(v.ref), self.t_i8, "");
+        const bits = self.toBits(self.loadBoxPayload(v.ref, pty), pty);
+        const p0 = c.LLVMBuildInsertValue(self.builder, c.LLVMGetUndef(self.t_optpair), tag8, 0, "");
+        const with_tag = c.LLVMBuildInsertValue(self.builder, p0, bits, 1, "");
+        _ = c.LLVMBuildBr(self.builder, join_bb);
+        c.LLVMPositionBuilderAtEnd(self.builder, join_bb);
+        const phi = c.LLVMBuildPhi(self.builder, self.t_optpair, "");
+        var none_elts = [_]c.LLVMValueRef{
+            c.LLVMConstInt(self.t_i8, TAG_NONE, 0),
+            c.LLVMConstInt(self.t_i64, 0, 0),
+        };
+        var vals = [_]c.LLVMValueRef{
+            c.LLVMConstNamedStruct(self.t_optpair, &none_elts, 2),
+            with_tag,
+        };
+        var bbs = [_]c.LLVMBasicBlockRef{ none_bb, load_bb };
+        c.LLVMAddIncoming(phi, &vals, &bbs, 2);
+        return .{ .ref = phi, .ty = .pair_, .payload_ty = pty, .sname = v.sname };
+    }
+
+    /// Lleva un valor a la forma que su destino espera (param/ret/slot de
+    /// `T?` = par; slot de caja, contenedor o ABI dinámica = caja). Sólo
+    /// convierte entre par y caja; el resto fluye tal cual — el typechecker
+    /// garantiza la compatibilidad del resto. `want_payload` es el `T` que
+    /// declara el destino: una caja sin payload estático (p. ej. `none`) lo
+    /// toma prestado para poder desempaquetarla.
+    fn coerceVal(self: *Emitter, v: Val, want: Ty, want_payload: ?Ty, idx: u32) ?Val {
+        if (want == v.ty) return v;
+        if (want == .pair_ and v.ty == .boxed_) {
+            var b = v;
+            if (b.payload_ty == null) b.payload_ty = want_payload;
+            return self.coerceToPair(b, idx);
+        }
+        if (want == .boxed_ and v.ty == .pair_) return self.coerceToBox(v, idx);
+        return v;
+    }
+
+    /// Coacción al retorno de la función actual (`return`, cola y `?`).
+    fn coerceRet(self: *Emitter, v: Val, idx: u32) ?Val {
+        const cr = self.cur_ret orelse return v;
+        return self.coerceVal(v, cr.ty, cr.payload, idx);
+    }
+
+    /// Caja NULL constante (el `none` literal) — el único caso en que una
+    /// caja sube a par sin payload estático: `{3, 0}` sin tocar memoria.
+    fn isNullConst(ref: c.LLVMValueRef) bool {
+        return c.LLVMIsConstant(ref) != 0 and c.LLVMIsNull(ref) != 0;
+    }
+
+    /// Une `other` (brazo/rama posterior) con la forma ya fijada de `fixed`
+    /// en un phi de Option/Result. Convierte SÓLO `other` (domina su propio
+    /// bloque): caja→par cuando su payload escalar es estático o es la caja
+    /// NULL de `none`; par→caja cuando `fixed` es caja. Imposible → null.
+    fn unifyWithFixed(self: *Emitter, fixed: Val, other: Val, idx: u32) ?Val {
+        if (fixed.ty == other.ty) return other;
+        if (fixed.ty == .boxed_ and other.ty == .pair_) return self.coerceToBox(other, idx);
+        if (fixed.ty == .pair_ and other.ty == .boxed_) {
+            var o = other;
+            if (o.payload_ty == null) o.payload_ty = fixed.payload_ty;
+            return self.coerceToPair(o, idx);
+        }
+        return other; // no es su problema (otro tipo): el caller rechaza
     }
 
     fn unsupportedBox(self: *Emitter, idx: u32) ?Val {
@@ -3387,20 +3833,31 @@ pub const Emitter = struct {
 
     const Annot = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
 
-    /// Anotación de un opcional `T?` → (`boxed_`, payload T). Es la única forma
-    /// de anotar Option/Result: `fn increment(x: i32?) -> i32?` (try_operator).
-    /// El `T` se resuelve completo (scalars, structs, arrays…) para conservar
-    /// el `sname` cuando el payload es un struct.
+    /// Anotación de un opcional `T?` (M6.c): payload escalar → par en SSA
+    /// (`pair_`, sin heap); payload puntero → caja (`boxed_`). Es la única
+    /// forma de anotar Option/Result: `fn increment(x: i32?) -> i32?`
+    /// (try_operator). El `T` se resuelve completo (scalars, structs,
+    /// arrays…) para conservar el `sname` cuando el payload es un struct.
     fn boxedM0Ty(self: *Emitter, node: ?u32) ?Annot {
         const ni = node orelse return null;
         switch (self.tree.node(ni)) {
             .type_optional => |inner| {
-                if (self.scalarM0Ty(inner)) |t| return .{ .ty = .boxed_, .payload = t };
+                if (self.scalarM0Ty(inner)) |t| {
+                    return .{ .ty = if (isScalarPayload(t)) .pair_ else .boxed_, .payload = t };
+                }
                 const ia = self.annotTy(inner) orelse return null;
                 return .{ .ty = .boxed_, .payload = ia.ty, .sname = ia.sname };
             },
             else => return null,
         }
+    }
+
+    /// En posiciones de contenedor (slots de 8 bytes: elementos de array,
+    /// campos de struct/enum) y en la ABI dinámica de `fn(...)`, los
+    /// opcionales viven como caja — un par sólo cabe en params/rets/lets de
+    /// funciones nombradas.
+    fn boxForm(at: Annot) Annot {
+        return if (at.ty == .pair_) .{ .ty = .boxed_, .payload = at.payload, .sname = at.sname } else at;
     }
 
     /// Anotación de parámetro/retorno/let: escalar, `T?`, `fn(T, ...) -> T`,
@@ -3424,16 +3881,20 @@ pub const Emitter = struct {
                     return .{ .ty = .enum_ };
                 return null;
             },
+            // El retorno de un valor-función viaja por la ABI dinámica
+            // (todo puntero): `T?` escalar viaja como caja, nunca como par.
             .type_fn => |tf| return .{
                 .ty = .fn_,
-                .payload = if (tf.ret) |r| (self.annotTy(r) orelse return null).ty else null,
+                .payload = if (tf.ret) |r| boxForm(self.annotTy(r) orelse return null).ty else null,
             },
             // `[T]` — el tamaño del literal no cambia la representación
             // (objetos de longitud variable con el elem type fijo), sólo se
-            // propaga el tipo de elemento para índices/bounds/print.
+            // propaga el tipo de elemento para índices/bounds/print. Los
+            // elementos viven en slots de 8 bytes: `T?` escalar se guarda
+            // como caja.
             .type_array => |ta| return .{
                 .ty = .arr_,
-                .payload = (self.annotTy(ta.elem) orelse return null).ty,
+                .payload = boxForm(self.annotTy(ta.elem) orelse return null).ty,
             },
             else => {},
         }
@@ -3622,7 +4083,13 @@ pub const Emitter = struct {
             .float_literal => return .f64_,
             .string_literal => return .str_,
             .bool_literal => return .bool_,
-            .none_expr, .nil_literal, .some_expr, .ok_expr, .err_expr => return .boxed_,
+            .none_expr, .nil_literal => return .boxed_,
+            // `some(x)`/`ok(x)`/`err(x)` (M6.c): payload escalar → par; si no
+            // (o si el payload no se infiere estáticamente) → caja.
+            .some_expr, .ok_expr, .err_expr => |inner| {
+                if (self.inferStaticTy(inner)) |it| return if (isScalarPayload(it)) .pair_ else .boxed_;
+                return .boxed_;
+            },
             .lambda_expr => return .fn_,
             .array_literal => return .arr_,
             .struct_literal => return .struct_,
@@ -3773,10 +4240,10 @@ pub const Emitter = struct {
             var off: i64 = 8; // offset 0 = puntero al descriptor
             for (field_items, 0..) |fi, i| {
                 const f = self.tree.node(fi).field_decl;
-                const at = self.annotTy(f.type_node) orelse {
+                const at = boxForm(self.annotTy(f.type_node) orelse {
                     self.unsupported(fi, "struct field without a supported type");
                     return;
-                };
+                });
                 fields[i] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .sname = at.sname };
                 ptypes[i] = boxPTy(at.ty) orelse PTY_BOOL; // inalcanzable: fn ya rechazó el checker
                 off += 8; // slots de 8 bytes: el bool vive como i8 en el inicio del slot
@@ -3938,10 +4405,11 @@ pub const Emitter = struct {
                     fields = self.a.alloc(StructField, payload_items.len) catch @panic("OOM");
                     for (payload_items, 0..) |pi, j| {
                         const f = self.tree.node(pi).field_decl;
-                        const at = self.annotTy(f.type_node) orelse {
+                        // Slots de 8 bytes: un opcional payload vive como caja.
+                        const at = boxForm(self.annotTy(f.type_node) orelse {
                             self.unsupported(pi, "enum payload without a supported type");
                             return;
-                        };
+                        });
                         fields[j] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .sname = at.sname };
                     }
                 }
