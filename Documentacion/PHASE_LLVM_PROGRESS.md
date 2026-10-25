@@ -59,8 +59,9 @@ fixture de fast-math de M6.b, §15).
 | **M6.a** | `--jit`: ejecución in-process vía ORC/LLJIT (§14) | ✅ |
 | **M6.b** | `--fast-math`: flags fast-math opt-in en la aritmética FP (§15) | ✅ |
 
-Queda, todo opcional y sin bloquear el cierre de la fase (plan §6): el
-des-boxing de Option/Result y error-union para `?`.
+Queda, todo opcional y sin bloquear el cierre de la fase (plan §6): la
+etapa c.2 del des-boxing (payloads `str_`). El error-union para `?` se
+cerró por investigación en §17.
 La compatibilidad con LLVM 22 (churn que señaló el canario) quedó
 corregida y verificada — §14.5.
 
@@ -1131,5 +1132,88 @@ Gates de c.1 (2026-10-24, todos verdes):
 | `dump_parity.sh` (seed ↔ zig) | **146 archivos, 0 divergent** |
 
 La suite LLVM crece de 156 a **157** (el conformance nuevo entra al glob de
-paridad). Queda abierto y opcional **c.2** (payloads `str_` con puntero) y,
-posterior, el **error-union para `?`** (plan §6).
+paridad). Queda abierto y opcional **c.2** (payloads `str_` con puntero); el
+**error-union para `?`** se cerró como investigación en §17 (ya cubierto por
+M1.c + M6.c).
+
+## 17. Error-union para `?` — investigación y decisión (sin código nuevo)
+
+Este §17 cierra el último item opcional que el plan §6 dejaba abierto. Viene
+de `research/023` §6.3 y `research/024` §4: la «v1» prometida era mantener
+longjmp, y la «v2+» un **modelo error-union estilo Zig** — resultado explícito
+`{ok, err}` propagado con `?`, sin longjmp, con ABI nuevo y reescritura de
+builtins — «solo con un caso de uso que lo pida (JIT/REPL)». La investigación
+concluye que **la v2 ya está entregada en lo esencial** por M1.c y M6.c, y que
+el delta restante no tiene consumidor hoy.
+
+### 17.1 Qué se entregó ya (sin que el plan lo supiera)
+
+1. **`?` sin setjmp/longjmp desde M1.c** (decisión 2 de §1): el typechecker
+   exige que la función devuelva un opcional, así que `err`/`none` propaga con
+   un **`ret` local** de la propia caja/par — el mismo efecto que el
+   frame-pop del `TRY_UNWRAP` del VM. `grep -n "unwind|setjmp|longjmp"`
+   sobre `zig/src/llvm/emitter.zig` y el IR emitido: **cero referencias** (la
+   mitad «elimina longjmp» de la v2, hecha).
+2. **El par de M6.c ES la error-union explícita** (§16/§16.1):
+   `{i8 tag; i64 payload}` con los tags del dominio (0=ok, 1=err, 2=some,
+   3=none) — construcción por `insertvalue`, `?` por `extractvalue` + `icmp`
+   + `br` frío. IR real de una propagación (`--emit-llvm-stdout` sobre un
+   `f()?` con `ok`/`err`, resumido):
+
+   ```llvm
+   %7  = call { i8, i64 } @astra_fn_f(ptr null, i8 0)
+   %10 = extractvalue { i8, i64 } %7, 0
+   %11 = icmp eq i8 %10, 1          ; err
+   %12 = icmp eq i8 %10, 3          ; none
+   %13 = or i1 %11, %12
+   br i1 %13, label %try_err, label %try_ok, !prof !0   ; pesos fríos (1<<20 : 1)
+   try_err:
+     ret { i8, i64} %7              ; propagar la unión tal cual, sin longjmp
+   try_ok:
+   %14 = extractvalue { i8, i64 } %7, 1   ; payload con tipo estático
+   ```
+
+   Eso es literalmente la ABI «{ok, err} propagado con `?`» de 023: sin
+   heap, sin rc, sin landingpad, camino caliente sin peaje. Los shapes
+   están pinzados por FileCheck (`check_try.astra`, `check_opt_pair.astra`).
+
+### 17.2 El delta restante — y dónde vive cada pieza
+
+- **(a) ABI dual `T,E` — el único «verdadero» v2 que queda**: hoy un valor
+  de dominio mixto (`ok(42)` con payload `i64` y `err("boom")` con payload
+  `string`) es **estáticamente ilegal** — verificado en vivo:
+  `if c { ok(42) } else { err("boom") }` → `error: if branches have
+  different types: optional vs optional`. No existe `TYPE_RESULT`
+  (`ARCHITECTURE.md` §5.3, «se cierra en la Fase 2»), así que ni el par ni
+  la caja necesitan hoy dos slots de payload: no hay código que escribir.
+  **Cuando entre TYPE_RESULT en Fase 2, este item renace** como decisión de
+  layout del backend (par con slots `ok`/`err` separados o unión
+  discriminada) — ese es el momento de reabrir §17.
+- **(b) Payloads no-escalar en el par** = la etapa **c.2** de §16, ya
+  tableada con su gate.
+- **(c) ABI dinámica (`fn_` con opcionales)**: caja por diseño — la llamada
+  dinámica necesita el `ptype` en runtime; no es un residuo de v2 sino la
+  frontera correcta.
+- **(d) Errores de runtime recuperables (el verdadero motivo del «si el JIT
+  lo pide»)**: hoy div0/OOB/overflow terminan en `exit(1)` — por diseño en
+  los tres backends (semántica fuerte: fatal, no `err` de dominio). Una
+  error-union **no** lo cambiaría: un fallo de runtime no es un valor de
+  dominio. Un futuro REPL/eval necesitaría un límite de recuperación en su
+  propio harness (p. ej. `setjmp` en el driver JIT o proceso aparte) — trabajo
+  aparte, sólo cuando exista un REPL (M6.a es «cimiento», no hay milestone).
+- **(e) Builtins**: no hay nada que reescribir — print/eq/orden convierten
+  par→caja en frontera y el runtime gateado sigue intacto (§16.1,
+  desviación 1).
+
+### 17.3 Decisión
+
+**No se reescribe el ABI; el item queda cerrado como investigación.** El
+disparador de 023 («si el JIT lo pide») no se ha ejercido: `--jit` es
+one-shot y las cuatro rutas están en paridad. Condiciones de reapertura, en
+cualquier orden: (1) `TYPE_RESULT` en Fase 2 → layout dual (a); (2) un REPL
+con eval recuperable → harness de errores (d); (3) un benchmark que pida
+c.2. Nada de esto bloquea el cierre de la fase LLVM.
+
+Gates tras la investigación (sin cambios de código, sólo docs): paridad
+**157/157** ×4 rutas (plano y `-O2`), filecheck **7/7**, seed **259/259**,
+dump parity **146/0**.
