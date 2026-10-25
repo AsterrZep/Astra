@@ -193,8 +193,11 @@ inf. M6.c (progress §16/§16.1) unboxes Option/Result: the pair
 `{i8 tag; i64 payload}` lives in SSA in named functions (params, returns,
 `let`, temporaries) with boxing only at container/dynamic-ABI boundaries, and
 construction/`?`/`match` run inline with no heap and no rc — no flag: the
-157/157 parity IS the gate. The remaining M6 items (c.2: `str_` payloads,
-error-union for `?`) stay optional; scalar unboxing is already delivered (the
+157/157 parity IS the gate. The remaining M6 item (c.2: `str_` payloads)
+stays optional; error-union for `?` was investigated and closed (progress
+§17): the local-`ret` `?` (M1.c) and the M6.c pair already deliver the
+explicit `{ok, err}` ABI in essence, and the dual-`T,E` layout is born again
+with `TYPE_RESULT` in Phase 2. Scalar unboxing is already delivered (the
 backend walks the typed AST and emits native `i64`/`f64`/`i8` in SSA — 2-8×
 faster than the boxed C backend per `llvm_bench.sh`).
 

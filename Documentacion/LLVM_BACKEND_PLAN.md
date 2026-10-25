@@ -273,9 +273,13 @@ Option/Result, etapa c.1) está implementado** (`PHASE_LLVM_PROGRESS.md` §16 y
 funciones nombradas, con boxing en las fronteras de contenedor y hot path de
 construcción/`?`/`match` sin heap ni rc; sin flag opt-in — la paridad
 **157/157** ES el gate. El diseño descartó la opción sentinel i64 (el dominio
-de i64 es completo, cualquier sentinel colisiona). Quedan opcionales la etapa
-c.2 (payloads `str_` con puntero) y error-union para `?` si el JIT lo pide.
-Cada uno se planifica al llegar; M6 no bloquea el cierre de la fase.
+de i64 es completo, cualquier sentinel colisiona). El **error-union para
+`?`** quedó cerrado por investigación (`PHASE_LLVM_PROGRESS.md` §17): la
+«v2» ya está entregada en lo esencial por el `?` de ret local (M1.c) y el
+par de M6.c; el resto (ABI dual `T,E`) renace con `TYPE_RESULT` en Fase 2.
+Queda opcional la etapa
+c.2 (payloads `str_` con puntero). Cada entrada se planifica al
+llegar; M6 no bloquea el cierre de la fase.
 
 ---
 
@@ -362,8 +366,10 @@ mismo log), opt-in puro sin mover la semántica por defecto; M6.c entregó el
 des-boxing de Option/Result (§16.1).
 
 Lo que queda es **opcional** (§6, «M6 — Opcional / futuro»), y cada
-entrada se planifica al entrar: la etapa c.2 del des-boxing (payloads `str_`)
-y error-union para `?`. Los hitos siguen el patrón
+entrada se planifica al entrar: la etapa c.2 del des-boxing (payloads `str_`).
+El error-union para `?` se cerró por investigación en
+`PHASE_LLVM_PROGRESS.md` §17 (entregado en esencia por M1.c + M6.c; el ABI
+dual `T,E` renace con `TYPE_RESULT` en Fase 2). Los hitos siguen el patrón
 workstream → commit probado → gate verde.
 
 Pendiente confirmado y cerrado: la instalación de `llvm-19-dev` en CI vía
