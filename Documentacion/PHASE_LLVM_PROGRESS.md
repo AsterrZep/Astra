@@ -1091,8 +1091,8 @@ Lo que entró en `zig/src/llvm/emitter.zig`:
 - **Hot path inline**: construcción (`insertvalue`), `?` (`extractvalue` +
   `icmp` de tag), `match` y la unificación de brazos no tocan heap ni rc.
 - **`emitIf`/`emitMatch` reestructurados**: los `br merge` se posponen y la
-  coerción de un brazo se emite **en el bloque-uniуn de su propio brazo**
-  (aún sin terminador); si se emitiera ya en merge, el bloque-uniуn no sería
+  coerción de un brazo se emite **en el bloque-unión de su propio brazo**
+  (aún sin terminador); si se emitiera ya en merge, el bloque-unión no sería
   predecesor del phi («PHI node entries do not match predecessors»).
 
 Desviaciones respecto al contrato de diseño de arriba (todas decisiones, no

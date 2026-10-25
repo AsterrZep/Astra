@@ -2121,7 +2121,7 @@ pub const Emitter = struct {
         // Los `br` a merge se posponen hasta aquí (M6.c): la unificación de
         // un par y una caja (`if c { some(1) } else { none }`) se emite en el
         // bloque MISMO del brazo que necesita convertirse — si se emitiera ya
-        // en merge, el bloque-uniуn de la conversión no sería predecesor del
+        // en merge, el bloque-unión de la conversión no sería predecesor del
         // merge y el phi recibiría de bloques que no lo alcanzan.
         const unify = tval != null and eval != null and !t_term and !e_term;
         var tv: Val = tval orelse .{ .ref = c.LLVMConstNull(self.t_ptr), .ty = .boxed_ };
