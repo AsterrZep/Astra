@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend LLVM: des-boxing de Option/Result (M6.c, etapa c.1)**: el par
+  `{i8 tag; i64 payload}` vive en SSA dentro de funciones nombradas
+  (parámetros, retornos, `let` y temporales de optional escalar), con
+  **boxing sólo en las fronteras** — elementos de array, campos de
+  struct/enum, capturas de lambda y la ABI dinámica de valores `fn(...)` —
+  y hot path de construcción (`insertvalue`), `?` (`extractvalue` + `icmp`
+  de tag) y `match` sin heap, sin malloc y sin rc. `none` = `{3, 0}` en el
+  par y caja NULL en frontera (nunca tag 3 en una caja: el runtime
+  imprimiría `some(`). Sin flag opt-in — es cambio de representación puro y
+  la paridad **157/157** contra la VM ES el gate (plano y `-O2`, y también
+  en JIT, cross aarch64 y wasm32-wasi; ASan + LSan sin fugas; FileCheck
+  7/7 con `check_opt_pair.astra` nuevo y `check_try.astra` reescrito).
+  Dos fallos hallados y cerrados en la auditoría de fronteras: los phis de
+  `if` y `match` descartaban `payload_ty`, así que imprimir el resultado de
+  `let c = if … { some(1) } else { none }` revienta en el emisor — pinzado
+  por el conformance nuevo `enums/option_branch_unify.astra` (15 EXPECT).
+  Detalle: `PHASE_LLVM_PROGRESS.md` §16 y §16.1.
 - **Backend LLVM: `--fast-math` opt-in (M6.b)**: el flag nuevo —exigido a un
   modo de salida LLVM (`--emit-llvm`, `--emit-llvm-stdout`, `--emit-obj` o
   `--jit`); con la VM o los dumps sale un error accionable— marca toda la
