@@ -115,10 +115,18 @@ pub fn main(init: std.process.Init) !void {
             fast_math = true;
         } else if (std.mem.eql(u8, arg, "--debug")) {
             debug = true;
-        } else if (std.mem.startsWith(u8, arg, "--")) {
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            // Paridad con el seed: Toda opción desconocida es error, también
+            // la de guion simple. Antes sólo caían los `--`, así que `-o` se
+            // tragaba como si fuera el path (y el siguiente arg lo pisaba):
+            // `--emit-obj -o out.o f.astra` salía 0 sin escribir out.o.
             std.debug.print("error: unknown flag {s}\n{s}", .{ arg, usage });
             std.process.exit(2);
         } else {
+            if (path != null) {
+                std.debug.print("error: unexpected argument {s}\n{s}", .{ arg, usage });
+                std.process.exit(2);
+            }
             path = arg;
         }
     }
