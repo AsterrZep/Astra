@@ -1,0 +1,8 @@
+// Benchmark B2: 2M arreglos de 8 elems creados y descartados — patrón de heap.
+fn make() -> [i32] { return [1, 2, 3, 4, 5, 6, 7, 8]; }
+fn main() {
+    let mut i = 0;
+    let mut s = 0;
+    while i < 2000000 { let a = make(); s = s + a[0]; i = i + 1; }
+    print(s);
+}

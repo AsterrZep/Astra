@@ -12,6 +12,14 @@
 # repite REPEATS veces y se queda el mínimo (menos ruido de scheduler).
 # `-O` pasa --opt-level=LEVEL al emisor LLVM (M4: 0 sin pipeline, 2 default<O2>
 # + licm/simple-loop-unswitch/irce).
+#
+# research/030 (benchmarks vs Rust/Go/C/Zig, 2026-10-27): los casos
+# fib30/alloc2m/str25k provienen de 030_benchmarks_suite/ y son los mismos
+# programas medidos allí, para poder comparar de nuevo contra los lenguajes
+# de referencia con `build_all.sh`. NOTA sobre umbrales: el techo de MEMORIA
+# está gateado en CI por zig/tests/llvm_mem.sh (DEC-009, 64 MB); los tiempos
+# se dejan informativos a propósito — en una máquina compartida un umbral de
+# ms solo produce flakes, y la corrección (3 rutas byte-idénticas) sí es gate.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
