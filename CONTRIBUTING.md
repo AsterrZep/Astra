@@ -38,7 +38,7 @@ Feature requests are welcome. Please include:
 
 ### Code Contributions
 
-1. **Read the [Architecture Specification](ARCHITECTURE.md)** to understand the language design
+1. **Read the [Architecture Specification](Documentacion/01_lenguaje/ARCHITECTURE.md)** to understand the language design
 2. **Check existing issues** to see if someone is already working on similar changes
 3. **Discuss significant changes** in GitHub Discussions before implementing
 4. **Write tests** for any new functionality

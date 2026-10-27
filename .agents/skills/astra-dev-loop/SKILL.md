@@ -40,8 +40,8 @@ invariants and the workstream table live there.
    — fix forward with a `fix(...)` commit, never leave `main` red silently.
    Green-on-CI is the real gate; local green is the precondition.
 7. **Docs last, in their own commit.** Status tables
-   (`Documentacion/PHASE1_PROGRESS.md`, `PHASE2_PROGRESS.md`,
-   `PHASE2_GAP_ANALYSIS.md`), `CHANGELOG.md` (Keep-a-Changelog, newest
+   (`Documentacion/03_fase1_seed/PHASE1_PROGRESS.md`, `Documentacion/04_fase2_zig/PHASE2_PROGRESS.md`,
+   `Documentacion/04_fase2_zig/PHASE2_GAP_ANALYSIS.md`), `CHANGELOG.md` (Keep-a-Changelog, newest
    first) and `AGENTS.md` counts/claims are updated in a final `docs:`
    commit once the behaviour is verified on both compilers.
 8. **Close the loop.** Mark the last todo `completed`, report the commit

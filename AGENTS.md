@@ -13,14 +13,14 @@ The repository currently holds **design documentation** (`Documentacion/`),
 **Phase 1 of the implementation** — the *seed compiler* (`seed/`), written in C,
 which compiles a bootstrap subset called **Astra-0** — and **Phase 2** (`zig/`),
 the self-hosting compiler written in Zig, whose Astra-0 frontend is ported (see
-`Documentacion/PHASE2_PROGRESS.md`).
+`Documentacion/04_fase2_zig/PHASE2_PROGRESS.md`).
 
 Full background lives in:
-- `Documentacion/ARCHITECTURE.md` — language specification
-- `Documentacion/COMPILER_STRATEGY.md` — the C → Zig → Astra bootstrap plan
-- `Documentacion/research/001_grammar_and_parser_design.md` — grammar/parser
-- `Documentacion/research/002_seed_compiler_design.md` — seed compiler design
-- `Documentacion/PHASE1_PROGRESS.md` — current implementation status
+- `Documentacion/01_lenguaje/ARCHITECTURE.md` — language specification
+- `Documentacion/02_compilador/COMPILER_STRATEGY.md` — the C → Zig → Astra bootstrap plan
+- `Documentacion/07_investigacion/001_grammar_and_parser_design.md` — grammar/parser
+- `Documentacion/07_investigacion/002_seed_compiler_design.md` — seed compiler design
+- `Documentacion/03_fase1_seed/PHASE1_PROGRESS.md` — current implementation status
 
 ## Build and test
 
@@ -95,7 +95,7 @@ checker, emitter, VM) is ported and verified against the seed suite. The module
 system (`src/modules/` + the multi-module path in `src/main.zig`) compiles and
 runs multi-file programs: `pub` gating, shared type pool, mangled globals,
 dependency-order execution, `use` re-exports and foreign struct/enum values
-(`Documentacion/PHASE2_PROGRESS.md` §7). Diagnostics
+(`Documentacion/04_fase2_zig/PHASE2_PROGRESS.md` §7). Diagnostics
 from every phase go through one sink (`src/diagnostics.zig`, §7.4).
 
 ```bash
@@ -130,17 +130,17 @@ new features are added** (the suite is the gate). Match `seed/src/*.c` and the
 
 ### LLVM backend (`-Dllvm`, opt-in)
 
-The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
-progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
+The native LLVM backend (Fase LLVM, `Documentacion/05_fase_llvm/LLVM_BACKEND_PLAN.md`;
+progress log `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
 build and binary are byte-identical and none of the existing gates change.
-**M0–M5, M6.a, M6.b and M6.c are closed** (2026-10-24): the emitter compiles the Astra-0 subset —
+**M0–M5, M6.a, M6.b and M6.c are closed** (2026-10-27): the emitter compiles the Astra-0 subset —
 scalars, floats, strings, Option/Result with `match`/`?`, closures,
 arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
 — straight from the typed AST (no bytecode/VM) to a native object via
 TargetMachine (`--emit-obj`, M2.e). `zig/tests/llvm_parity.sh` gates it
-against the zig VM: **157 cases — 157 ok, 0 skip, 0 excl, 0 fail**.
+against the zig VM: **159 cases — 159 ok, 0 skip, 0 excl, 0 fail**.
 `zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`/opt-pair/debug/fast-math
 fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
 `llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
@@ -150,15 +150,15 @@ seed's inert-import semantics for the `module/` fixtures. M4 (quality) is
 closed: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
 simple-loop-unswitch / IRCE for N=2), `--debug-info` emits source-mapped DWARF
 (verified via `tests/llvm_dwarf_test.sh` under `lldb`), and the parity gate is
-run both plain and with `ASTRA_LLVM_OPT=2` (157/157 in both); `zig/tests/llvm_bench.sh`
+run both plain and with `ASTRA_LLVM_OPT=2` (159/159 in both); `zig/tests/llvm_bench.sh`
 publishes VM/C/LLVM timings. `--sanitize=address` marks functions and runs the
 new-PM `asan` pass before the optimizer; `zig/tests/llvm_sanitize.sh` proves
 the artifacts are instrumented, that a plain link fails without
-`-fsanitize=address`, runs the whole 157-case suite under ASan at `-O0` and
+`-fsanitize=address`, runs the whole 159-case suite under ASan at `-O0` and
 `-O2`, and closes with an LSan step (`detect_leaks=1`) on
 `zig/tests/llvm/leaks.astra`. UBSan is not offered because LLVM 19..23 does
 not register a `ubsan` new-PM pass (`opt-19 --print-passes`); see
-`PHASE_LLVM_PROGRESS.md` §8. The post-M4 audit (§11) closed nil-related SEGVs,
+`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §8. The post-M4 audit (§11) closed nil-related SEGVs,
 bool-array equality and function-value printing. Values are owned by
 **reference counting** (M4.e, §12): every heap object carries an `{rc, kind}`
 header, stores/returns/params retain, locals/globals/temporaries release, and
@@ -169,11 +169,11 @@ whose env reaches the closure). Derived element metadata is still not carried
 module carries the target's triple and datalayout, and `src/llvm/target.zig`
 registers every target (`LLVMInitializeAllTargets`) — and
 `zig/tests/llvm_cross.sh` gates it by cross-linking with `<triple>-gcc` and
-cross-running under `qemu-<arch>-static`: **157/157**, byte-identical to the
+cross-running under `qemu-<arch>-static`: **159/159**, byte-identical to the
 native VM (CI job `llvm-cross`). The wasm route (progress §13.4) is likewise
 formal: `zig/tests/llvm_wasm.sh` compiles every fixture with `--emit-obj
 --target=wasm32-wasi`, links with `wasm-ld` + wasi-libc (crt1) and runs it
-under Node's WASI — **157/157**, plain and `-O2` (CI job `llvm-wasm`; needs
+under Node's WASI — **159/159**, plain and `-O2` (CI job `llvm-wasm`; needs
 `lld`, a wasi-libc sysroot and Node >= 22). The sysroot must ship a modern
 `<setjmp.h>` (the runtime TU includes `codegen_runtime.h`, which includes
 it): **Ubuntu's apt `wasi-libc` predates EH setjmp and ships none**, so CI
@@ -184,7 +184,7 @@ works, no driver patches). M6.a
 **in-process** via ORC/LLJIT (no cc/link step — the runtime TU is linked into
 the `astra-zig` binary with `-rdynamic` so LLJIT's process-symbol generator
 resolves `astra_llvm_*`+libc); `zig/tests/llvm_jit.sh` gates it against the VM
-with the same 157 cases (157/157, plain and `-O2`) — the foundation for a
+with the same 159 cases (159/159, plain and `-O2`) — the foundation for a
 future REPL/eval. M6.b (`--fast-math`, progress §15) marks all FP arithmetic
 (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`/`fneg`) with the seven fast-math flags —
 strictly opt-in: without the flag the IR is byte-identical — and leaves the
@@ -193,7 +193,7 @@ inf. M6.c (progress §16/§16.1) unboxes Option/Result: the pair
 `{i8 tag; i64 payload}` lives in SSA in named functions (params, returns,
 `let`, temporaries) with boxing only at container/dynamic-ABI boundaries, and
 construction/`?`/`match` run inline with no heap and no rc — no flag: the
-157/157 parity IS the gate. M6.c c.2 (progress §16.2) extends the pair to
+159/159 parity IS the gate. M6.c c.2 (progress §16.2) extends the pair to
 `str_` payloads: `string?` carries the string pointer as bits, with the rc
 of the payload handled at the ownership points (store, return, param entry,
 frame release, call-result temp, module globals) via `rcRef`; pair equality
@@ -253,7 +253,7 @@ Gotchas that will bite you:
 Beyond M0 the backend splits into parallel workstreams (`llvm-infra`,
 `llvm-core`, `llvm-values`, `llvm-errors`, `llvm-testing`, `llvm-quality`),
 each owning a slice of `src/llvm/` and verified by `llvm_parity.sh` +
-`zig build -Dllvm` — the file/ownership map is in `LLVM_BACKEND_PLAN.md` §5.
+`zig build -Dllvm` — the file/ownership map is in `Documentacion/05_fase_llvm/LLVM_BACKEND_PLAN.md` §5.
 
 ## Seed compiler layout (`seed/src`)
 
@@ -462,7 +462,7 @@ gh pr merge --admin --squash --delete-branch
   and weekly. Only the three contexts above gate merges, but keep every job
   green — `llvm (latest) — canario no bloqueante` is `continue-on-error` by
   design (it exists to alarm on LLVM-latest churn, as in §14.5 of
-  `Documentacion/PHASE_LLVM_PROGRESS.md`).
+  `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`).
 
 ## Conventions
 
