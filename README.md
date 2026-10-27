@@ -16,7 +16,7 @@
 
 ---
 
-> **Status: Phase 1 complete, Phase 2 in progress** — the seed compiler (`seed/`, C) compiles and runs Astra-0 (suite in green on the VM, the C backend and Zig); the self-hosting Zig compiler (`zig/`) implements the Astra-0 frontend plus the module system. The standard library and the LLVM backend (Phase 2.6) do not exist yet.
+> **Status: Phase 1 complete, Phase 2 in progress** — the seed compiler (`seed/`, C) compiles and runs Astra-0 (suite in green on the VM, the C backend and Zig); the self-hosting Zig compiler (`zig/`) implements the Astra-0 frontend plus the module system; the opt-in LLVM backend (`-Dllvm`, M0–M6) compiles Astra-0 natively with parity 159/159 (see [Benchmarks](#benchmarks-2026-10-27)). The standard library does not exist yet.
 
 **Astra** is a compiled programming language that aims to unify the ergonomics of Python/TypeScript with the native speed of C/Rust — without the complexity of Rust's Borrow Checker or GC pauses.
 
@@ -88,7 +88,7 @@ Astra/
     ├── 04_fase2_zig/             # Phase 2: kickoff, architecture, plans, status (6)
     ├── 05_fase_llvm/             # LLVM backend: plan + status (2)
     ├── 06_auditorias/            # Audits: coherence + pre-LLVM (2)
-    ├── 07_investigacion/         # Research reports 001–024 (24 files)
+    ├── 07_investigacion/         # Research reports 001–030 (30 files)
     └── 08_originales/            # Source PDFs (2)
 ```
 
@@ -112,8 +112,63 @@ document is listed there with a one-line description.
 - **[04_fase2_zig](Documentacion/04_fase2_zig/)** — Phase 2 (self-hosting Zig compiler): kickoff, architecture, implementation plan, research, gap analysis and [live status](Documentacion/04_fase2_zig/PHASE2_PROGRESS.md)
 - **[05_fase_llvm](Documentacion/05_fase_llvm/)** — LLVM backend: [plan](Documentacion/05_fase_llvm/LLVM_BACKEND_PLAN.md) and [status](Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md)
 - **[06_auditorias](Documentacion/06_auditorias/)** — [Coherence audit](Documentacion/06_auditorias/COHERENCE_AUDIT.md) and [pre-LLVM audit](Documentacion/06_auditorias/PRE_LLVM_AUDIT.md)
-- **[07_investigacion](Documentacion/07_investigacion/)** — 24 deep-dive research reports (001–024) on compilers, runtimes and language design
+- **[07_investigacion](Documentacion/07_investigacion/)** — 30 deep-dive research reports (001–030) on compilers, runtimes, language design, external critique analysis and benchmarks
 - **[08_originales](Documentacion/08_originales/)** — Original design PDFs
+
+## Benchmarks (2026-10-27)
+
+Measured on **Debian 13 · AMD Ryzen 3 3250C (4C, 15 W) · 2.7 GB RAM**, at
+commit `6e0954d` (Astra-0 subset, LLVM backend M0–M6.c, parity 159/159).
+**These numbers are for the LLVM native route (`--emit-obj` + runtime), not
+the VMs.** The seed and Zig VMs are *development tools and still have no
+memory reclamation* (bump arena — everything is freed only at process exit).
+That divergence is accepted and RSS-gated short-term; creating reclamation
+in the VMs is Phase-2 work (option 3B of
+[research/027](Documentacion/07_investigacion/027_runtime_semantics_decisions.md)).
+Their rows appear below only as reference.
+
+Method: min of N wall-time runs (shared machine, loadavg 0.5–1.5), peak
+memory via `VmHWM` sampling every 2 ms, outputs verified on every run,
+identical test programs in every language. Toolchains: rustc 1.99.1 · go
+1.24.4 · gcc 14.2.0 · zig 0.16.0 · Astra `--emit-obj` (O0 and O2). Full
+report, sources and raw data:
+[research/030](Documentacion/07_investigacion/030_benchmarks_llvm_vs_compilados.md)
++ `030_benchmarks_suite/` (reproducible: `build_all.sh` → `run_bench.py`).
+
+**CPU — naive `fib(30)` (min of 5):**
+
+| C -O2 | Rust -O | Zig -OReleaseFast | Go | **Astra LLVM -O2** | **Astra LLVM -O0** | seed VM* | zig VM* |
+|------:|--------:|------------------:|---:|-------------------:|-------------------:|---------:|--------:|
+| 4.9 ms | 7.0 ms | 7.2 ms | 10.7 ms | **41.2 ms** | **44.6 ms** | 5.34 s | 3.79 s |
+
+**Memory — 2M arrays created & discarded (peak RSS):**
+
+| C -O2 | Zig | Rust -O0 | Go | **Astra LLVM** | seed VM* | zig VM* |
+|------:|----:|---------:|---:|---------------:|---------:|--------:|
+| 1.2 MB | 0.5 MB | 1.9 MB | 1.9 MB | **1.2 MB** | **400 MB** | **712 MB** |
+
+**Memory — 25k string concats O(n²), peak RSS** (reclamation vs accumulation):
+
+| Zig | C -O2 | Rust -O0 | **Astra LLVM** | Go (GC) | seed VM* | zig VM* |
+|----:|------:|---------:|---------------:|--------:|---------:|--------:|
+| 0.6 MB | 1.3 MB | 2.1 MB | **1.4 MB** | 20 MB | **320 MB** | **354 MB** |
+
+**Startup (empty program, min of 20) & binary size:**
+
+| | **Astra LLVM** | C | Zig | Rust | Go |
+|:--|---------------:|--:|----:|-----:|---:|
+| Start | **0.8 ms** | 0.8 ms | 0.7 ms | 1.2 ms | 1.7 ms |
+| Binary | **23 KB** | 16 KB | 0.95 MB | 4.5 MB | 1.6 MB |
+
+\* VM rows are the development interpreter paths — **no memory reclamation
+yet** (that work is pending), and they compile+run the source on every
+invocation.
+
+Honest read: the LLVM route already behaves like a native language (0.8 ms
+startup, flat 1.2 MB under sustained allocation, no GC pauses, 23 KB
+binaries) and is **8–9× slower than C** on recursive CPU work — a
+first-iteration backend without escape analysis or aggressive inlining; the
+gap-closing milestones are listed in `PHASE_LLVM_PROGRESS.md`.
 
 ## Roadmap
 

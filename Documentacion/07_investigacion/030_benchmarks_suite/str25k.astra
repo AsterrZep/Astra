@@ -1,0 +1,11 @@
+// Benchmark B3: 25000 concatenaciones s = s + "x" — O(n^2) deliberado,
+// idéntico en todos los lenguajes; imprime la cadena final (25000 bytes).
+fn main() {
+    let mut s = "";
+    let mut i = 0;
+    while i < 25000 {
+        s = s + "x";
+        i = i + 1;
+    }
+    print(s);
+}

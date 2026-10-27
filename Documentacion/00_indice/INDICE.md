@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–024) | 24 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–030) | 30 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 
 ---
@@ -77,15 +77,23 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-24 informes numerados `001`–`024`, sin solapamientos: cada uno es un
+30 informes numerados `001`–`030`, sin solapamientos: cada uno es un
 dossier autocontenido sobre un tema (gramática, diseño del seed, backend C,
 enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
-concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM…).
+concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
+externa, enforcement de seguridad, semántica de runtime, stdlib y
+benchmarks…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
   diseño del seed y patrones del backend C.
 - `021`–`022` son dossiers de tareas concretas del compilador.
 - `023`–`024` son la investigación que sostiene la Fase LLVM.
+- `025` contrasta una crítica externa con el código: promesas de seguridad sin
+  mecanismo de enforcement, decisiones de runtime abiertas y proceso.
+- `026`–`030` son la respuesta a esa crítica: modelo de enforcement (026),
+  decisiones de semántica de runtime (027), stdlib mínimo para self-hosting
+  (028), arreglos de proceso/bootstrap (029) y benchmarks vs Rust/Go/C/Zig
+  (030, con suite reproducible en `030_benchmarks_suite/`).
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
