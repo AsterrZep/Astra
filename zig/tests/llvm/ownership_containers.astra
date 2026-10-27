@@ -19,7 +19,7 @@ struct Outer {
 fn make(i: i32) -> Outer {
     let inner = Inner { label: "i" + "-", more: [i, i + 1] }
     let items = [inner, inner]
-    let tag = One(inner)
+    let tag = Wrap.One(inner)
     return Outer { tag: tag, items: items, flag: i > 0 }
 }
 
@@ -45,7 +45,7 @@ fn main() {
     print(arr[1])
 
     // many(string[]) con elemento sobrescrito
-    let m = Many(["a" + "1", "b" + "2"])
+    let m = Wrap.Many(["a" + "1", "b" + "2"])
     match m {
         Wrap.Many(ms) => print(ms),
         Wrap.One(x) => print(x.label),

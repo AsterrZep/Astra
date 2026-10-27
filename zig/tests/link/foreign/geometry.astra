@@ -13,7 +13,7 @@ pub enum Shape {
 }
 
 pub fn circle(r: f64) -> Shape {
-    Circle(r)
+    Shape.Circle(r)
 }
 
 pub fn area(s: Shape) -> f64 {

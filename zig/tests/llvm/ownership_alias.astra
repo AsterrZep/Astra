@@ -41,9 +41,9 @@ fn main() {
     print(arr)
 
     // enum con payload sobrescrito
-    let mut t = One("first" + "!")
-    t = Two("second" + "?", 7)
-    t = One(t_to_one(t))
+    let mut t = Tag.One("first" + "!")
+    t = Tag.Two("second" + "?", 7)
+    t = Tag.One(t_to_one(t))
     print(t)
 
     // array de strings reasignado en bucle con break/continue

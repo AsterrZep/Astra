@@ -28,7 +28,7 @@ enum Tag {
 let origin: Punto = Punto { x: 0, y: 0 }
 let flag = Flag { on: true }
 let unit = Color.Red
-let tagged = Num(7)
+let tagged = Tag.Num(7)
 
 fn main() {
     print(origin.x)

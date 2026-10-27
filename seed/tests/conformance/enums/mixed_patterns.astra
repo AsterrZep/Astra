@@ -9,7 +9,7 @@ enum Item {
 }
 
 fn main() {
-    let items = [First(1), Item.Third, Second(2)];
+    let items = [Item.First(1), Item.Third, Item.Second(2)];
     for item in items {
         match item {
             Item.First(x) => print(x),

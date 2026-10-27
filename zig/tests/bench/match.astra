@@ -17,8 +17,8 @@ fn main() {
     let mut i: i32 = 0
     let mut acc: i32 = 1
     while i < 1000000 {
-        acc = apply(Add(i % 13), acc)
-        acc = apply(Mul(2), acc)
+        acc = apply(Op.Add(i % 13), acc)
+        acc = apply(Op.Mul(2), acc)
         if i % 97 == 0 {
             acc = apply(Op.Neg, acc)
         }

@@ -9,7 +9,7 @@
 enum Pair { Two(i32, i32) }
 fn main() {
     let a = 7
-    let p = Two(1, 2)
+    let p = Pair.Two(1, 2)
     let r = match p {
         Pair.Two(a, b) => a + b,
     }

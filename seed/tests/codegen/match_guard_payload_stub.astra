@@ -16,17 +16,17 @@ enum E { A B(i32) C(i32, i32) }
 
 fn main() {
     // Variant payload binding, guard fails -> wildcard arm.
-    let v1 = B(1)
+    let v1 = E.B(1)
     print(match v1 { E.B(n) if n > 1 => n, _ => 0 })
 
     // Variant payload binding, guard holds -> the arm runs.
-    let v2 = B(2)
+    let v2 = E.B(2)
     print(match v2 { E.B(n) if n > 1 => n, _ => 0 })
 
     // Two payload bindings: the guard-false drop is both cells.
-    let c1 = C(3, 7)
+    let c1 = E.C(3, 7)
     print(match c1 { E.C(x, y) if x > y => 1, _ => 0 })
-    let c2 = C(9, 2)
+    let c2 = E.C(9, 2)
     print(match c2 { E.C(x, y) if x > y => 1, _ => 0 })
 
     // Builtin payload binding (Option), guard fails.
@@ -42,11 +42,11 @@ fn main() {
     // binding, variant arm, wildcard — every failed guard must hand the
     // next arm arm-entry height.
     let i = 1
-    let e1 = B(1)
+    let e1 = E.B(1)
     print(match e1 { E.B(n) if n > 1 => n, m if i == 0 => 100, E.A => 50, _ => 0 })
 
     // Chained guarded variant arms.
-    let b = B(5)
+    let b = E.B(5)
     print(match b { E.B(n) if n > 9 => n, E.B(k) if k > 1 => k, E.A => 50, _ => 0 })
 
     // Guarded plain binding, guard fails, wildcard arm.

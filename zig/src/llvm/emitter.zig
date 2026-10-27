@@ -3105,7 +3105,16 @@ pub const Emitter = struct {
                 }
                 return null;
             },
-            else => return self.emitDynamicCall(idx, call.callee),
+            else => {
+                // `Enum.Variant(args)` — construcción calificada (DEC-008,
+                // research/027 §4): única ortografía legal de una variante
+                // de usuario; el constructor pelón sigue resolviendo arriba
+                // para cualquier cosa que el checker haya dejado pasar.
+                if (std.meta.activeTag(callee_node) == .field_access) {
+                    if (self.resolveVariantPath(call.callee)) |vr| return self.emitEnumConstruct(idx, vr);
+                }
+                return self.emitDynamicCall(idx, call.callee);
+            },
         }
     }
 
@@ -4910,7 +4919,7 @@ test "emite enums: descriptor + constantes kind-0, constructor y match con paylo
         \\}
         \\fn main() {
         \\    let c = Color.Rojo
-        \\    let v = Verde(7)
+        \\    let v = Color.Verde(7)
         \\    match v {
         \\        Color.Verde(n) => print(n),
         \\        Color.Rojo => print("rojo"),

@@ -598,6 +598,57 @@ static bool is_known_fn(Emitter *e, InternedString name) {
     return false;
 }
 
+/* Emit a data-carrying variant construction `Enum.Variant(args)` — the
+ * only spelling the checker accepts for user variants (DEC-008,
+ * research/027 §4); the bare form is rejected upstream, so this serves the
+ * qualified callee and keeps the bare one working for anything the checker
+ * let through. Returns false when `variant` is not one of `ei`'s (caller
+ * falls back to a plain call). */
+static bool emit_variant_construction(Emitter *e, Node *node, EnumInfo *ei,
+                                      InternedString variant) {
+    int vi = enum_variant_index(ei, variant);
+    if (vi < 0) return false;
+    size_t nf = (size_t)ei->field_counts[vi];
+    if (node->as.call.args.len != nf) {
+        fprintf(stderr,
+                "error: variant '%.*s.%.*s' expects %zu field(s), got %zu\n",
+                (int)ei->name.len, ei->name.str,
+                (int)variant.len, variant.str,
+                nf, node->as.call.args.len);
+        e->error_count++;
+        return true; /* handled: arity error, stop emitting this node */
+    }
+    /* Pack the runtime layout: shared by value_print/equality.
+     * The value stack only ever sees the finished handle. */
+    EnumDef *ed = arena_new(e->arena, EnumDef);
+    ed->name = ei->name.str;
+    ed->variant_count = ei->variant_count;
+    ed->variants = arena_new_array(e->arena, VariantDef, ei->variant_count);
+    for (size_t v = 0; v < ei->variant_count; v++) {
+        ed->variants[v].name = ei->variants[v].str;
+        ed->variants[v].field_count = ei->field_counts[v];
+        ed->variants[v].field_names = ei->field_names
+            ? ei->field_names[v] : NULL;
+    }
+    uint32_t def_idx = add_constant(e, value_enum_def(ed));
+    emit_inst_index(e, OPCODE_CONST, def_idx, node->loc.line);
+    for (size_t i = 0; i < node->as.call.args.len; i++) {
+        emit_expr(e, node->as.call.args.data[i]);
+    }
+    emit_inst(e, OPCODE_NEW_ENUM, node->loc.line);
+    e->code[e->code_len - 1].arg.index =
+        ((uint32_t)vi << 16) | (uint32_t)nf;
+    /* emit_inst applied opcode_stack_effect(op, 0) = +1, but
+     * the real effect is -(nf) [pops nf+1, pushes 1]. Correct
+     * the model: +1 already applied, need total -(nf), so
+     * adjust by -(nf) - (+1) = -(nf+1). The exact runtime
+     * model needs the same correction (audit §4.7): a match
+     * after the construction computes its frontier from rt. */
+    sp_advance(e, -(int)nf - 1);
+    e->rt += -(int)nf - 1;
+    return true;
+}
+
 /* Collect struct/enum declarations before emitting code so literals, field
  * accesses and variants can be resolved without a type table. */
 static void register_types(Emitter *e, Node *module) {
@@ -1407,51 +1458,25 @@ static void emit_expr(Emitter *e, Node *node) {
                             (uint8_t)(node->as.call.args.len + 1));
             break;
         }
-        if (callee->kind == NODE_IDENT && !is_known_fn(e, callee->as.ident.name)) {
-            EnumInfo *ei = find_enum_by_variant(e, callee->as.ident.name);
-            if (ei) {
-                int vi = enum_variant_index(ei, callee->as.ident.name);
-                if (vi >= 0) {
-                    size_t nf = (size_t)ei->field_counts[vi];
-                    if (node->as.call.args.len != nf) {
-                        fprintf(stderr,
-                                "error: variant '%.*s.%.*s' expects %zu field(s), got %zu\n",
-                                (int)ei->name.len, ei->name.str,
-                                (int)callee->as.ident.name.len, callee->as.ident.name.str,
-                                nf, node->as.call.args.len);
-                        e->error_count++;
-                        break;
-                    }
-                    /* Pack the runtime layout: shared by value_print/equality.
-                     * The value stack only ever sees the finished handle. */
-                    EnumDef *ed = arena_new(e->arena, EnumDef);
-                    ed->name = ei->name.str;
-                    ed->variant_count = ei->variant_count;
-                    ed->variants = arena_new_array(e->arena, VariantDef, ei->variant_count);
-                    for (size_t v = 0; v < ei->variant_count; v++) {
-                        ed->variants[v].name = ei->variants[v].str;
-                        ed->variants[v].field_count = ei->field_counts[v];
-                        ed->variants[v].field_names = ei->field_names
-                            ? ei->field_names[v] : NULL;
-                    }
-                    uint32_t def_idx = add_constant(e, value_enum_def(ed));
-                    emit_inst_index(e, OPCODE_CONST, def_idx, node->loc.line);
-                    for (size_t i = 0; i < node->as.call.args.len; i++) {
-                        emit_expr(e, node->as.call.args.data[i]);
-                    }
-                    emit_inst(e, OPCODE_NEW_ENUM, node->loc.line);
-                    e->code[e->code_len - 1].arg.index =
-                        ((uint32_t)vi << 16) | (uint32_t)nf;
-                    /* emit_inst applied opcode_stack_effect(op, 0) = +1, but
-                     * the real effect is -(nf) [pops nf+1, pushes 1]. Correct
-                     * the model: +1 already applied, need total -(nf), so
-                     * adjust by -(nf) - (+1) = -(nf+1). The exact runtime
-                     * model needs the same correction (audit §4.7): a match
-                     * after the construction computes its frontier from rt. */
-                    sp_advance(e, -(int)nf - 1);
-                    e->rt += -(int)nf - 1;
+        /* Qualified variant construction `Enum.Variant(args)` (DEC-008,
+         * research/027 §4): same bytecode the bare spelling used to emit. */
+        if (callee->kind == NODE_FIELD_ACCESS) {
+            Node *obj = callee->as.field_access.object;
+            if (obj && obj->kind == NODE_IDENT) {
+                EnumInfo *ei = find_enum(e, obj->as.ident.name);
+                if (ei && emit_variant_construction(e, node, ei,
+                                                    callee->as.field_access.field)) {
                     break;
                 }
+            }
+        }
+        /* Bare callee: the checker rejects user variants here (DEC-008), so
+         * this only mirrors its rule defensively — the builtins `some/ok/err`
+         * are VM natives and never resolve through this registry. */
+        if (callee->kind == NODE_IDENT && !is_known_fn(e, callee->as.ident.name)) {
+            EnumInfo *ei = find_enum_by_variant(e, callee->as.ident.name);
+            if (ei && emit_variant_construction(e, node, ei, callee->as.ident.name)) {
+                break;
             }
         }
         emit_expr(e, node->as.call.callee);

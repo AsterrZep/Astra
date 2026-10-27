@@ -1459,6 +1459,44 @@ pub const Emitter = struct {
                     self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
                     return;
                 }
+                // Qualified variant construction `Enum.Variant(args)` (DEC-008,
+                // research/027 §4): the only spelling the checker accepts for
+                // user variants — same bytecode the bare form used to emit.
+                // Resolves both paths the checker accepts: `Enum.Variant`
+                // (own or from-imported enum) and `alias.Enum.Variant`
+                // through a module namespace.
+                if (std.meta.activeTag(callee) == .field_access) {
+                    const fa = callee.field_access;
+                    const cobj = self.tree.node(fa.object);
+                    const cen: ?*const EnumInfo = switch (cobj) {
+                        .identifier => |nm| self.findEnum(nm),
+                        .field_access => |inner| blk: {
+                            const iobj = self.tree.node(inner.object);
+                            if (std.meta.activeTag(iobj) == .identifier) {
+                                if (self.importFor(iobj.identifier)) |iref| {
+                                    if (iref.module_prefix.len > 0) {
+                                        break :blk self.findNamespaceEnum(iref.module_prefix, inner.field);
+                                    }
+                                }
+                            }
+                            break :blk null;
+                        },
+                        else => null,
+                    };
+                    if (cen) |ei| {
+                        if (enumVariantIndex(ei, fa.field)) |vi| {
+                            const nf: usize = ei.field_counts[vi];
+                            const args = self.tree.extraSlice(c.args);
+                            if (args.len != nf) {
+                                self.err(ln, "variant '{s}.{s}' expects {d} field(s), got {d}", .{ ei.name, fa.field, nf, args.len });
+                            } else {
+                                self.emitEnumConstruction(ei, vi, nf, args, ln);
+                                self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
+                                return;
+                            }
+                        }
+                    }
+                }
                 // A bare-identifier callee may name a data-carrying enum variant
                 // (`Paso(x)`); mirror the checker's rule: variant, else call.
                 // An imported name is never a local variant — skip the search
@@ -1783,7 +1821,7 @@ pub const Emitter = struct {
         self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
     }
 
-    fn emitEnumConstruction(self: *Emitter, ei: *EnumInfo, vi: usize, nf: usize, args: []const u32, ln: u32) void {
+    fn emitEnumConstruction(self: *Emitter, ei: *const EnumInfo, vi: usize, nf: usize, args: []const u32, ln: u32) void {
         // Pack the runtime layout shared by value_print/equality. The value
         // stack only ever sees the finished handle.
         const ed = self.a.create(bc.EnumDef) catch @panic("OOM");
@@ -2559,7 +2597,7 @@ test "emits loops, match and enum construction" {
         \\}
         \\
         \\fn main() {
-        \\    let items = [First(1), Item.Third];
+        \\    let items = [Item.First(1), Item.Third];
         \\    for item in items {
         \\        match item {
         \\            Item.First(x) => print(x),

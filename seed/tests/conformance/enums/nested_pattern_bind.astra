@@ -6,7 +6,7 @@ enum Point {
 }
 
 fn main() {
-    let p = Pt(5, 10);
+    let p = Point.Pt(5, 10);
     match p {
         Point.Pt(x, y) => {
             print(x);

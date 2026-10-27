@@ -8,7 +8,7 @@ enum Color {
 }
 
 fn main() {
-    let c = Rgb(10, 20, 30);
+    let c = Color.Rgb(10, 20, 30);
     match c {
         Color.Rgb(r, g, b) => {
             print(r);

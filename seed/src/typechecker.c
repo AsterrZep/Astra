@@ -294,10 +294,14 @@ void symbol_table_pop_scope(SymbolTable *st) {
 /* One entry per declared variant, in registration order. Variant names do
  * not live in the symbol table (they are not bindings), so a data-carrying
  * construction `Paso(x)` cannot resolve through it; this flat registry is
- * the checker's view of "which enum does this variant name belong to". */
+ * the checker's view of "which enum does this variant name belong to".
+ * DEC-008 (research/027 §4): the bare spelling is only legal for the
+ * built-in Option/Result variants (`some/ok/err/none`), so every entry
+ * records which kind it is. */
 typedef struct {
     InternedString variant;
     Type          *enum_type;
+    bool           builtin;
 } VariantEntry;
 
 /* One entry per method declared in an `impl` block (research/001 §12). The
@@ -395,7 +399,7 @@ struct TypeChecker {
     size_t     impl_cap;
 };
 
-static void checker_add_variant(TypeChecker *tc, InternedString variant, Type *et) {
+static void checker_add_variant(TypeChecker *tc, InternedString variant, Type *et, bool builtin) {
     if (tc->variant_count >= tc->variant_cap) {
         size_t nc = tc->variant_cap == 0 ? 16 : tc->variant_cap * 2;
         VariantEntry *nd = arena_new_array(tc->arena, VariantEntry, nc);
@@ -407,12 +411,17 @@ static void checker_add_variant(TypeChecker *tc, InternedString variant, Type *e
     }
     tc->variants[tc->variant_count].variant   = variant;
     tc->variants[tc->variant_count].enum_type = et;
+    tc->variants[tc->variant_count].builtin   = builtin;
     tc->variant_count++;
 }
 
-static Type *checker_find_variant(TypeChecker *tc, InternedString name) {
+/* First registry entry for `name`, or NULL. `builtin` (when non-NULL)
+ * reports whether it is one of the Option/Result variants, which are the
+ * only ones the bare spelling `some(x)` may still construct. */
+static Type *checker_find_variant(TypeChecker *tc, InternedString name, bool *builtin) {
     for (size_t i = 0; i < tc->variant_count; i++) {
         if (string_eq(tc->variants[i].variant, name)) {
+            if (builtin) *builtin = tc->variants[i].builtin;
             return tc->variants[i].enum_type;
         }
     }
@@ -642,8 +651,8 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         opt_type->as.enumeration.payloads[1].types = NULL;
         opt_type->as.enumeration.payloads[1].names = NULL;
 
-        checker_add_variant(tc, string_intern_cstr(strings, "some"), opt_type);
-        checker_add_variant(tc, string_intern_cstr(strings, "none"), opt_type);
+        checker_add_variant(tc, string_intern_cstr(strings, "some"), opt_type, true);
+        checker_add_variant(tc, string_intern_cstr(strings, "none"), opt_type, true);
     }
 
     /* Register built-in Result enum: ok(T) -> Result[T, E], err(E) -> Result[T, E] */
@@ -666,8 +675,8 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         res_type->as.enumeration.payloads[1].types[0] = type_new(arena, TYPE_UNKNOWN);
         res_type->as.enumeration.payloads[1].names = NULL;
 
-        checker_add_variant(tc, string_intern_cstr(strings, "ok"), res_type);
-        checker_add_variant(tc, string_intern_cstr(strings, "err"), res_type);
+        checker_add_variant(tc, string_intern_cstr(strings, "ok"), res_type, true);
+        checker_add_variant(tc, string_intern_cstr(strings, "err"), res_type, true);
     }
 
     return tc;
@@ -1606,54 +1615,73 @@ static Type *typecheck_generic_call(TypeChecker *tc, Node *node, Symbol *csym) {
     return ret;
 }
 
+/* Check a data-carrying variant construction `Enum.Variant(args)`
+ * (research/004 §9.2): positional construction against the payload layout.
+ * DEC-008 (research/027 §4) routes both spellings here — the qualified
+ * `Enum.Variant(...)` (the only legal one for user variants) and the bare
+ * builtin `some(x)` / `ok(x)` / `err(x)`. Returns the enum's type, or an
+ * error type. */
+static Type *check_variant_construction(TypeChecker *tc, Node *node, Type *et,
+                                        InternedString vname) {
+    int vi = enum_variant_index(et, vname);
+    if (vi < 0) return type_new(tc->arena, TYPE_ERROR); /* defensive */
+    const VariantLayout *vl =
+        et->as.enumeration.payloads ? &et->as.enumeration.payloads[vi] : NULL;
+    size_t nf = vl ? vl->field_count : 0;
+
+    if (node->as.call.args.len != nf) {
+        return tc_error_type(tc, node->loc,
+                             "variant '%.*s.%.*s' expects %zu field(s), got %zu",
+                             (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
+                             (int)vname.len, vname.str, nf, node->as.call.args.len);
+    }
+    /* Construction is positional in Astra-0: `PasoDoble(1, 2)`.
+     * Declared field names are kept for pattern bindings, not
+     * for named construction — the shared call grammar has no
+     * `name:` argument form yet. */
+    if (vl) {
+        for (size_t i = 0; i < node->as.call.args.len; i++) {
+            Type *at = typecheck_node(tc, node->as.call.args.data[i]);
+            if (type_is_error(at)) return at;
+            Type *expected = vl->types[i];
+            if (expected && expected->kind == TYPE_UNKNOWN) expected = NULL;
+            if (expected && !type_eq(at, expected)) {
+                return tc_error_type(tc, node->loc,
+                                     "field %zu of '%.*s.%.*s' expects %s, got %s",
+                                     i + 1,
+                                     (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
+                                     (int)vname.len, vname.str,
+                                     type_kind_name(expected->kind),
+                                     type_kind_name(at->kind));
+            }
+        }
+    }
+    return et;
+}
+
 static Type *typecheck_call(TypeChecker *tc, Node *node) {
     Node *callee_node = node->as.call.callee;
 
-    /* A bare identifier callee may name a data-carrying enum variant:
-     * `Paso(x)` / `PasoDoble(1, 2)` (research/004 §9.2). The grammar cannot
-     * tell it from a function call, so resolution is by name: the variant
-     * registry wins unless the name also binds a function. */
+    /* A bare identifier callee may name a built-in Option/Result variant:
+     * `some(x)` / `ok(x)` / `err(x)`. DEC-008 (research/027 §4): a *user*
+     * variant is only legal in the qualified spelling `Enum.Variant(...)`,
+     * so the bare form resolves to a variant and is rejected with a hint —
+     * the flat registry that used to let the first-registered enum win
+     * (colliding homonyms) now only serves the built-ins. */
     if (callee_node->kind == NODE_IDENT) {
-        Type *et = checker_find_variant(tc, callee_node->as.ident.name);
+        bool builtin = false;
+        Type *et = checker_find_variant(tc, callee_node->as.ident.name, &builtin);
         Symbol *sym = symbol_table_lookup(tc->symbols, callee_node->as.ident.name);
         if (type_is_error(et)) return et;
         if (et && !(sym && sym->is_fn)) {
-            InternedString vname = callee_node->as.ident.name;
-            int vi = enum_variant_index(et, vname);
-            if (vi >= 0) {
-                const VariantLayout *vl =
-                    et->as.enumeration.payloads ? &et->as.enumeration.payloads[vi] : NULL;
-                size_t nf = vl ? vl->field_count : 0;
-
-                if (node->as.call.args.len != nf) {
-                    return tc_error_type(tc, node->loc,
-                                         "variant '%.*s.%.*s' expects %zu field(s), got %zu",
-                                         (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
-                                         (int)vname.len, vname.str, nf, node->as.call.args.len);
-                }
-                /* Construction is positional in Astra-0: `PasoDoble(1, 2)`.
-                 * Declared field names are kept for pattern bindings, not
-                 * for named construction — the shared call grammar has no
-                 * `name:` argument form yet. */
-                if (vl) {
-                    for (size_t i = 0; i < node->as.call.args.len; i++) {
-                        Type *at = typecheck_node(tc, node->as.call.args.data[i]);
-                        if (type_is_error(at)) return at;
-                        Type *expected = vl->types[i];
-                        if (expected && expected->kind == TYPE_UNKNOWN) expected = NULL;
-                        if (expected && !type_eq(at, expected)) {
-                            return tc_error_type(tc, node->loc,
-                                                 "field %zu of '%.*s.%.*s' expects %s, got %s",
-                                                 i + 1,
-                                                 (int)et->as.enumeration.name.len, et->as.enumeration.name.str,
-                                                 (int)vname.len, vname.str,
-                                                 type_kind_name(expected->kind),
-                                                 type_kind_name(at->kind));
-                        }
-                    }
-                }
-                return et;
+            if (builtin) {
+                return check_variant_construction(tc, node, et,
+                                                  callee_node->as.ident.name);
             }
+            return tc_error_type(tc, node->loc,
+                                 "use Enum.Variant to construct '%.*s'",
+                                 (int)callee_node->as.ident.name.len,
+                                 callee_node->as.ident.name.str);
         }
     }
 
@@ -1667,6 +1695,14 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
     if (callee_node->kind == NODE_FIELD_ACCESS) {
         Type *obj = typecheck_node(tc, callee_node->as.field_access.object);
         if (type_is_error(obj)) return obj;
+        /* DEC-008 (research/027 §4): `Enum.Variant(args)` is a variant
+         * construction, not a method call — checked before the method table
+         * so a method may not shadow a variant of the same name. */
+        if (obj->kind == TYPE_ENUM &&
+            enum_variant_index(obj, callee_node->as.field_access.field) >= 0) {
+            return check_variant_construction(tc, node, obj,
+                                              callee_node->as.field_access.field);
+        }
         MethodEntry *m = checker_find_method(tc, obj,
                                              callee_node->as.field_access.field);
         if (m) {
@@ -2977,7 +3013,7 @@ static void typecheck_enum_decl(TypeChecker *tc, Node *node) {
             }
         }
         en_type->as.enumeration.variants[i] = node->as.enum_decl.variants.data[i];
-        checker_add_variant(tc, node->as.enum_decl.variants.data[i], en_type);
+        checker_add_variant(tc, node->as.enum_decl.variants.data[i], en_type, false);
     }
 
     /* Payload layouts run parallel to the variants: index i describes
