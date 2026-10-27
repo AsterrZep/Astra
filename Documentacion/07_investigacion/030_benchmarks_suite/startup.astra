@@ -1,0 +1,2 @@
+// Benchmark B4: programa vacío — coste de arranque del runtime.
+fn main() {}

@@ -1,0 +1,10 @@
+# artefactos de build de la suite de benchmarks (no se commitean)
+runtime.o
+*.o
+*_astra_O0
+*_astra_O2
+*_rust
+*_rust_O0
+*_go
+*_c
+*_zig
