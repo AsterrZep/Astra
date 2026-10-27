@@ -8,7 +8,7 @@
  * Right associative and the loosest level in §12.1 (the grammar
  * entry point is `Expression ::= Assignment`), which contradicts
  * the §12.2 table row that puts assignment *highest*. See
- * Documentacion/CONSTRUCT_REGISTRY.md — the seed follows §12.1,
+ * Documentacion/01_lenguaje/CONSTRUCT_REGISTRY.md — the seed follows §12.1,
  * like every language in the comparison set.
  *
  * One production, two node kinds: NODE_ASSIGN and

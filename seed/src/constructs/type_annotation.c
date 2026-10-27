@@ -52,6 +52,6 @@ const ConstructSpec construct_type_annotation = {
                   "by name at check time; there is no unification (research/002 §8.1 "
                   "calls for simplified HM, which the seed does not yet need). "
                   "NOTE: this text is hand-written documentation, not machine-checked "
-                  "— see Documentacion/COHERENCE_AUDIT.md §7.",
+                  "— see Documentacion/06_auditorias/COHERENCE_AUDIT.md §7.",
     .parse = NULL, .check = NULL, .emit = NULL,
 };

@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `if` y `match` descartaban `payload_ty`, así que imprimir el resultado de
   `let c = if … { some(1) } else { none }` revienta en el emisor — pinzado
   por el conformance nuevo `enums/option_branch_unify.astra` (15 EXPECT).
-  Detalle: `PHASE_LLVM_PROGRESS.md` §16 y §16.1.
+  Detalle: `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §16 y §16.1.
 - **Backend LLVM: `--fast-math` opt-in (M6.b)**: el flag nuevo —exigido a un
   modo de salida LLVM (`--emit-llvm`, `--emit-llvm-stdout`, `--emit-obj` o
   `--jit`); con la VM o los dumps sale un error accionable— marca toda la
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fija la forma del IR con FileCheck (6/6); al vivir en `tests/llvm/`
   entra también en paridad y la suite crece de 154 a **155** (añade
   paridad real de `%` float VM↔LLVM): **155/155** en paridad, JIT, cross
-  y wasm, plano y `-O2`. Detalle: `PHASE_LLVM_PROGRESS.md` §15.
+  y wasm, plano y `-O2`. Detalle: `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §15.
 - **Backend LLVM: ruta wasm32-wasi formalizada**: lo que el plan listaba
   como «+ wasm si se quiere» (§6 M5) quedó formal: `--emit-obj
   --target=wasm32-wasi` emite el objeto, `zig/tests/llvm_wasm.sh` (nuevo)
@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release `wasi-sdk-23` y el gate pasa el `include/<triple>` con `-I`
   explícito (cualquier clang sirve). El intento previo con el sysroot de
   noble falló en CI exactamente por eso; la historia está contada en
-  `PHASE_LLVM_PROGRESS.md` §13.4.
+  `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §13.4.
 - **Backend LLVM: `--jit` — ejecución in-process (M6.a)**: el módulo
   emitido se compila y corre en el propio proceso vía ORC/LLJIT, sin paso
   `cc`+enlace — cimiento del REPL/eval futuro. Resolución de símbolos
@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sin y con `-O2` (`zig/tests/llvm_jit.sh`), test unitario de
   create→add→lookup→call, y `registerAll()` en el camino del host para que
   `detectHost` no falle con «no targets are registered». Detalle:
-  `PHASE_LLVM_PROGRESS.md` §14.
+  `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §14.
 - **Backend LLVM: cross-compilation a aarch64 (M5)**: el backend ya no
   emite sólo para el host. El flag `--target=<triple>` (p. ej.
   `aarch64-linux-gnu`, exigido a un modo de salida LLVM) fija el triple de
@@ -78,7 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `llvm-cross`. Tests unitarios: TargetMachine de host + aarch64 + triple
   inventado (rechazo limpio) y verificación de `e_machine` = EM_AARCH64 en el
   `.o` cruzado. wasm se formalizó después (ver la entrada «ruta
-  wasm32-wasi» más arriba). Detalle en `PHASE_LLVM_PROGRESS.md` §13.
+  wasm32-wasi» más arriba). Detalle en `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §13.
 - **Backend LLVM: ownership por refcount y cero fugas (M4.e)**: los valores
   de la ruta LLVM ya no viven todo el proceso. Cada objeto heap lleva una
   cabecera `{rc, kind}` justo antes del puntero (los layouts de array/struct/
@@ -96,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   también que un global `let g = "a" + "b"` se infería `i64` e imprimía el
   puntero. Paridad **154/154** a `-O0`, `-O2` y bajo ASan; ciclos de
   closures/structs siguen sin coleccionarse (limitación documentada,
-  `PHASE_LLVM_PROGRESS.md` §12).
+  `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §12).
 - **Backend nativo LLVM (Fase LLVM, M0–M3, opt-in `-Dllvm`)**: tercera ruta
   de codegen del compilador zig — AST tipado → LLVM IR (C API `llvm-c`,
   LLVM 19..23 vía `llvm-config`) → `.o` nativo con TargetMachineEmitToFile
@@ -130,7 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   en IR y objeto, que el enlace sin `-fsanitize=address` falla, un control
   negativo con heap-buffer-overflow y la suite completa bajo ASan
   (**154/154** a `-O0` y `-O2`). UBSan no se ofrece: LLVM 19..23 no registra
-  `ubsan` en el new PM. Detalle: `Documentacion/PHASE_LLVM_PROGRESS.md`.
+  `ubsan` en el new PM. Detalle: `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`.
 - **Propagación de errores estáticamente chequeada (seed + Zig, Fase 2.5)**:
   el `?` ya existía de punta a punta (postfix Pratt, `OPCODE_TRY_UNWRAP`,
   unwind de frame, setjmp del C backend); ahora el typechecker de ambos
@@ -148,7 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declara `?` con `BP_POSTFIX` (el check de precedencia de la invariante 6
   lo saltaba con `binding_power=0`) y dos notas de constructs que mentían
   sobre `?` se corrigieron. Diferido: `Result<T,E>` estático y `!` (Tier
-  2), `??`, re-chequeo por instanciación genérica — `PHASE2_PROGRESS.md`
+  2), `??`, re-chequeo por instanciación genérica — `Documentacion/04_fase2_zig/PHASE2_PROGRESS.md`
   §10.4. Gates: suite seed 152/152, zig 73/73, paridad 92/92, CI verde.
 - **Genéricos (seed + Zig, Fase 2.4, pasos 1–4)**: `GenericParams` con
   bounds (`T: Show + Debug`) parsea en fn/struct/enum/trait/impl y el `>>`
@@ -172,7 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   args sobre primitivas (`i32<f32>` silencioso), método sobre parámetro
   (UFCS), genéricos cross-módulo (el exportador zig filtra
   `generics.len == 0`), where-clauses, turbofish, blanket impls:
-  `PHASE2_PROGRESS.md` §9.6. Fijado por 6 casos `generics/` y 17 casos
+  `Documentacion/04_fase2_zig/PHASE2_PROGRESS.md` §9.6. Fijado por 6 casos `generics/` y 17 casos
   `ui/` — suite seed 148/148, zig 73/73, paridad de dumps 91/91, CI
   verde en ambos compiladores.
 - **Traits y métodos con dispatch estático (seed + Zig, Fase 2.3)**: los
@@ -197,7 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/codegen/method_dispatch.astra`). Quedan diferidos los objetos de
   trait/vtable, UFCS, `impl<T>`, métodos default, la desambigüación
   cross-trait y todo lo cross-módulo (tablas por checker, `pub trait` sin
-  exportar): `PHASE2_PROGRESS.md` §8.3. Fijado por
+  exportar): `Documentacion/04_fase2_zig/PHASE2_PROGRESS.md` §8.3. Fijado por
   `tests/conformance/traits/{method_dispatch,trait_conformance}.astra`,
   `tests/codegen/method_dispatch.astra` y 13 casos `ui/` — suite seed
   123/123, zig 73/73, paridad de dumps 83/83, CI verde en ambos
@@ -240,7 +240,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   propia línea no se confunde con un valor. Fijado por
   `tests/conformance/ui/break_value.astra` (104 casos seed, 60 Zig)
 - **Closures (seed + C backend + Zig)**: lambdas now capture free variables
-  from the enclosing frame **by value** (ARCHITECTURE.md §30.5). The emitter
+  from the enclosing frame **by value** (Documentacion/01_lenguaje/ARCHITECTURE.md §30.5). The emitter
   analyzes the lambda body for free names against the enclosing scopes, pushes
   each captured value at the creation site, and emits `OPCODE_CLOSURE`
   (`(fn_const << 8) | n_captures`), which clones the template `FnObj` and
@@ -292,7 +292,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `const` is accepted by both compilers and recorded on the AST (`is_pub`);
   before anything else (`pub let`, `pub use`) it is a parse error with the
   same message in both. Foundation for the module system's visibility rules
-  (`ARCHITECTURE.md` §10.2); no cross-module semantics yet. New cases
+  (`Documentacion/01_lenguaje/ARCHITECTURE.md` §10.2); no cross-module semantics yet. New cases
   `module/pub_decls.astra` and `ui/pub_let.astra`
 - **CI (GitHub Actions)**: `.github/workflows/ci.yml` builds the seed under
   ASan/UBSan/LSan and runs the full suite against that binary, checks the
@@ -316,18 +316,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Governance and RFC process
 - Evolution demo scripts (01_basics through 07_lowlevel_phase2) in `scripts/evolution/`
 - Terminal status dashboard (`scripts/status.sh`)
-- Phase 2 kickoff document (`Documentacion/PHASE2_KICKOFF.md`)
+- Phase 2 kickoff document (`Documentacion/04_fase2_zig/PHASE2_KICKOFF.md`)
 - **Module declarations in the Zig compiler (Phase 2.2, step 1)**: `use`/`import`/`from` are lexed and parsed into `use_decl`/`import_decl`/`from_decl`/`import_item` nodes, with dot-separated `ImportPath` (`zig/src/`). No module resolution yet
 - **Module declarations in the seed (Phase 2.2, step 1)**: `import`/`from`/`as` are lexed and parsed into `NODE_IMPORT`/`NODE_FROM`/`NODE_IMPORT_ITEM`, sharing one dot-separated `ImportPath` builder with `use`. The registry grows to 46 constructs (`seed/src/`). Parsed and discarded, as before: no module resolution in the seed
-- **Module resolution groundwork (Phase 2.2, step 2)**: `zig/src/modules/modules.zig` resolves an `ImportPath` to a file (relative and sub-route, `ARCHITECTURE.md` §10.4 rules 1–2, rejected if a segment could escape the module directory), collects a file's declarations into a `ModuleTable`, and lists the names each declaration states explicitly
-- **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
+- **Module resolution groundwork (Phase 2.2, step 2)**: `zig/src/modules/modules.zig` resolves an `ImportPath` to a file (relative and sub-route, `Documentacion/01_lenguaje/ARCHITECTURE.md` §10.4 rules 1–2, rejected if a segment could escape the module directory), collects a file's declarations into a `ModuleTable`, and lists the names each declaration states explicitly
+- **Module loader with cycle detection**: the same module reads each resolved file, follows its imports transitively and reports circular imports (`Documentacion/01_lenguaje/ARCHITECTURE.md` §10.6) instead of looping; `--dump-modules` prints the resulting graph, with fixtures under `zig/tests/modules/`
 - **Prefijo raíz `@/` y separador `/` en `ImportPath` (gramática + resolución)**:
   la producción pasa a `ImportPath ::= ("@" "/")? Identifier (("." | "/") Identifier)*`
   en ambos parsers — token `@` nuevo (`TOKEN_AT`/`.at`), `.` y `/` como
   separadores intercambiables y el path guardado tal cual está escrito (el
   seed comparte un único `parse_module_path` entre `use`/`import`/`from`, así
   `--dump-ast` imprime el mismo slice en ambos lados). En el Zig, la regla 3
-  de `ARCHITECTURE.md` §10.4 resuelve `@/…` contra el directorio con
+  de `Documentacion/01_lenguaje/ARCHITECTURE.md` §10.4 resuelve `@/…` contra el directorio con
   `astra.toml` más cercano por encima del fichero de entrada (walk-up en
   `Loader.load`; sólo existencia — leer `[package]` queda para el package
   manager), y la regla 4 rechaza `std/…` con «no standard library exists
@@ -339,6 +339,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zig 73, paridad 79/79; cierra App. B #10).
 
 ### Changed
+- **Documentación reorganizada en carpetas numeradas**: `Documentacion/`
+  pasa de 18 documentos sueltos + `research/` + `original/` a nueve carpetas
+  numeradas que siguen el orden de trabajo — `00_indice/`, `01_lenguaje/`,
+  `02_compilador/`, `03_fase1_seed/`, `04_fase2_zig/`, `05_fase_llvm/`,
+  `06_auditorias/`, `07_investigacion/` (informes 001–024, numeración
+  intacta, de modo que las citas `` `research/001` `` siguen valiendo) y
+  `08_originales/`. Nuevo índice maestro `00_indice/INDICE.md` con cada
+  documento, su contenido, su idioma y el estado del proyecto de un vistazo.
+  Todas las rutas referenciadas fuera y dentro de la documentación quedan
+  resolubles: `AGENTS.md`, `README.md` (árbol y sección de documentación),
+  `CHANGELOG.md`, `index.html`, `CONTRIBUTING.md` (enlace al spec que ya
+  estaba roto), `.agents/skills/astra-dev-loop/SKILL.md` y los comentarios de
+  `seed/src/constructs/{assign,type_annotation}.c`; además, las citas en prosa
+  que daban un nombre de documento suelto ahora llevan su carpeta (123
+  referencias).
+- **Documentación sincronizada con el estado real del proyecto (2026-10-27)**:
+  contadores verificados por ejecución, no de memoria — suite seed
+  **219 → 259** (`make debug && make test` → 259 passed, 0 failed: 112 no-UI +
+  116 `ui/` + 28 `codegen/` + 3 auxiliares; antes se citaba 83/111/22 y hasta
+  «93 casos»/«89 passing»), barrido `sweep_emit_c.sh` **83 → 112** (3 skip,
+  0 fail), `dump_parity.sh` **111/144 → 146 ficheros, 0 divergentes**,
+  opcodes **~30/48/50 → 54** en los dos emisores, constructos **44 → 47**
+  (27 operadores), informes de investigación **19/20 → 24**, jobs de CI
+  **3 → 7**. Estados corregidos: la Fase LLVM se da por cerrada en su etapa
+  c.1 (M0–M6.c) con paridad **155 → 157/157**, no «pending» como decía el
+  roadmap del README; `PHASE2_GAP_ANALYSIS.md` marca los módulos y la
+  propagación de errores como entregados y cierra dos decisiones abiertas de
+  su §12 (fuente del DWARF y forma de los flags, ya implementadas en M4.c y
+  en el CLI); `PHASE2_KICKOFF.md` deja de decir «Ready to begin». Hechos
+  puntuales falsos arreglados: extensión `.ast` → `.astra` (nunca existió
+  `.ast`), `parser_internal.h` (no existe) y `--dump-operands` (no existe,
+  la verificación es `ASTRA_DUMP_VM=1`), `f32` (no implementado), y la fila
+  A3 de `PRE_LLVM_AUDIT.md`, que aconsejaba limpiar las keywords `in`/`as`
+  cuando sí se usan (`for..in` y el alias `as` de `import`). Los documentos
+  fechados (`*_AUDIT`, `PHASE2_{ARCHITECTURE,IMPL_PLAN,RESEARCH}`) se
+  conservan como registro histórico: sólo se les corrigen hechos objetivos,
+  no se reescriben.
 - **`--dump-tokens` y `--dump-ast` del Zig byte-idénticos al seed (PHASE2
   §4 #6)**: los dos introspection flags dejaron de imprimir el formato
   propio del Zig a stderr y ahora replican el del seed a stdout. Nuevo
@@ -400,7 +437,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GetContext`; 22+: `FromLLVMContext`), con ownership idéntico en ambos
   lados. Verificado en LLVM 19 (`build`, `build test`, `llvm_jit.sh`
   154/154 plano y `-O2`) y con el canario en verde en CI bajo LLVM
-  latest. Detalle: `PHASE_LLVM_PROGRESS.md` §14.5.
+  latest. Detalle: `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §14.5.
 - **Backend LLVM: `--debug-info` con closures (M4.c)**: una función que
   devuelve un closure hacía fallar la verificación del módulo (`--debug-info`
   rechazaba el programa con "!dbg attachment points at wrong subprogram"):
@@ -423,7 +460,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paridad **146/146** a `-O0`, `-O2` y bajo ASan. El `free` llegó después en
   M4.e (ownership por refcount; §12 del progress log) y `a[0][1]` /
   `a[0](x)` siguen siendo rechazos limpios por falta de metadatos del
-  elemento; detalle en `PHASE_LLVM_PROGRESS.md` §11.
+  elemento; detalle en `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §11.
 - **C backend: el contexto `?` ya no sobrevive a las llamadas**:
   `astra_error_jmp`/`astra_error_active` son un par de globales y cada
   callee con `?` instalaba su setjmp encima del del caller dejándolo
@@ -464,7 +501,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ui/too_many_locals.astra` (95 seed cases)
 - **Zig conformance gate**: `zig build test` used to skip (green) when
   `seed/tests/conformance` was missing; it now hard-fails, as
-  `PHASE2_KICKOFF.md` defines the suite as the parity gate
+  `Documentacion/04_fase2_zig/PHASE2_KICKOFF.md` defines the suite as the parity gate
 - **`status.sh` false red**: the dashboard parsed `failed:` with `awk '{print $2}'`
   on the shared summary line and reported "94 passed, 94 FAILED" for a green suite
 - **`import` path segments are re-validated at the filesystem boundary**: `zig/src/modules/modules.zig` refuses a segment that is not an identifier (`a/b`, `..`), so a module path can never escape the importing file's directory

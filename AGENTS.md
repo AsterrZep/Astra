@@ -13,14 +13,14 @@ The repository currently holds **design documentation** (`Documentacion/`),
 **Phase 1 of the implementation** — the *seed compiler* (`seed/`), written in C,
 which compiles a bootstrap subset called **Astra-0** — and **Phase 2** (`zig/`),
 the self-hosting compiler written in Zig, whose Astra-0 frontend is ported (see
-`Documentacion/PHASE2_PROGRESS.md`).
+`Documentacion/04_fase2_zig/PHASE2_PROGRESS.md`).
 
 Full background lives in:
-- `Documentacion/ARCHITECTURE.md` — language specification
-- `Documentacion/COMPILER_STRATEGY.md` — the C → Zig → Astra bootstrap plan
-- `Documentacion/research/001_grammar_and_parser_design.md` — grammar/parser
-- `Documentacion/research/002_seed_compiler_design.md` — seed compiler design
-- `Documentacion/PHASE1_PROGRESS.md` — current implementation status
+- `Documentacion/01_lenguaje/ARCHITECTURE.md` — language specification
+- `Documentacion/02_compilador/COMPILER_STRATEGY.md` — the C → Zig → Astra bootstrap plan
+- `Documentacion/07_investigacion/001_grammar_and_parser_design.md` — grammar/parser
+- `Documentacion/07_investigacion/002_seed_compiler_design.md` — seed compiler design
+- `Documentacion/03_fase1_seed/PHASE1_PROGRESS.md` — current implementation status
 
 ## Build and test
 
@@ -95,7 +95,7 @@ checker, emitter, VM) is ported and verified against the seed suite. The module
 system (`src/modules/` + the multi-module path in `src/main.zig`) compiles and
 runs multi-file programs: `pub` gating, shared type pool, mangled globals,
 dependency-order execution, `use` re-exports and foreign struct/enum values
-(`Documentacion/PHASE2_PROGRESS.md` §7). Diagnostics
+(`Documentacion/04_fase2_zig/PHASE2_PROGRESS.md` §7). Diagnostics
 from every phase go through one sink (`src/diagnostics.zig`, §7.4).
 
 ```bash
@@ -130,8 +130,8 @@ new features are added** (the suite is the gate). Match `seed/src/*.c` and the
 
 ### LLVM backend (`-Dllvm`, opt-in)
 
-The native LLVM backend (Fase LLVM, `Documentacion/LLVM_BACKEND_PLAN.md`;
-progress log `Documentacion/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
+The native LLVM backend (Fase LLVM, `Documentacion/05_fase_llvm/LLVM_BACKEND_PLAN.md`;
+progress log `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
 build and binary are byte-identical and none of the existing gates change.
 **M0–M5, M6.a, M6.b and M6.c are closed** (2026-10-24): the emitter compiles the Astra-0 subset —
@@ -158,7 +158,7 @@ the artifacts are instrumented, that a plain link fails without
 `-O2`, and closes with an LSan step (`detect_leaks=1`) on
 `zig/tests/llvm/leaks.astra`. UBSan is not offered because LLVM 19..23 does
 not register a `ubsan` new-PM pass (`opt-19 --print-passes`); see
-`PHASE_LLVM_PROGRESS.md` §8. The post-M4 audit (§11) closed nil-related SEGVs,
+`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §8. The post-M4 audit (§11) closed nil-related SEGVs,
 bool-array equality and function-value printing. Values are owned by
 **reference counting** (M4.e, §12): every heap object carries an `{rc, kind}`
 header, stores/returns/params retain, locals/globals/temporaries release, and
@@ -245,7 +245,7 @@ Gotchas that will bite you:
 Beyond M0 the backend splits into parallel workstreams (`llvm-infra`,
 `llvm-core`, `llvm-values`, `llvm-errors`, `llvm-testing`, `llvm-quality`),
 each owning a slice of `src/llvm/` and verified by `llvm_parity.sh` +
-`zig build -Dllvm` — the file/ownership map is in `LLVM_BACKEND_PLAN.md` §5.
+`zig build -Dllvm` — the file/ownership map is in `Documentacion/05_fase_llvm/LLVM_BACKEND_PLAN.md` §5.
 
 ## Seed compiler layout (`seed/src`)
 
@@ -454,7 +454,7 @@ gh pr merge --admin --squash --delete-branch
   and weekly. Only the three contexts above gate merges, but keep every job
   green — `llvm (latest) — canario no bloqueante` is `continue-on-error` by
   design (it exists to alarm on LLVM-latest churn, as in §14.5 of
-  `Documentacion/PHASE_LLVM_PROGRESS.md`).
+  `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`).
 
 ## Conventions
 

@@ -1,0 +1,135 @@
+# Astra — Índice maestro de la documentación
+
+> **Última revisión:** 2026-10-27 · **Rama:** reorganización en carpetas
+> numeradas · **Estado del proyecto:** Fase 1 ✅ · Fase 2 (frontend + módulos) ✅ ·
+> Fase LLVM (M0–M6.c, etapa c.1) ✅
+
+Este es el punto de entrada a toda la documentación. La estructura está
+dividida en **carpetas numeradas** que siguen el orden en que se aborda el
+proyecto: primero el lenguaje, luego el compilador, después cada fase de
+implementación, al final las auditorías y el material de investigación.
+
+---
+
+## Estructura
+
+| Carpeta | Contenido | Documentos |
+|:--------|:----------|:-----------|
+| [`00_indice/`](../00_indice/) | Este índice | 1 |
+| [`01_lenguaje/`](../01_lenguaje/) | Qué es Astra: especificación, filosofía, comparativas y registro de constructos | 4 |
+| [`02_compilador/`](../02_compilador/) | Cómo se construye el compilador: estrategia, herramientas y trabajo por agentes | 3 |
+| [`03_fase1_seed/`](../03_fase1_seed/) | Estado del compilador semilla en C | 1 |
+| [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
+| [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
+| [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–024) | 24 |
+| [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
+
+---
+
+## 1. `01_lenguaje/` — Lenguaje
+
+| Documento | Qué contiene | Idioma |
+|:----------|:-------------|:-------|
+| [`ARCHITECTURE.md`](../01_lenguaje/ARCHITECTURE.md) | **Especificación completa** del lenguaje (40 secciones): tipos, memoria, concurrencia, gramática. El documento fuente. | ES |
+| [`PHILOSOPHY.md`](../01_lenguaje/PHILOSOPHY.md) | Los principios de diseño y el axioma central que gobierna las decisiones. | ES |
+| [`COMPARATIVE_ANALYSIS.md`](../01_lenguaje/COMPARATIVE_ANALYSIS.md) | Astra frente a Mojo, Nim, Zig, Julia, Vale y Swift. | EN |
+| [`CONSTRUCT_REGISTRY.md`](../01_lenguaje/CONSTRUCT_REGISTRY.md) | Un fichero por producción EBNF: por qué existe el registro y sus invariantes. | ES |
+
+## 2. `02_compilador/` — Compilador
+
+| Documento | Qué contiene | Idioma |
+|:----------|:-------------|:-------|
+| [`COMPILER_STRATEGY.md`](../02_compilador/COMPILER_STRATEGY.md) | **Plan de bootstrap C → Zig → Astra**: por qué tres fases y no una. | EN |
+| [`COMPILER_TOOLCHAIN.md`](../02_compilador/COMPILER_TOOLCHAIN.md) | Herramientas, librerías y flujos de trabajo (C, Zig, LLVM, CI). | EN |
+| [`MULTI_AGENT_SETUP.md`](../02_compilador/MULTI_AGENT_SETUP.md) | Hallazgos verificados sobre cómo repartir trabajo entre agentes. | ES |
+
+## 3. `03_fase1_seed/` — Fase 1: compilador semilla
+
+| Documento | Qué contiene | Idioma |
+|:----------|:-------------|:-------|
+| [`PHASE1_PROGRESS.md`](../03_fase1_seed/PHASE1_PROGRESS.md) | **Estado del compilador en C** (`seed/`): pipeline, lenguaje soportado, cobertura, límites conocidos y hallazgos de la Fase 1. | ES |
+
+## 4. `04_fase2_zig/` — Fase 2: compilador en Zig
+
+| Documento | Qué contiene | Idioma |
+|:----------|:-------------|:-------|
+| [`PHASE2_PROGRESS.md`](../04_fase2_zig/PHASE2_PROGRESS.md) | **Estado vivo de la Fase 2** — el documento que hay que leer para saber qué hay hecho hoy (frontend, módulos, traits, genéricos, `?`). | ES |
+| [`PHASE2_KICKOFF.md`](../04_fase2_zig/PHASE2_KICKOFF.md) | Arranque de la fase: alcance y regla de paridad con el seed. | EN |
+| [`PHASE2_ARCHITECTURE.md`](../04_fase2_zig/PHASE2_ARCHITECTURE.md) | Arquitectura diseñada para el compilador Zig (diseño, 2026-09). | EN |
+| [`PHASE2_IMPL_PLAN.md`](../04_fase2_zig/PHASE2_IMPL_PLAN.md) | Plan de implementación práctico por pasos (plan, 2026-09). | EN |
+| [`PHASE2_GAP_ANALYSIS.md`](../04_fase2_zig/PHASE2_GAP_ANALYSIS.md) | Inventario de lo que falta para el lenguaje completo y orden recomendado. | EN |
+| [`PHASE2_RESEARCH.md`](../04_fase2_zig/PHASE2_RESEARCH.md) | Síntesis de investigación específica de la fase (arquitectura Zig, LLVM en Zig). | EN |
+
+## 5. `05_fase_llvm/` — Fase LLVM
+
+| Documento | Qué contiene | Idioma |
+|:----------|:-------------|:-------|
+| [`LLVM_BACKEND_PLAN.md`](../05_fase_llvm/LLVM_BACKEND_PLAN.md) | **Plan accionable** del backend: decisiones, workstreams, hitos M0–M6, CI y riesgos. | ES |
+| [`PHASE_LLVM_PROGRESS.md`](../05_fase_llvm/PHASE_LLVM_PROGRESS.md) | **Estado vivo de la Fase LLVM**: qué hito está cerrado, gates y trazabilidad de commits. | ES |
+
+## 6. `06_auditorias/` — Auditorías
+
+| Documento | Qué contiene | Idioma |
+|:----------|:-------------|:-------|
+| [`COHERENCE_AUDIT.md`](../06_auditorias/COHERENCE_AUDIT.md) | Auditoría de coherencia documento↔código (2026-09-16/21). Registro histórico. | ES |
+| [`PRE_LLVM_AUDIT.md`](../06_auditorias/PRE_LLVM_AUDIT.md) | Auditoría previa a la Fase 2.6 sobre todo el código, con repros y tests por hallazgo (2026-10-14). Registro histórico. | ES |
+
+## 7. `07_investigacion/` — Informes de investigación
+
+24 informes numerados `001`–`024`, sin solapamientos: cada uno es un
+dossier autocontenido sobre un tema (gramática, diseño del seed, backend C,
+enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
+concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM…).
+
+- `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
+  diseño del seed y patrones del backend C.
+- `021`–`022` son dossiers de tareas concretas del compilador.
+- `023`–`024` son la investigación que sostiene la Fase LLVM.
+
+**Convención de citación:** los documentos (y el código) citan estos informes
+por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
+Esa abreviatura sigue siendo válida: designa al informe **001** de esta
+carpeta, no una ruta literal.
+
+## 8. `08_originales/` — Material original
+
+Los dos PDFs de los que arrancó todo: *Arquitectura Lenguaje Astra* y
+*Diseño de un Lenguaje Híbrido*.
+
+---
+
+## Estado del proyecto de un vistazo (2026-10-27)
+
+| Área | Estado | Gate / cifra |
+|:-----|:-------|:-------------|
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **259 passed, 0 failed** (ASan/UBSan/LSan): 112 no-UI + 116 `ui/` + 28 `codegen/` + 3 auxiliares |
+| Registro de constructos | ✅ | `--check-constructs` → **47 constructos, 27 operadores** |
+| Backend C (`--emit-c`) | ✅ | `sweep_emit_c.sh` → **112 total, 3 skip, 0 fail** |
+| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **146 ficheros, 0 divergentes** |
+| Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
+| **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c (etapa c.1) | `llvm_parity.sh` → **157/157** (y con `ASTRA_LLVM_OPT=2`) |
+| Fase LLVM — etapa c.2 (payloads `str_`) | ⏭️ Opcional, abierta | ver `PHASE_LLVM_PROGRESS.md` §16 |
+| Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
+| **Fase 3** — Astra se compila a sí misma | ⏳ Pendiente | la prueba final |
+
+---
+
+## Cómo mantener este índice
+
+- **Al añadir o mover un documento**: añadir su fila aquí y corregir las
+  referencias en los puntos de entrada: `README.md`, `AGENTS.md`,
+  `CHANGELOG.md`, `index.html`, `.github/PULL_REQUEST_TEMPLATE.md`,
+  `.agents/skills/*/SKILL.md` y los comentarios en
+  `seed/src/constructs/{assign,type_annotation}.c`.
+- **Al actualizar el estado**: los documentos *vivos* son
+  `03_fase1_seed/PHASE1_PROGRESS.md`, `04_fase2_zig/PHASE2_PROGRESS.md` y
+  `05_fase_llvm/PHASE_LLVM_PROGRESS.md`. Los demás (`*_AUDIT`,
+  `PHASE2_{ARCHITECTURE,IMPL_PLAN,RESEARCH}`) son registros de diseño o
+  auditorías **fechados**: no se reescriben, se corrigen solo los hechos
+  objetivamente falsos.
+- **Los contadores se verifican, no se recuerdan.** Antes de citar un número
+  de tests, ejecútalo: `cd seed && make test`, `cd zig && zig build test`,
+  `zig/tests/dump_parity.sh`, `zig/tests/llvm_parity.sh`.
+- **Idioma**: la documentación no está unificada. Se respeta el idioma de cada
+  documento (ES o EN); ver cabecera de tabla en cada sección.

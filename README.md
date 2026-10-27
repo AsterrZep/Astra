@@ -80,36 +80,40 @@ Astra/
 ├── zig/                         # Phase 2: self-hosting Zig compiler
 ├── assets/
 │   └── astra-logo.svg           # Project logo
-└── Documentacion/
-    ├── ARCHITECTURE.md           # Complete language specification (40 sections)
-    ├── PHILOSOPHY.md             # Design philosophy and principles
-    ├── COMPARATIVE_ANALYSIS.md   # Comparison with other languages
-    ├── original/                 # Source PDFs and extracted text
-    │   ├── Arquitectura Lenguaje Astra.pdf
-    │   ├── Diseño de un Lenguaje Híbrido.pdf
-    │   └── ...
-    └── research/                 # Deep-dive research reports (20 files)
-        ├── go-internals-report.md
-        ├── cpython-internals-report.md
-        ├── julia_internals_research.md
-        ├── compiler-internals-report.md
-        ├── abi-stability-report.md
-        ├── rustc-architecture-deep-dive.md
-        ├── concurrency-primitives-report.md
-        ├── stdlib-design-patterns.md
-        └── ...
+└── Documentacion/                # Numbered folders — start at 00_indice/INDICE.md
+    ├── 00_indice/                # Master index of every document
+    ├── 01_lenguaje/              # Language: spec, philosophy, comparison, constructs (4)
+    ├── 02_compilador/            # Compiler strategy, toolchain, multi-agent setup (3)
+    ├── 03_fase1_seed/            # Phase 1 status: the C seed compiler (1)
+    ├── 04_fase2_zig/             # Phase 2: kickoff, architecture, plans, status (6)
+    ├── 05_fase_llvm/             # LLVM backend: plan + status (2)
+    ├── 06_auditorias/            # Audits: coherence + pre-LLVM (2)
+    ├── 07_investigacion/         # Research reports 001–024 (24 files)
+    └── 08_originales/            # Source PDFs (2)
 ```
 
 ## Documentation
 
-All documentation lives in `Documentacion/`:
+All documentation lives in `Documentacion/`, organised in numbered folders.
+**Start at the [master index](Documentacion/00_indice/INDICE.md)** — every
+document is listed there with a one-line description.
 
-- **[Architecture Specification](Documentacion/ARCHITECTURE.md)** — The complete technical specification (40 sections, ~86KB)
-- **[Compiler Strategy](Documentacion/COMPILER_STRATEGY.md)** — Why C and Zig, the bootstrap process, every decision explained
-- **[Compiler Toolchain](Documentacion/COMPILER_TOOLCHAIN.md)** — Tools, libraries, and workflows for building the compiler
-- **[Design Philosophy](Documentacion/PHILOSOPHY.md)** — Why Astra exists and the principles behind it
-- **[Comparative Analysis](Documentacion/COMPARATIVE_ANALYSIS.md)** — How Astra compares to Mojo, Nim, Zig, Julia, Vale, Swift
-- **[Research Reports](Documentacion/research/)** — 20 deep-dive reports on compilers, runtimes, and language design
+- **[00_indice](Documentacion/00_indice/)** — Where to find everything
+- **[01_lenguaje](Documentacion/01_lenguaje/)** — Language definition
+  - [Architecture Specification](Documentacion/01_lenguaje/ARCHITECTURE.md) — the complete technical specification (40 sections)
+  - [Design Philosophy](Documentacion/01_lenguaje/PHILOSOPHY.md) — why Astra exists and the principles behind it
+  - [Comparative Analysis](Documentacion/01_lenguaje/COMPARATIVE_ANALYSIS.md) — Astra vs. Mojo, Nim, Zig, Julia, Vale, Swift
+  - [Construct Registry](Documentacion/01_lenguaje/CONSTRUCT_REGISTRY.md) — one file per EBNF production
+- **[02_compilador](Documentacion/02_compilador/)** — How the compiler is built
+  - [Compiler Strategy](Documentacion/02_compilador/COMPILER_STRATEGY.md) — why C and Zig, and the C → Zig → Astra bootstrap
+  - [Compiler Toolchain](Documentacion/02_compilador/COMPILER_TOOLCHAIN.md) — tools, libraries and workflows
+  - [Multi-agent Setup](Documentacion/02_compilador/MULTI_AGENT_SETUP.md) — verified findings on parallel agent workstreams
+- **[03_fase1_seed](Documentacion/03_fase1_seed/)** — [Phase 1 status](Documentacion/03_fase1_seed/PHASE1_PROGRESS.md): the C seed compiler
+- **[04_fase2_zig](Documentacion/04_fase2_zig/)** — Phase 2 (self-hosting Zig compiler): kickoff, architecture, implementation plan, research, gap analysis and [live status](Documentacion/04_fase2_zig/PHASE2_PROGRESS.md)
+- **[05_fase_llvm](Documentacion/05_fase_llvm/)** — LLVM backend: [plan](Documentacion/05_fase_llvm/LLVM_BACKEND_PLAN.md) and [status](Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md)
+- **[06_auditorias](Documentacion/06_auditorias/)** — [Coherence audit](Documentacion/06_auditorias/COHERENCE_AUDIT.md) and [pre-LLVM audit](Documentacion/06_auditorias/PRE_LLVM_AUDIT.md)
+- **[07_investigacion](Documentacion/07_investigacion/)** — 24 deep-dive research reports (001–024) on compilers, runtimes and language design
+- **[08_originales](Documentacion/08_originales/)** — Original design PDFs
 
 ## Roadmap
 
@@ -125,8 +129,10 @@ All documentation lives in `Documentacion/`:
 - [x] Compiler strategy (C → Zig → Astra bootstrapping)
 
 ### Implementation
-- [x] **Phase 1**: Seed compiler in C (Astra-0) — compiles, runs, C backend, fuzzed
-- [ ] **Phase 2**: Self-hosting compiler in Zig — Astra-0 frontend + modules done, LLVM backend pending
+- [x] **Phase 1**: Seed compiler in C (Astra-0) — compiles, runs, C backend, fuzzed; 259 checks green
+- [x] **Phase 2 core**: Self-hosting compiler in Zig — Astra-0 frontend, modules, traits, generics and error propagation verified against the seed suite
+- [x] **LLVM backend**: native `--emit-obj`/`--jit`, cross aarch64, wasm32-wasi, `--fast-math`, unboxed Option/Result — 157/157 parity (opt-in `-Dllvm`)
+- [ ] **Phase 2 full language**: comptime, ARC/ORC, fibers, FFI and the standard library
 - [ ] **Phase 3**: Astra compiles itself — the proof
 
 ## Contributing
