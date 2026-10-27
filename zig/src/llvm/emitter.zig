@@ -4166,6 +4166,14 @@ pub const Emitter = struct {
                     if (self.variant_map.contains(nm)) return .enum_;
                     return null;
                 },
+                // DEC-008: construcción calificada `Enum.Variant(args)` — el
+                // valor es de tipo enum, igual que la forma pelón vía
+                // variant_map (sin esto, `let x = Tag.Num(7)` a nivel de
+                // módulo no infiere y toplevel_aggregates cae a skip).
+                .field_access => {
+                    if (self.resolveVariantPath(call.callee)) |_| return .enum_;
+                    return null;
+                },
                 else => return null,
             },
             .try_expr => |inner| return self.inferBoxPayload(inner),
