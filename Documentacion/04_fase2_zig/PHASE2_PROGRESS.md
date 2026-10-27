@@ -7,7 +7,7 @@ completo.
 
 > **Regla de paridad**: el compilador Zig debe aceptar **el mismo lenguaje** que
 > el seed antes de crecer. `Documentacion/04_fase2_zig/PHASE2_KICKOFF.md` lo fija como puerta: portar la
-> suite existente (259 casos) antes de añadir genéricos, traits, etc.
+> suite existente (260 casos) antes de añadir genéricos, traits, etc.
 
 ---
 
@@ -35,7 +35,7 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 
 ### Verificación medida
 
-- **112/112** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
+- **113/113** ficheros no-UI de `seed/tests/conformance/` se compilan **y se
   ejecutan** en la VM con una salida idéntica a la del seed (comparada fichero
   a fichero). Los casos `EXPECT-RUNTIME-ERROR` fallan con el mismo mensaje
   que el seed y sin volcar nada a stdout.
@@ -47,8 +47,8 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 - **73 pruebas** (lexer, AST, parser, type checker, types, emitter,
   bytecode, VM, módulos, depurador, link multi-módulo, diagnósticos y
   conformance) en `zig build test`.
-- Gates de CI: suite seed **259/259** (228 conformance + 28 codegen +
-  `--check-constructs` + 2 checks de `--dump-ast`), paridad de dumps **146/146
+- Gates de CI: suite seed **260/260** (229 conformance + 28 codegen +
+  `--check-constructs` + 2 checks de `--dump-ast`), paridad de dumps **147/147
   ficheros, 0 divergentes**.
 
 ---
@@ -137,7 +137,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 3 | **VM** (`vm.c` → Zig) | ✅ | 54 opcodes, frames, globals, builtins; mismos textos de error que el seed. La salida de floats replica `printf("%g")` (ver §6) |
 | 4 | **Runner de conformance con ejecución** | ✅ | `zig build test` ejecuta cada caso no-UI y compara `EXPECT:` / `EXPECT-RUNTIME-ERROR:`; los `ui/` deben fallar al compilar |
 | 5 | Errores con recuperación a nivel de sentencia | ✅ | el módulo reporta varios errores por pase; verificado contra el seed (2 declaraciones malas → 2 errores) |
-| 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | ✅ | byte-idénticos al seed: gate `zig/tests/dump_parity.sh` (job `parity` de CI) sobre conformance no-UI + codegen + `zig/tests/dump_probes/` (146 ficheros, 0 divergencias). `src/dump.zig` reimplementa el `%g` de C sin libc (tests contra gcc) y `Tag.seedName()` espeja `token_kind_name`. Mirrors lossy a propósito del seed, replicados: `Use` sin path, guard de match omitido, `CompoundAssign` sin hijos |
+| 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | ✅ | byte-idénticos al seed: gate `zig/tests/dump_parity.sh` (job `parity` de CI) sobre conformance no-UI + codegen + `zig/tests/dump_probes/` (147 ficheros, 0 divergencias). `src/dump.zig` reimplementa el `%g` de C sin libc (tests contra gcc) y `Tag.seedName()` espeja `token_kind_name`. Mirrors lossy a propósito del seed, replicados: `Use` sin path, guard de match omitido, `CompoundAssign` sin hijos |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `Documentacion/04_fase2_zig/PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
 | 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
 | 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | ✅ | Carga, exports `pub`, gating y compilación multi-módulo en el CLI (§7.3). Los re-exports (`use`) y los valores struct/enum foráneos quedaron cubiertos (2026-10-12); la raíz `@/` se resuelve contra el `astra.toml` del proyecto (App. B #10 cerrado 2026-10-12) y `std/…` se rechaza con diagnóstico hasta que exista stdlib |
@@ -164,11 +164,11 @@ Ordenado por dependencia y valor para el bootstrap.
   DWARF, depurador de bytecode) y las decisiones abiertas; el backend nativo
   está en su §11 (fase 2.6) — **implementado y cerrado**: la Fase LLVM
   (M0–M6.c: nativo, cross aarch64, wasm32-wasi, `--jit`, `--fast-math` y
-  desempaquetado de Option/Result; queda opcional c.2, los payloads `str_`)
+  desempaquetado de Option/Result en sus etapas c.1 y c.2)
   vive en `zig/src/llvm/` con su propio log
   (`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`, opt-in
-  `-Dllvm`, gates `zig/tests/llvm_{parity,jit,cross,wasm}.sh`, **157/157
-  casos ok en cada una de las cuatro rutas** a 2026-10-24, también bajo
+  `-Dllvm`, gates `zig/tests/llvm_{parity,jit,cross,wasm}.sh`, **159/159
+  casos ok en cada una de las cuatro rutas** a 2026-10-27, también bajo
   ASan con `zig/tests/llvm_sanitize.sh`; la auditoría post-M4 y sus
   correcciones están en `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §11
   y el modelo de ownership por refcount que elimina las fugas del código

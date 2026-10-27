@@ -39,7 +39,7 @@ Phase 2 replaces the C seed compiler with a Zig-based self-hosting compiler that
 
 - 47 grammar constructs fully implemented
 - 27 operators with correct precedence
-- 259 passing tests (conformance + codegen + UI errors + self-check gates)
+- 260 passing tests (conformance + codegen + UI errors + self-check gates)
 - Recursive descent + Pratt parser architecture
 - Scoped symbol table with type inference
 
@@ -1736,7 +1736,7 @@ export fn LLVMFuzzerTestOneInput(data: [*]const u8, size: usize) c_int {
 | 29-30 | ARC insertion | Reference counting |
 | 31-32 | VM bytecode emission | Bytecode generation |
 | 33-34 | VM execution engine | Running Astra programs |
-| 35-36 | Pass all 259 tests | Compatibility achieved |
+| 35-36 | Pass all 260 tests | Compatibility achieved |
 
 ### 9.4 Phase 2.4: LLVM Backend (Months 10-12)
 

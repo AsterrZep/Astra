@@ -264,7 +264,7 @@ implementado** (`--fast-math`, `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.m
 fast-math sobre toda la aritmética FP, opt-in puro — sin el flag el IR es
 byte-idéntico — y el guard de división cero queda sin marcar; suite de
 paridad 155/155 en su cierre con el fixture `check_fast_math.astra` (creció
-de 154; hoy 157/157).
+de 154; hoy 159/159).
 El des-boxing de escalares
 que 023 §1.2 apunta ya está entregado dentro de v1 — el emisor camina el AST
 tipado y emite `i64`/`f64`/`i8` nativos en SSA, y `llvm_bench.sh` mide la ruta
@@ -273,14 +273,14 @@ Option/Result, etapa c.1) está implementado** (`Documentacion/05_fase_llvm/PHAS
 §16.1): par `{i8 tag, i64 payload}` en SSA para params/rets/`let` de
 funciones nombradas, con boxing en las fronteras de contenedor y hot path de
 construcción/`?`/`match` sin heap ni rc; sin flag opt-in — la paridad
-**157/157** ES el gate. El diseño descartó la opción sentinel i64 (el dominio
+**159/159** ES el gate. El diseño descartó la opción sentinel i64 (el dominio
 de i64 es completo, cualquier sentinel colisiona). El **error-union para
 `?`** quedó cerrado por investigación (`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §17): la
 «v2» ya está entregada en lo esencial por el `?` de ret local (M1.c) y el
 par de M6.c; el resto (ABI dual `T,E`) renace con `TYPE_RESULT` en Fase 2.
-Queda opcional la etapa
-c.2 (payloads `str_` con puntero). Cada entrada se planifica al
-llegar; M6 no bloquea el cierre de la fase.
+Queda cerrada la etapa
+c.2 (payloads `str_` con puntero — `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §16.2). Cada
+entrada se planifica al llegar; M6 no bloquea el cierre de la fase.
 
 ---
 
@@ -350,26 +350,27 @@ llvm-canario:                                        # no bloqueante (continue-o
 
 ## 9. Próximo paso
 
-Estado (2026-10-27): **M0–M6.c completados** — M6.c en su etapa c.1; la
-etapa c.2 (payloads `str_`) sigue opcional y abierta (ver
-`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §16). El backend
+Estado (2026-10-27): **M0–M6.c completados** — M6.c en sus etapas c.1 y
+c.2 (payloads `str_`, cerrada el 2026-10-27, ver
+`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §16/§16.2). El backend
 compila el subconjunto de Astra-0 (escalares, floats, strings,
 Option/Result+`match`/`?`, closures, arrays/structs/enums, `for..in`,
 `break`/`continue`, genéricos, traits/impls) a `.o` nativo vía
 TargetMachineEmitToFile y reproduce la salida de la VM byte a byte en
-**157/157 casos** (0 skip, 0 excl). Las cuatro rutas están gateadas en CI
+**159/159 casos** (0 skip, 0 excl). Las cuatro rutas están gateadas en CI
 y en verde: nativa (`llvm`), cross aarch64 bajo qemu (`llvm-cross`, M5),
 wasm32-wasi bajo Node WASI (`llvm-wasm`, §13.4) y `--jit` in-process
 (`llvm`, M6.a); el job `llvm` añade FileCheck, DWARF, sanitizers y el
 fuzz diferencial de cuatro rutas. M4 cerró con benchmarks y pipeline
-`-O2` (157/157 también en `-O2`). La compatibilidad con LLVM 22 (churn de ORC que señaló el
+`-O2` (159/159 también en `-O2`). La compatibilidad con LLVM 22 (churn de ORC que señaló el
 canario) quedó corregida y verificada con el canario en verde
 (`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §14.5); M6.b entregó `--fast-math` (§15 del
 mismo log), opt-in puro sin mover la semántica por defecto; M6.c entregó el
 des-boxing de Option/Result (§16.1).
 
 Lo que queda es **opcional** (§6, «M6 — Opcional / futuro»), y cada
-entrada se planifica al entrar: la etapa c.2 del des-boxing (payloads `str_`).
+entrada se planifica al entrar: la etapa c.2 del des-boxing (payloads `str_`)
+cerró en 2026-10-27 (`Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §16.2).
 El error-union para `?` se cerró por investigación en
 `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §17 (entregado en esencia por M1.c + M6.c; el ABI
 dual `T,E` renace con `TYPE_RESULT` en Fase 2). Los hitos siguen el patrón

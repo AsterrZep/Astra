@@ -23,7 +23,7 @@ The seed compiler provides:
 
 - **47 grammar constructs** fully implemented and tested
 - **27 operators** with correct precedence
-- **259 passing tests** (conformance + codegen + UI errors + self-check gates)
+- **260 passing tests** (conformance + codegen + UI errors + self-check gates)
 - **Dual backend** (VM + `--emit-c`)
 - **Self-checking registry** (`--check-constructs`)
 - **Arena allocation** model
@@ -181,7 +181,7 @@ The seed compiler provides:
 The Zig compiler should:
 
 1. **Accept the same Astra-0 syntax** as the seed compiler
-2. **Pass all 259 existing tests** (conformance + codegen)
+2. **Pass all 260 existing tests** (conformance + codegen)
 3. **Support `--emit-c`** output (safety net)
 4. **Then extend** with new features (generics, traits, etc.)
 
@@ -194,7 +194,7 @@ This ensures the bootstrap chain is never broken.
 | Zig bootstrap breaks | Use `--emit-c` to compile Zig compiler to C |
 | LLVM version issues | Pin LLVM version, use Zig's bundled LLVM |
 | Feature creep | Ship Astra-1 without all features, iterate |
-| Testing gaps | Port all 259 seed tests, add Phase 2 tests |
+| Testing gaps | Port all 260 seed tests, add Phase 2 tests |
 
 ## Timeline Estimate
 
@@ -203,7 +203,7 @@ This ensures the bootstrap chain is never broken.
 | Setup + Lexer | 2-3 weeks | Tokenizes Astra-0 |
 | Parser + AST | 3-4 weeks | Parses Astra-0 |
 | Type checker | 4-6 weeks | Type-checks Astra-0 |
-| AIR + VM | 4-6 weeks | Runs Astra-0 (passes all 259 tests) |
+| AIR + VM | 4-6 weeks | Runs Astra-0 (passes all 260 tests) |
 | LLVM backend | 4-6 weeks | Optimized compilation |
 | New features | 8-12 weeks | Generics, traits, comptime |
 | **Total** | **6-9 months** | Self-hosting compiler |

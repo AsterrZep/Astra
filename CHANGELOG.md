@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend LLVM: des-boxing de Option/Result (M6.c, etapa c.2 — payloads
+  `str_`)**: el par `{i8 tag; i64 payload}` ahora también transporta
+  punteros de string — `string?` vive en SSA sin caja en params/rets/`let`
+  y temporales, con las fronteras de c.1 intactas (contenedores, capturas y
+  ABI dinámica siguen cajando el optional). La referencia con rc del payload
+  se gestiona en los puntos de ownership (`rcRef`/`ownsRc`: store, retorno,
+  entrada de params, frame, temporales de llamada y globales de módulo) y la
+  igualdad par-vs-par de strings compara **contenido** vía `str_eq` (como
+  `boxed_eq`/`value_eq`). Hallado y cerrado en el mismo cambio un bug
+  latente de datalayout del host: el módulo se creaba con
+  `LLVMCreateTargetData("")` (layout vacío → i64 @4 en los plegados del
+  middle-end) mientras el objeto se emitía con el layout de la
+  TargetMachine (i64 @8), y con `--opt-level=2` liberar un global `string?`
+  leía el payload 4 bytes desplazado (`SEGV` en `astra_llvm_release`);
+  `setTarget` ahora deriva el datalayout de la TargetMachine. Sin flag
+  opt-in: paridad **159/159** contra la VM (plano y `-O2`, y también en
+  JIT, cross aarch64 y wasm32-wasi; ASan + LSan sin fugas; FileCheck 8/8
+  con `check_str_pair.astra` nuevo; seed 260/260 con el conformance
+  `enums/option_str_payload.astra`, 19 EXPECT). Detalle:
+  `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md` §16.2.
 - **Backend LLVM: des-boxing de Option/Result (M6.c, etapa c.1)**: el par
   `{i8 tag; i64 payload}` vive en SSA dentro de funciones nombradas
   (parámetros, retornos, `let` y temporales de optional escalar), con
@@ -356,22 +376,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   referencias).
 - **Documentación sincronizada con el estado real del proyecto (2026-10-27)**:
   contadores verificados por ejecución, no de memoria — suite seed
-  **219 → 259** (`make debug && make test` → 259 passed, 0 failed: 112 no-UI +
+  **219 → 260** (`make debug && make test` → 260 passed, 0 failed: 113 no-UI +
   116 `ui/` + 28 `codegen/` + 3 auxiliares; antes se citaba 83/111/22 y hasta
-  «93 casos»/«89 passing»), barrido `sweep_emit_c.sh` **83 → 112** (3 skip,
-  0 fail), `dump_parity.sh` **111/144 → 146 ficheros, 0 divergentes**,
+  «93 casos»/«89 passing»), barrido `sweep_emit_c.sh` **83 → 113** (3 skip,
+  0 fail), `dump_parity.sh` **111/144 → 147 ficheros, 0 divergentes**,
   opcodes **~30/48/50 → 54** en los dos emisores, constructos **44 → 47**
   (27 operadores), informes de investigación **19/20 → 24**, jobs de CI
-  **3 → 7**. Estados corregidos: la Fase LLVM se da por cerrada en su etapa
-  c.1 (M0–M6.c) con paridad **155 → 157/157**, no «pending» como decía el
-  roadmap del README; `PHASE2_GAP_ANALYSIS.md` marca los módulos y la
+  **3 → 7**. Estados corregidos: la Fase LLVM se da por cerrada (M0–M6.c,
+  etapas c.1 y c.2) con paridad **155 → 159/159**, no «pending» como decía el
+  roadmap del README; `Documentacion/04_fase2_zig/PHASE2_GAP_ANALYSIS.md` marca los módulos y la
   propagación de errores como entregados y cierra dos decisiones abiertas de
   su §12 (fuente del DWARF y forma de los flags, ya implementadas en M4.c y
-  en el CLI); `PHASE2_KICKOFF.md` deja de decir «Ready to begin». Hechos
+  en el CLI); `Documentacion/04_fase2_zig/PHASE2_KICKOFF.md` deja de decir «Ready to begin». Hechos
   puntuales falsos arreglados: extensión `.ast` → `.astra` (nunca existió
   `.ast`), `parser_internal.h` (no existe) y `--dump-operands` (no existe,
   la verificación es `ASTRA_DUMP_VM=1`), `f32` (no implementado), y la fila
-  A3 de `PRE_LLVM_AUDIT.md`, que aconsejaba limpiar las keywords `in`/`as`
+  A3 de `Documentacion/06_auditorias/PRE_LLVM_AUDIT.md`, que aconsejaba limpiar las keywords `in`/`as`
   cuando sí se usan (`for..in` y el alias `as` de `import`). Los documentos
   fechados (`*_AUDIT`, `PHASE2_{ARCHITECTURE,IMPL_PLAN,RESEARCH}`) se
   conservan como registro histórico: sólo se les corrigen hechos objetivos,

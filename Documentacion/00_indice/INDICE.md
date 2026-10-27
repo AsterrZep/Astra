@@ -2,7 +2,7 @@
 
 > **Última revisión:** 2026-10-27 · **Rama:** reorganización en carpetas
 > numeradas · **Estado del proyecto:** Fase 1 ✅ · Fase 2 (frontend + módulos) ✅ ·
-> Fase LLVM (M0–M6.c, etapa c.1) ✅
+> Fase LLVM (M0–M6.c) ✅
 
 Este es el punto de entrada a toda la documentación. La estructura está
 dividida en **carpetas numeradas** que siguen el orden en que se aborda el
@@ -103,13 +103,12 @@ Los dos PDFs de los que arrancó todo: *Arquitectura Lenguaje Astra* y
 
 | Área | Estado | Gate / cifra |
 |:-----|:-------|:-------------|
-| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **259 passed, 0 failed** (ASan/UBSan/LSan): 112 no-UI + 116 `ui/` + 28 `codegen/` + 3 auxiliares |
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **260 passed, 0 failed** (ASan/UBSan/LSan): 113 no-UI + 116 `ui/` + 28 `codegen/` + 3 auxiliares |
 | Registro de constructos | ✅ | `--check-constructs` → **47 constructos, 27 operadores** |
-| Backend C (`--emit-c`) | ✅ | `sweep_emit_c.sh` → **112 total, 3 skip, 0 fail** |
-| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **146 ficheros, 0 divergentes** |
+| Backend C (`--emit-c`) | ✅ | `sweep_emit_c.sh` → **113 total, 3 skip, 0 fail** |
+| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **147 ficheros, 0 divergentes** |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
-| **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c (etapa c.1) | `llvm_parity.sh` → **157/157** (y con `ASTRA_LLVM_OPT=2`) |
-| Fase LLVM — etapa c.2 (payloads `str_`) | ⏭️ Opcional, abierta | ver `PHASE_LLVM_PROGRESS.md` §16 |
+| **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c (etapas c.1 y c.2) | `llvm_parity.sh` → **159/159** (y con `ASTRA_LLVM_OPT=2`) |
 | Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
 | **Fase 3** — Astra se compila a sí misma | ⏳ Pendiente | la prueba final |
 

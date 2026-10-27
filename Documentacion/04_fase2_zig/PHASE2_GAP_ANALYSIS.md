@@ -2,7 +2,7 @@
 
 > **Status:** Working document
 > **Last updated:** 2026-10-27
-> **Baseline:** Phase 1 seed compiler (C, v0.1.0) — 47 constructs, 27 operators, 259 tests
+> **Baseline:** Phase 1 seed compiler (C, v0.1.0) — 47 constructs, 27 operators, 260 tests
 
 ---
 
@@ -124,8 +124,8 @@ El seed no tiene hoy ningún otro builtin: `len`/`push`/`pop` no existen
 
 ### 2.8 Test Coverage
 
-- 259 total tests (conformance + codegen round-trip)
-- 112 non-UI conformance cases verified on both VM and C backend
+- 260 total tests (conformance + codegen round-trip)
+- 113 non-UI conformance cases verified on both VM and C backend
   (`sweep_emit_c.sh`, 3 module cases skipped)
 - `make test` runs VM + `--emit-c` + gcc round-trip, compares output
 
@@ -494,7 +494,7 @@ Zig catches most C UB at compile time or with safety checks:
 | Risk | Impact | Mitigation |
 |:-----|:-------|:-----------|
 | **Build system complexity** | Annoying but solvable | Zig build system is simpler than Make |
-| **Test coverage regression** | Missing bugs | Port all 89 tests (hoy la suite son 259), add new ones per feature |
+| **Test coverage regression** | Missing bugs | Port all 89 tests (hoy la suite son 260), add new ones per feature |
 | **Performance regression** | Slower compilation | Profile early, use Zig's performance tools |
 
 ---
@@ -511,10 +511,10 @@ Zig catches most C UB at compile time or with safety checks:
 6. **Port emitter** — bytecode emission
 7. **Port VM** — stack interpreter
 8. **Port construct registry** — self-validation
-9. **Port all 89 tests** (criterio histórico de la Fase 2.1; hoy la suite son 259) — verify parity with Phase 1
+9. **Port all 89 tests** (criterio histórico de la Fase 2.1; hoy la suite son 260) — verify parity with Phase 1
 10. **Port C codegen backend** — keep for bootstrap verification
 
-**Exit criteria:** `astra-zig` produces identical output to `astra-seed` on all 89 tests (cumplido — la suite actual de 259 corre en verde en ambos).
+**Exit criteria:** `astra-zig` produces identical output to `astra-seed` on all 89 tests (cumplido — la suite actual de 260 corre en verde en ambos).
 
 ### Phase 2.2 — Module System
 
@@ -617,7 +617,7 @@ re-check of `?` inside generic bodies (details in `Documentacion/04_fase2_zig/PH
 > typed AST (not the bytecode) to LLVM IR. Live flags: `--emit-llvm`,
 > `--emit-llvm-stdout`, `--emit-obj`, `--jit`, `--opt-level`, `--debug-info`
 > (DWARF), `--sanitize=address`, `--target`, `--fast-math`; VM↔native parity is
-> **157/157** on the four gates. `--emit-asm` (item 3) is the only flag of this
+> **159/159** on the four gates. `--emit-asm` (item 3) is the only flag of this
 > list still missing. Details in
 > `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`.
 

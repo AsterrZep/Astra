@@ -134,13 +134,13 @@ The native LLVM backend (Fase LLVM, `Documentacion/05_fase_llvm/LLVM_BACKEND_PLA
 progress log `Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md`) lives in `src/llvm/` plus
 the `src/llvm.zig` facade. It is **strictly opt-in**: without `-Dllvm` the
 build and binary are byte-identical and none of the existing gates change.
-**M0–M5, M6.a, M6.b and M6.c are closed** (2026-10-24): the emitter compiles the Astra-0 subset —
+**M0–M5, M6.a, M6.b and M6.c are closed** (2026-10-27): the emitter compiles the Astra-0 subset —
 scalars, floats, strings, Option/Result with `match`/`?`, closures,
 arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
 — straight from the typed AST (no bytecode/VM) to a native object via
 TargetMachine (`--emit-obj`, M2.e). `zig/tests/llvm_parity.sh` gates it
-against the zig VM: **157 cases — 157 ok, 0 skip, 0 excl, 0 fail**.
+against the zig VM: **159 cases — 159 ok, 0 skip, 0 excl, 0 fail**.
 `zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`/opt-pair/debug/fast-math
 fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
 `llvm_fuzz_gen.py`) compares generated programs across VM↔C↔zig↔LLVM. Real
@@ -150,11 +150,11 @@ seed's inert-import semantics for the `module/` fixtures. M4 (quality) is
 closed: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
 simple-loop-unswitch / IRCE for N=2), `--debug-info` emits source-mapped DWARF
 (verified via `tests/llvm_dwarf_test.sh` under `lldb`), and the parity gate is
-run both plain and with `ASTRA_LLVM_OPT=2` (157/157 in both); `zig/tests/llvm_bench.sh`
+run both plain and with `ASTRA_LLVM_OPT=2` (159/159 in both); `zig/tests/llvm_bench.sh`
 publishes VM/C/LLVM timings. `--sanitize=address` marks functions and runs the
 new-PM `asan` pass before the optimizer; `zig/tests/llvm_sanitize.sh` proves
 the artifacts are instrumented, that a plain link fails without
-`-fsanitize=address`, runs the whole 157-case suite under ASan at `-O0` and
+`-fsanitize=address`, runs the whole 159-case suite under ASan at `-O0` and
 `-O2`, and closes with an LSan step (`detect_leaks=1`) on
 `zig/tests/llvm/leaks.astra`. UBSan is not offered because LLVM 19..23 does
 not register a `ubsan` new-PM pass (`opt-19 --print-passes`); see
@@ -169,11 +169,11 @@ whose env reaches the closure). Derived element metadata is still not carried
 module carries the target's triple and datalayout, and `src/llvm/target.zig`
 registers every target (`LLVMInitializeAllTargets`) — and
 `zig/tests/llvm_cross.sh` gates it by cross-linking with `<triple>-gcc` and
-cross-running under `qemu-<arch>-static`: **157/157**, byte-identical to the
+cross-running under `qemu-<arch>-static`: **159/159**, byte-identical to the
 native VM (CI job `llvm-cross`). The wasm route (progress §13.4) is likewise
 formal: `zig/tests/llvm_wasm.sh` compiles every fixture with `--emit-obj
 --target=wasm32-wasi`, links with `wasm-ld` + wasi-libc (crt1) and runs it
-under Node's WASI — **157/157**, plain and `-O2` (CI job `llvm-wasm`; needs
+under Node's WASI — **159/159**, plain and `-O2` (CI job `llvm-wasm`; needs
 `lld`, a wasi-libc sysroot and Node >= 22). The sysroot must ship a modern
 `<setjmp.h>` (the runtime TU includes `codegen_runtime.h`, which includes
 it): **Ubuntu's apt `wasi-libc` predates EH setjmp and ships none**, so CI
@@ -184,7 +184,7 @@ works, no driver patches). M6.a
 **in-process** via ORC/LLJIT (no cc/link step — the runtime TU is linked into
 the `astra-zig` binary with `-rdynamic` so LLJIT's process-symbol generator
 resolves `astra_llvm_*`+libc); `zig/tests/llvm_jit.sh` gates it against the VM
-with the same 157 cases (157/157, plain and `-O2`) — the foundation for a
+with the same 159 cases (159/159, plain and `-O2`) — the foundation for a
 future REPL/eval. M6.b (`--fast-math`, progress §15) marks all FP arithmetic
 (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`/`fneg`) with the seven fast-math flags —
 strictly opt-in: without the flag the IR is byte-identical — and leaves the
@@ -193,8 +193,16 @@ inf. M6.c (progress §16/§16.1) unboxes Option/Result: the pair
 `{i8 tag; i64 payload}` lives in SSA in named functions (params, returns,
 `let`, temporaries) with boxing only at container/dynamic-ABI boundaries, and
 construction/`?`/`match` run inline with no heap and no rc — no flag: the
-157/157 parity IS the gate. The remaining M6 item (c.2: `str_` payloads)
-stays optional; error-union for `?` was investigated and closed (progress
+159/159 parity IS the gate. M6.c c.2 (progress §16.2) extends the pair to
+`str_` payloads: `string?` carries the string pointer as bits, with the rc
+of the payload handled at the ownership points (store, return, param entry,
+frame release, call-result temp, module globals) via `rcRef`; pair equality
+compares string **content** through `str_eq`. It also exposed — and the fix
+landed with it — a latent host datalayout mismatch: the module got
+`LLVMCreateTargetData("")` (empty layout, i64 @4) while the object used the
+TargetMachine layout (i64 @8), so O2 folds read pair-global payloads 4 bytes
+off; `setTarget` now derives the datalayout from the TargetMachine.
+Error-union for `?` was investigated and closed (progress
 §17): the local-`ret` `?` (M1.c) and the M6.c pair already deliver the
 explicit `{ok, err}` ABI in essence, and the dual-`T,E` layout is born again
 with `TYPE_RESULT` in Phase 2. Scalar unboxing is already delivered (the

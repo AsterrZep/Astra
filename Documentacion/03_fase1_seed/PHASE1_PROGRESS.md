@@ -33,7 +33,7 @@ ejecutable desde el bytecode, compilable con `gcc`/`clang`.
 | Type checker | ✅ | tabla de símbolos con ámbitos; exhaustividad de `match`; errores con ubicación |
 | Emitter | ✅ | bytecode de pila, parcheo de saltos, locales ocultos de bucle, `SWAP` para el temporal de `match` |
 | VM | ✅ | 54 opcodes, frames de llamada, globals, builtins |
-| C Codegen | ✅ | `--emit-c` genera .c compilable; aritmética, control, funciones, structs, enums, arrays, lambdas, match, Option/Result, `?` — barrido `sweep_emit_c.sh` 112/112 con gcc `-Wall -Wextra` (3 de módulos saltados). Ver §3c |
+| C Codegen | ✅ | `--emit-c` genera .c compilable; aritmética, control, funciones, structs, enums, arrays, lambdas, match, Option/Result, `?` — barrido `sweep_emit_c.sh` 113/113 con gcc `-Wall -Wextra` (3 de módulos saltados). Ver §3c |
 | Runner de tests | ✅ | `tests/run_tests.sh` (`EXPECT` / `EXPECT-ERROR`) |
 
 ## 2. Lenguaje soportado (Astra-0)
@@ -91,7 +91,7 @@ acceso a campo), enums unitarios (`Enum.Variant`), enums con datos (ADTs),
 ```
 
 La suite arranca con la puerta del registro (`--check-constructs`) y sigue con
-los casos de conformidad. Cobertura actual (**259 casos**: 112 no-UI + 116 ui +
+los casos de conformidad. Cobertura actual (**260 casos**: 113 no-UI + 116 ui +
 28 codegen + 3 secciones auxiliares), en verde en las tres
 variantes de build (`dev`, `debug` con ASan+UBSan+LSan, `release`).
 
@@ -284,7 +284,7 @@ Estas tres viven en `codegen_runtime.h` y están cubiertas por
 |:--------|:---------|:-------------------|
 Los cinco ítems que esta tabla daba por pendientes **ya funcionan** y desde el
 2026-09-21 están verificados automáticamente: el barrido `tests/sweep_emit_c.sh`
-compila los 112 casos no-UI de conformidad con `--emit-c` + `gcc` y compara
+compila los 113 casos no-UI de conformidad con `--emit-c` + `gcc` y compara
 stdout/stderr/rc con la VM (coincidencia exacta, sin fugas bajo LSan; salta
 los 3 de módulos):
 
@@ -395,7 +395,7 @@ Ordenado por valor para el objetivo de bootstrap.
 - [x] **Match**: funciona (el fallo de "cannot call non-function" era un efecto de los opcodes sin handler).
 - [x] **Option/Result**: `TRY_UNWRAP`, `TAG_IS`, `UNWRAP` verificados por `try_operator` y los 4 tests de Option/Result.
 - [x] **Enums con datos**: `pattern_bind`, `nested_pattern_bind`, `mixed_patterns` idénticos a la VM.
-- [x] **Suite vía C codegen**: el barrido `sweep_emit_c.sh` compila los 112 casos no-UI con `--emit-c` + `gcc` y compara salida (ver §6).
+- [x] **Suite vía C codegen**: el barrido `sweep_emit_c.sh` compila los 113 casos no-UI con `--emit-c` + `gcc` y compara salida (ver §6).
 - [x] **Escapado de literales de string**: el contenido se escribe escapado; antes un `"` en un string de Astra producía C inválido e inyectable (ver §6, S2).
 - [x] **Límites de los registros de nombres**: un programa con más de 256 globales corrompía memoria; ahora falla con diagnóstico (ver §6, S1).
 - [x] **Errores de runtime en código de módulo**: verificado (§3c); el runtime no depende de `setjmp` para reportar.
@@ -625,7 +625,7 @@ construcción marcada como soportada sin ninguna prueba que la ejercite.
 
 ```bash
 cd seed
-make clean && make debug && make test        # 259 casos, ASan+UBSan+LSan, 0 fugas
+make clean && make debug && make test        # 260 casos, ASan+UBSan+LSan, 0 fugas
 ./astra-seed --check-constructs              # 47 constructos, 27 operadores, sin drift
 
 # S1: 300 globales por la ruta de C (antes: SEGV)

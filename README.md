@@ -129,9 +129,9 @@ document is listed there with a one-line description.
 - [x] Compiler strategy (C → Zig → Astra bootstrapping)
 
 ### Implementation
-- [x] **Phase 1**: Seed compiler in C (Astra-0) — compiles, runs, C backend, fuzzed; 259 checks green
+- [x] **Phase 1**: Seed compiler in C (Astra-0) — compiles, runs, C backend, fuzzed; 260 checks green
 - [x] **Phase 2 core**: Self-hosting compiler in Zig — Astra-0 frontend, modules, traits, generics and error propagation verified against the seed suite
-- [x] **LLVM backend**: native `--emit-obj`/`--jit`, cross aarch64, wasm32-wasi, `--fast-math`, unboxed Option/Result — 157/157 parity (opt-in `-Dllvm`)
+- [x] **LLVM backend**: native `--emit-obj`/`--jit`, cross aarch64, wasm32-wasi, `--fast-math`, unboxed Option/Result (c.1 + c.2) — 159/159 parity (opt-in `-Dllvm`)
 - [ ] **Phase 2 full language**: comptime, ARC/ORC, fibers, FFI and the standard library
 - [ ] **Phase 3**: Astra compiles itself — the proof
 

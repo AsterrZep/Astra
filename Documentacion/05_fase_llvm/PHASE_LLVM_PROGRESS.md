@@ -25,14 +25,14 @@ por la VM.
 
 ---
 
-## 1. Estado actual (2026-10-27, M0–M6.c c.1 cerrados)
+## 1. Estado actual (2026-10-27, M0–M6.c cerrados)
 
 **M0 (infraestructura), M1 (núcleo completo), M2 (valores y patrones), M3
 (paridad total y robustez), M4 (calidad), M5 (targets), M6.a (LLJIT),
-M6.b (fast-math) y M6.c etapa c.1 (des-boxing de Option/Result) están
+M6.b (fast-math) y M6.c (des-boxing de Option/Result, etapas c.1 y c.2) están
 terminados: pipeline `-O2`, benchmarks, DWARF, sanitizers ASan, cross
 aarch64, wasm32-wasi, ejecución in-process, flags fast-math opt-in y el
-par `{i8 tag, i64 payload}` en SSA (§16/§16.1).** El emisor compila
+par `{i8 tag, i64 payload}` en SSA, escalares y strings (§16/§16.1/§16.2).** El emisor compila
 Astra-0 —
 escalares, floats, strings, Option/Result con `match`/`?`, closures,
 arrays/structs/enums de usuario, `for..in`/`break`/`continue`, genéricos
@@ -42,10 +42,11 @@ a LLVM IR verificado y lo baja a objeto con `--emit-obj`
 rutas — nativa, cross aarch64 (`--target=<triple>`, §13), wasm32-wasi
 (§13.4) y `--jit` in-process (§14) — la salida (stdout, stderr y código
 de salida) es **byte-idéntica a la VM** para **todos** los casos del gate
-correspondiente: **157 — 157 ok, 0 skip, 0 excl, 0 fail** en cada ruta,
+correspondiente: **159 — 159 ok, 0 skip, 0 excl, 0 fail** en cada ruta,
 planas y con `ASTRA_LLVM_OPT=2` (la suite creció de 154 a 155 con el
-fixture de fast-math de M6.b, §15, y de 155 a 157 con los dos fixtures
-de M6.c c.1: `option_branch_unify` y `check_opt_pair`, §16.1).
+fixture de fast-math de M6.b, §15, de 155 a 157 con los dos fixtures
+de c.1: `option_branch_unify` y `check_opt_pair`, §16.1, y de 157 a
+159 con los dos de c.2: `option_str_payload` y `check_str_pair`, §16.2).
 
 | Hito | Contenido | Estado |
 |:-----|:----------|:-------|
@@ -61,11 +62,12 @@ de M6.c c.1: `option_branch_unify` y `check_opt_pair`, §16.1).
 | **M5** | `--target=<triple>` (cross aarch64) + `src/llvm/target.zig` + ruta wasm32-wasi formalizada (§13) | ✅ |
 | **M6.a** | `--jit`: ejecución in-process vía ORC/LLJIT (§14) | ✅ |
 | **M6.b** | `--fast-math`: flags fast-math opt-in en la aritmética FP (§15) | ✅ |
-| **M6.c** | des-boxing de Option/Result: par `{i8 tag, i64 payload}` en SSA, etapa c.1 (§16/§16.1) | ✅ |
+| **M6.c** | des-boxing de Option/Result: par `{i8 tag, i64 payload}` en SSA, etapas c.1 y c.2 (§16/§16.1/§16.2) | ✅ |
 
-Queda, todo opcional y sin bloquear el cierre de la fase (plan §6): la
-etapa c.2 del des-boxing (payloads `str_`). El error-union para `?` se
-cerró por investigación en §17.
+No queda nada abierto en M6: la etapa c.2 del des-boxing (payloads
+`str_`) se cerró el 2026-10-27 (§16.2) y el error-union para `?` se
+cerró por investigación en §17. Todo lo demás de §6 («M6 — Opcional /
+futuro») sigue sin planificarse y sin bloquear el cierre de la fase.
 La compatibilidad con LLVM 22 (churn que señaló el canario) quedó
 corregida y verificada — §14.5.
 
@@ -997,11 +999,11 @@ históricos de los hitos anteriores conservan su 154 fechado.
 
 ## 16. M6.c — des-boxing de Option/Result (etapa c.1 implementada)
 
-**Estado (2026-10-24): c.1 implementado** — el par `{i8 tag, i64 payload}`
+**Estado (2026-10-27): c.1 y c.2 implementados** — el par `{i8 tag, i64 payload}`
 vive en SSA dentro de funciones nombradas (params, retornos, `let` y
-temporales) con boxing en las fronteras, sin flag opt-in; todos los gates en
-§16.1 están verdes y el contrato de diseño de este §16 quedó cerrado con las
-desviaciones anotadas. Sigue abierto y opcional el paso c.2 (payloads `str_`).
+temporales) con boxing en las fronteras, sin flag opt-in; los gates de c.1
+están en §16.1, los de c.2 en §16.2, y el contrato de diseño de este §16
+quedó cerrado con las desviaciones anotadas.
 
 Segundo item opcional de M6 (plan §6). Este §16 es el **contrato de diseño**
 que precedió a la implementación — la convención «cada item se planifica al
@@ -1064,7 +1066,7 @@ delimitadas documentadas:
 | Etapa | Contenido | Gate |
 |:------|:----------|:-----|
 | **c.1** | par en SSA para construcción + `?` + `match` + print/igualdad inline, con boxing en fronteras | paridad **157/157** (la paridad ES el gate: si la representación cambia la salida, hay bug), filecheck nuevo de formas del par, fuzz 4 rutas |
-| **c.2** (opcional) | ampliar a payloads `str_` (par con puntero) sin boxing en fronteras de string | igual |
+| **c.2** (cerrada) | ampliar a payloads `str_` (par con puntero) sin boxing en fronteras de string | igual — §16.2 |
 
 Sin flag opt-in: a diferencia de fast-math, aquí no hay cambio semántico que
 proteger — la corrección se demuestra con las rutas gateadas existentes
@@ -1140,10 +1142,84 @@ Gates de c.1 (2026-10-24, todos verdes):
 
 La suite LLVM crece de 155 a **157** con c.1 (los dos fixtures nuevos
 entran al glob de paridad: el conformance `enums/option_branch_unify.astra`
-y el FileCheck `check_opt_pair.astra`). Queda abierto y opcional **c.2**
-(payloads `str_` con puntero); el
+y el FileCheck `check_opt_pair.astra`; ningún estado intermedio tuvo 156).
+La etapa **c.2** (payloads `str_`) se cerró después — §16.2, la suite pasa
+de 157 a **159**; el
 **error-union para `?`** se cerró como investigación en §17 (ya cubierto por
 M1.c + M6.c).
+
+### §16.2 — Registro de implementación de c.2 (payloads `str_`)
+
+**Estado (2026-10-27): c.2 implementado.** El par ahora admite payloads
+`str_`: `string?` vive como par `{i8 tag; i64 payload}` con el puntero del
+string como bits (`ptrtoint`/`inttoptr`), sin caja en params/rets/`let` ni
+en ningún punto intermedio. Las fronteras de c.1 quedan intactas —
+elementos de array, campos de struct/enum, capturas y la ABI dinámica de
+`fn(...)` siguen cajando el optional con `boxForm` — y el string sigue
+siendo el objeto heap rc de siempre (cabecera 8 bytes delante, literales
+inmortales). La lectura de «sin boxing en fronteras de string»: el optional
+no añade una segunda caja para payloads string; la frontera es la del par
+(contenedores/ABI), no hay una frontera nueva «de string».
+
+Lo que entró en `zig/src/llvm/emitter.zig`:
+
+- **`isScalarPayload` → `isPairPayload`, con `.str_`**: un solo predicado
+  decide par vs caja en los seis puntos (construcción `some()`, anotación
+  `T?`, inferencia de `some(x)`, `coerceToPair`, subida/bajada en `emitIf`).
+- **rc del payload del par — `rcRef`/`ownsRc`**: el par no es heap; la
+  referencia poseída vive en su payload, y todos los puntos de ownership
+  operan sobre el puntero extraído (`extractvalue` + `inttoptr`):
+  `emitStoreOwned` (libera el viejo, retiene el nuevo), `emitFrameRelease`
+  con `OwnedSlot.payload` (locales y params), retorno (`emitFrameCleanup`
+  retiene antes de salir del frame), entrada de params (el callee retiene),
+  temporales de resultado de llamada (`tmp_push` del payload, que entrega el
+  +1 del callee) y globales de módulo al final de `main`. El modelo sigue
+  siendo prestado: la construcción no retiene; retienen store, retorno y
+  fronteras (§12).
+- **Igualdad par-vs-par con payload `str_`**: compara **contenido** con
+  `astra_llvm_str_eq` — mismo contrato que `boxed_eq` y `value_eq` del VM
+  (dos copias distintas del mismo texto son iguales; comparar bits sería
+  identidad de puntero). `?`, match con literal y bindings ya eran
+  genéricos (`fromBits` + la máquina de `==`) y no tocaron.
+- **Bug hallado y cerrado: datalayout del host.** `setTarget` creaba el
+  TargetData con `LLVMCreateTargetData("")` → string de layout vacío → el
+  middle-end plegaba con los defaults: `extractvalue` sobre un global de
+  par se pliega a `gep +4` (align 4) mientras el isel del objeto ponía el
+  miembro i64 a **+8** con el layout real de x86_64. Con
+  `--opt-level=2`, la liberación de un global `string?` leía el payload 4
+  bytes desplazado y moría en `astra_llvm_release` (SEGV, ASan lo fija en el
+  stack de `main`). No había salido antes: los locales los SROA reescribe
+  (no queda struct que plegar) y pre-c.2 ningún global era de tipo struct —
+  un puntero vive a offset 0, inmune al desplazamiento. Fix: el datalayout
+  del módulo sale **siempre de la TargetMachine del triple** (misma rama
+  que `--target`).
+
+Alcance y límites: sólo `str_` — payloads `arr_`/`struct_`/`enum_`/`fn_`
+siguen en caja; una función cuya firma usa par (ahora también `string?`) no
+puede usarse como valor (rechazo honesto de c.1, §16.1); `some(some(x))`
+sigue rechazado limpio.
+
+Gates de c.2 (2026-10-27, todos verdes):
+
+| Gate | Resultado |
+|:-----|:----------|
+| `seed make test` (VM + C codegen, con el conformance nuevo) | **260/260** |
+| `zig build test -Dllvm` (unit, emisor) | **rc=0** |
+| `llvm_parity.sh` plano y `ASTRA_LLVM_OPT=2` | **159/159** y **159/159** |
+| `llvm_jit.sh` plano y O2 | **159/159** ×2 |
+| `llvm_cross.sh` (aarch64→qemu) plano y O2 | **159/159** ×2 |
+| `llvm_wasm.sh` (wasm32-wasi→Node) plano y O2 | **159/159** ×2 |
+| `llvm_filecheck.sh` (`check_str_pair.astra` nuevo) | **8/8** |
+| `llvm_sanitize.sh` (ASan + LSan) | **159/159**, sin fugas |
+| `dump_parity.sh` (seed ↔ zig) | **147 archivos, 0 divergent** |
+
+La suite LLVM crece de 157 a **159** (conformance `option_str_payload` con
+19 EXPECT + fixture `check_str_pair`, ambos dentro del glob de paridad). El
+smoke manual previo cubrió además el caso rc del concat almacenado en slot
+(`some("wor" + "ld")`), la reasignación de un slot par en bucle (100
+stores) y la igualdad por contenido de dos objetos distintos, verificados
+VM ↔ LLVM en O0 y O2 con ASan+LSan. Con c.2, M6 no tiene items pendientes
+(el error-union quedó cerrado en §17).
 
 ## 17. Error-union para `?` — investigación y decisión (sin código nuevo)
 
@@ -1223,6 +1299,7 @@ cualquier orden: (1) `TYPE_RESULT` en Fase 2 → layout dual (a); (2) un REPL
 con eval recuperable → harness de errores (d); (3) un benchmark que pida
 c.2. Nada de esto bloquea el cierre de la fase LLVM.
 
-Gates tras la investigación (sin cambios de código, sólo docs): paridad
-**157/157** ×4 rutas (plano y `-O2`), filecheck **7/7**, seed **259/259**,
-dump parity **146/0**.
+Gates tras la investigación, **a esa fecha (2026-10-24)** y sin cambios
+de código (sólo docs): paridad **157/157** ×4 rutas (plano y `-O2`),
+filecheck **7/7**, seed **259/259**, dump parity **146/0**. Después
+cambió sólo por c.2 (§16.2): hoy 159/159, 8/8, 260/260 y 147/0.
