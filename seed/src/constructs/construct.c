@@ -300,7 +300,10 @@ int construct_self_check(char *buf, size_t cap) {
     }
 
     report(&r, "sub-constructs: %zu\n", sub);
-    report(&r, "migrated (all three phases): %zu / %zu\n", migrated, astra_construct_count);
+    /* The hooks are aspirational (CONSTRUCT_REGISTRY.md §8); keep the word
+     * "migrated" — run_tests.sh:65 greps for it. */
+    report(&r, "migrated (all three phases): %zu / %zu (hooks aspirational — see CONSTRUCT_REGISTRY.md §8)\n",
+           migrated, astra_construct_count);
     report(&r, "operator table: %zu entries\n", op_count);
     if (r.failures == 0) {
         report(&r, "OK — registry, lexer, parser and operator table agree\n");
