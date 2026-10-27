@@ -5,9 +5,41 @@ on:
     branches: [main]
   pull_request:
 
+# Fast path para PRs que solo tocan documentación: los tres checks
+# requeridos (seed/zig/parity) SIEMPRE corren — con pasos guardados, su
+# job termina en éxito en segundos — y los jobs de LLVM (no requeridos) se
+# saltan por completo. En push a main sale `code=true` y corre todo, como
+# verificación post-merge. Sin tocar los rulesets: los nombres de los checks
+# no cambian.
 jobs:
+  changes:
+    name: detect changes (paths filter)
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.result.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'seed/**'
+              - 'zig/**'
+              - '.github/**'
+      - name: Always run everything on push (post-merge verification)
+        if: github.event_name != 'pull_request'
+        id: push
+        run: echo "code=true" >> "$GITHUB_OUTPUT"
+      - name: Resolve
+        id: result
+        run: echo "code=${{ github.event_name == 'pull_request' && steps.filter.outputs.code || 'true' }}" >> "$GITHUB_OUTPUT"
+
   seed:
     name: seed (C) — ASan/UBSan/LSan + suite
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,9 +47,11 @@ jobs:
       # that binary: `make test` depends on $(TARGET) and would rebuild it with
       # default flags, silently dropping the sanitizers.
       - name: Build (ASan + UBSan + LSan)
+        if: needs.changes.outputs.code == 'true'
         run: make debug
         working-directory: seed
       - name: Test suite (registry gate + VM + C backend)
+        if: needs.changes.outputs.code == 'true'
         run: ./tests/run_tests.sh
         working-directory: seed
       # PRE_LLVM_AUDIT §1: every non-UI conformance case through the VM and
@@ -25,9 +59,11 @@ jobs:
       # only round-trips tests/codegen/, so divergences outside it (like the
       # call-depth guard bug of §1.1) were invisible before this sweep.
       - name: Differential sweep (VM vs --emit-c + gcc)
+        if: needs.changes.outputs.code == 'true'
         run: ./tests/sweep_emit_c.sh
         working-directory: seed
       - name: Release build compiles clean
+        if: needs.changes.outputs.code == 'true'
         run: make release
         working-directory: seed
       # libFuzzer harness (PHASE1 §4bis#23): build it, then execute every
@@ -36,6 +72,7 @@ jobs:
       # fails the job on any sanitizer hit or harness crash while feeding
       # the whole suite through the fuzzed pipeline.
       - name: Fuzz harness (clang + libFuzzer) + corpus replay
+        if: needs.changes.outputs.code == 'true'
         run: |
           make fuzz
           mkdir -p build/fuzz/corpus build/fuzz/work
@@ -49,19 +86,32 @@ jobs:
 
   zig:
     name: zig (Phase 2) — zig build test
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      # Caché de build de Zig: en un PR de docs este job ni construye; en uno
+      # de código el cache hit evita recompilar el árbol completo.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig/.zig-cache
+          key: zig-${{ runner.os }}-0.16.0-${{ hashFiles('zig/build.zig', 'zig/src/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-0.16.0-
       - name: Build
+        if: needs.changes.outputs.code == 'true'
         run: zig build
         working-directory: zig
       # Unit tests + the seed conformance suite compiled and executed in the
       # Zig VM. conformance.zig hard-fails when seed/tests/conformance is
       # missing, so a sparse checkout cannot go green.
       - name: Unit tests + seed conformance
+        if: needs.changes.outputs.code == 'true'
         run: zig build test --summary all
         working-directory: zig
 
@@ -70,24 +120,37 @@ jobs:
   # every conformance/codegen file plus the parse-only probes.
   parity:
     name: dump parity (seed <-> zig)
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig/.zig-cache
+          key: zig-${{ runner.os }}-0.16.0-${{ hashFiles('zig/build.zig', 'zig/src/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-0.16.0-
       - name: Build seed (reference)
+        if: needs.changes.outputs.code == 'true'
         run: make debug
         working-directory: seed
       - name: Build zig
+        if: needs.changes.outputs.code == 'true'
         run: zig build
         working-directory: zig
       - name: Byte-for-byte dump comparison
+        if: needs.changes.outputs.code == 'true'
         run: ./zig/tests/dump_parity.sh
       # PRE_LLVM_AUDIT §1: both compilers must reject every ui/ case with the
       # same FIRST diagnostic line (`file:line:col: error: msg`). Accepted
       # divergences live in the script's KNOWN_FIRST_LINE list (§1.7).
       - name: ui diagnostic messages (seed <-> zig)
+        if: needs.changes.outputs.code == 'true'
         run: ./zig/tests/ui_message_parity.sh
 
   # LLVM backend (LLVM_BACKEND_PLAN.md §6 M0.4, §7): the opt-in -Dllvm route
@@ -99,12 +162,23 @@ jobs:
   # the apt.llvm.org install is the one piece the plan flags "[a verificar]".
   llvm:
     name: llvm (LLVM 19) — ruta --emit-obj sobre la suite
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig/.zig-cache
+          key: zig-${{ runner.os }}-0.16.0-llvm-${{ hashFiles('zig/build.zig', 'zig/src/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-0.16.0-llvm-
+            zig-${{ runner.os }}-0.16.0-
       # apt.llvm.org pins LLVM 19 regardless of the distro's own packages.
       # llvm.sh installs the tools (llc-19, opt-19); llvm-19-dev provides
       # llvm-config-19 (build.zig discovery) and the libLLVM-19 shared library
@@ -169,12 +243,23 @@ jobs:
   # sniff. Blocking: the cross-run is deterministic under qemu-user.
   llvm-cross:
     name: llvm-cross (aarch64) — cross-run bajo qemu
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig/.zig-cache
+          key: zig-${{ runner.os }}-0.16.0-llvm-${{ hashFiles('zig/build.zig', 'zig/src/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-0.16.0-llvm-
+            zig-${{ runner.os }}-0.16.0-
       - name: Install LLVM 19 (apt.llvm.org, pinned)
         run: |
           wget -qO llvm.sh https://apt.llvm.org/llvm.sh
@@ -205,6 +290,8 @@ jobs:
   # verificó localmente.
   llvm-wasm:
     name: llvm-wasm (wasm32-wasi) — suite bajo Node WASI
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     env:
       ASTRA_WASM_CLANG: clang-19
@@ -213,6 +300,15 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig/.zig-cache
+          key: zig-${{ runner.os }}-0.16.0-llvm-${{ hashFiles('zig/build.zig', 'zig/src/**') }}
+          restore-keys: |
+            zig-${{ runner.os }}-0.16.0-llvm-
+            zig-${{ runner.os }}-0.16.0-
       - name: Install LLVM 19 (apt.llvm.org, pinned)
         run: |
           wget -qO llvm.sh https://apt.llvm.org/llvm.sh
@@ -254,6 +350,8 @@ jobs:
   # pinado a 19, que es el suelo del rango.
   llvm-canario:
     name: llvm (latest) — canario no bloqueante
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
