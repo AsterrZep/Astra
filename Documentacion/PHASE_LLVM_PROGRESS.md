@@ -991,11 +991,11 @@ históricos de los hitos anteriores conservan su 154 fechado.
 
 ## 16. M6.c — des-boxing de Option/Result (etapa c.1 implementada)
 
-**Estado (2026-10-24): c.1 implementado** — el par `{i8 tag, i64 payload}`
+**Estado (2026-10-27): c.1 y c.2 implementados** — el par `{i8 tag, i64 payload}`
 vive en SSA dentro de funciones nombradas (params, retornos, `let` y
-temporales) con boxing en las fronteras, sin flag opt-in; todos los gates en
-§16.1 están verdes y el contrato de diseño de este §16 quedó cerrado con las
-desviaciones anotadas. Sigue abierto y opcional el paso c.2 (payloads `str_`).
+temporales) con boxing en las fronteras, sin flag opt-in; los gates de c.1
+están en §16.1, los de c.2 en §16.2, y el contrato de diseño de este §16
+quedó cerrado con las desviaciones anotadas.
 
 Segundo item opcional de M6 (plan §6). Este §16 es el **contrato de diseño**
 que precedió a la implementación — la convención «cada item se planifica al
@@ -1058,7 +1058,7 @@ delimitadas documentadas:
 | Etapa | Contenido | Gate |
 |:------|:----------|:-----|
 | **c.1** | par en SSA para construcción + `?` + `match` + print/igualdad inline, con boxing en fronteras | paridad **157/157** (la paridad ES el gate: si la representación cambia la salida, hay bug), filecheck nuevo de formas del par, fuzz 4 rutas |
-| **c.2** (opcional) | ampliar a payloads `str_` (par con puntero) sin boxing en fronteras de string | igual |
+| **c.2** (cerrada) | ampliar a payloads `str_` (par con puntero) sin boxing en fronteras de string | igual — §16.2 |
 
 Sin flag opt-in: a diferencia de fast-math, aquí no hay cambio semántico que
 proteger — la corrección se demuestra con las rutas gateadas existentes
@@ -1132,9 +1132,82 @@ Gates de c.1 (2026-10-24, todos verdes):
 | `dump_parity.sh` (seed ↔ zig) | **146 archivos, 0 divergent** |
 
 La suite LLVM crece de 156 a **157** (el conformance nuevo entra al glob de
-paridad). Queda abierto y opcional **c.2** (payloads `str_` con puntero); el
+paridad). La etapa **c.2** (payloads `str_`) se cerró después — §16.2; el
 **error-union para `?`** se cerró como investigación en §17 (ya cubierto por
 M1.c + M6.c).
+
+### §16.2 — Registro de implementación de c.2 (payloads `str_`)
+
+**Estado (2026-10-27): c.2 implementado.** El par ahora admite payloads
+`str_`: `string?` vive como par `{i8 tag; i64 payload}` con el puntero del
+string como bits (`ptrtoint`/`inttoptr`), sin caja en params/rets/`let` ni
+en ningún punto intermedio. Las fronteras de c.1 quedan intactas —
+elementos de array, campos de struct/enum, capturas y la ABI dinámica de
+`fn(...)` siguen cajando el optional con `boxForm` — y el string sigue
+siendo el objeto heap rc de siempre (cabecera 8 bytes delante, literales
+inmortales). La lectura de «sin boxing en fronteras de string»: el optional
+no añade una segunda caja para payloads string; la frontera es la del par
+(contenedores/ABI), no hay una frontera nueva «de string».
+
+Lo que entró en `zig/src/llvm/emitter.zig`:
+
+- **`isScalarPayload` → `isPairPayload`, con `.str_`**: un solo predicado
+  decide par vs caja en los seis puntos (construcción `some()`, anotación
+  `T?`, inferencia de `some(x)`, `coerceToPair`, subida/bajada en `emitIf`).
+- **rc del payload del par — `rcRef`/`ownsRc`**: el par no es heap; la
+  referencia poseída vive en su payload, y todos los puntos de ownership
+  operan sobre el puntero extraído (`extractvalue` + `inttoptr`):
+  `emitStoreOwned` (libera el viejo, retiene el nuevo), `emitFrameRelease`
+  con `OwnedSlot.payload` (locales y params), retorno (`emitFrameCleanup`
+  retiene antes de salir del frame), entrada de params (el callee retiene),
+  temporales de resultado de llamada (`tmp_push` del payload, que entrega el
+  +1 del callee) y globales de módulo al final de `main`. El modelo sigue
+  siendo prestado: la construcción no retiene; retienen store, retorno y
+  fronteras (§12).
+- **Igualdad par-vs-par con payload `str_`**: compara **contenido** con
+  `astra_llvm_str_eq` — mismo contrato que `boxed_eq` y `value_eq` del VM
+  (dos copias distintas del mismo texto son iguales; comparar bits sería
+  identidad de puntero). `?`, match con literal y bindings ya eran
+  genéricos (`fromBits` + la máquina de `==`) y no tocaron.
+- **Bug hallado y cerrado: datalayout del host.** `setTarget` creaba el
+  TargetData con `LLVMCreateTargetData("")` → string de layout vacío → el
+  middle-end plegaba con los defaults: `extractvalue` sobre un global de
+  par se pliega a `gep +4` (align 4) mientras el isel del objeto ponía el
+  miembro i64 a **+8** con el layout real de x86_64. Con
+  `--opt-level=2`, la liberación de un global `string?` leía el payload 4
+  bytes desplazado y moría en `astra_llvm_release` (SEGV, ASan lo fija en el
+  stack de `main`). No había salido antes: los locales los SROA reescribe
+  (no queda struct que plegar) y pre-c.2 ningún global era de tipo struct —
+  un puntero vive a offset 0, inmune al desplazamiento. Fix: el datalayout
+  del módulo sale **siempre de la TargetMachine del triple** (misma rama
+  que `--target`).
+
+Alcance y límites: sólo `str_` — payloads `arr_`/`struct_`/`enum_`/`fn_`
+siguen en caja; una función cuya firma usa par (ahora también `string?`) no
+puede usarse como valor (rechazo honesto de c.1, §16.1); `some(some(x))`
+sigue rechazado limpio.
+
+Gates de c.2 (2026-10-27, todos verdes):
+
+| Gate | Resultado |
+|:-----|:----------|
+| `seed make test` (VM + C codegen, con el conformance nuevo) | **260/260** |
+| `zig build test -Dllvm` (unit, emisor) | **rc=0** |
+| `llvm_parity.sh` plano y `ASTRA_LLVM_OPT=2` | **159/159** y **159/159** |
+| `llvm_jit.sh` plano y O2 | **159/159** ×2 |
+| `llvm_cross.sh` (aarch64→qemu) plano y O2 | **159/159** ×2 |
+| `llvm_wasm.sh` (wasm32-wasi→Node) plano y O2 | **159/159** ×2 |
+| `llvm_filecheck.sh` (`check_str_pair.astra` nuevo) | **8/8** |
+| `llvm_sanitize.sh` (ASan + LSan) | **159/159**, sin fugas |
+| `dump_parity.sh` (seed ↔ zig) | **147 archivos, 0 divergent** |
+
+La suite LLVM crece de 157 a **159** (conformance `option_str_payload` con
+19 EXPECT + fixture `check_str_pair`, ambos dentro del glob de paridad). El
+smoke manual previo cubrió además el caso rc del concat almacenado en slot
+(`some("wor" + "ld")`), la reasignación de un slot par en bucle (100
+stores) y la igualdad por contenido de dos objetos distintos, verificados
+VM ↔ LLVM en O0 y O2 con ASan+LSan. Con c.2, M6 no tiene items pendientes
+(el error-union quedó cerrado en §17).
 
 ## 17. Error-union para `?` — investigación y decisión (sin código nuevo)
 

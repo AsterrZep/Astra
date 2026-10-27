@@ -193,8 +193,16 @@ inf. M6.c (progress §16/§16.1) unboxes Option/Result: the pair
 `{i8 tag; i64 payload}` lives in SSA in named functions (params, returns,
 `let`, temporaries) with boxing only at container/dynamic-ABI boundaries, and
 construction/`?`/`match` run inline with no heap and no rc — no flag: the
-157/157 parity IS the gate. The remaining M6 item (c.2: `str_` payloads)
-stays optional; error-union for `?` was investigated and closed (progress
+157/157 parity IS the gate. M6.c c.2 (progress §16.2) extends the pair to
+`str_` payloads: `string?` carries the string pointer as bits, with the rc
+of the payload handled at the ownership points (store, return, param entry,
+frame release, call-result temp, module globals) via `rcRef`; pair equality
+compares string **content** through `str_eq`. It also exposed — and the fix
+landed with it — a latent host datalayout mismatch: the module got
+`LLVMCreateTargetData("")` (empty layout, i64 @4) while the object used the
+TargetMachine layout (i64 @8), so O2 folds read pair-global payloads 4 bytes
+off; `setTarget` now derives the datalayout from the TargetMachine.
+Error-union for `?` was investigated and closed (progress
 §17): the local-`ret` `?` (M1.c) and the M6.c pair already deliver the
 explicit `{ok, err}` ABI in essence, and the dual-`T,E` layout is born again
 with `TYPE_RESULT` in Phase 2. Scalar unboxing is already delivered (the
