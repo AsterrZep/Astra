@@ -1,0 +1,50 @@
+// Formas del par Option/Result con payload `str_` (M6.c etapa c.2): el
+// puntero del string viaja como bits en el i64 del par (`ptrtoint` en la
+// construcción, `inttoptr` en la extracción), la igualdad par-vs-par compara
+// CONTENIDO vía `astra_llvm_str_eq` (no bits) y `astra_llvm_wrap` no aparece
+// en el hot path — sólo en la frontera de `print`.
+//
+// CHECK: define { i8, i64 } @astra_fn_sbuild
+// CHECK: %[[PB:[0-9]+]] = ptrtoint ptr {{%[0-9]+}} to i64
+// CHECK: insertvalue { i8, i64 } { i8 2, i64 undef }, i64 %[[PB]], 1
+// CHECK: extractvalue { i8, i64 } {{%[0-9]+}}, 1
+// CHECK: inttoptr i64
+// CHECK: define { i8, i64 } @astra_fn_spin
+// CHECK: phi { i8, i64 } [ { i8 3, i64 0 }, %box_none ],
+// CHECK: define { i8, i64 } @astra_fn_stry
+// CHECK: icmp eq i8 {{%[0-9]+}}, 1
+// CHECK: icmp eq i8 {{%[0-9]+}}, 3
+// CHECK: define i8 @astra_fn_seq
+// CHECK: call i32 @astra_llvm_str_eq(
+// CHECK-NOT: astra_llvm_wrap
+// CHECK: define void @astra_fn_main
+// CHECK-NOT: astra_llvm_wrap
+// CHECK: store { i8, i64 } { i8 2, i64 ptrtoint
+// CHECK: phi { i8, i64 } [ { i8 3, i64 0 }, %box_none ]
+// CHECK: call ptr @astra_llvm_wrap(
+// CHECK: call void @astra_llvm_print_boxed(
+fn sbuild(x: string) -> string? {
+    some(x + "!")
+}
+
+fn spin(c: bool, x: string) -> string? {
+    if c { some(x) } else { none }
+}
+
+fn stry(o: string?) -> string? {
+    let v = o?
+    some(v)
+}
+
+fn seq(a: string?, b: string?) -> bool {
+    a == b
+}
+
+fn main() {
+    let a: string? = some("hi")
+    let b: string? = none
+    print(stry(a))
+    print(sbuild("x"))
+    print(spin(false, "y"))
+    print(seq(a, a))
+}

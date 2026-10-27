@@ -53,12 +53,13 @@ const debug_mod = @import("debug.zig");
 /// payload / patrón, kind 1 = data construido — los dos kinds del VM).
 const Ty = enum { i64_, bool_, f64_, str_, boxed_, pair_, fn_, arr_, struct_, enum_ };
 
-/// Un escalar puede vivir dentro de un par Option/Result sin heap (M6.c):
-/// `i32`/`i64`/`f64`/`bool` — los payloads puntero (string, arrays, structs,
-/// enums, funciones) siguen en la caja.
-fn isScalarPayload(ty: Ty) bool {
+/// Un payload puede vivir dentro de un par Option/Result sin heap (M6.c):
+/// escalares `i32`/`i64`/`f64`/`bool` y — c.2 — `string`, cuyo puntero
+/// viaja como bits en el i64 del par (`toBits`/`fromBits`). El resto de
+/// payloads puntero (arrays, structs, enums, funciones) siguen en la caja.
+fn isPairPayload(ty: Ty) bool {
     return switch (ty) {
-        .i64_, .f64_, .bool_ => true,
+        .i64_, .f64_, .bool_, .str_ => true,
         else => false,
     };
 }
@@ -102,7 +103,9 @@ const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, s
 /// Local con dueño (parámetro, `let`, binding de match o variable de `for`):
 /// su alloca guarda una referencia y el frame la libera al salir. Las allocas
 /// se crean una vez por emisión; en bucles el store libera el valor anterior.
-const OwnedSlot = struct { alloca: c.LLVMValueRef, ty: Ty };
+/// `payload` importa para pares (c.2): el refcount del slot es el de su
+/// payload puntero, no el par.
+const OwnedSlot = struct { alloca: c.LLVMValueRef, ty: Ty, payload: ?Ty = null };
 /// Binding temporal para la inferencia de la firma de un `fn` sin `->`:
 /// declareFn corre antes de emitir el cuerpo, así que los `let` de dentro no
 /// están en el scope real. Se resuelven aquí solo para tipos (nunca para
@@ -948,7 +951,8 @@ pub const Emitter = struct {
                 return self.unsupported(pi, "parameter without a scalar type annotation (i32/i64/u32/u64/f64/bool/string/T?)");
             pbuf[i + 1] = self.llvmTy(at.ty);
             // La forma declarada viaja al sitio de llamada (M6.c): un `T?`
-            // escalar entra como par y una caja cargada se desempaqueta.
+            // de par (escalar o string, c.2) entra como par y una caja
+            // cargada se desempaqueta.
             panns[i] = .{ .ty = at.ty, .payload = at.payload };
         }
         var ret_ty: c.LLVMTypeRef = self.t_void;
@@ -1031,12 +1035,14 @@ pub const Emitter = struct {
             const p = self.tree.node(pi).param;
             const at = self.annotTy(p.type_node) orelse return;
             const alloca = self.buildAlloca(self.llvmTy(at.ty));
-            _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(info.val, @intCast(i + 1)), alloca);
+            const parg = c.LLVMGetParam(info.val, @intCast(i + 1));
+            _ = c.LLVMBuildStore(self.builder, parg, alloca);
             // El callee posee una referencia a cada parámetro (el caller no
             // transfiere): así asignar a un parámetro y liberarlo al salir es
-            // seguro aunque el argumento fuese un local prestado.
-            if (isPtrTy(at.ty)) self.emitRetainRef(c.LLVMGetParam(info.val, @intCast(i + 1)));
-            self.trackOwned(alloca, at.ty);
+            // seguro aunque el argumento fuese un local prestado. Para un par
+            // (c.2) la referencia poseída es la de su payload.
+            if (self.rcRef(parg, at.ty, at.payload)) |pr| self.emitRetainRef(pr);
+            self.trackOwned(alloca, at.ty, at.payload);
             self.addLocal(p.name, alloca, at.ty, at.payload, at.sname);
         }
         const body_val = self.emitBlockValue(fd.body);
@@ -1183,9 +1189,10 @@ pub const Emitter = struct {
             const p = self.tree.node(pi).param;
             const at = boxForm(self.annotTy(p.type_node) orelse return null);
             const alloca = self.buildAlloca(self.llvmTy(at.ty));
-            _ = c.LLVMBuildStore(self.builder, c.LLVMGetParam(fnv, @intCast(i + 1)), alloca);
-            if (isPtrTy(at.ty)) self.emitRetainRef(c.LLVMGetParam(fnv, @intCast(i + 1)));
-            self.trackOwned(alloca, at.ty);
+            const parg = c.LLVMGetParam(fnv, @intCast(i + 1));
+            _ = c.LLVMBuildStore(self.builder, parg, alloca);
+            if (self.rcRef(parg, at.ty, at.payload)) |pr| self.emitRetainRef(pr);
+            self.trackOwned(alloca, at.ty, at.payload);
             self.addLocal(p.name, alloca, at.ty, at.payload, at.sname);
         }
         const body_val = self.emitBlockValue(l.body);
@@ -1832,9 +1839,9 @@ pub const Emitter = struct {
         // independientes y `release(NULL)` es no-op.
         var git = self.globals.valueIterator();
         while (git.next()) |g| {
-            if (!isPtrTy(g.ty)) continue;
+            if (!ownsRc(g.ty, g.payload_ty)) continue;
             const cur = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, "");
-            self.emitReleaseRef(cur);
+            if (self.rcRef(cur, g.ty, g.payload_ty)) |rr| self.emitReleaseRef(rr);
         }
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_cleanup), self.r_cleanup, null, 0, "");
         _ = c.LLVMBuildRet(self.builder, c.LLVMConstInt(c.LLVMInt32TypeInContext(self.ctx), 0, 0));
@@ -1915,7 +1922,7 @@ pub const Emitter = struct {
             const alloca = self.buildAlloca(self.llvmTy(ann.ty));
             // `let x: T?` sin valor: caja NULL / par `none` — el nil del VM.
             _ = c.LLVMBuildStore(self.builder, self.zeroInit(ann.ty), alloca);
-            self.trackOwned(alloca, ann.ty);
+            self.trackOwned(alloca, ann.ty, ann.payload);
             self.addLocal(vd.name, alloca, ann.ty, ann.payload, ann.sname);
             return;
         }
@@ -1936,7 +1943,7 @@ pub const Emitter = struct {
         // guarda el par tal cual.
         const val = self.coerceVal(val0, ty, payload, idx) orelse return;
         self.emitStoreOwned(alloca, val);
-        self.trackOwned(alloca, ty);
+        self.trackOwned(alloca, ty, payload);
         self.addLocal(vd.name, alloca, ty, payload, sname);
     }
 
@@ -2024,7 +2031,7 @@ pub const Emitter = struct {
             elem_ty = ety;
             bound_alloca = self.buildAlloca(self.t_ptr);
             self.emitStoreOwned(bound_alloca, av);
-            self.trackOwned(bound_alloca, .arr_);
+            self.trackOwned(bound_alloca, .arr_, null);
             _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i64, 0, 0), i_alloca);
         }
         _ = c.LLVMBuildBr(self.builder, cond_bb);
@@ -2063,7 +2070,7 @@ pub const Emitter = struct {
         };
         const var_alloca = self.buildAlloca(self.llvmTy(elem_ty));
         self.emitStoreOwned(var_alloca, .{ .ref = cur, .ty = elem_ty });
-        self.trackOwned(var_alloca, elem_ty);
+        self.trackOwned(var_alloca, elem_ty, null);
         self.addLocal(fe.var_name, var_alloca, elem_ty, null, null);
         self.loops.append(self.a, .{ .break_bb = exit_bb, .continue_bb = cont_bb }) catch @panic("OOM");
         _ = self.emitBlockValue(fe.body);
@@ -2132,15 +2139,16 @@ pub const Emitter = struct {
             var conv_e: Conv = .none;
             if (tv.ty != ev.ty) {
                 if (tv.ty == .pair_ or ev.ty == .pair_) {
-                    // Sube la caja a par si su payload escalar es estático
-                    // (o es la caja NULL de `none`, que toma prestado el
-                    // payload del otro brazo); si no, baja el par a caja.
+                    // Sube la caja a par si su payload es de par (escalar o
+                    // string, c.2) — o si es la caja NULL de `none`, que
+                    // toma prestado el payload del otro brazo; si no, baja
+                    // el par a caja.
                     if (tv.ty == .boxed_) {
                         if (tv.payload_ty == null) tv.payload_ty = ev.payload_ty;
-                        conv_t = if (tv.payload_ty) |pty| (if (isScalarPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
+                        conv_t = if (tv.payload_ty) |pty| (if (isPairPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
                     } else {
                         if (ev.payload_ty == null) ev.payload_ty = tv.payload_ty;
-                        conv_e = if (ev.payload_ty) |pty| (if (isScalarPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
+                        conv_e = if (ev.payload_ty) |pty| (if (isPairPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
                     }
                 } else {
                     self.unsupported(idx, "if branches have different types");
@@ -2478,7 +2486,7 @@ pub const Emitter = struct {
             .pattern_bind => |name| {
                 const alloca = self.buildAlloca(self.llvmTy(tv.ty));
                 self.emitStoreOwned(alloca, tv);
-                self.trackOwned(alloca, tv.ty);
+                self.trackOwned(alloca, tv.ty, tv.payload_ty);
                 self.addLocal(name, alloca, tv.ty, tv.payload_ty, tv.sname);
             },
             .pattern_wildcard => {},
@@ -2503,7 +2511,7 @@ pub const Emitter = struct {
                             .{ .ref = self.loadBoxPayload(tv.ref, pty), .ty = pty };
                         const alloca = self.buildAlloca(self.llvmTy(pty));
                         self.emitStoreOwned(alloca, pv);
-                        self.trackOwned(alloca, pty);
+                        self.trackOwned(alloca, pty, null);
                         self.addLocal(name, alloca, pty, null, tv.sname);
                     },
                     // Literal (`some(1)`): no vincula nada — el test ya
@@ -2538,7 +2546,7 @@ pub const Emitter = struct {
                             const pv = c.LLVMBuildLoad2(self.builder, self.llvmTy(ft), sp, "");
                             const alloca = self.buildAlloca(self.llvmTy(ft));
                             self.emitStoreOwned(alloca, .{ .ref = pv, .ty = ft });
-                            self.trackOwned(alloca, ft);
+                            self.trackOwned(alloca, ft, vl.fields[i].payload);
                             self.addLocal(name, alloca, ft, vl.fields[i].payload, vl.fields[i].sname);
                         },
                         else => {
@@ -2688,7 +2696,7 @@ pub const Emitter = struct {
             },
             // Par vs par (M6.c): tag igual && payload igual, sin heap. El
             // payload compara como el boxed_eq del runtime: f64 por valor
-            // (NaN != NaN), el resto por bits.
+            // (NaN != NaN), string por contenido, el resto por bits.
             .pair_ => blk: {
                 const ta = c.LLVMBuildExtractValue(self.builder, av.ref, 0, "");
                 const tb = c.LLVMBuildExtractValue(self.builder, bv.ref, 0, "");
@@ -2698,6 +2706,14 @@ pub const Emitter = struct {
                 const pty = av.payload_ty orelse bv.payload_ty;
                 const peq = if (pty == .f64_)
                     c.LLVMBuildFCmp(self.builder, c.LLVMRealOEQ, self.fromBits(ba, .f64_), self.fromBits(bb, .f64_), "")
+                else if (pty == .str_)
+                    // c.2: contenido, no bits — dos copias distintas del
+                    // mismo texto son iguales en boxed_eq y en value_eq.
+                    blk2: {
+                        var sargs = [_]c.LLVMValueRef{ self.fromBits(ba, .str_), self.fromBits(bb, .str_) };
+                        const se = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_eq), self.r_str_eq, &sargs, 2, "");
+                        break :blk2 c.LLVMBuildTrunc(self.builder, se, self.t_i1, "");
+                    }
                 else
                     c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, ba, bb, "");
                 break :blk c.LLVMBuildAnd(self.builder, teq, peq, "");
@@ -3084,7 +3100,7 @@ pub const Emitter = struct {
                 const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, &abuf, @intCast(args.len + 1), "");
                 self.emitDepthPop();
                 if (info.returns_value) {
-                    if (isPtrTy(info.ret_ty.?)) self.emitTmpPush(rv);
+                    if (self.rcRef(rv, info.ret_ty.?, info.ret_payload)) |tr| self.emitTmpPush(tr);
                     return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
                 }
                 return null;
@@ -3168,7 +3184,7 @@ pub const Emitter = struct {
         const rv = c.LLVMBuildCall2(self.builder, info.fty, info.val, &abuf, @intCast(args.len + 2), "");
         self.emitDepthPop();
         if (info.returns_value) {
-            if (isPtrTy(info.ret_ty.?)) self.emitTmpPush(rv);
+            if (self.rcRef(rv, info.ret_ty.?, info.ret_payload)) |tr| self.emitTmpPush(tr);
             return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
         }
         return null;
@@ -3357,13 +3373,35 @@ pub const Emitter = struct {
 
     // ── Refcount y dueños (v1) ───────────────────────────────────────────────
 
-    /// Los tipos con representación puntero son los únicos que participan en
-    /// el refcount; los escalares se copian por valor.
+    /// Los tipos con representación puntero participan en el refcount; los
+    /// escalares se copian por valor. Un par (M6.c) participa vía `rcRef`:
+    /// depende de su payload, no del par en sí.
     fn isPtrTy(ty: Ty) bool {
         return switch (ty) {
             .str_, .boxed_, .fn_, .arr_, .struct_, .enum_ => true,
             else => false,
         };
+    }
+
+    /// ¿El valor con dueño transporta una referencia con refcount? Para un
+    /// par (c.2) lo decide su payload: con payload puntero (string) el par
+    /// posee una referencia al payload — el par no es heap, la posesión vive
+    /// en el puntero; con payload escalar no posee nada.
+    fn ownsRc(ty: Ty, payload: ?Ty) bool {
+        if (isPtrTy(ty)) return true;
+        return ty == .pair_ and payload != null and isPtrTy(payload.?);
+    }
+
+    /// El puntero con refcount que el valor posee, o `null` si no posee
+    /// nada. Para un par es su payload extraído con `fromBits`. Emite
+    /// instrucciones (extractvalue/inttoptr): llamar sólo en posición de
+    /// código, con el builder donde deba quedar la extracción.
+    fn rcRef(self: *Emitter, ref: c.LLVMValueRef, ty: Ty, payload: ?Ty) ?c.LLVMValueRef {
+        if (isPtrTy(ty)) return ref;
+        if (ty != .pair_) return null;
+        const pty = payload orelse return null;
+        if (!isPtrTy(pty)) return null;
+        return self.fromBits(c.LLVMBuildExtractValue(self.builder, ref, 1, ""), pty);
     }
 
     fn emitRetainRef(self: *Emitter, ref: c.LLVMValueRef) void {
@@ -3409,33 +3447,39 @@ pub const Emitter = struct {
     /// store libera NULL; las construcciones heap también (calloc), lo que
     /// permite usar este helper para inicializar campos y elementos.
     fn emitStoreOwned(self: *Emitter, slot: c.LLVMValueRef, v: Val) void {
-        if (isPtrTy(v.ty)) {
+        // c.2: un par con payload puntero posee una referencia al payload —
+        // viejo y nuevo pasan por rcRef (el puntero extraído, no el par).
+        const own = self.rcRef(v.ref, v.ty, v.payload_ty);
+        if (own) |o| {
             const old = c.LLVMBuildLoad2(self.builder, self.llvmTy(v.ty), slot, "");
-            self.emitReleaseRef(old);
+            if (self.rcRef(old, v.ty, v.payload_ty)) |oo| self.emitReleaseRef(oo);
+            _ = c.LLVMBuildStore(self.builder, v.ref, slot);
+            self.emitRetainRef(o);
+        } else {
+            _ = c.LLVMBuildStore(self.builder, v.ref, slot);
         }
-        _ = c.LLVMBuildStore(self.builder, v.ref, slot);
-        if (isPtrTy(v.ty)) self.emitRetainRef(v.ref);
     }
 
-    fn trackOwned(self: *Emitter, alloca: c.LLVMValueRef, ty: Ty) void {
-        self.frame_owned.append(self.a, .{ .alloca = alloca, .ty = ty }) catch @panic("OOM");
+    fn trackOwned(self: *Emitter, alloca: c.LLVMValueRef, ty: Ty, payload: ?Ty) void {
+        self.frame_owned.append(self.a, .{ .alloca = alloca, .ty = ty, .payload = payload }) catch @panic("OOM");
     }
 
     /// Libera todos los locales con dueño del frame y vacía sus temporales.
     /// Se llama en cada return, al caer el cuerpo y en el camino de error de
-    /// `?`; el valor de retorno se retiene antes (si es puntero) para que
-    /// sobreviva a la liberación del local que lo originó.
+    /// `?`; el valor de retorno se retiene antes (si posee refcount — para
+    /// un par, su payload) para que sobreviva a la liberación del local que
+    /// lo originó.
     fn emitFrameRelease(self: *Emitter) void {
         for (self.frame_owned.items) |slot| {
-            if (!isPtrTy(slot.ty)) continue;
+            if (!ownsRc(slot.ty, slot.payload)) continue;
             const cur = c.LLVMBuildLoad2(self.builder, self.llvmTy(slot.ty), slot.alloca, "");
-            self.emitReleaseRef(cur);
+            if (self.rcRef(cur, slot.ty, slot.payload)) |rr| self.emitReleaseRef(rr);
         }
         if (self.frame_mark) |mark| self.emitTmpClear(mark);
     }
 
     fn emitFrameCleanup(self: *Emitter, ret: ?Val) void {
-        if (ret) |v| if (isPtrTy(v.ty)) self.emitRetainRef(v.ref);
+        if (ret) |v| if (self.rcRef(v.ref, v.ty, v.payload_ty)) |rr| self.emitRetainRef(rr);
         self.emitFrameRelease();
         if (ret) |v| {
             _ = c.LLVMBuildRet(self.builder, v.ref);
@@ -3652,15 +3696,16 @@ pub const Emitter = struct {
         return self.fromBits(bits, pty);
     }
 
-    /// `some(x)`/`ok(x)`/`err(x)`: con payload escalar, par `{ i8 tag; i64
-    /// payload }` en SSA (M6.c — sin heap); con payload puntero, caja como
-    /// siempre. Un payload que ya es par se baja a caja primero (anidamiento:
-    /// el runtime sólo conoce cajas).
+    /// `some(x)`/`ok(x)`/`err(x)`: con payload de par (escalares y string,
+    /// c.2), par `{ i8 tag; i64 payload }` en SSA (M6.c — sin heap); con el
+    /// resto de payloads puntero, caja como siempre. Un payload que ya es
+    /// par se baja a caja primero (anidamiento: el runtime sólo conoce
+    /// cajas).
     fn emitWrap(self: *Emitter, idx: u32, tag: u32, inner: Val) ?Val {
         var iv = inner;
         if (iv.ty == .pair_) iv = self.coerceToBox(iv, idx) orelse return null;
         const pty = boxPTy(iv.ty) orelse return self.unsupportedBox(idx);
-        if (isScalarPayload(iv.ty)) {
+        if (isPairPayload(iv.ty)) {
             const bits = self.toBits(iv.ref, iv.ty);
             return self.buildPair(tag, bits, iv.ty, iv.sname);
         }
@@ -3728,14 +3773,15 @@ pub const Emitter = struct {
 
     /// Caja → par en la entrada de una firma con par: la caja NULL (none) es
     /// `{3, 0}` sin tocar memoria; una caja viva carga tag y payload. El
-    /// payload escalar es estático, así que el load usa el `T` conocido.
+    /// payload (escalar o string, c.2) es estático, así que el load usa el
+    /// `T` conocido.
     fn coerceToPair(self: *Emitter, v: Val, idx: u32) ?Val {
         if (v.ty != .boxed_) return v;
         const pty = v.payload_ty orelse {
             self.unsupported(idx, "optional without a known payload cannot flow unboxed");
             return null;
         };
-        if (!isScalarPayload(pty)) {
+        if (!isPairPayload(pty)) {
             self.unsupported(idx, "optional with a pointer payload cannot flow unboxed");
             return null;
         }
@@ -3833,8 +3879,9 @@ pub const Emitter = struct {
 
     const Annot = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
 
-    /// Anotación de un opcional `T?` (M6.c): payload escalar → par en SSA
-    /// (`pair_`, sin heap); payload puntero → caja (`boxed_`). Es la única
+    /// Anotación de un opcional `T?` (M6.c): payload de par (escalares y
+    /// string, c.2) → par en SSA (`pair_`, sin heap); el resto de payloads
+    /// puntero → caja (`boxed_`). Es la única
     /// forma de anotar Option/Result: `fn increment(x: i32?) -> i32?`
     /// (try_operator). El `T` se resuelve completo (scalars, structs,
     /// arrays…) para conservar el `sname` cuando el payload es un struct.
@@ -3843,7 +3890,7 @@ pub const Emitter = struct {
         switch (self.tree.node(ni)) {
             .type_optional => |inner| {
                 if (self.scalarM0Ty(inner)) |t| {
-                    return .{ .ty = if (isScalarPayload(t)) .pair_ else .boxed_, .payload = t };
+                    return .{ .ty = if (isPairPayload(t)) .pair_ else .boxed_, .payload = t };
                 }
                 const ia = self.annotTy(inner) orelse return null;
                 return .{ .ty = .boxed_, .payload = ia.ty, .sname = ia.sname };
@@ -4084,10 +4131,11 @@ pub const Emitter = struct {
             .string_literal => return .str_,
             .bool_literal => return .bool_,
             .none_expr, .nil_literal => return .boxed_,
-            // `some(x)`/`ok(x)`/`err(x)` (M6.c): payload escalar → par; si no
-            // (o si el payload no se infiere estáticamente) → caja.
+            // `some(x)`/`ok(x)`/`err(x)` (M6.c): payload de par (escalares y
+            // string, c.2) → par; si no (o si el payload no se infiere
+            // estáticamente) → caja.
             .some_expr, .ok_expr, .err_expr => |inner| {
-                if (self.inferStaticTy(inner)) |it| return if (isScalarPayload(it)) .pair_ else .boxed_;
+                if (self.inferStaticTy(inner)) |it| return if (isPairPayload(it)) .pair_ else .boxed_;
                 return .boxed_;
             },
             .lambda_expr => return .fn_,
@@ -4510,6 +4558,13 @@ pub const Emitter = struct {
         // datalayout del módulo, así que uno del host produciría un objeto
         // cruzado malformado (tamaños/alignments de i64, GEPs). Sin `--target`,
         // el host como siempre (los gates de IR no cambian).
+        //
+        // El datalayout sale SIEMPRE de la TargetMachine del triple: con
+        // `LLVMCreateTargetData("")` el string de layout era vacío y el
+        // middle-end plegaba con los defaults (i64 @4) mientras el isel del
+        // objeto usaba el layout real de x86_64 (i64 @8) — un extractvalue
+        // plegado sobre un global de par leía 4 bytes desplazado y el release
+        // de c.2 revienta (bug expuesto por el primer global `T?` en par).
         var td: c.LLVMTargetDataRef = undefined;
         if (self.target_triple) |t| {
             c.LLVMSetTarget(self.mod, t.ptr);
@@ -4521,7 +4576,9 @@ pub const Emitter = struct {
             const triple = c.LLVMGetDefaultTargetTriple();
             defer c.LLVMDisposeMessage(triple);
             c.LLVMSetTarget(self.mod, triple);
-            td = c.LLVMCreateTargetData("");
+            const tm = target_mod.create(self.diag, self.file, null) orelse return;
+            defer c.LLVMDisposeTargetMachine(tm);
+            td = c.LLVMCreateTargetDataLayout(tm);
         }
         // El TargetData queda en el emisor (target_td) para calcular offsets
         // de struct según el datalayout del destino; se libera en `deinit`.

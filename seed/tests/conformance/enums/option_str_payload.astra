@@ -1,0 +1,108 @@
+// string payloads unboxed in the pair (M6.c c.2): the pair carries the
+// string pointer as bits — construction, ?, match (literal and bind),
+// content equality, if/match unification, params/returns, reassignment,
+// loop stores, container boundary (boxed element) and a module-level
+// global released at the end of main. Same outputs on VM and LLVM.
+// EXPECT: some(hello)
+// EXPECT: nil
+// EXPECT: some(world)
+// EXPECT: some(hello)
+// EXPECT: some(world)
+// EXPECT: some(w)
+// EXPECT: some(q)
+// EXPECT: nil
+// EXPECT: true
+// EXPECT: false
+// EXPECT: false
+// EXPECT: some(y)
+// EXPECT: lit-y
+// EXPECT: y
+// EXPECT: some(new)
+// EXPECT: some(n)
+// EXPECT: some(z)
+// EXPECT: nil
+// EXPECT: some(g)
+let gs: string? = some("g")
+
+fn pick(a: string?, b: string?) -> string? {
+    match a {
+        some(_) => a,
+        none => b,
+    }
+}
+
+fn first_word() -> string? {
+    let v: string? = some("w" + "")
+    v
+}
+
+fn rethrow(x: string?) -> string? {
+    let v = x?
+    some(v)
+}
+
+fn main() {
+    let mut s: string? = some("hello")
+    print(s)
+    let e: string? = none
+    print(e)
+
+    // concat temporal dentro del par (rc: temp → par → slot)
+    let t: string? = some("wor" + "ld")
+    print(t)
+
+    // params y retorno de pares
+    let p = pick(s, t)
+    print(p)
+    print(pick(e, t))
+
+    // extraccion con ? y rc a traves del retorno
+    print(first_word())
+
+    // ? con propagacion de none por el camino del par
+    print(rethrow(some("q" + "")))
+    print(rethrow(none))
+
+    // igualdad por CONTENIDO (dos objetos distintos con el mismo texto)
+    let a: string = "a" + ""
+    let b: string = "a" + ""
+    print(some(a) == some(b))
+    print(some(a) == t)
+    print(some(a) == none)
+
+    // unificacion if: par y none en un phi
+    let c: string? = if true { some("y") } else { none }
+    print(c)
+
+    // match con literal sobre el par
+    match c {
+        some("y") => print("lit-y"),
+        some(_) => print("lit-other"),
+        none => print("lit-no"),
+    }
+    match c {
+        some(v) => print(v),
+        none => print("bind-no"),
+    }
+
+    // reasignacion de un slot par (release viejo, retain nuevo)
+    s = some("new" + "")
+    print(s)
+
+    // bucle: 100 stores sobre el mismo slot par
+    let mut i = 0
+    let mut acc: string? = none
+    while i < 100 {
+        acc = some("n" + "")
+        i = i + 1
+    }
+    print(acc)
+
+    // frontera de contenedor: el elemento va en caja
+    let arr: [string?] = [some("z"), none]
+    print(arr[0])
+    print(arr[1])
+
+    // global en el cierre del main
+    print(gs)
+}
