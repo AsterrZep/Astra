@@ -365,6 +365,16 @@ static const char *astra_llvm_boxed_name(const void *p) {
     return b->tag < 3 ? names[b->tag] : "nil";
 }
 
+/* `len(x)` sobre una caja/par (DEC-013): el VM nombra el valor con
+ * type_name (`cannot take length of nil/ok/err/some`) — mismo texto en el
+ * backend C (astra_tag_name) y en los VMs. Siempre falla: el emisor marca
+ * la llamada noreturn y pone `unreachable` detrás. */
+void astra_llvm_len_fail(unsigned line, const void *p) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "cannot take length of %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
 void astra_llvm_boxed_order_fail(unsigned line, const void *pa, const void *pb) {
     char buf[96];
     snprintf(buf, sizeof buf, "cannot compare %s and %s",
@@ -474,6 +484,31 @@ void astra_llvm_index_fail(unsigned line, int64_t idx, int64_t len) {
  * guard audit §5.3 added to the C backend — instead of GEPping NULL. */
 void astra_llvm_index_nil_fail(unsigned line) {
     astra_llvm_fail(line, "cannot index nil");
+}
+
+/* `s[i]` (DEC-013, research/028 PR1): byte i of the string as a fresh
+ * one-byte string. The whole receiver/int/bounds sequence lives here so the
+ * emitter emits a single call and the messages are literally the VM's —
+ * `cannot index nil` for a nil string, then `index i out of bounds (len n)`
+ * (shared with the array path via astra_llvm_index_fail). The result goes
+ * through the same alloc/kind as str_concat, so retain/release treat it like
+ * any other heap string. */
+void *astra_llvm_str_index(unsigned line, const void *ps, int64_t i) {
+    if (!ps) {
+        astra_llvm_index_nil_fail(line);
+        return NULL; /* noreturn en el IR; en C, para el compilador */
+    }
+    const AstraLLVMStr *s = (const AstraLLVMStr *)ps;
+    if (i < 0 || i >= s->len) {
+        astra_llvm_index_fail(line, i, s->len);
+        return NULL;
+    }
+    AstraLLVMStr *out = (AstraLLVMStr *)astra_llvm_alloc(
+        line, (int64_t)sizeof(int64_t) + 1 + 1, ASTRA_LLVM_KIND_STR);
+    out->len = 1;
+    out->data[0] = s->data[i];
+    out->data[1] = '\0';
+    return out;
 }
 
 /* ---- structs (M2.b) ----------------------------------------------------- */

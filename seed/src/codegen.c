@@ -216,6 +216,33 @@ static const char *make_global_cname(Codegen *cg, InternedString name) {
 }
 
 /* -----------------------------------------------------------
+ * Builtin table (research/028 §2.1 / PR1)
+ * -----------------------------------------------------------
+ * Every builtin exposed as a global `g_<name>` plus the runtime function
+ * behind it (codegen_runtime.h). The sites that used to hardcode `print` —
+ * the init function, the init call in main — walk this table, so a new
+ * builtin is one row plus its `astra_builtin_*` implementation. The generic
+ * CALL dispatch (fun(args, argc)) needs no change: the per-builtin function
+ * pointer already lives in the AstraFn constant. */
+typedef struct {
+    const char *name;  /* Astra-level builtin name */
+    const char *impl;  /* C function in codegen_runtime.h */
+} BuiltinDef;
+
+static const BuiltinDef cg_builtins[] = {
+    { "print", "astra_builtin_print" },
+    { "len",   "astra_builtin_len"   },
+};
+
+static const BuiltinDef *find_builtin(const char *name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < sizeof(cg_builtins) / sizeof(cg_builtins[0]); i++) {
+        if (strcmp(name, cg_builtins[i].name) == 0) return &cg_builtins[i];
+    }
+    return NULL;
+}
+
+/* -----------------------------------------------------------
  * FnObj registry helpers (lambdas and non-builtin FnObjs)
  * ----------------------------------------------------------- */
 
@@ -568,22 +595,22 @@ static void emit_global_decls(Codegen *cg) {
     }
 
     for (size_t i = 0; i < cg->global_map_count; i++) {
-        /* Check if this is the print builtin */
-        if (strcmp(cg->global_map[i].name.str, "print") == 0) {
-            cg_write(cg, "static AstraValue g_print;\n");
-        } else {
-            cg_writef(cg, "static AstraValue %s;\n", cg->global_map[i].c_name);
-        }
+        /* Builtins and ordinary globals share the plain `g_<name>` declaration
+         * (for print the old special case wrote exactly this string). */
+        cg_writef(cg, "static AstraValue %s;\n", cg->global_map[i].c_name);
     }
     if (cg->global_map_count > 0) cg_write(cg, "\n");
 
-    /* Initialize print builtin */
+    /* Initialize the builtin globals that this program actually references —
+     * one `g_<name>_init()` per table row found in the global map. */
     for (size_t i = 0; i < cg->global_map_count; i++) {
-        if (strcmp(cg->global_map[i].name.str, "print") == 0) {
+        const BuiltinDef *b = find_builtin(cg->global_map[i].name.str);
+        if (b) {
             cg_writef(cg, "static void %s_init(void) { "
-                     "g_print = astra_builtin_fn_new((AstraFnPtr)astra_builtin_print, 255); }\n",
-                     cg->global_map[i].c_name);
-            break;
+                     "%s = astra_builtin_fn_new((AstraFnPtr)%s, 255); }\n",
+                     cg->global_map[i].c_name,
+                     cg->global_map[i].c_name,
+                     b->impl);
         }
     }
     if (cg->global_map_count > 0) cg_write(cg, "\n");
@@ -763,6 +790,12 @@ static void emit_instructions(Codegen *cg,
                     break;
                 case VAL_FN: {
                     FnObj *fn_obj = v.as.fn_val;
+                    /* Builtin markers never reach the constant pool: the
+                     * emitter emits builtins as GET_GLOBAL <name> (resolved
+                     * per name in codegen.c/vm.c), and only lambdas and named
+                     * functions travel as CONST FnObj. The arm is defensive
+                     * only — a marker has no id to tell print from len, which
+                     * is exactly why the pool must stay builtin-free. */
                     if (fn_obj && fn_obj->param_count == 255 && fn_obj->code == NULL) {
                         cg_write(cg, "    ASTRA_PUSH(frame, sp, astra_builtin_fn_new((AstraFnPtr)astra_builtin_print, 255));\n");
                     } else if (fn_obj) {
@@ -1114,15 +1147,22 @@ static void emit_instructions(Codegen *cg,
              * guards mirror vm.c OPCODE_INDEX word for word (audit §5.3):
              * `_arr.as.array_val` used to be dereferenced unchecked, so
              * `let a: [i32]; a[0]` segfaulted instead of reporting the VM's
-             * "cannot index nil". */
+             * "cannot index nil". The string arm (DEC-013 `s[i]`) mirrors the
+             * seed VM's string arm in the same order: receiver, int, bounds. */
             cg_write(cg, "    {\n");
             cg_write(cg, "        AstraValue _idx = frame[--sp];\n");
             cg_write(cg, "        AstraValue _arr = frame[sp - 1];\n");
-            cg_write(cg, "        if (_arr.tag != AST_ARRAY || !_arr.as.array_val)\n");
+            cg_write(cg, "        if (_arr.tag == AST_STRING && _arr.as.string_val) {\n");
+            cg_write(cg, "            if (_idx.tag != AST_INT)\n");
+            cg_write(cg, "                astra_errorf(\"array index must be int, got %s\", astra_tag_name(_idx.tag));\n");
+            cg_write(cg, "            frame[sp - 1] = astra_string_get(_arr.as.string_val, _idx.as.int_val);\n");
+            cg_write(cg, "        } else if (_arr.tag != AST_ARRAY || !_arr.as.array_val) {\n");
             cg_write(cg, "            astra_errorf(\"cannot index %s\", astra_tag_name(_arr.tag));\n");
-            cg_write(cg, "        if (_idx.tag != AST_INT)\n");
-            cg_write(cg, "            astra_errorf(\"array index must be int, got %s\", astra_tag_name(_idx.tag));\n");
-            cg_write(cg, "        frame[sp - 1] = astra_array_get(_arr.as.array_val, _idx.as.int_val);\n");
+            cg_write(cg, "        } else {\n");
+            cg_write(cg, "            if (_idx.tag != AST_INT)\n");
+            cg_write(cg, "                astra_errorf(\"array index must be int, got %s\", astra_tag_name(_idx.tag));\n");
+            cg_write(cg, "            frame[sp - 1] = astra_array_get(_arr.as.array_val, _idx.as.int_val);\n");
+            cg_write(cg, "        }\n");
             cg_write(cg, "    }\n");
         } break;
 
@@ -1406,11 +1446,11 @@ static void emit_module_code(Codegen *cg) {
     size_t code_len = 0;
     const Instruction *code = emitter_get_code(cg->emitter, &code_len);
 
-    /* Initialize builtins */
+    /* Initialize the builtins this program references (table-driven, one
+     * call per builtin — no break: several may coexist now). */
     for (size_t i = 0; i < cg->global_map_count; i++) {
-        if (strcmp(cg->global_map[i].name.str, "print") == 0) {
-            cg_write(cg, "    g_print_init();\n");
-            break;
+        if (find_builtin(cg->global_map[i].name.str)) {
+            cg_writef(cg, "    %s_init();\n", cg->global_map[i].c_name);
         }
     }
     cg_write(cg, "\n");

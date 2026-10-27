@@ -776,6 +776,24 @@ static inline AstraValue astra_builtin_print(AstraValue *args, uint8_t argc) {
     return astra_nil();
 }
 
+/* ---------- Built-in: len (DEC-013, research/028 PR1) ----------
+ *
+ * len(array | string) -> i64. The receiver and arity wording mirrors vm.c's
+ * builtin_len and OPCODE_LEN (`cannot take length of %s` / `expected 1
+ * arguments but got %u`) so the VM and this backend stay byte-comparable
+ * (sweep_emit_c.sh). */
+static inline AstraValue astra_builtin_len(AstraValue *args, uint8_t argc) {
+    if (argc != 1)
+        astra_errorf("expected 1 arguments but got %u", (unsigned)argc);
+    AstraValue v = args[0];
+    if (v.tag == AST_ARRAY && v.as.array_val)
+        return astra_int(v.as.array_val->len);
+    if (v.tag == AST_STRING && v.as.string_val)
+        return astra_int(v.as.string_val->len);
+    astra_errorf("cannot take length of %s", astra_tag_name(v.tag));
+    return astra_nil(); /* astra_errorf exits; not reached */
+}
+
 /* ---------- Runtime error ---------- */
 /* A *hard* runtime error (div-by-zero, bounds, nil receiver, …) is fatal, full
  * stop: print `file:line: runtime error: msg` exactly like the VM's driver
@@ -833,6 +851,22 @@ static inline AstraValue astra_array_get(AstraArray *a, int64_t idx) {
 static inline void astra_array_set(AstraArray *a, int64_t idx, AstraValue val) {
     astra_array_bounds(a, idx);
     a->elems[idx] = val;
+}
+
+/* Bounds-checked one-byte string index — vm.c OPCODE_INDEX's string arm
+ * (DEC-013 `s[i]`): same receiver guard, same `index i out of bounds (len n)`
+ * wording as the array path, then a fresh 1-byte string so the value owns its
+ * copy (astra_string_new copies). */
+static inline AstraValue astra_string_get(AstraString *s, int64_t idx) {
+    if (!s)
+        astra_runtime_error("cannot index string"); /* defensive; the caller guards */
+    if (idx < 0 || idx >= s->len) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "index %ld out of bounds (len %ld)",
+                 (long)idx, (long)s->len);
+        astra_runtime_error(msg);
+    }
+    return astra_string_new(s->data + idx, 1);
 }
 
 /* ---------- Bounds-checked push ----------

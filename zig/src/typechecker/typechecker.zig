@@ -406,6 +406,13 @@ pub const TypeChecker = struct {
         print_params[0] = self.newType(.unknown);
         self.insert(.{ .name = "print", .type_ = self.newFn(print_params, self.newType(.void)), .is_mut = false, .is_fn = true });
 
+        // len(value) -> i64: length of an array or a string (DEC-013,
+        // research/028 PR1). Unknown parameter like print's, so the runtime
+        // wording (`cannot take length of int`) is the parity surface.
+        const len_params = try self.a.alloc(*Type, 1);
+        len_params[0] = self.newType(.unknown);
+        self.insert(.{ .name = "len", .type_ = self.newFn(len_params, self.newType(.int64)), .is_mut = false, .is_fn = true });
+
         // Option: some(T) -> Option, none -> Option
         {
             const opt = self.pool.enumType("Option") catch @panic("OOM");
@@ -1201,7 +1208,11 @@ pub const TypeChecker = struct {
     fn checkIndex(self: *TypeChecker, object_idx: u32, index_idx: u32) *Type {
         const object = self.checkNode(object_idx);
         if (isErrorType(object)) return object;
-        if (object.kind != .array) {
+        // DEC-013 (research/028 PR1): strings index for reading — `s[i]`
+        // yields the one-byte string at byte i. Anything else keeps the
+        // historical rejection (ui/index_non_array.astra); writing through a
+        // string index is rejected in checkAssign (strings are immutable).
+        if (object.kind != .array and object.kind != .string) {
             return self.errorType(self.tree.loc(object_idx), "cannot index non-array type {s}", .{object.kind.name()});
         }
         const index = self.checkNode(index_idx);
@@ -1209,6 +1220,7 @@ pub const TypeChecker = struct {
         if (!isInteger(index)) {
             return self.errorType(self.tree.loc(index_idx), "array index must be integer type, got {s}", .{index.kind.name()});
         }
+        if (object.kind == .string) return self.newType(.string);
         return object.elem.?;
     }
 
@@ -1695,6 +1707,18 @@ pub const TypeChecker = struct {
                 return self.errorType(self.tree.loc(root), "cannot assign through immutable variable '{s}' (declare it with 'let mut')", .{name});
             }
             return self.errorType(self.tree.loc(root), "cannot assign to immutable variable '{s}'", .{name});
+        }
+
+        // DEC-013: indexing a string is read-only (mirror of the seed's
+        // typecheck_assign). The receiver is checked here, and an errored
+        // receiver returns before checkNode(target) re-walks it, so no
+        // diagnostic fires twice for the same node.
+        if (isTag(self.tree.node(target), .index_expr)) {
+            const obj = self.checkNode(self.tree.node(target).index_expr.object);
+            if (isErrorType(obj)) return obj;
+            if (obj.kind == .string) {
+                return self.errorType(self.tree.loc(target), "cannot assign to string element", .{});
+            }
         }
 
         const target_type = self.checkNode(target);

@@ -1,0 +1,7 @@
+// Out-of-range string index fails with the very wording arrays use (DEC-013):
+// same message in the seed VM, the C backend, the zig VM and the LLVM route.
+// EXPECT-RUNTIME-ERROR: index 5 out of bounds (len 5)
+fn main() {
+    let s = "hello"
+    print(s[5])
+}

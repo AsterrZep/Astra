@@ -463,6 +463,33 @@ static void vm_runtime_error(VM *vm, uint32_t line, const char *fmt, ...) {
     vm->error_line = line;
 }
 
+/* Builtin `len(x) -> i64` (DEC-013, research/028 PR1): arrays and strings.
+ * Arity and receiver wording mirror the OPCODE_LEN handler (`expected 1
+ * arguments but got %u` = OPCODE_CALL's phrasing, `cannot take length of %s`
+ * = OPCODE_LEN's) so all four routes report identical text. Returns false
+ * with the VM error set. */
+static bool builtin_len(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 1) {
+        vm_runtime_error(vm, line, "expected 1 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value obj = args[0];
+    size_t n;
+    if (obj.kind == VAL_ARRAY && obj.as.array_val) {
+        n = obj.as.array_val->len;
+    } else if (obj.kind == VAL_STRING) {
+        /* `""` interns to {str: NULL, len: 0} (string_intern returns the empty
+         * pair for len 0), so the NULL-ness of the pointer says nothing about
+         * emptiness — only VAL_NIL (an uninitialized `let s: string`) is nil. */
+        n = obj.as.string_val.len;
+    } else {
+        vm_runtime_error(vm, line, "cannot take length of %s", type_name(obj));
+        return false;
+    }
+    *out = value_int((int64_t)n);
+    return true;
+}
+
 /* -----------------------------------------------------------
  * VM execution
  * ----------------------------------------------------------- */
@@ -685,9 +712,11 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 return VM_RUNTIME_ERROR;
             }
             const char *name = vm->constants[inst.arg.index].as.string_val.str;
-            /* Check built-in globals */
+            /* Check built-in globals (research/028 PR1: one branch per builtin) */
             if (name && strcmp(name, "print") == 0) {
                 if (!vm_push(vm, value_fn(vm->builtin_print_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "len") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_len_fn))) return VM_RUNTIME_ERROR;
             } else {
                 /* Look up in globals table */
                 bool found = false;
@@ -1144,21 +1173,42 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             Value idx = vm_pop(vm);
             Value obj = vm_pop(vm);
-            if (obj.kind != VAL_ARRAY || !obj.as.array_val) {
+            if (obj.kind == VAL_STRING) {
+                /* DEC-013: `s[i]` reads byte i as a one-byte string. The
+                 * receiver/int/bounds order and every message mirror the
+                 * array arm below so the four routes stay comparable. `""` is
+                 * VAL_STRING with a NULL pointer and len 0 (string_intern), so
+                 * the kind alone decides the receiver — `""[0]` is simply out
+                 * of bounds (len 0), like the C backend says. */
+                if (idx.kind != VAL_INT) {
+                    vm_runtime_error(vm, line, "array index must be int, got %s", type_name(idx));
+                    return VM_RUNTIME_ERROR;
+                }
+                size_t slen = obj.as.string_val.len;
+                if (idx.as.int_val < 0 || (uint64_t)idx.as.int_val >= slen) {
+                    vm_runtime_error(vm, line, "index %ld out of bounds (len %zu)",
+                        (long)idx.as.int_val, slen);
+                    return VM_RUNTIME_ERROR;
+                }
+                if (!vm_push(vm,
+                        value_string(obj.as.string_val.str + idx.as.int_val, 1)))
+                    return VM_RUNTIME_ERROR;
+            } else if (obj.kind != VAL_ARRAY || !obj.as.array_val) {
                 vm_runtime_error(vm, line, "cannot index %s", type_name(obj));
                 return VM_RUNTIME_ERROR;
+            } else {
+                if (idx.kind != VAL_INT) {
+                    vm_runtime_error(vm, line, "array index must be int, got %s", type_name(idx));
+                    return VM_RUNTIME_ERROR;
+                }
+                ArrayObj *arr = obj.as.array_val;
+                if (idx.as.int_val < 0 || (uint64_t)idx.as.int_val >= arr->len) {
+                    vm_runtime_error(vm, line, "index %ld out of bounds (len %zu)",
+                        (long)idx.as.int_val, arr->len);
+                    return VM_RUNTIME_ERROR;
+                }
+                if (!vm_push(vm, arr->elems[idx.as.int_val])) return VM_RUNTIME_ERROR;
             }
-            if (idx.kind != VAL_INT) {
-                vm_runtime_error(vm, line, "array index must be int, got %s", type_name(idx));
-                return VM_RUNTIME_ERROR;
-            }
-            ArrayObj *arr = obj.as.array_val;
-            if (idx.as.int_val < 0 || (uint64_t)idx.as.int_val >= arr->len) {
-                vm_runtime_error(vm, line, "index %ld out of bounds (len %zu)",
-                    (long)idx.as.int_val, arr->len);
-                return VM_RUNTIME_ERROR;
-            }
-            if (!vm_push(vm, arr->elems[idx.as.int_val])) return VM_RUNTIME_ERROR;
         } break;
 
         case OPCODE_LEN: {
@@ -1169,7 +1219,9 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             Value obj = vm_pop(vm);
             size_t n = 0;
             if (obj.kind == VAL_ARRAY && obj.as.array_val) n = obj.as.array_val->len;
-            else if (obj.kind == VAL_STRING && obj.as.string_val.str) n = obj.as.string_val.len;
+            /* `""` is VAL_STRING with a NULL pointer and len 0 (string_intern),
+             * so only the kind — not pointer NULL-ness — decides emptiness. */
+            else if (obj.kind == VAL_STRING) n = obj.as.string_val.len;
             else {
                 vm_runtime_error(vm, line, "cannot take length of %s", type_name(obj));
                 return VM_RUNTIME_ERROR;
@@ -1399,10 +1451,17 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
             }
             FnObj *fn = fn_val.as.fn_val;
 
-            /* Handle built-in functions (param_count == 255) */
+            /* Handle built-in functions (param_count == 255), one arm per
+             * builtin: GET_GLOBAL resolved the name to its own marker, so
+             * pointer identity is the dispatch key (research/028 §1.3 B). */
             if (fn->param_count == 255 && fn->code == NULL) {
-                /* Built-in: print */
-                Value result = builtin_print(&vm->stack[fn_idx + 1], argc);
+                Value result;
+                if (fn == vm->builtin_len_fn) {
+                    if (!builtin_len(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
+                } else {
+                    result = builtin_print(&vm->stack[fn_idx + 1], argc);
+                }
                 /* Remove args + fn from stack */
                 vm->sp = (uint16_t)fn_idx;
                 if (!vm_push(vm, result)) return VM_RUNTIME_ERROR;
@@ -1714,7 +1773,9 @@ VM *vm_create(Arena *arena) {
     VM *vm = arena_alloc_zero(arena, sizeof(VM), _Alignof(VM));
     if (!vm) return NULL;
     vm->arena = arena;
-    /* Cache built-in print function */
+    /* Cache the built-in marker functions (param_count = 255, no code). One
+     * marker per builtin: GET_GLOBAL maps each builtin name to its marker and
+     * OPCODE_CALL dispatches on pointer identity. */
     FnObj *print_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
     print_fn->code = NULL;
     print_fn->code_len = 0;
@@ -1723,6 +1784,14 @@ VM *vm_create(Arena *arena) {
     print_fn->param_count = 255;
     print_fn->local_count = 0;
     vm->builtin_print_fn = print_fn;
+    FnObj *len_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    len_fn->code = NULL;
+    len_fn->code_len = 0;
+    len_fn->constants = NULL;
+    len_fn->const_len = 0;
+    len_fn->param_count = 255;
+    len_fn->local_count = 0;
+    vm->builtin_len_fn = len_fn;
     return vm;
 }
 

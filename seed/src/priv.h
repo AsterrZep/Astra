@@ -252,7 +252,12 @@ struct VM {
     Global      globals[VM_MAX_GLOBALS];
     uint16_t    global_count;
 
+    /* One marker FnObj per builtin: GET_GLOBAL resolves the builtin *name* to
+     * its own marker and OPCODE_CALL discriminates by pointer identity, so no
+     * id field is needed in the shared FnObj (research/028 §1.3 option B —
+     * astra.h stays untouched). */
     FnObj      *builtin_print_fn;
+    FnObj      *builtin_len_fn;
 
     const char *error_msg;
     uint32_t    error_line;

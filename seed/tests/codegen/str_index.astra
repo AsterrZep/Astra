@@ -1,0 +1,19 @@
+// C round-trip for the string index (DEC-013): read, concatenate, compare and
+// loop with len — the byte at s[i] must survive --emit-c -> gcc unchanged.
+// EXPECT: h
+// EXPECT: o!
+// EXPECT: ello
+// EXPECT: true
+fn main() {
+    let s = "hello"
+    print(s[0])
+    print(s[4] + "!")
+    let mut w = ""
+    let mut i: i64 = 1
+    while i < len(s) {
+        w = w + s[i]
+        i = i + 1
+    }
+    print(w)
+    print(s[1] == "e")
+}

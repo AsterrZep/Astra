@@ -475,6 +475,8 @@ pub const Emitter = struct {
     r_str_concat: c.LLVMValueRef,
     r_str_eq: c.LLVMValueRef,
     r_str_order_fail: c.LLVMValueRef,
+    // Índice de string `s[i]` (DEC-013, PR1): bounds check + string de 1 byte.
+    r_str_index: c.LLVMValueRef,
     // Option/Result boxed (M1): construcción, print, igualdad y el fallo
     // dinámico de ordenación ("cannot compare some and some").
     r_wrap: c.LLVMValueRef,
@@ -498,6 +500,9 @@ pub const Emitter = struct {
     r_print_enum: c.LLVMValueRef,
     r_enum_eq: c.LLVMValueRef,
     r_array_eq: c.LLVMValueRef,
+    // `len(x)` sobre una caja/par (DEC-013): nombre dinámico ok/err/some/nil
+    // para el mensaje `cannot take length of <tipo>` del VM.
+    r_len_fail: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
@@ -605,6 +610,7 @@ pub const Emitter = struct {
             .r_str_concat = undefined,
             .r_str_eq = undefined,
             .r_str_order_fail = undefined,
+            .r_str_index = undefined,
             .r_wrap = undefined,
             .r_print_boxed = undefined,
             .r_boxed_eq = undefined,
@@ -623,6 +629,7 @@ pub const Emitter = struct {
             .r_print_enum = undefined,
             .r_enum_eq = undefined,
             .r_array_eq = undefined,
+            .r_len_fail = undefined,
         };
         self.declareRuntime();
         return self;
@@ -659,6 +666,9 @@ pub const Emitter = struct {
         // Ordenación de strings: siempre falla, pero escribe los nombres de
         // los operandos reales (un string nil dice `nil`, no `string`).
         self.r_str_order_fail = self.declVoid("astra_llvm_str_order_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr });
+        // `s[i]` (DEC-013): bounds check con los mensajes del VM + string de
+        // 1 byte fresco (tmp push como el resultado de str_concat).
+        self.r_str_index = self.declRet(self.t_ptr, "astra_llvm_str_index", &.{ self.t_i32, self.t_ptr, self.t_i64 });
         // wrap(line, tag, ptype, payload) → caja; eq por contenido; el fallo
         // de ordenación lleva ambos operandos para nombrarlos dinámicamente.
         self.r_wrap = self.declRet(self.t_ptr, "astra_llvm_wrap", &.{ self.t_i32, self.t_i32, self.t_i32, self.t_i64 });
@@ -680,6 +690,8 @@ pub const Emitter = struct {
         self.r_print_enum = self.declVoid("astra_llvm_print_enum", &.{self.t_ptr});
         self.r_enum_eq = self.declRet(self.t_i32, "astra_llvm_enum_eq", &.{ self.t_ptr, self.t_ptr });
         self.r_array_eq = self.declRet(self.t_i32, "astra_llvm_array_eq", &.{ self.t_ptr, self.t_ptr });
+        // `len` sobre caja/par (DEC-013): falla nombrando el tipo como el VM.
+        self.r_len_fail = self.declVoid("astra_llvm_len_fail", &.{ self.t_i32, self.t_ptr });
 
         // Contador de profundidad de llamada (guard VM_CALL_DEPTH): global
         // interno, cero-inicializado; el backend C usa `astra_depth` igual.
@@ -697,18 +709,19 @@ pub const Emitter = struct {
             self.r_fail,           self.r_print_begin,    self.r_print_i64,
             self.r_print_f64,      self.r_print_bool,     self.r_print_str,
             self.r_print_fn,       self.r_print_end,      self.r_str_concat,
-            self.r_str_eq,         self.r_str_order_fail, self.r_wrap,
+            self.r_str_eq,         self.r_str_order_fail, self.r_str_index,
+            self.r_wrap,
             self.r_print_boxed,    self.r_boxed_eq,       self.r_boxed_order_fail,
             self.r_alloc,          self.r_retain,         self.r_release,
             self.r_tmp_mark,       self.r_tmp_push,       self.r_tmp_clear,
             self.r_print_array,    self.r_index_fail,     self.r_index_nil_fail,
             self.r_print_struct,   self.r_struct_eq,      self.r_print_enum,
-            self.r_enum_eq,        self.r_array_eq,
+            self.r_enum_eq,        self.r_array_eq,       self.r_len_fail,
         };
         for (helpers) |h| self.addFnAttr(h, "nounwind");
         const noreturn_helpers = [_]c.LLVMValueRef{
             self.r_fail,           self.r_boxed_order_fail, self.r_index_fail, self.r_index_nil_fail,
-            self.r_str_order_fail,
+            self.r_str_order_fail, self.r_len_fail,
         };
         for (noreturn_helpers) |h| {
             self.addFnAttr(h, "noreturn");
@@ -1415,6 +1428,23 @@ pub const Emitter = struct {
     fn emitIndex(self: *Emitter, idx: u32) ?Val {
         const ix = self.tree.node(idx).index_expr;
         const ov = self.emitExpr(ix.object) orelse return null;
+        if (ov.ty == .str_) {
+            // DEC-013: `s[i]` — byte i como string de 1 byte. El runtime hace
+            // el nil/bounds check con los mensajes exactos del VM (`cannot
+            // index nil`, `index i out of bounds (len n)`); el typechecker ya
+            // garantiza el receptor string y el índice entero.
+            const iv = self.emitExpr(ix.index) orelse return null;
+            if (iv.ty != .i64_) {
+                self.unsupported(idx, "array index must be an integer");
+                return null;
+            }
+            var sargs = [_]c.LLVMValueRef{
+                c.LLVMConstInt(self.t_i32, self.tree.loc(idx).line, 0), ov.ref, iv.ref,
+            };
+            const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_index), self.r_str_index, &sargs, 3, "");
+            self.emitTmpPush(rp);
+            return .{ .ref = rp, .ty = .str_ };
+        }
         if (ov.ty != .arr_) {
             self.unsupported(idx, "indexing a non-array value");
             return null;
@@ -3067,6 +3097,7 @@ pub const Emitter = struct {
                 // (`identity` → `identity<i32>`) por el nodo del callee.
                 const name = self.instanceCallee(call.callee, name0);
                 if (std.mem.eql(u8, name, "print")) return self.emitPrint(idx);
+                if (std.mem.eql(u8, name, "len")) return self.emitLen(idx);
                 const info = self.fns.get(name) orelse {
                     // Constructor pelón de variante de enum: `Circle(x)`
                     // (el seed resuelve la variante en cualquier enum).
@@ -3319,6 +3350,83 @@ pub const Emitter = struct {
         }
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_print_end), self.r_print_end, null, 0, "");
         return null; // print es void
+    }
+
+    /// `len(x) -> i64` (DEC-013, research/028 PR1): arrays y strings cargan la
+    /// longitud del header (offset 0, igual que emitFor); cualquier otro
+    /// receptor falla con la redacción del VM (`cannot take length of <tipo>`)
+    /// para que stderr byte-a-byte coincida con las otras rutas.
+    fn emitLen(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        if (args.len != 1) {
+            // El typechecker registra len con exactamente un parámetro: esto
+            // solo lo alcanza un programa que se saltó el chequeo.
+            self.unsupported(idx, "len takes exactly one argument");
+            return null;
+        }
+        const line = self.tree.loc(idx).line;
+        const v = self.emitExpr(args[0]) orelse return null;
+        const dummy = Val{ .ref = c.LLVMConstInt(self.t_i64, 0, 0), .ty = .i64_ }; // tras el guard: inalcanzable
+        switch (v.ty) {
+            .arr_, .str_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "cannot take length of nil");
+                var lidxs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i64, 0, 0) };
+                const lp = c.LLVMBuildGEP2(self.builder, self.t_i8, v.ref, &lidxs, 1, "");
+                return .{ .ref = c.LLVMBuildLoad2(self.builder, self.t_i64, lp, ""), .ty = .i64_ };
+            },
+            .i64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot take length of int");
+                return dummy;
+            },
+            .f64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot take length of float");
+                return dummy;
+            },
+            .bool_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot take length of bool");
+                return dummy;
+            },
+            .struct_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "cannot take length of nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot take length of struct");
+                return dummy;
+            },
+            .enum_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "cannot take length of nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot take length of enum");
+                return dummy;
+            },
+            .fn_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "cannot take length of nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "cannot take length of function");
+                return dummy;
+            },
+            .boxed_ => {
+                self.emitLenBoxFail(line, v.ref);
+                return dummy;
+            },
+            .pair_ => {
+                const bx = self.coerceToBox(v, idx) orelse return null;
+                self.emitLenBoxFail(line, bx.ref);
+                return dummy;
+            },
+        }
+    }
+
+    /// Fallo dinámico de `len` sobre caja/par: `astra_llvm_len_fail` nombra
+    /// nil/ok/err/some como type_name del VM y aborta (marcado noreturn),
+    /// igual que el brazo de fallo de emitBoundsCheck.
+    fn emitLenBoxFail(self: *Emitter, line: u32, box: c.LLVMValueRef) void {
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "len_fail");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "len_cont");
+        const br = c.LLVMBuildCondBr(self.builder, c.LLVMConstInt(self.t_i1, 1, 0), fail_bb, cont_bb);
+        self.coldBranch(br, true);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), box };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_len_fail), self.r_len_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
     }
 
     // ── Guards de aritmética (idénticos al VM) ──────────────────────────────
@@ -4162,6 +4270,9 @@ pub const Emitter = struct {
                     // global de esa instancia (`c` → `c<i32>`).
                     const nm = self.instanceCallee(call.callee, nm0);
                     if (std.mem.eql(u8, nm, "print")) return null;
+                    // len(x) -> i64 (DEC-013): el inicializador global de un
+                    // `let n = len(…)` necesita el tipo sin emitir el valor.
+                    if (std.mem.eql(u8, nm, "len")) return .i64_;
                     if (self.fns.get(nm)) |fi| return fi.ret_ty;
                     if (self.variant_map.contains(nm)) return .enum_;
                     return null;
@@ -4197,11 +4308,12 @@ pub const Emitter = struct {
             // `xs[i]`: el tipo de elemento del array. El objeto tiene que ser
             // nominal (identificador) — un literal de array se infiere por su
             // primer elemento en los contextos donde el emitter lo necesita.
+            // Un índice sobre string (DEC-013) produce string.
             .index_expr => |ix| switch (self.tree.node(ix.object)) {
                 .identifier => |nm| {
-                    if (self.lookupLocal(nm)) |l| return if (l.ty == .arr_) l.payload_ty else null;
-                    if (self.globals.get(nm)) |g| return if (g.ty == .arr_) g.payload_ty else null;
-                    if (self.tmpBinding(nm)) |b| return if (b.ty == .arr_) b.payload else null;
+                    if (self.lookupLocal(nm)) |l| return if (l.ty == .arr_) l.payload_ty else if (l.ty == .str_) .str_ else null;
+                    if (self.globals.get(nm)) |g| return if (g.ty == .arr_) g.payload_ty else if (g.ty == .str_) .str_ else null;
+                    if (self.tmpBinding(nm)) |b| return if (b.ty == .arr_) b.payload else if (b.ty == .str_) .str_ else null;
                     return null;
                 },
                 else => return null,

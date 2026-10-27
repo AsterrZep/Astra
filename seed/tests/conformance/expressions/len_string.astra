@@ -1,0 +1,9 @@
+// len(string) -> i64 (DEC-013, research/028 PR1): byte length, including the
+// empty string — the number `while i < len(src)` needs to scan a source file.
+// EXPECT: 5
+// EXPECT: 0
+fn main() {
+    let s = "hello"
+    print(len(s))
+    print(len(""))
+}

@@ -1,0 +1,9 @@
+// len(array) -> i64 (DEC-013, research/028 PR1): the length operation the
+// for..in loops already used (OPCODE_LEN) exposed as a callable builtin.
+// EXPECT: 3
+// EXPECT: 1
+fn main() {
+    let xs = [10, 20, 30]
+    print(len(xs))
+    print(len([99]))
+}

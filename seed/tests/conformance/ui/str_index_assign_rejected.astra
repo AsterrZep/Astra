@@ -1,0 +1,9 @@
+// Indexing a string is read-only (DEC-013): `s[i]` reads one byte, and a
+// write through it must stay a compile-time error — it was one while string
+// indexing itself was rejected.
+// EXPECT-ERROR: cannot assign to string element
+// EXPECT-ERROR-FIRST: 8:5: error: cannot assign to string element
+fn main() {
+    let mut s = "abc"
+    s[0] = "x"
+}
