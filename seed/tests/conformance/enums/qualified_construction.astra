@@ -1,0 +1,15 @@
+// Variantes con payload se construyen SOLO como Enum.Variant (decisión 027 §4):
+// el namespace por enum es obligatorio y los homónimos no colisionan.
+// EXPECT: 1
+// EXPECT: 2
+// EXPECT: 3
+enum A { Some2(i32) None2 }
+enum B { Some2(i32) None2 }
+fn main() {
+    let a = A.Some2(1);
+    let b = B.Some2(2);
+    print(match a { A.Some2(n) => n, A.None2 => 0 });   // 1
+    print(match b { B.Some2(n) => n, B.None2 => 0 });   // 2
+    let c = A.None2;
+    print(match c { A.Some2(n) => n + 2, A.None2 => 3 }); // 3
+}

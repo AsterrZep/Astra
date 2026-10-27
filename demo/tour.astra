@@ -249,8 +249,8 @@ fn main() {
     }
 
     print("== enums y match ==")
-    print(area(Circulo(2)))     // 12  (payload de 1 campo)
-    print(area(Rect(3, 4)))     // 12  (payload de 2 campos)
+    print(area(Forma.Circulo(2)))     // 12  (payload de 1 campo)
+    print(area(Forma.Rect(3, 4)))     // 12  (payload de 2 campos)
     print(area(Forma.Nada))     // 0
     print(Color.Rojo.nombre())  // rojo (método sobre enum)
 
@@ -260,8 +260,8 @@ fn main() {
     print(clasificar(99))       // grande
 
     // Match anidado en un brazo con bloque.
-    describir(Mover(5))             // 5
-    describir(Pintar(Color.Verde))  // pinta verde
+    describir(Accion.Mover(5))             // 5
+    describir(Accion.Pintar(Color.Verde))  // pinta verde
     describir(Accion.Quedarse)      // quieto
 
     print("== option, result y el operador ? ==")

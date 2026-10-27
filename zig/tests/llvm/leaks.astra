@@ -37,7 +37,7 @@ fn main() {
     let mut last = "start"
     while i < 40 {
         let item = Item { name: "i" + "tem", tags: ["a" + "!", "b"] }
-        let m = Pair(item.name, i)
+        let m = Msg.Pair(item.name, i)
         last = match m {
             Msg.Text(t) => t,
             Msg.Pair(s, n) => s,

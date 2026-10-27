@@ -7,6 +7,6 @@
 // never caught because it only prints unit variants.
 enum E { A B(i32) Pair(i32, i32) }
 fn main() {
-    print(B(7))
-    print(Pair(1, 2))
+    print(E.B(7))
+    print(E.Pair(1, 2))
 }

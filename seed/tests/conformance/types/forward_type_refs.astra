@@ -58,7 +58,7 @@ fn main() {
     let p: Paso = Paso { pasos: 3 };
     print(p.pasos);
 
-    let acc = Mover(Paso { pasos: 5 });
+    let acc = Accion.Mover(Paso { pasos: 5 });
     match acc {
         Accion.Mover(paso) => print(paso.pasos),
         Accion.Pintar(c) => {

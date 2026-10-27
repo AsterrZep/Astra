@@ -15,7 +15,7 @@
 | DEC-005 | El slot 0 de un frame es el callee/return; los parámetros empiezan en el slot 1 | Aceptada (test-pinned) | 2026-09 | `AGENTS.md` invariant 3; conformance de funciones |
 | DEC-006 | Un literal fuera de rango de su tipo anotado es **error en compile-time** (con fallback a `i64` si el literal no cabe en el default `i32`) | Aceptada (test-pinned) | 2026-10-27 | `ui/int_literal_range.astra`, `ui/int_literal_range_unsigned.astra`, `types/int_width_semantics.astra` (PR fase B1) |
 | DEC-007 | El overflow de enteros en runtime es **wrap definido** (two's complement, documentado); checked-overflow = flag futuro | Aceptada (test-pinned) | 2026-10-27 | `types/int_width_semantics.astra` (`s + s` → wrap) |
-| DEC-008 | Las variantes de enums viven en el namespace de su enum; la construcción **calificada es obligatoria** (`A.Some2(1)`) | Aceptada (ratificación 2026-10-27, D4) — test en PR de fase B | 2026-10-27 | `research/027` §4; `research/031` §0 (APPROVED) |
+| DEC-008 | Las variantes de enums viven en el namespace de su enum; la construcción **calificada es obligatoria** (`A.Some2(1)`) | Aceptada (test-pinned) | 2026-10-27 | `research/027` §4; `enums/qualified_construction.astra` (EXPECT 1/2/3), `ui/enum_bare_construction_rejected.astra` (PR fase B2) |
 | DEC-009 | Los VMs (seed/zig) y el backend C no liberan memoria (arena/vitalicio); la ruta LLVM libera con ARC — divergencia **documentada y gateada** con techo de RSS | Aceptada (ratificación 2026-10-27, D3) — gate en PR de fase C | 2026-10-27 | `research/027` §3; `research/030` §3.2 (1,2 MB vs 400–712 MB) |
 | DEC-010 | Los floats se imprimen con formato `%g` | Aceptada (test-pinned) | 2026-09 | conformance de expresiones |
 | DEC-011 | Las sentencias se terminan con `;` o con newline | Aceptada (test-pinned) | 2026-09 | suite de conformidad (estilo mixto) |
@@ -39,18 +39,29 @@
 - **Spec**: `research/027` §1 — «pendiente de escribir en ARCHITECTURE §8/§9».
 
 ### DEC-008 — Variantes de enums: namespace por enum, construcción calificada
-- **Estado**: Aceptada (ratificación 2026-10-27, D4) — el test llega en el PR de fase B
+- **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B2 (2026-10-27)
 - **Fecha**: 2026-10-27
-- **Decisión**: `Some2(1)` sin calificar deja de compilar si es ambiguo;
-  solo `A.Some2(1)`. Las variantes unitarias calificadas ya funcionan; los
+- **Decisión**: la construcción **calificada `Enum.Variant(...)` es la única
+  legal** para variantes de usuario: `Some2(1)` se rechaza siempre con
+  «use Enum.Variant to construct 'Some2'» (no solo cuando hay colisión), y
+  el registro plano deja de resolver la forma pelona. Los builtins
+  `some/ok/err/none` (Option/Result) siguen pelones: el usuario escribe
+  `some(x)`. Las variantes unitarias calificadas ya funcionaban; los
   patrones ya exigen calificación.
 - **Alternativas consideradas**: «pelón si es inequívoco» (cuesta 0 tests
-  pero deja dos ortografías para siempre y empeora con módulos).
+  pero deja dos ortografías para siempre y empeora con módulos);
+  status quo (primer enum en ganar) — el bug sigue vivo.
 - **Coste aceptado**: 2 typecheckers + 3 emisores; 12 conformance + 5
   codegen + 5 fixtures LLVM + 2 unit zig + `llvm_fuzz_gen.py` (lista exacta
   en `research/027` §4).
-- **Evidencia actual**: hoy ambas construcciones sin calificar resuelven al
-  primer enum y `match` contra el segundo falla (`research/025` §2.8).
+- **Evidencia**: `enums/qualified_construction.astra` (EXPECT 1/2/3 —
+  homónimos `A.Some2`/`B.Some2` sin colisión) y
+  `ui/enum_bare_construction_rejected.astra` (EXPECT-ERROR: use
+  Enum.Variant to construct 'Some2'); calificados los 12 conformance +
+  5 codegen + 5 fixtures LLVM + 2 unit zig + el generador. Gates:
+  `make test` 265/0, `sweep_emit_c` fail=0, `zig build test` verde,
+  `ui_message_parity` first_fail=0, `dump_parity` 0 divergent,
+  `llvm_parity` fail=0, `llvm_fuzz` fail=0.
 - **Spec**: `research/027` §4.
 
 ### DEC-012 — Enforcement entre fibras: Opción F (pospuesto)

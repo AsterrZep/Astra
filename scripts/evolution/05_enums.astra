@@ -58,8 +58,8 @@ fn main() {
     let c = Color.Red;
     print(color_name(c));
 
-    // Data-carrying enum (constructor without prefix)
-    let s = Circle(5.0);
+    // Data-carrying enum (qualified constructor — DEC-008)
+    let s = Shape.Circle(5.0);
     print(shape_area(s));
 
     // Or-patterns
@@ -72,7 +72,7 @@ fn main() {
     print(classify_number(7));
 
     // Describe shapes
-    print(describe_shape(Circle(1.0)));
-    print(describe_shape(Rectangle(5.0, 5.0)));
-    print(describe_shape(Triangle(3.0, 4.0, 5.0)));
+    print(describe_shape(Shape.Circle(1.0)));
+    print(describe_shape(Shape.Rectangle(5.0, 5.0)));
+    print(describe_shape(Shape.Triangle(3.0, 4.0, 5.0)));
 }

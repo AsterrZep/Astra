@@ -13,7 +13,7 @@
 enum E { X(i32) Y }
 
 fn tail_match(v: i32) -> i32 {
-    let e2 = X(v)
+    let e2 = E.X(v)
     match e2 { E.X(n) => n, E.Y => 0 }
 }
 

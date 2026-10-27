@@ -79,7 +79,7 @@ pub const ImportBinding = struct {
     module_exports: ?[]const Export = null,
 };
 
-const Variant = struct { name: []const u8, enum_type: *Type };
+const Variant = struct { name: []const u8, enum_type: *Type, builtin: bool };
 
 /// Phase 2.4 step 2b: one generic-parameter binding of a call site. A null
 /// type means "not inferred yet" while the arguments are unified.
@@ -278,13 +278,18 @@ pub const TypeChecker = struct {
 
     // ── Variant registry ──────────────────────────────────────────
 
-    fn addVariant(self: *TypeChecker, name: []const u8, enum_type: *Type) void {
-        self.variants.append(self.a, .{ .name = name, .enum_type = enum_type }) catch @panic("OOM");
+    /// One flat entry per declared variant. DEC-008 (research/027 §4): the
+    /// bare spelling `some(x)` is only legal for the built-in Option/Result
+    /// variants, so each entry records which kind it is; a user variant is
+    /// constructed only as `Enum.Variant(...)`.
+    fn addVariant(self: *TypeChecker, name: []const u8, enum_type: *Type, builtin: bool) void {
+        self.variants.append(self.a, .{ .name = name, .enum_type = enum_type, .builtin = builtin }) catch @panic("OOM");
     }
 
-    fn findVariant(self: *TypeChecker, name: []const u8) ?*Type {
+    /// First registry entry for `name`, or null.
+    fn findVariant(self: *TypeChecker, name: []const u8) ?Variant {
         for (self.variants.items) |v| {
-            if (std.mem.eql(u8, v.name, name)) return v.enum_type;
+            if (std.mem.eql(u8, v.name, name)) return v;
         }
         return null;
     }
@@ -414,8 +419,8 @@ pub const TypeChecker = struct {
             pls[0] = .{ .field_count = 1, .types = some_types };
             pls[1] = .{ .field_count = 0 };
             opt.payloads = pls;
-            self.addVariant("some", opt);
-            self.addVariant("none", opt);
+            self.addVariant("some", opt, true);
+            self.addVariant("none", opt, true);
         }
 
         // Result: ok(T) -> Result, err(E) -> Result
@@ -433,8 +438,8 @@ pub const TypeChecker = struct {
             pls[0] = .{ .field_count = 1, .types = ok_t };
             pls[1] = .{ .field_count = 1, .types = err_t };
             res.payloads = pls;
-            self.addVariant("ok", res);
-            self.addVariant("err", res);
+            self.addVariant("ok", res, true);
+            self.addVariant("err", res, true);
         }
     }
 
@@ -1049,32 +1054,49 @@ pub const TypeChecker = struct {
         return ret;
     }
 
+    /// Positional construction of a data-carrying variant against its
+    /// payload layout (research/004 §9.2), mirror of the seed's
+    /// `check_variant_construction`. DEC-008 (research/027 §4) routes both
+    /// spellings here: the qualified `Enum.Variant(args)` — the only legal
+    /// one for user variants — and the bare builtin `some(x)` / `ok(x)` /
+    /// `err(x)`.
+    fn checkVariantConstruction(self: *TypeChecker, args: ast.List, et: *Type, vname: []const u8, loc: lexer.Loc) *Type {
+        const vi = enumVariantIndex(et, vname) orelse return self.newType(.error_);
+        const vl = if (vi < et.payloads.len) et.payloads[vi] else VariantLayout{};
+        const arg_slice = self.tree.extraSlice(args);
+        if (arg_slice.len != vl.field_count) {
+            return self.errorType(loc, "variant '{s}.{s}' expects {d} field(s), got {d}", .{ et.name, vname, vl.field_count, arg_slice.len });
+        }
+        for (arg_slice, 0..) |arg, i| {
+            const at = self.checkNode(arg);
+            if (isErrorType(at)) return at;
+            if (i < vl.types.len and vl.types[i].kind != .unknown) {
+                const expected = vl.types[i];
+                if (!typeEq(at, expected)) {
+                    return self.errorType(loc, "field {d} of '{s}.{s}' expects {s}, got {s}", .{ i + 1, et.name, vname, expected.kind.name(), at.kind.name() });
+                }
+            }
+        }
+        return et;
+    }
+
     fn checkCall(self: *TypeChecker, callee_idx: u32, args: ast.List, loc: lexer.Loc) *Type {
         const arg_slice = self.tree.extraSlice(args);
 
-        // A bare identifier callee may name a data-carrying enum variant.
+        // A bare identifier callee may name a built-in Option/Result variant.
+        // DEC-008 (research/027 §4): a *user* variant is only legal in the
+        // qualified spelling `Enum.Variant(...)`, so the bare form is
+        // rejected with a hint — the flat registry that used to let the
+        // first-registered enum win now only serves the builtins.
         if (isTag(self.tree.node(callee_idx), .identifier)) {
             const vname = self.tree.node(callee_idx).identifier;
-            if (self.findVariant(vname)) |et| {
+            if (self.findVariant(vname)) |entry| {
                 const sym = self.lookup(vname);
                 if (!(sym != null and sym.?.is_fn)) {
-                    if (enumVariantIndex(et, vname)) |vi| {
-                        const vl = if (vi < et.payloads.len) et.payloads[vi] else VariantLayout{};
-                        if (arg_slice.len != vl.field_count) {
-                            return self.errorType(loc, "variant '{s}.{s}' expects {d} field(s), got {d}", .{ et.name, vname, vl.field_count, arg_slice.len });
-                        }
-                        for (arg_slice, 0..) |arg, i| {
-                            const at = self.checkNode(arg);
-                            if (isErrorType(at)) return at;
-                            if (i < vl.types.len and vl.types[i].kind != .unknown) {
-                                const expected = vl.types[i];
-                                if (!typeEq(at, expected)) {
-                                    return self.errorType(loc, "field {d} of '{s}.{s}' expects {s}, got {s}", .{ i + 1, et.name, vname, expected.kind.name(), at.kind.name() });
-                                }
-                            }
-                        }
-                        return et;
+                    if (entry.builtin) {
+                        return self.checkVariantConstruction(args, entry.enum_type, vname, loc);
                     }
+                    return self.errorType(loc, "use Enum.Variant to construct '{s}'", .{vname});
                 }
             }
         }
@@ -1096,6 +1118,12 @@ pub const TypeChecker = struct {
             if (!is_module_callee) {
                 const obj = self.checkNode(fa.object);
                 if (isErrorType(obj)) return obj;
+                // DEC-008 (research/027 §4): `Enum.Variant(args)` is a
+                // variant construction, not a method call — resolved before
+                // the method table so a method cannot shadow a variant.
+                if (obj.kind == .enum_ and enumVariantIndex(obj, fa.field) != null) {
+                    return self.checkVariantConstruction(args, obj, fa.field, loc);
+                }
                 if (self.findMethod(obj, fa.field)) |m| {
                     self.tree.nodes.items[callee_idx].field_access.method = m.global;
                     const want = m.fn_type.params.len - 1;
@@ -1979,7 +2007,7 @@ pub const TypeChecker = struct {
                 }
             }
             vs[i] = v.name;
-            self.addVariant(v.name, en);
+            self.addVariant(v.name, en, false);
         }
 
         var payloads = self.a.alloc(VariantLayout, variants.len) catch @panic("OOM");

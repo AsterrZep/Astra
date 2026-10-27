@@ -30,9 +30,9 @@ fn main() {
     print(inner)
 
     // enum con payload struct: alias y sobrescritura
-    let mut e = Boxed(inner)
+    let mut e = E.Boxed(inner)
     let e2 = e
-    e = Tagged("plain" + "!")
+    e = E.Tagged("plain" + "!")
     print(e)
     print(e2)
     match e2 {

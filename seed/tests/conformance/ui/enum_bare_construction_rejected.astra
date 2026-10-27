@@ -1,0 +1,8 @@
+// La forma pelona se rechaza con una pista hacia la calificada (DEC-008,
+// research/027 §4): `Enum.Variant(...)` es la única ortografía legal.
+// EXPECT-ERROR: use Enum.Variant to construct 'Some2'
+enum A { Some2(i32) None2 }
+fn main() {
+    let x = Some2(1);
+    print(x);
+}

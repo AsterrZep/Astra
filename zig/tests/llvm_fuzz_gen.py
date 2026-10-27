@@ -181,7 +181,7 @@ class Gen:
         # 5) enum + match con binding de payload
         ename = self.fresh("e")
         if self.rng.random() < 0.7:
-            out.append("    let " + ename + " = Num(" + self.int_expr(1) + ")")
+            out.append("    let " + ename + " = Kind.Num(" + self.int_expr(1) + ")")
         else:
             out.append("    let " + ename + " = Kind.Empty")
         self.enums.append(ename)

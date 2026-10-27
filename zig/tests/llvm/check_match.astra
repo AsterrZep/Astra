@@ -42,7 +42,7 @@ fn area(s: Shape) -> i32 {
 }
 
 fn main() {
-    print(area(Circle(2)))
-    print(area(Rect(3, 4)))
+    print(area(Shape.Circle(2)))
+    print(area(Shape.Rect(3, 4)))
     print(area(Shape.Empty))
 }

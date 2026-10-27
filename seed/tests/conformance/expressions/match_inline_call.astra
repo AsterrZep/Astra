@@ -28,7 +28,7 @@ fn main() {
     // NEW_ENUM packs nf payload cells and the layout constant; the exact
     // runtime model must shrink by nf+1 or the match below computes a
     // frontier the frame never reaches.
-    let p = A(3)
+    let p = Pair.A(3)
     print(match p { Pair.A(v) => v, Pair.B => 0 })
     print(f(match p { Pair.A(v) => v, Pair.B => 0 }))
 }
