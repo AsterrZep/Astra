@@ -15,7 +15,9 @@ fuzz compara bytes, no busca cobertura.
 import argparse
 import random
 
-INT_LITERALS = ["0", "1", "2", "3", "5", "7", "11", "100", "-1", "-2", "9223372036854775807"]
+# DEC-006: los literales deben caber en i32 (los contextos anotados del
+# generador son i32); i64-max se probaba antes y ahora no compila.
+INT_LITERALS = ["0", "1", "2", "3", "5", "7", "11", "100", "-1", "-2", "2147483647", "-2147483648"]
 STR_LITERALS = ['"a"', '"hola"', '"x y"', '"he said \\"hi\\""', '"line\\nbreak"', '"tab\\there"', '""']
 
 
