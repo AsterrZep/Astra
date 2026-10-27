@@ -1686,6 +1686,47 @@ pub const TypeChecker = struct {
 
     // ── Declarations ──────────────────────────────────────────────
 
+    // ------------------------------------------------------------
+    // DEC-006/DEC-007 (research/027 §1, ratificada 2026-10-27) — mirror of
+    // int_lit_value / int_lit_fits / default_int_type in
+    // seed/src/typechecker.c. Messages must stay byte-identical: the first
+    // diagnostic line is gated by zig/tests/ui_message_parity.sh.
+    // ------------------------------------------------------------
+
+    // The value of an integer literal node, folding a leading `-` (`-1` is
+    // a negated literal). False for any other shape.
+    fn intLitValue(self: *const TypeChecker, n: ?u32, out: *i64) bool {
+        const idx = n orelse return false;
+        switch (self.tree.node(idx)) {
+            .int_literal => |v| { out.* = v; return true; },
+            .unary_expr => |u| {
+                if (u.op != .minus) return false;
+                switch (self.tree.node(u.operand)) {
+                    .int_literal => |v| { out.* = -v; return true; },
+                    else => return false,
+                }
+            },
+            else => return false,
+        }
+    }
+
+    /// Does the value fit the concrete integer type? The i64/u64 upper
+    /// bounds cannot be exceeded through an int64 literal (the lexer
+    /// already rejects anything past i64 max), so those reduce to sign.
+    fn intLitFits(v: i64, k: Kind) bool {
+        return switch (k) {
+            .int => v >= std.math.minInt(i32) and v <= std.math.maxInt(i32),
+            .uint32 => v >= 0 and v <= @as(i64, std.math.maxInt(u32)),
+            .int64 => true,
+            .uint64 => v >= 0,
+            else => true,
+        };
+    }
+
+    fn isIntegerKind(k: Kind) bool {
+        return k == .int or k == .int64 or k == .uint32 or k == .uint64;
+    }
+
     fn checkVarDecl(self: *TypeChecker, v: ast.VarDecl, loc: lexer.Loc, is_const: bool) void {
         var decl_type: ?*Type = null;
         if (v.type_node) |t| {
@@ -1711,12 +1752,26 @@ pub const TypeChecker = struct {
             if (!typeEq(decl_type.?, val_type.?)) {
                 const what = if (is_const) "const" else "variable";
                 self.errFmt(loc, "type mismatch: {s} '{s}' declared as {s} but initialized with {s}", .{ what, v.name, decl_type.?.kind.name(), val_type.?.kind.name() });
+            } else if (isIntegerKind(decl_type.?.kind)) {
+                // DEC-006: the literal adopted a concrete integer type — it
+                // has to fit it (`let big: i32 = 9999999999` is an error).
+                var lit: i64 = 0;
+                if (self.intLitValue(v.value, &lit) and !intLitFits(lit, decl_type.?.kind)) {
+                    self.errFmt(loc, "integer literal {d} out of range for {s}", .{ lit, decl_type.?.kind.name() });
+                }
             }
             final_type = decl_type.?;
         } else if (decl_type) |d| {
             final_type = d;
         } else if (val_type) |vt| {
-            final_type = if (vt.kind == .int_literal) self.newType(.int) else vt;
+            // DEC-006: the default integer type is i32 — unless the literal
+            // does not fit it, in which case it falls to i64 (Rust's rule;
+            // mirrors seed/src/typechecker.c default_int_type).
+            final_type = if (vt.kind == .int_literal) blk: {
+                var lit: i64 = 0;
+                break :blk if (self.intLitValue(v.value, &lit) and !intLitFits(lit, .int))
+                    self.newType(.int64) else self.newType(.int);
+            } else vt;
         } else {
             self.errFmt(loc, "{s} '{s}' must have a type annotation or initializer", .{ if (is_const) "const" else "variable", v.name });
             final_type = self.newType(.error_);

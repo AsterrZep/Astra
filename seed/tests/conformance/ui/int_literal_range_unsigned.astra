@@ -1,0 +1,6 @@
+// DEC-006: a negative literal never fits an unsigned width.
+// EXPECT-ERROR: integer literal -1 out of range for u32
+fn main() {
+    let u: u32 = -1;
+    print(u);
+}
