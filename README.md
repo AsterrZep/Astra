@@ -16,7 +16,7 @@
 
 ---
 
-> **Status: Phase 1 complete, Phase 2 in progress** — the seed compiler (`seed/`, C) compiles and runs Astra-0 (suite in green on the VM, the C backend and Zig); the self-hosting Zig compiler (`zig/`) implements the Astra-0 frontend plus the module system; the opt-in LLVM backend (`-Dllvm`, M0–M6) compiles Astra-0 natively with parity 159/159 (see [Benchmarks](#benchmarks-2026-10-27)). The standard library does not exist yet.
+> **Status (2026-10-27)**: Phase 1 (`seed/`, C) complete — `cd seed && make test` → **260 passed, 0 failed**. Phase 2 (`zig/`) has the Astra-0 frontend, module system, traits, generics and `?`, verified against the seed suite — `zig build test` → **73/73**, `dump_parity.sh` → **147 files, 0 divergent**. The LLVM backend is **opt-in** (`-Dllvm`) and green: `llvm_parity.sh` → **159/159** (native, `-O2`, aarch64 under qemu, wasm32-wasi under Node) — measured in [Benchmarks](#benchmarks-2026-10-27). **Not built yet**: standard library, ARC/ORC + fibers, comptime, package manager, Phase 3 self-compilation. Single source of truth for status: [`Documentacion/00_indice/INDICE.md`](Documentacion/00_indice/INDICE.md).
 
 **Astra** is a compiled programming language that aims to unify the ergonomics of Python/TypeScript with the native speed of C/Rust — without the complexity of Rust's Borrow Checker or GC pauses.
 
@@ -172,23 +172,39 @@ gap-closing milestones are listed in `PHASE_LLVM_PROGRESS.md`.
 
 ## Roadmap
 
-### Design & Research (Complete)
-- [x] Language design and architecture specification
-- [x] Cross-platform research (Linux, macOS, Windows, Android, iOS, visionOS)
-- [x] Compiler architecture (multi-IR, query system, dual backend)
-- [x] Memory model (ARC/ORC, cycle detection, fiber-aware)
-- [x] Concurrency model (green threads, channels, atomics)
-- [x] Standard library design (~64 modules)
-- [x] Package manager design
-- [x] Formal grammar (EBNF)
-- [x] Compiler strategy (C → Zig → Astra bootstrapping)
+**Single source of truth: [`Documentacion/00_indice/INDICE.md`](Documentacion/00_indice/INDICE.md) → «Estado del proyecto».**
+This table mirrors it. A row may only change in the same PR that changes that
+table, and only with the gate command + figure pasted under «Evidencia de
+verificación».
+
+States — never a bare `[x]`:
+**Specified** = written in a document, no code ·
+**Implemented** = code exists, not gated ·
+**Verified** = gate executed, command + number.
+
+### Design & Research
+
+| Item | State | Evidence |
+|:-----|:------|:---------|
+| Language design and architecture specification | **Specified** | `Documentacion/01_lenguaje/ARCHITECTURE.md` (§1–§41) |
+| Cross-platform research (Linux, macOS, Windows, Android, iOS, visionOS) | **Specified** | `research/018`, `research/019`, ARCHITECTURE §24–27. *Cross-verified* only for `aarch64-linux-gnu` and `wasm32-wasi`: `zig/tests/llvm_cross.sh`, `llvm_wasm.sh` → 159/159 |
+| Compiler architecture (multi-IR, query system) | **Specified (partial)** | multi-IR: ARCHITECTURE §20.1 · query system: **0 hits** in `seed/src`+`zig/src` · dual backend **Verified**: `make test` 260/260 + `llvm_parity.sh` 159/159 |
+| Memory model (ARC/ORC, cycle detection, fiber-aware) | **Specified — not implemented** | ARCHITECTURE §2; `vm.c` never frees (`grep -c 'free(' seed/src/vm.c` → 0, arena-only), no cycle detection, no fiber-awareness. Ref-counting exists only on the LLVM route (M4.e, no cycles) |
+| Concurrency model (green threads, channels, atomics) | **Specified — not implemented** | ARCHITECTURE §3/§35; `grep -riE "fiber\|scheduler\|spawn\|channel\|Atomic\[" seed/src zig/src` → **0**; `transfer` → 0 |
+| Standard library design (~64 modules) | **Specified** | `research/015`, ARCHITECTURE §32; `std/…` is rejected by the Zig CLI |
+| Package manager design | **Specified** | `research/016`, ARCHITECTURE §33; only `@/` root resolution from `astra.toml` |
+| Formal grammar (EBNF) | **Specified + gated** | `research/001` §12.1; `./astra-seed --check-constructs` → 47 constructs / 27 operators, registry⇔lexer⇔parser agree |
+| Compiler strategy (C → Zig → Astra bootstrapping) | **Specified** | `COMPILER_STRATEGY.md` §7.1 rewritten as-built (manual port + gates) — correction landed2026-10-27, `research/029` §1 |
 
 ### Implementation
-- [x] **Phase 1**: Seed compiler in C (Astra-0) — compiles, runs, C backend, fuzzed; 260 checks green
-- [x] **Phase 2 core**: Self-hosting compiler in Zig — Astra-0 frontend, modules, traits, generics and error propagation verified against the seed suite
-- [x] **LLVM backend**: native `--emit-obj`/`--jit`, cross aarch64, wasm32-wasi, `--fast-math`, unboxed Option/Result (c.1 + c.2) — 159/159 parity (opt-in `-Dllvm`)
-- [ ] **Phase 2 full language**: comptime, ARC/ORC, fibers, FFI and the standard library
-- [ ] **Phase 3**: Astra compiles itself — the proof
+
+| Item | State | Evidence |
+|:-----|:------|:---------|
+| **Phase 1**: seed compiler in C (Astra-0) — VM, C backend, fuzzing | **Verified** | `cd seed && make test` → **260 passed, 0 failed** (2026-10-27, ASan/UBSan/LSan) |
+| **Phase 2 core**: Zig compiler — Astra-0 frontend, modules, traits, generics, `?` | **Verified** | `cd zig && zig build test` → **73/73**; `zig/tests/dump_parity.sh` → **147 files, 0 divergent** (2026-10-27) |
+| **LLVM backend** (`-Dllvm`, opt-in): `--emit-obj`/`--jit`, cross aarch64, wasm32-wasi, `--fast-math`, unboxed Option/Result | **Verified (CI)** | `zig/tests/llvm_parity.sh` → **159/159**, plain and `ASTRA_LLVM_OPT=2`; jobs `llvm`, `llvm-cross`, `llvm-wasm` green on PR #10 |
+| **Phase 2 full language**: comptime, ARC/ORC, fibers, FFI, stdlib | **Not started** | `Documentacion/04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
+| **Phase 3**: Astra compiles itself | **Not started** | needs Phase 2 + the minimal Astra-0 stdlib of `research/025` §2.6 |
 
 ## Contributing
 

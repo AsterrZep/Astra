@@ -25,6 +25,13 @@
       (El push protection del secret scanning bloqueará el push si los hay.)
 - [ ] **Nuevos comportamientos con tests**: toda conducta nueva del lenguaje
       tiene su caso en `seed/tests/conformance/` o `tests/codegen/`.
+- [ ] **Decisión registrada**: si el cambio toca comportamiento del lenguaje,
+      este PR añade su `DEC-NNN` en `Documentacion/01_lenguaje/DECISIONES.md`
+      (o amplía uno existente) con el test que lo fija.
+- [ ] **Estado en un solo sitio**: si el PR cambia el estado de un ítem del
+      roadmap, cambia la tabla «Estado del proyecto» de
+      `Documentacion/00_indice/INDICE.md` **en el mismo PR** y pega comando +
+      cifra en «Evidencia de verificación».
 - [ ] **Documentación al día**: `Documentacion/`, `AGENTS.md` y progreso
       actualizados si el cambio afecta diseño o flujo de trabajo.
 - [ ] **Conventional commits**: mensajes con prefijo `feat(scope):`,

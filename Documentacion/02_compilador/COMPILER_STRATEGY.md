@@ -81,7 +81,7 @@ Don't over-invest in the seed. Don't choose the "best" language for the seed. Ch
 │  Compiles: Minimal Astra subset (Astra-0)                   │
 │  Backend: Bytecode VM                                        │
 │  Features: types, functions, structs, enums, match, I/O     │
-│  Purpose: Bootstrap the self-hosting compiler                │
+│  Purpose: Astra-0 reference impl + future bootstrap         │
 │  Lifespan: Retired after Phase 2                            │
 │                                                              │
 ├─────────────────────────────────────────────────────────────┤
@@ -109,11 +109,11 @@ Don't over-invest in the seed. Don't choose the "best" language for the seed. Ch
 
 ### Why Three Phases?
 
-**Phase 1 (C) → Phase 2 (Zig):** The C seed compiles a minimal Astra that's powerful enough to compile the Zig-based compiler. The Zig compiler is the "real" compiler — it handles all the complex features (generics, traits, comptime, ARC/ORC).
+**Phase 1 (C) → Phase 2 (Zig):** The C seed is the behavioural reference for Astra-0: it fixes the grammar, diagnostics and VM behaviour that the Zig compiler must reproduce. The Zig compiler was **ported from it by hand** and is verified against the seed's suite; it is the "real" compiler — it handles all the complex features (generics, traits, comptime, ARC/ORC).
 
 **Phase 2 (Zig) → Phase 3 (Astra):** The Zig compiler compiles Astra code. Eventually, Astra becomes powerful enough to compile itself. At this point, the Zig compiler is replaced by the Astra compiler.
 
-**Why not skip Phase 1?** Because you need *something* to compile the Zig compiler. Zig requires `zig` to build Zig programs. The C seed provides the initial `astra` command that can compile the minimal subset needed.
+**Why not skip Phase 1?** Because you need *something* to define Astra-0: the seed fixes the reference semantics the port must match, and it is the compiler that will later build the Astra-written compiler of Phase 3 (`research/002` §6.3). Zig requires `zig` to build Zig programs — the seed never builds them.
 
 **Why not skip Phase 2?** Because writing the full compiler in C is impractical. C lacks the abstractions (sum types, generics, pattern matching) needed for a complex compiler. Zig provides these abstractions while maintaining C-level control.
 
@@ -300,9 +300,13 @@ clean:
 ### 4.7 Testing the Seed
 
 The seed compiler is tested against:
-1. **Self-hosting compiler source**: The seed must compile the Zig-based compiler
-2. **Astra-0 conformance tests**: 228 test cases covering the minimal subset
-3. **Cross-platform**: Must build and run on Linux, macOS, Windows
+1. **Behavioural reference for the Zig port**: the seed defines Astra-0
+   behaviour; `zig build test` and `zig/tests/dump_parity.sh` must agree with
+   it. The seed does **not** compile the Zig compiler — that is Step 4 of §7.1
+2. **Astra-0 conformance tests**: 260 checks covering the minimal subset
+   (229 conformance + 28 codegen + 3 auxiliary — `make test`, 2026-10-27)
+3. **Cross-platform**: verified on Linux (CI). macOS/Windows builds are not
+   exercised by any gate today
 
 ```bash
 # Test the seed
@@ -585,37 +589,53 @@ Astra compiles itself
 
 ## 7. The Bootstrap Chain
 
-### 7.1 Complete Bootstrap Sequence
+### 7.1 Bootstrap Sequence (as built)
+
+The chain executed so far is a **manual port**, not a compilation step: the
+seed has never compiled the Zig compiler, Astra-0 cannot read `.zig` sources,
+and `bootstrap/zig-compiler.zig` does not exist. Steps marked *future* are
+what remains; steps marked *gate* are re-run on every PR.
 
 ```
-Step 1: Build C seed
+Step 1: Build C seed                                        [done]
     cc *.c -o astra-seed
 
-Step 2: Seed compiles minimal Astra
-    ./astra-seed src/stdlib/stdlib.astra -o stdlib.o
-    ./astra-seed src/compiler/compiler.astra -o compiler.o
-    cc stdlib.o compiler.o -o astra-v0
+Step 2: Port the Astra-0 frontend to Zig BY HAND            [done]
+    cd zig && zig build                 # Zig 0.16, port of seed/src
+    zig build test                      # unit + seed conformance
+    ./tests/dump_parity.sh              # --dump-tokens/--dump-ast vs seed
 
-Step 3: astra-v0 compiles Zig compiler source
-    ./astra-v0 bootstrap/zig-compiler.zig -o astra-zig
+Step 3: The seed stays the behavioural reference            [gate, every PR]
+    cd seed && make test                # registry gate + VM + C-backend round-trip
+    every new behaviour lands in seed/tests/ first, then in zig/src
 
-Step 4: astra-zig compiles full Astra compiler
+Step 4 (future): astra-zig compiles the Astra compiler
+    # prereq: minimal Astra-0 stdlib (len, push, string indexing/iteration,
+    # int->string, file I/O) — research/025 §2.6; then an Astra-0 source tree
     ./astra-zig build src/compiler/ -o astra
 
-Step 5: astra compiles itself
+Step 5 (future): astra compiles itself
     ./astra build src/compiler/ -o astra-self
     ./astra-self build src/compiler/ -o astra-verified
     diff astra-self astra-verified  # Must be identical
 ```
+
+> **Note (2026-10-27, `research/029` §1).** An earlier revision listed a
+> `Step 3: astra-v0 compiles Zig compiler source`. That step was impossible
+> (Astra-0 compiles `.astra`, not `.zig`) and no `astra-v0` binary was ever
+> produced. The Zig compiler is a *port* verified by the seed's suite; the
+> seed compiles an **Astra-0** compiler only from Step 4 on, which is exactly
+> what `research/002` §6.3 prescribes.
 
 ### 7.2 Trust Chain
 
 ```
 C compiler (gcc/clang) — trusted (system compiler)
   → astra-seed — auditable (simple C code)
-    → astra-v0 — compiled by seed (verify conformance tests)
-      → astra-zig — compiled by v0 (verify it compiles correctly)
-        → astra — compiled by zig (verify conformance tests)
+    → astra-zig — written by hand from the seed, verified against its suite
+      (zig build test + dump_parity.sh byte-for-byte)
+        → astra (future) — compiled by astra-zig from Astra-0 source
+          (conformance tests)
           → astra-self — compiled by astra (verify binary reproducibility)
 ```
 
@@ -623,9 +643,9 @@ C compiler (gcc/clang) — trusted (system compiler)
 
 1. **C compiler is trusted**: It's the system compiler, used by billions of lines of code
 2. **C seed is auditable**: ~5000 lines of C, no dependencies, easy to review
-3. **astra-v0 is verified**: Must pass all conformance tests
-4. **astra-zig is verified**: Must compile correctly and pass tests
-5. **astra is verified**: Must produce identical output to itself
+3. **astra-seed is verified**: `make test` — registry gate + VM + C-backend round-trip (260 checks)
+4. **astra-zig is verified**: `zig build test` (73 tests) + `dump_parity.sh` byte-identical to the seed
+5. **astra is verified** (future): Must produce identical output to itself
 
 ---
 

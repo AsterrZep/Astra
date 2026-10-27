@@ -2487,7 +2487,14 @@ edition = "2025"  # opt-in, como Rust
 
 ---
 
-## 41. Puntos Pendientes
+## 41. Puntos de investigación — estado en INDICE.md
+
+> **Estado (2026-10-27)**: esta lista registra qué se ha **investigado**, no
+> qué está implementado. El estado de cada área (Especificado / Implementado /
+> Verificado, con el gate) vive en `Documentacion/00_indice/INDICE.md` §«Estado
+> del proyecto» y en `README.md` §Roadmap; no se marca nada aquí con `[x]`.
+> Los `[x]` de abajo significan «investigado/diseñado» (regla 3–4 de
+> `AGENTS.md` §«Language decisions»).
 
 - [x] Todos los items investigados.
 - [x] Implementación del seed compiler.

@@ -16,7 +16,7 @@ implementación, al final las auditorías y el material de investigación.
 | Carpeta | Contenido | Documentos |
 |:--------|:----------|:-----------|
 | [`00_indice/`](../00_indice/) | Este índice | 1 |
-| [`01_lenguaje/`](../01_lenguaje/) | Qué es Astra: especificación, filosofía, comparativas y registro de constructos | 4 |
+| [`01_lenguaje/`](../01_lenguaje/) | Qué es Astra: especificación, filosofía, comparativas, registro de constructos y decisiones | 5 |
 | [`02_compilador/`](../02_compilador/) | Cómo se construye el compilador: estrategia, herramientas y trabajo por agentes | 3 |
 | [`03_fase1_seed/`](../03_fase1_seed/) | Estado del compilador semilla en C | 1 |
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
@@ -35,6 +35,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`PHILOSOPHY.md`](../01_lenguaje/PHILOSOPHY.md) | Los principios de diseño y el axioma central que gobierna las decisiones. | ES |
 | [`COMPARATIVE_ANALYSIS.md`](../01_lenguaje/COMPARATIVE_ANALYSIS.md) | Astra frente a Mojo, Nim, Zig, Julia, Vale y Swift. | EN |
 | [`CONSTRUCT_REGISTRY.md`](../01_lenguaje/CONSTRUCT_REGISTRY.md) | Un fichero por producción EBNF: por qué existe el registro y sus invariantes. | ES |
+| [`DECISIONES.md`](../01_lenguaje/DECISIONES.md) | Registro de decisiones de lenguaje (ADR-lite): qué se decidió, cuándo, por qué y qué test lo fija. Creado 2026-10-27. | ES |
 
 ## 2. `02_compilador/` — Compilador
 
@@ -124,11 +125,14 @@ Los dos PDFs de los que arrancó todo: *Arquitectura Lenguaje Astra* y
 
 ## Cómo mantener este índice
 
-- **Al añadir o mover un documento**: añadir su fila aquí y corregir las
-  referencias en los puntos de entrada: `README.md`, `AGENTS.md`,
-  `CHANGELOG.md`, `index.html`, `.github/PULL_REQUEST_TEMPLATE.md`,
-  `.agents/skills/*/SKILL.md` y los comentarios en
-  `seed/src/constructs/{assign,type_annotation}.c`.
+- **Al añadir o mover un documento**: añadir su fila aquí; corregir los
+  contadores *actuales* que citan el número de informes (`README.md` árbol y
+  sección Documentation) y las referencias en `AGENTS.md` si el documento
+  cambia una regla de flujo. No hace falta tocar `index.html` ni
+  `.agents/skills/*` para un informe nuevo: ninguno enumera informes
+  (verificado 2026-10-27). `CHANGELOG.md` solo cita el recuento en la entrada
+  fechada del reordenamiento («informes 001–024»): es registro histórico y no
+  se reescribe.
 - **Al actualizar el estado**: los documentos *vivos* son
   `03_fase1_seed/PHASE1_PROGRESS.md`, `04_fase2_zig/PHASE2_PROGRESS.md` y
   `05_fase_llvm/PHASE_LLVM_PROGRESS.md`. Los demás (`*_AUDIT`,

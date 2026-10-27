@@ -382,6 +382,53 @@ Everything else that was on this list (lambdas, match, Option/Result, `?`,
 data-carrying enums, the `tests/codegen/` round-trip) is implemented and now
 verified by `make test` on both backends.
 
+## Language decisions — `Documentacion/01_lenguaje/DECISIONES.md`
+
+1. **Nothing lands without a decision.** Any PR that adds, changes or rejects a
+   language behaviour (new construct, semantics, diagnostic, layout, memory
+   rule, accepted rejection) must add an entry `DEC-NNN` to
+   `Documentacion/01_lenguaje/DECISIONES.md` **in the same PR**, with the
+   conformance test that pins it. A `feat` PR with no `DEC-NNN` is rejected in
+   review — this is a review rule, not a CI rule (CI cannot judge intent).
+2. **Decisions that already exist as tests are recorded, not re-litigated.**
+   If behaviour is pinned by a test (e.g. `arrays/alias_write.astra`), the entry
+   is `Estado: Aceptada (test-pinned)` and cites the test. Registering a
+   decision never changes behaviour, so it never needs a feature gate.
+3. **Status lives in exactly one place.** The only file where a roadmap item may
+   be marked done is the table «Estado del proyecto» in
+   `Documentacion/00_indice/INDICE.md`. `README.md` §Roadmap and
+   `ARCHITECTURE.md` §41 mirror that table and cite the gate command + figure;
+   they are never edited to flip a state on their own.
+4. **Three states, never a bare `[x]`.** Every roadmap row is one of
+   `Specified` (doc only) · `Implemented` (code exists, not gated) ·
+   `Verified` (gate executed; command + number pasted in the PR's
+   «Evidencia de verificación»).
+5. **Open decisions block backends.** While a `DEC-NNN` needed by a feature is
+   in state `Propuesta`, no new backend work may be merged that would have to
+   encode it (today: DEC-006..DEC-008, `research/025` §2.8 — integer width,
+   `let`/alias semantics, enum-variant scoping; they reach 7 routes: VM seed,
+   C backend, VM Zig, LLVM ×`--opt-level`, JIT, wasm, aarch64).
+
+## Commit budget — decisions vs. backends
+
+Measured **per work cycle** (a cycle = one milestone / PR series), by path, not
+by commit prefix:
+
+```bash
+INI=2026-09-16                                   # cycle start
+CODE=$(git log --format=%H --since=$INI -- seed/src zig/src | sort -u | wc -l)
+DEC=$(git log --format=%H --since=$INI -- Documentacion/01_lenguaje/DECISIONES.md | sort -u | wc -l)
+# rule: DEC * 5 >= CODE   (>= 20 % of code commits are paid for by a decision commit)
+```
+
+- A cycle with `CODE > 0` and `DEC == 0` **cannot close**: paste both numbers in
+  the closing PR's «Evidencia de verificación».
+- **No two consecutive backend cycles** (LLVM / parity / wasm / cross). The
+  cycle after a backend cycle starts in `DECISIONES.md`, not in `src/`.
+- Baseline 2026-09-16 → 2026-10-27: `CODE = 135`, `DEC = 0`,
+  `llvm|parity = 73/234` (31 %). The rule exists to break that 135:0; the
+  initial backfill of DECISIONES.md counts as one kickoff commit, not a cycle.
+
 ## Sub-agent workstreams
 
 When a spawner agent is available, Phase 1 work splits cleanly along these
@@ -392,7 +439,7 @@ agreed up front).
 | Workstream | Owns | Verifies with |
 |:-----------|:-----|:--------------|
 | **registry** | `constructs/construct.{h,c}`, `constructs/registry.c`, `constructs/operator_table.c` | `--check-constructs` |
-| **one construct** | a single `constructs/<name>.c` | `--check-constructs` + conformance |
+| **one construct** | a single `constructs/<name>.c` — **metadata only** (keyword/token/node/EBNF/research/note); the `parse/check/emit` hooks are aspirational, see below | `--check-constructs` + conformance |
 | **frontend** (lexer + parser + AST) | `lexer.c`, `parser.c`, `ast.c` | `--dump-tokens`, `--dump-ast` |
 | **types** (semantics) | `typechecker.c` | `tests/conformance/ui/*` |
 | **codegen** (emitter + VM) | `emitter.c`, `vm.c` | `ASTRA_DUMP_VM=1`, conformance |
@@ -406,6 +453,16 @@ file per grammar production), so several can run at once. They have exactly
 one shared contract — `constructs/construct.h` — and the self-check is the
 arbiter: if two of them claim the same node kind, token or keyword,
 `--check-constructs` fails the suite before anything is compiled.
+
+**Scope of a construct workstream (decision 2026-09-21, `CONSTRUCT_REGISTRY.md` §8).**
+The registry is **documental + validated**, not a migration plan:
+`parser.c`, `typechecker.c` and `emitter.c` dispatch on their own `switch`es
+and never consult the table, so a construct PR edits *metadata* only and must
+not claim to "migrate" a phase. `--check-constructs` reporting
+`migrated (all three phases): 0 / 47` is a **documented aspiration**, not a
+progress bar; wiring the hooks is a separate project that would first need a
+`ConstructParseFn` redesign (Pratt led forms do not fit the current signature)
+plus a `parser_internal.h` — costed in `Documentacion/07_investigacion/029_process_bootstrap_fixes.md` §3.2.
 
 Shared-contract files (`include/astra/astra.h`, `src/priv.h`) are the
 integration points: changes to them must be done by the workstream that needs

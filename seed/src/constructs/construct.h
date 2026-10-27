@@ -8,13 +8,20 @@
  * is to know about that construct: its keyword, token, AST node,
  * grammar position, its dependencies on sub-constructs, the EBNF
  * production it implements and the research report that specifies
- * it — plus, as they are migrated, its parse / check / emit hooks.
+ * it. The `parse / check / emit` hooks and the `phases` bits are
+ * **aspirational, not wired** (decision of 2026-09-21, recorded in
+ * Documentacion/01_lenguaje/CONSTRUCT_REGISTRY.md §8): no phase
+ * dispatches through this table — parser.c, typechecker.c and
+ * emitter.c keep their own switches. The only consumer of the
+ * hooks today is the self-check itself.
  *
- * The registry is the single source of truth. Nothing about a
- * construct may live outside its own file; the self-check fails
- * the build if the registry and the rest of the compiler drift
- * apart (unknown deps, orphan sub-constructs, a keyword that the
- * lexer does not produce, a hook without its phase bit, ...).
+ * The registry IS the single source of truth for construct *metadata*
+ * (keyword, token, node kind, positions, deps, EBNF, research pointer).
+ * Nothing about a construct may live outside its own file; the self-check
+ * fails the build if the registry and the rest of the compiler drift
+ * apart (unknown deps, orphan sub-constructs, a keyword that the lexer
+ * does not produce, a hook without its phase bit, an operator row whose
+ * binding power differs from the parser's table, ...).
  *
  * Granularity policy — a construct is *one EBNF production*.
  *   `IfExpr ::= "if" Expression Block ("else" (IfExpr | Block))?`
