@@ -1,0 +1,15 @@
+// DEC-001/DEC-002 (research/027 §2, ratificada como D2): `let` protects the
+// BINDING, not the object — writing through a `let mut` alias is visible in
+// every binding. Together with alias_write.astra (mut<->mut) and
+// ui/immutable_field_assign.astra (no write through `let`), this pins the
+// aggregate-sharing contract from both sides.
+// EXPECT: 5
+// EXPECT: 5
+struct P { x: i32 }
+fn main() {
+    let p = P { x: 1 };        // immutable binding
+    let mut q = p;             // mutable alias to the SAME object
+    q.x = 5;
+    print(p.x);                // 5: the object is shared (ARCHITECTURE §2.5)
+    print(q.x);                // 5
+}

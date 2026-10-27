@@ -16,10 +16,10 @@
 | DEC-006 | Un literal fuera de rango de su tipo anotado es **error en compile-time** (con fallback a `i64` si el literal no cabe en el default `i32`) | Aceptada (test-pinned) | 2026-10-27 | `ui/int_literal_range.astra`, `ui/int_literal_range_unsigned.astra`, `types/int_width_semantics.astra` (PR fase B1) |
 | DEC-007 | El overflow de enteros en runtime es **wrap definido** (two's complement, documentado); checked-overflow = flag futuro | Aceptada (test-pinned) | 2026-10-27 | `types/int_width_semantics.astra` (`s + s` → wrap) |
 | DEC-008 | Las variantes de enums viven en el namespace de su enum; la construcción **calificada es obligatoria** (`A.Some2(1)`) | Aceptada (test-pinned) | 2026-10-27 | `research/027` §4; `enums/qualified_construction.astra` (EXPECT 1/2/3), `ui/enum_bare_construction_rejected.astra` (PR fase B2) |
-| DEC-009 | Los VMs (seed/zig) y el backend C no liberan memoria (arena/vitalicio); la ruta LLVM libera con ARC — divergencia **documentada y gateada** con techo de RSS | Aceptada (ratificación 2026-10-27, D3) — gate en PR de fase C | 2026-10-27 | `research/027` §3; `research/030` §3.2 (1,2 MB vs 400–712 MB) |
+| DEC-009 | Los VMs (seed/zig) y el backend C no liberan memoria (arena/vitalicio); la ruta LLVM libera con ARC — divergencia **documentada y gateada** con techo de RSS | Aceptada (test-pinned + gate) | 2026-10-27 | `memory/loop_reuse.astra` + gate `zig/tests/llvm_mem.sh` (techo 64 MB, CI job `llvm`) |
 | DEC-010 | Los floats se imprimen con formato `%g` | Aceptada (test-pinned) | 2026-09 | conformance de expresiones |
 | DEC-011 | Las sentencias se terminan con `;` o con newline | Aceptada (test-pinned) | 2026-09 | suite de conformidad (estilo mixto) |
-| DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: regla de cruce con unicidad comprobada; `transfer(x)` será builtin, sin keyword; el walk de rc se difiere al primer cruce real — scheduler/send) | **Propuesta** (D7 pospuesto el 2026-10-27; solo Fase 0 documental) | 2026-10-27 | `research/026` §3–§4; `research/031` §0 (NEEDS WORK, bloqueos resueltos por posición) |
+| DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: regla de cruce con unicidad comprobada; `transfer(x)` será builtin, sin keyword; el walk de rc se difiere al primer cruce real — scheduler/send) | **Propuesta** (D7 pospuesto; Fase 0 completada: `ARCHITECTURE.md` §2.6 escrita) | 2026-10-27 | `research/026` §3–§4; `ARCHITECTURE.md` §2.6; `research/031` §0 |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -65,8 +65,9 @@
 - **Spec**: `research/027` §4.
 
 ### DEC-012 — Enforcement entre fibras: Opción F (pospuesto)
-- **Estado**: Propuesta — D7 pospuesto el 2026-10-27; mientras sea `Propuesta`,
-  la regla 5 de AGENTS bloquea backend work que tenga que codificarla.
+- **Estado**: Propuesta — D7 pospuesto el 2026-10-27; Fase 0 completada
+  (la regla vive en `ARCHITECTURE.md` §2.6); mientras sea `Propuesta`, la
+  regla 5 de AGENTS bloquea backend work que tenga que codificarla.
 - **Fecha**: 2026-10-27
 - **Decisión (dirección)**: compartir intra-fibra es gratis (DEC-001);
   **cruzar frontera de fibra exige valor único en ese punto** — estático si
