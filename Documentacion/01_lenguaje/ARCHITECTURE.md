@@ -28,7 +28,7 @@ Lenguaje de programación multi-paradigma, de propósito general y científico, 
 ### 2.2 ARC/ORC Detallado
 
 - **ARC (Atomic Reference Counting):** Conteo de referencias atómico para objetos compartidos entre fibras en diferentes núcleos.
-- **ARC No-Atómico Local a la Fibra:** Para objetos que no cruzan fronteras de fibras, se usa RC no atómico (transferencia de propiedad estricta). Si un objeto debe compartirse entre fibras, se fuerza la promoción a `AtomicRef[T]` o se realiza deep copy.
+- **ARC No-Atómico Local a la Fibra:** Para objetos que no cruzan fronteras de fibras, se usa RC no atómico (transferencia de propiedad estricta). Si un objeto debe compartirse entre fibras, se fuerza la promoción a `AtomicRef[T]` o se realiza deep copy. *(La regla de cruce que decide cuándo aplica esto está en §2.6 — especificada, no implementada.)*
 - **ORC (Ownership-based Reference Counting):** Detecta y libera ciclos de memoria mediante el algoritmo de Trial Deletion (Bacon-Rajan) sin Stop-The-World.
 
 ### 2.3 Algoritmo de Eliminación de Prueba (Trial Deletion)
@@ -57,6 +57,8 @@ Modelo de Memoria: Secuencialmente Consistente para Programas Libres de Carreras
 | **Move Semantics** | `var` = mutable. Para transferir a otra fibra: `transfer(var)`. Invalida la variable emisora. |
 | **Barreras de Memoria** | Para modificación concurrente: `Atomic[T]` con semántica Acquire-Release. |
 
+*El enforcement de «Move Semantics» (quién verifica que `transfer` es legal) está especificado en **§2.6** — no implementado; `transfer` es un builtin futuro (DEC-012).*
+
 ### 2.5 Semántica de agregados en Astra-0 (decisión del 2026-09-21)
 
 **`let b = a` comparte el handle; no copia los elementos.** Escribir a través de
@@ -69,7 +71,10 @@ b[0] = 99
 print(a[0])        # 99
 ```
 
-Fijado por `seed/tests/conformance/arrays/alias_write.astra`.
+Fijado por `seed/tests/conformance/arrays/alias_write.astra` (`let mut`↔`let mut`),
+`seed/tests/conformance/arrays/alias_let_visibility.astra` (`let`↔`let mut`) y
+`seed/tests/conformance/ui/immutable_field_assign.astra` (ninguna escritura a
+través de un binding `let`) — contrato DEC-001/DEC-002.
 
 **Por qué compartir y no copiar:**
 
@@ -87,7 +92,41 @@ Fijado por `seed/tests/conformance/arrays/alias_write.astra`.
 escribir el compilador en Zig: cuándo se libera un handle compartido, qué hace
 una copia explícita (`.copy()`), y si un agregado puede cruzar una frontera de
 fibra. Ninguna de las tres existe en el seed; se implementan con ARC/ORC en la
-Fase 2 y su contrato se añade aquí entonces.
+Fase 2 y su contrato se añade aquí entonces. *El tercer punto —el cruce— ya
+tiene regla especificada en §2.6 (aún no implementada); los dos primeros
+siguen pendientes de la Fase 2.*
+
+### 2.6 Frontera de fibra — regla de cruce (especificado, NO implementado)
+
+> **Estado (2026-10-27)**: especificado en `research/026` («Opción F»,
+> ratificada como D7 con **implementación pospuesta** — `DECISIONES.md`
+> DEC-012). **Nada de lo que sigue existe en el código**: `transfer` no lexea,
+> no hay fibras, no hay chequeo de unicidad. Mientras DEC-012 esté en estado
+> `Propuesta`, la regla 5 de `AGENTS.md` bloquea trabajo de backend que tenga
+> que codificarla.
+
+Las reglas §2.4/§2.5 valen *dentro* de una fibra; en la frontera:
+
+1. **Compartir intra-fibra es gratis** (§2.5: handle compartido).
+2. **`val` cruza siempre** — inmutable profundo, sin barreras (§2.4).
+3. **`var` solo cruza si el compilador prueba unicidad** en ese punto de flujo
+   (análisis de flujo sobre aliases directos; un closure que captura un `var`
+   cuenta como «no único» — la captura por valor copia el *handle*, §2.5).
+4. **Si no se prueba unicidad**: `.copy()` explícito (deep copy) o `Atomic[T]`.
+   `transfer(var)` — **builtin**, no keyword (`DECISIONES.md` DEC-012) — es el
+   move que exige unicidad probada y invalida el binding emisor.
+5. **El walk de `rc` como verificación en runtime** (la comprobación barata de
+   unicidad: `rc == 1` en todo el grafo alcanzable, coste O(grafo) **solo en
+   el cruce**) llega con la primera feature con cruce real (scheduler/send) —
+   no antes: los VMs no tienen refcounting (DEC-009, §2.2).
+6. Red de v2: owner-check por acceso en runtime, promovible a compile-time
+   cuando el análisis lo pruebe.
+
+**Garantía honesta con esto**: dos fibras no pueden escribir el mismo objeto
+mutable a la vez — estáticamente donde se prueba, con walk en el cruce cuando
+no; coste cero por acceso, coste de copia o de rechazo en los cruces
+impropios. El detalle operativo (reglas R1–R7, algoritmos, mensajes de error)
+está en `research/026` §3.
 
 ---
 
@@ -115,7 +154,7 @@ Patrón `entersyscall` / `exitsyscall` (estilo Go):
 ### 3.3 Consistencia de Memoria
 
 - `val` (inmutable): Sin necesidad de barreras de memoria entre fibras.
-- `var` (mutable): Solo una fibra a la vez. Para compartir: `transfer(var)` o `Atomic[T]`.
+- `var` (mutable): Solo una fibra a la vez. Para compartir: `transfer(var)` o `Atomic[T]`. *(Ambos, especificados en §2.6 — no implementados; `transfer` es un builtin futuro, DEC-012.)*
 
 ---
 
@@ -872,7 +911,7 @@ LSP Server
 
 1. **Green Threads sin async/await** — Único lenguaje con M:N scheduling y código síncrono.
 2. **Dual Backend** — <10ms dev + AOT producción.
-3. **ARC/ORC atómico** — Thread-safe sin borrow checker.
+3. **ARC/ORC atómico** — Thread-safe sin borrow checker. *(Modelo de la §2.6: especificado, no implementado; la ruta LLVM ya libera con ARC.)*
 4. **Zero-Copy Python FFI** — Acceso directo a NumPy/PyTorch.
 5. **Unidades de Medida** — Análisis dimensional en compile-time.
 6. **Toolchain unificado** — Binario único <30MB vs 2GB+ de Rust/C++.

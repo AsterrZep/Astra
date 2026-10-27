@@ -148,6 +148,12 @@ jobs:
       # las fugas SÍ son objetivo del gate.
       - name: Sanitizers (ASan over the artifacts)
         run: ./zig/tests/llvm_sanitize.sh
+      # DEC-009 (research/027 §3, ratificada como D3): la ruta nativa mantiene
+      # un techo de memoria plano bajo asignación sostenida — el crecimiento
+      # en arena de los VMs (400–729 MB, research/030) no debe aparecer nunca
+      # aquí (medido hoy: ~1.2 MB; techo por defecto 64 MB).
+      - name: Memory ceiling (native route, DEC-009)
+        run: ./zig/tests/llvm_mem.sh
       # Differential fuzz (M3): generated programs through the zig VM and the
       # LLVM route, byte-identical stdout/stderr/exit code. The seed routes
       # self-skip here (no seed build in this job); they run locally and in

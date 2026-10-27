@@ -1,0 +1,16 @@
+// DEC-009 (research/027 §3, ratificada como D3): sustained allocation whose
+// results do not depend on WHEN memory is reclaimed — passes under the VM's
+// arena and under the LLVM route's ARC alike. Under `make debug` (ASan/LSan)
+// and under llvm_sanitize.sh it must run leak-free; the RSS ceiling for the
+// native route is gated by zig/tests/llvm_mem.sh.
+// EXPECT: 2000000
+// EXPECT: 8
+fn make() -> [i32] { return [1, 2, 3, 4, 5, 6, 7, 8]; }
+fn main() {
+    let mut i = 0;
+    let mut s = 0;
+    while i < 2000000 { let a = make(); s = s + a[0]; i = i + 1; }
+    print(s);       // 2000000
+    let last = make();
+    print(last[7]); // 8 — the value survives its scope while referenced
+}
