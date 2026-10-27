@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend LLVM: des-boxing de Option/Result (M6.c, etapa c.2 — payloads
+  `str_`)**: el par `{i8 tag; i64 payload}` ahora también transporta
+  punteros de string — `string?` vive en SSA sin caja en params/rets/`let`
+  y temporales, con las fronteras de c.1 intactas (contenedores, capturas y
+  ABI dinámica siguen cajando el optional). La referencia con rc del payload
+  se gestiona en los puntos de ownership (`rcRef`/`ownsRc`: store, retorno,
+  entrada de params, frame, temporales de llamada y globales de módulo) y la
+  igualdad par-vs-par de strings compara **contenido** vía `str_eq` (como
+  `boxed_eq`/`value_eq`). Hallado y cerrado en el mismo cambio un bug
+  latente de datalayout del host: el módulo se creaba con
+  `LLVMCreateTargetData("")` (layout vacío → i64 @4 en los plegados del
+  middle-end) mientras el objeto se emitía con el layout de la
+  TargetMachine (i64 @8), y con `--opt-level=2` liberar un global `string?`
+  leía el payload 4 bytes desplazado (`SEGV` en `astra_llvm_release`);
+  `setTarget` ahora deriva el datalayout de la TargetMachine. Sin flag
+  opt-in: paridad **159/159** contra la VM (plano y `-O2`, y también en
+  JIT, cross aarch64 y wasm32-wasi; ASan + LSan sin fugas; FileCheck 8/8
+  con `check_str_pair.astra` nuevo; seed 260/260 con el conformance
+  `enums/option_str_payload.astra`, 19 EXPECT). Detalle:
+  `PHASE_LLVM_PROGRESS.md` §16.2.
 - **Backend LLVM: des-boxing de Option/Result (M6.c, etapa c.1)**: el par
   `{i8 tag; i64 payload}` vive en SSA dentro de funciones nombradas
   (parámetros, retornos, `let` y temporales de optional escalar), con
