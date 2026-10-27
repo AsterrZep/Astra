@@ -1,0 +1,7 @@
+// DEC-006 (research/027 §1): an integer literal that does not fit the
+// annotated width is a compile-time error. It used to print 9999999999.
+// EXPECT-ERROR: integer literal 9999999999 out of range for i32
+fn main() {
+    let big: i32 = 9999999999;
+    print(big);
+}

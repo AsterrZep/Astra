@@ -2491,6 +2491,56 @@ static Type *typecheck_assign(TypeChecker *tc, Node *node) {
  * §6: Declaration Type Checking
  * ============================================================ */
 
+/* ------------------------------------------------------------
+ * DEC-006/DEC-007 (research/027 §1, ratificada 2026-10-27)
+ *
+ * An integer literal that meets a concrete integer type must FIT it: a
+ * compile-time range check at the point where the literal stops being
+ * polymorphic. The runtime stays a single i64 with defined two's-complement
+ * wrap on every route (research/027 §1 option 1E). The default type of an
+ * unannotated binding stays i32 — unless the literal does not fit it, in
+ * which case it falls to i64 (the Rust rule), so `let x = 9999999999`
+ * keeps working.
+ *
+ * Messages here are mirrored byte-for-byte in zig/src/typechecker/
+ * typechecker.zig (ui_message_parity.sh gates the first diagnostic line).
+ * ------------------------------------------------------------ */
+
+/* The value of an integer literal node, folding a leading `-` (`-1` is
+ * UNOP_NEG over the literal). Returns false for any other shape. */
+static bool int_lit_value(Node *n, int64_t *out) {
+    if (!n) return false;
+    if (n->kind == NODE_INT_LIT) { *out = n->as.int_lit.value; return true; }
+    if (n->kind == NODE_UNARY_OP && n->as.unary.op == UNOP_NEG &&
+        n->as.unary.operand && n->as.unary.operand->kind == NODE_INT_LIT) {
+        *out = -n->as.unary.operand->as.int_lit.value;
+        return true;
+    }
+    return false;
+}
+
+/* Does the value fit the concrete integer type? i64/u64 upper bounds cannot
+ * be exceeded through an int64 literal (the lexer already rejects anything
+ * past i64 max), so those reduce to the sign check. */
+static bool int_lit_fits(int64_t v, TypeKind k) {
+    switch (k) {
+    case TYPE_INT:     return v >= INT32_MIN && v <= INT32_MAX;
+    case TYPE_UINT32:  return v >= 0 && v <= (int64_t)UINT32_MAX;
+    case TYPE_INT64:   return true;
+    case TYPE_UINT64:  return v >= 0;
+    default:           return true;
+    }
+}
+
+/* The DEC-006 default for an unannotated binding: i32, or i64 when the
+ * literal does not fit i32. */
+static Type *default_int_type(Arena *a, Node *init) {
+    int64_t v;
+    if (int_lit_value(init, &v) && !int_lit_fits(v, TYPE_INT))
+        return type_new(a, TYPE_INT64);
+    return type_new(a, TYPE_INT);
+}
+
 static void typecheck_var_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.var_decl.name;
     Type *decl_type = NULL;
@@ -2527,6 +2577,16 @@ static void typecheck_var_decl(TypeChecker *tc, Node *node) {
                      (int)name.len, name.str,
                      type_kind_name(decl_type->kind),
                      type_kind_name(val_type->kind));
+        } else if (type_is_integer(decl_type)) {
+            /* DEC-006: the literal adopted a concrete integer type — it has
+             * to fit it (`let big: i32 = 9999999999` is a compile error). */
+            int64_t lit;
+            if (int_lit_value(node->as.var_decl.value, &lit) &&
+                !int_lit_fits(lit, decl_type->kind)) {
+                tc_error(tc, node->loc,
+                         "integer literal %lld out of range for %s",
+                         (long long)lit, type_kind_name(decl_type->kind));
+            }
         }
         final_type = decl_type;
     } else if (decl_type) {
@@ -2536,9 +2596,11 @@ static void typecheck_var_decl(TypeChecker *tc, Node *node) {
          * here and becomes the default integer type (i32). Without this fallback
          * an unannotated binding would stay polymorphic forever and could later
          * be assigned to `u64` as if it had been a u64 all along — Rust resolves
-         * the same ambiguity the same way. */
+         * the same ambiguity the same way. DEC-006: the default falls to i64
+         * when the literal does not fit i32. */
         final_type = (val_type->kind == TYPE_INT_LITERAL)
-                   ? type_new(tc->arena, TYPE_INT) : val_type;
+                   ? default_int_type(tc->arena, node->as.var_decl.value)
+                   : val_type;
     } else {
         tc_error(tc, node->loc,
                  "variable '%.*s' must have a type annotation or initializer",
@@ -2579,15 +2641,25 @@ static void typecheck_const_decl(TypeChecker *tc, Node *node) {
                      (int)name.len, name.str,
                      type_kind_name(decl_type->kind),
                      type_kind_name(val_type->kind));
+        } else if (type_is_integer(decl_type)) {
+            /* DEC-006, same rule as `let`. */
+            int64_t lit;
+            if (int_lit_value(node->as.const_decl.value, &lit) &&
+                !int_lit_fits(lit, decl_type->kind)) {
+                tc_error(tc, node->loc,
+                         "integer literal %lld out of range for %s",
+                         (long long)lit, type_kind_name(decl_type->kind));
+            }
         }
         final_type = decl_type;
     } else if (decl_type) {
         final_type = decl_type;
     } else if (val_type) {
         /* Same default as `let`: a bare const initialised with a literal takes
-         * the default integer type. */
+         * the default integer type (DEC-006: i64 when it does not fit i32). */
         final_type = (val_type->kind == TYPE_INT_LITERAL)
-                   ? type_new(tc->arena, TYPE_INT) : val_type;
+                   ? default_int_type(tc->arena, node->as.const_decl.value)
+                   : val_type;
     } else {
         tc_error(tc, node->loc,
                  "const '%.*s' must have a type annotation or initializer",

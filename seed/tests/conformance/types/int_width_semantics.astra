@@ -1,0 +1,18 @@
+// DEC-006/DEC-007 (research/027 §1): widths are type-checking only — the
+// runtime is a single i64 with defined two's-complement wrap on every route.
+// The unannotated default is i32, falling to i64 when the literal does not
+// fit i32 (so `let big = 9999999999` keeps working).
+// EXPECT: 4294967295
+// EXPECT: -9223372036854775808
+// EXPECT: 2147483648
+// EXPECT: 9999999999
+fn main() {
+    let u: u32 = 4294967295;      // in range: compiles
+    print(u);
+    let s: i64 = 4611686018427387904;
+    print(s + s);                 // defined i64 wrap (two's complement)
+    let a: i32 = 2147483647;
+    print(a + 1);                 // arithmetic runs in i64: no 32-bit wrap yet
+    let big = 9999999999;         // no annotation: default falls to i64
+    print(big);
+}
