@@ -301,7 +301,11 @@ pub const VM = struct {
     globals: [VM_MAX_GLOBALS]Global = undefined,
     global_count: usize = 0,
 
+    // One marker FnObj per builtin: GET_GLOBAL maps each builtin name to its
+    // marker, OPCODE_CALL dispatches on pointer identity (mirror of the
+    // seed's vm.c — research/028 §1.3 B, no id field in FnObj).
     builtin_print_fn: *FnObj = undefined,
+    builtin_len_fn: *FnObj = undefined,
 
     error_msg: []const u8 = "",
     error_line: u32 = 0,
@@ -333,11 +337,14 @@ pub const VM = struct {
 
     pub fn init(a: std.mem.Allocator, w: *std.Io.Writer) !VM {
         var vm = VM{ .a = a, .w = w };
-        // The builtin print function is recognised by the same marker the seed
-        // uses: param_count == 255 and no code.
+        // The builtin markers use the same sentinel the seed does:
+        // param_count == 255 and no code — one marker per builtin name.
         const f = try a.create(FnObj);
         f.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
         vm.builtin_print_fn = f;
+        const g = try a.create(FnObj);
+        g.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_len_fn = g;
         return vm;
     }
 
@@ -814,6 +821,8 @@ pub const VM = struct {
                     };
                     if (std.mem.eql(u8, name, "print")) {
                         if (!self.push(bc.vFn(self.builtin_print_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "len")) {
+                        if (!self.push(bc.vFn(self.builtin_len_fn))) return .runtime_error;
                     } else {
                         var found = false;
                         var i: usize = 0;
@@ -1072,13 +1081,27 @@ pub const VM = struct {
                     if (self.sp < 2) return self.rt(line, "stack underflow on index", .{});
                     const idx = self.pop();
                     const obj = self.pop();
-                    if (tag(obj) != .array) return self.rt(line, "cannot index {s}", .{typeName(obj)});
-                    if (tag(idx) != .int) return self.rt(line, "array index must be int, got {s}", .{typeName(idx)});
-                    const arr = obj.array;
-                    if (idx.int < 0 or @as(u64, @intCast(idx.int)) >= arr.len) {
-                        return self.rt(line, "index {d} out of bounds (len {d})", .{ idx.int, arr.len });
+                    if (tag(obj) == .string) {
+                        // DEC-013: `s[i]` reads byte i as a one-byte string —
+                        // receiver/int/bounds order and messages mirror the
+                        // array arm below (and the seed's OPCODE_INDEX).
+                        if (tag(idx) != .int) return self.rt(line, "array index must be int, got {s}", .{typeName(idx)});
+                        const s = obj.string;
+                        if (idx.int < 0 or @as(u64, @intCast(idx.int)) >= s.len) {
+                            return self.rt(line, "index {d} out of bounds (len {d})", .{ idx.int, s.len });
+                        }
+                        const start: usize = @intCast(idx.int);
+                        if (!self.push(bc.vString(s[start .. start + 1]))) return .runtime_error;
+                    } else if (tag(obj) != .array) {
+                        return self.rt(line, "cannot index {s}", .{typeName(obj)});
+                    } else {
+                        if (tag(idx) != .int) return self.rt(line, "array index must be int, got {s}", .{typeName(idx)});
+                        const arr = obj.array;
+                        if (idx.int < 0 or @as(u64, @intCast(idx.int)) >= arr.len) {
+                            return self.rt(line, "index {d} out of bounds (len {d})", .{ idx.int, arr.len });
+                        }
+                        if (!self.push(arr.elems[@intCast(idx.int)])) return .runtime_error;
                     }
-                    if (!self.push(arr.elems[@intCast(idx.int)])) return .runtime_error;
                 },
                 .len => {
                     if (self.sp == 0) return self.rt(line, "stack underflow on len", .{});
@@ -1212,9 +1235,15 @@ pub const VM = struct {
                     if (tag(fn_val) != .fn_) return self.rt(line, "cannot call non-function value", .{});
                     const fn_obj = fn_val.fn_;
 
-                    // Builtin: param_count == 255 and no code.
+                    // Builtin: param_count == 255 and no code. GET_GLOBAL
+                    // resolved the name to its own marker, so pointer identity
+                    // is the dispatch key (mirror of seed vm.c OPCODE_CALL).
                     if (fn_obj.param_count == 255 and fn_obj.code.len == 0) {
-                        const result = try self.builtinPrint(self.stack[fn_idx + 1 .. fn_idx + 1 + argc]);
+                        const args = self.stack[fn_idx + 1 .. fn_idx + 1 + argc];
+                        const result = if (fn_obj == self.builtin_len_fn)
+                            (self.builtinLen(args, line) orelse return .runtime_error)
+                        else
+                            try self.builtinPrint(args);
                         self.sp = fn_idx;
                         if (!self.push(result)) return .runtime_error;
                     } else {
@@ -1401,6 +1430,27 @@ pub const VM = struct {
         }
         try self.w.writeByte('\n');
         return bc.vNil();
+    }
+
+    /// Builtin `len(x) -> i64` (DEC-013, research/028 PR1): arrays and
+    /// strings. Returns null with the VM error already set (`rt` recorded
+    /// message and line); the wording mirrors the `.len` opcode handler and
+    /// the seed's builtin_len so all routes print identical text.
+    fn builtinLen(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 1) {
+            _ = self.rt(line, "expected 1 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const obj = args[0];
+        const n: usize = switch (obj) {
+            .array => |a| a.len,
+            .string => |s| s.len,
+            else => {
+                _ = self.rt(line, "cannot take length of {s}", .{typeName(obj)});
+                return null;
+            },
+        };
+        return bc.vInt(@intCast(n));
     }
 };
 

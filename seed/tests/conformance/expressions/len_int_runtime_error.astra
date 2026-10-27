@@ -1,0 +1,8 @@
+// len() of a scalar: the typechecker accepts any receiver (like print) and
+// each runtime rejects it with the OPCODE_LEN wording (DEC-013) — the guard
+// a program that smuggles a non-collection past the checker hits.
+// EXPECT-RUNTIME-ERROR: cannot take length of int
+fn main() {
+    let n = len(1)
+    print(n)
+}

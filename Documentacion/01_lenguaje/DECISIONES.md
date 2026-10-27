@@ -20,6 +20,7 @@
 | DEC-010 | Los floats se imprimen con formato `%g` | Aceptada (test-pinned) | 2026-09 | conformance de expresiones |
 | DEC-011 | Las sentencias se terminan con `;` o con newline | Aceptada (test-pinned) | 2026-09 | suite de conformidad (estilo mixto) |
 | DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: regla de cruce con unicidad comprobada; `transfer(x)` será builtin, sin keyword; el walk de rc se difiere al primer cruce real — scheduler/send) | **Propuesta** (D7 pospuesto; Fase 0 completada: `ARCHITECTURE.md` §2.6 escrita) | 2026-10-27 | `research/026` §3–§4; `ARCHITECTURE.md` §2.6; `research/031` §0 |
+| DEC-013 | Stdlib M1: `len(x) -> i64` para arrays y strings; `s[i]` → **string de 1 byte** (OOB = error de runtime con el texto de los arrays); los strings son inmutables (`s[i] = …` es error de compilación) | Aceptada (test-pinned) | 2026-10-27 | `arrays/len_array.astra`, `expressions/len_string.astra`, `expressions/str_index.astra`, `expressions/str_index_oob.astra`, `expressions/len_int_runtime_error.astra`, `ui/str_index_assign_rejected.astra`, `codegen/str_index.astra`, `codegen/len_builtin.astra` (PR D-PR1) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -84,3 +85,50 @@
 - **Evidencia**: `research/026` §3–§4 (spec operativa R1–R7); `research/031`
   §0 (NEEDS WORK: estimación de esfuerzo pendiente antes del PR grande).
 - **Spec**: «pendiente de escribir en ARCHITECTURE §2.6».
+
+### DEC-013 — Stdlib M1: `len(x)` y `s[i]` (índice de string)
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR1 (2026-10-27)
+- **Fecha**: 2026-10-27
+- **Decisión**:
+  - `len(x) -> i64` para **arrays** (número de elementos) y **strings**
+    (número de bytes). Registrado como builtin con parámetro `unknown` — igual
+    que `print` —, así que cualquier receptor pasa el typechecker y el guard
+    de runtime (`cannot take length of <tipo>`, el texto que ya usaba
+    `OPCODE_LEN`) es la superficie de paridad entre las 4 rutas.
+  - `s[i]` sobre un string devuelve un **string de 1 byte** (byte, no
+    codepoint: el lexer del seed es byte-oriented). El typechecker lo acepta
+    como lectura; el índice sigue teniendo que ser entero. **Fuera de rango =
+    error de runtime con el mismo texto que los arrays**
+    (`index N out of bounds (len M)`); receptor nil → `cannot index nil`.
+  - Los strings son **inmutables**: `s[i] = …` es error de compilación
+    (`cannot assign to string element`) — se rechaza en el typechecker, no en
+    runtime, para que ninguna ruta lo ejecute.
+  - `i32` y floats siguen rechazados con el mensaje actual
+    (`cannot index non-array type …`, `ui/index_non_array.astra` intacto).
+- **Alternativas consideradas**: código numérico (Go) en vez de 1-byte-string
+  (habría roto `match c { "(" => …, _ => … }` y `==` por contenido, que ya
+  funcionan en 4 rutas, y no existe char literal); `char_at(s, i)` como builtin
+  (gastaba el plumbing completo de un builtin sin reutilizar `OPCODE_INDEX`);
+  restringir `len` a `string|array` en compile-time (`research/028` §1.3 lo
+  recomienda) — pospuesto: exige un caso `ui/` con primera línea byte-idéntica
+  y el guard de runtime ya existe en las 4 rutas; discriminador `builtin_id` en
+  `FnObj` — descartado por ahora: identidad de puntero por marcador (un FnObj
+  por builtin) deja `astra.h` intacta.
+- **Coste aceptado**: 4 implementaciones (seed VM, backend C, zig VM,
+  LLVM+runtime) en 7 ficheros de código; 8 tests; los JIT/wasm/aarch64 heredan
+  el runtime LLVM sin código propio.
+- **Evidencia**: fijado por `arrays/len_array.astra` (3/1),
+  `expressions/len_string.astra` (5/0 — incluye `len("")` → 0),
+  `expressions/str_index.astra` (lectura + concat + `==`),
+  `expressions/str_index_oob.astra` (`index 5 out of bounds (len 5)`),
+  `expressions/len_int_runtime_error.astra` (`cannot take length of int`),
+  `ui/str_index_assign_rejected.astra` (primera línea byte-idéntica seed↔zig),
+  `codegen/str_index.astra` y `codegen/len_builtin.astra` (redondeo C). Gates
+  del PR: `make test` 276/0, `sweep_emit_c` total=122 fail=0, `make debug`
+  (ASan/UBSan/LSan) 276/0, `make release` 276/0, `zig build test` verde,
+  `ui_message_parity` first_fail=0, `dump_parity` 0 divergent,
+  `llvm_parity` 170/170 (opt=0 y opt=2), `llvm_jit` 170/170,
+  `llvm_fuzz -n 20 -s 1` fail=0, `--check-constructs` OK.
+- **Spec**: `research/028` §1.2 (firmas M1) y §3 (PR1) — «pendiente de
+  escribir en ARCHITECTURE».

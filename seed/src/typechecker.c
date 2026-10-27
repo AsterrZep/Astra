@@ -632,6 +632,24 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         symbol_table_insert(tc->symbols, sym);
     }
 
+    /* len(value) -> i64 — length of an array or a string (DEC-013,
+     * research/028 PR1). The parameter is unknown like print's, so any
+     * receiver is accepted at compile time and each runtime words its
+     * defensive rejection identically (`cannot take length of int`), the
+     * same text the OPCODE_LEN handlers already use. */
+    {
+        Type **params = arena_new_array(arena, Type *, 1);
+        params[0] = type_new(arena, TYPE_UNKNOWN);
+        Type *len_type = type_new_fn(arena, params, 1, type_new(arena, TYPE_INT64));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "len"),
+            .type = len_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
     /* Register built-in Option enum: some(T) -> Option[T], none -> Option[T] */
     {
         Type *opt_type = type_new(arena, TYPE_ENUM);
@@ -1787,7 +1805,12 @@ static Type *typecheck_index(TypeChecker *tc, Node *node) {
     Type *object = typecheck_node(tc, node->as.index.object);
     if (type_is_error(object)) return object;
 
-    if (object->kind != TYPE_ARRAY) {
+    /* DEC-013 (research/028 PR1): strings index for reading — `s[i]` yields
+     * the one-byte string at byte i. Everything else keeps the historical
+     * rejection (`ui/index_non_array.astra`), including as an assignment
+     * target: typecheck_assign rejects `s[0] = …` separately, strings being
+     * immutable. */
+    if (object->kind != TYPE_ARRAY && object->kind != TYPE_STRING) {
         return tc_error_type(tc, node->as.index.object->loc,
                              "cannot index non-array type %s",
                              type_kind_name(object->kind));
@@ -1803,6 +1826,7 @@ static Type *typecheck_index(TypeChecker *tc, Node *node) {
                              type_kind_name(index->kind));
     }
 
+    if (object->kind == TYPE_STRING) return type_new(tc->arena, TYPE_STRING);
     return object->as.array.elem;
 }
 
@@ -2501,6 +2525,19 @@ static Type *typecheck_assign(TypeChecker *tc, Node *node) {
         }
         return tc_error_type(tc, root->loc, "cannot assign to immutable variable '%.*s'",
                              (int)name.len, name.str);
+    }
+
+    /* DEC-013: indexing a string is read-only (`s[i]` reads one byte), so
+     * `s[0] = "x"` keeps the compile-time rejection it had when string
+     * indexing was rejected outright. The receiver is typechecked here, and
+     * an errored receiver returns before typecheck_node(target) re-walks it —
+     * no diagnostic is ever emitted twice for the same node. */
+    if (target->kind == NODE_INDEX) {
+        Type *obj = typecheck_node(tc, target->as.index.object);
+        if (type_is_error(obj)) return obj;
+        if (obj->kind == TYPE_STRING) {
+            return tc_error_type(tc, target->loc, "cannot assign to string element");
+        }
     }
 
     /* Type of the place being written. */

@@ -1,0 +1,11 @@
+// C round-trip for the len builtin (DEC-013): the generic builtin dispatch
+// (fun(args, argc)) must reach astra_builtin_len, not astra_builtin_print.
+// EXPECT: 3
+// EXPECT: 5
+// EXPECT: 2
+fn main() {
+    let xs = [7, 8, 9]
+    print(len(xs))
+    print(len("hello"))
+    print(len("ab"))
+}
