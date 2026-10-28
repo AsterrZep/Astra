@@ -1,4 +1,5 @@
-// DEC-001/DEC-002 (research/027 §2, ratificada como D2): `let` protects the
+// DEC-001 (research/027 §2, ratificada como D2 — el aliasing es DEC-001;
+// DEC-002 es la decisión del registro de constructs): `let` protects the
 // BINDING, not the object — writing through a `let mut` alias is visible in
 // every binding. Together with alias_write.astra (mut<->mut) and
 // ui/immutable_field_assign.astra (no write through `let`), this pins the
