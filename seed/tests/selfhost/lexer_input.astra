@@ -1,0 +1,42 @@
+// lexer_input.astra — fixture for selfhost/lexer_gate.sh (research/028 PR3a
+// §4.3). A small NON-TRIVIAL Astra-0 source that exercises every token class
+// the lexer emits: keywords, identifiers (with `_` and digits), integers
+// (decimal + hex), string literals (with escapes), both comment forms the
+// lexer skips (`//`), single- and two-char operators, and — on purpose — one
+// invalid char (`$` below) so lexer.expected also pins the ERROR path.
+// This file is only ever LEXED (read_file + lexer.astra); it is never
+// compiled by any gate, so the `$` costs nothing.
+struct Point {
+    x: i32
+    y: i32
+}
+enum Shape { Circle Rect }
+fn area(s: Shape, p: Point) -> i32 {
+    return match s {
+        Shape.Circle => 3 * p.x * p.y / 4,
+        _ => p.x * p.y
+    }
+}
+fn main() {
+    let mut total = 0
+    let name = "fixture \"quoted\" é\n" // escapes: \\ \" \n
+    let flag = true
+    let num = 42
+    let hex = 0x2A
+    let double = |a: i32| -> i32 { a * 2 }
+    let i = 0
+    while i < 5 {
+        if i <= 2 && name != "x" {
+            total = total + double(i)
+        } else if flag || num >= 0 {
+            total = total - 1
+        }
+        i = i + 1
+    }
+    for j in 0..3 {
+        total = total + j
+    }
+    print(to_string(total + hex))
+    // deliberate lexer error: '$' is not a valid Astra-0 character
+    let bad = 1 $ 2
+}

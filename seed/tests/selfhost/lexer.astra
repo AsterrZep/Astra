@@ -1,0 +1,192 @@
+// lexer.astra — mini lexer written in Astra-0 (research/028 PR3a, §4.2).
+// First self-hosting step: the language lexes a source file of its own
+// dialect, using ONLY primitives verified in 028 §1.1/§4.1 — len(), s[i]
+// (1 byte as string), read_file(), to_string(), string == / +, match with
+// string literals + or-patterns + `_`, while/continue, if/else-if.
+//
+// OUTPUT FORMAT (one token per line, stable and documented here on purpose):
+//
+//     <KIND>:<lexeme>@<line>
+//
+//   KIND   = KEYWORD | IDENT | INT | STRING | SYMBOL | OP | ERROR
+//   lexeme = the raw lexeme; for STRING it is the content without the
+//            surrounding quotes (escape sequences kept verbatim); for ERROR
+//            it is a short message
+//   line   = 1-based line where the token starts
+//   last line of every run: EOF@<line>
+//
+//   Examples:  KEYWORD:fn@1   IDENT:fib@1   INT:42@3   SYMBOL:{@2
+//              OP:==@7   STRING:hello@4   ERROR:unknown char '$'@22
+//
+// Skipped without emitting: `//` line comments (no block comments in
+// Astra-0), spaces, tabs, CR. Additions on top of the 028 §4.2
+// pseudocode: two-char operators (incl. `=>` and `..`), hex literals and
+// an escape-aware string scan; see DEC-016.
+
+// 52 or-patterns (028 §4.2 workaround, verified in 4 routes): Astra-0 has no
+// ranges in match and no char type, so letter classification is a literal
+// table. Note: a match-arm pattern list must fit on ONE line — the parser
+// does not continue an arm across a NEWLINE.
+fn is_alpha(c: string) -> bool {
+    return match c {
+        "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" => true,
+        _ => false
+    }
+}
+
+fn is_digit(c: string) -> bool {
+    return match c {
+        "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => true,
+        _ => false
+    }
+}
+
+fn is_hex(c: string) -> bool {
+    return match c {
+        "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F" => true,
+        _ => false
+    }
+}
+
+// Keyword table mirrors seed/src/lexer.c (all 36, including the Option/
+// Result names: ok, err, none, some, option, result — `ok` is a keyword, so
+// no function in this file may be called `ok`). Returns the KIND prefix so
+// the caller prints prefix + lexeme in one go.
+fn keyword_kind(word: string) -> string {
+    return match word {
+        "and" | "as" | "break" | "comptime" | "const" | "continue" | "else" | "enum" | "err" | "false" | "fn" | "for" | "from" | "if" | "impl" | "import" | "in" | "let" | "match" | "mod" | "mut" | "none" | "not" | "ok" | "option" | "or" | "pub" | "result" | "return" | "some" | "struct" | "trait" | "true" | "use" | "var" | "while" => "KEYWORD:",
+        _ => "IDENT:"
+    }
+}
+
+// Two-char operators, matched on the concatenated pair (no substr needed:
+// `c + s[i+1]` builds the probe). Empty result = not a two-char operator.
+fn two_char_kind(two: string) -> string {
+    return match two {
+        "==" | "!=" | "<=" | ">=" | "&&" | "||" | "->" | "::" | "=>" | ".." => "OP:",
+        _ => ""
+    }
+}
+
+fn punct_kind(c: string) -> string {
+    return match c {
+        "(" | ")" | "{" | "}" | "[" | "]" => "SYMBOL:",
+        "+" | "-" | "*" | "/" | "=" | ";" | "," | "." | ":" | "|" | "!" | "<" | ">" | "?" => "SYMBOL:",
+        _ => ""
+    }
+}
+
+fn main() {
+    let src = read_file("lexer_input.astra")
+    let n = len(src)
+    let mut i: i64 = 0       // i64: len() returns i64, and mixing widths in `i < n` is an error
+    let mut line: i64 = 1
+
+    while i < n {
+        let c = src[i]
+
+        // whitespace: newline also advances the line counter
+        if c == "\n" {
+            line = line + 1
+            i = i + 1
+            continue
+        }
+        if c == " " || c == "\t" || c == "\r" {
+            i = i + 1
+            continue
+        }
+
+        // line comment "//" — skipped to end of line (the "\n" itself is
+        // re-examined by the whitespace branch, so the count stays correct)
+        if c == "/" && i + 1 < n && src[i + 1] == "/" {
+            while i < n && src[i] != "\n" {
+                i = i + 1
+            }
+            continue
+        }
+
+        // integer literal: hex "0x…" (the seed accepts it too) or decimal run
+        if is_digit(c) {
+            let mut lex = ""
+            if c == "0" && i + 1 < n && src[i + 1] == "x" && i + 2 < n && is_hex(src[i + 2]) {
+                lex = "0x"
+                i = i + 2
+                while i < n && is_hex(src[i]) {
+                    lex = lex + src[i]
+                    i = i + 1
+                }
+            } else {
+                while i < n && is_digit(src[i]) {
+                    lex = lex + src[i]
+                    i = i + 1
+                }
+            }
+            print("INT:" + lex + "@" + to_string(line))
+            continue
+        }
+
+        // identifier / keyword
+        if is_alpha(c) || c == "_" {
+            let mut lex = ""
+            while i < n && (is_alpha(src[i]) || is_digit(src[i]) || src[i] == "_") {
+                lex = lex + src[i]
+                i = i + 1
+            }
+            print(keyword_kind(lex) + lex + "@" + to_string(line))
+            continue
+        }
+
+        // string literal: copy content verbatim, keep escapes (\\ \" \n …)
+        // as the two source bytes; a raw newline terminates the scan, like
+        // in the seed lexer (unterminated string = ERROR)
+        if c == "\"" {
+            i = i + 1
+            let mut lex = ""
+            let mut closed = false
+            while i < n {
+                let d = src[i]
+                if d == "\n" {
+                    break
+                }
+                if d == "\"" {
+                    i = i + 1
+                    closed = true
+                    break
+                }
+                if d == "\\" && i + 1 < n && src[i + 1] != "\n" {
+                    lex = lex + d + src[i + 1]
+                    i = i + 2
+                    continue
+                }
+                lex = lex + d
+                i = i + 1
+            }
+            if closed {
+                print("STRING:" + lex + "@" + to_string(line))
+            } else {
+                print("ERROR:unterminated string@" + to_string(line))
+            }
+            continue
+        }
+
+        // two-char operator
+        if i + 1 < n {
+            let op_kind = two_char_kind(c + src[i + 1])
+            if op_kind != "" {
+                print(op_kind + c + src[i + 1] + "@" + to_string(line))
+                i = i + 2
+                continue
+            }
+        }
+
+        // single-char punctuation, else error
+        let kind = punct_kind(c)
+        if kind != "" {
+            print(kind + c + "@" + to_string(line))
+        } else {
+            print("ERROR:unknown char '" + c + "'@" + to_string(line))
+        }
+        i = i + 1
+    }
+    print("EOF@" + to_string(line))
+}
