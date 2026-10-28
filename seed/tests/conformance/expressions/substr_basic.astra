@@ -1,0 +1,21 @@
+// substr(s, start, len) -> string (DEC-018, research/028 M2a): `len` bytes
+// from `start`, so a lexer takes a lexeme in one step instead of appending
+// byte by byte. start == len(s) with len == 0 is the empty slice (valid, the
+// caller asked for nothing), and the arguments take an i32 literal (DEC-006)
+// or an i64 (`len(s)`, an `i64` local) alike — the parameters are `unknown`,
+// because a call checks arguments by exact type equality and Astra-0 has no
+// coercion.
+// EXPECT: ell
+// EXPECT: true
+// EXPECT: true
+// EXPECT: true
+// EXPECT: e
+fn main() {
+    let s = "hello"
+    let i: i64 = 1
+    print(substr(s, 1, 3))
+    print(substr(s, 1, 3) == "ell")
+    print(substr(s, 0, len(s)) == s)
+    print(substr(s, 5, 0) == "")
+    print(substr(s, i, 1))
+}

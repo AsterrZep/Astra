@@ -25,6 +25,7 @@
 | DEC-015 | Los nombres de builtin (`print`, `len`, `to_string`, `read_file`) están **reservados**: redeclararlos con `let`/`const`/`fn` en cualquier ámbito es error de compilación, idéntico en los dos typecheckers | Aceptada (test-pinned) | 2026-10-27 | `ui/builtin_shadow_print.astra`, `ui/builtin_shadow_len.astra`, `ui/builtin_shadow_to_string.astra`, `ui/builtin_shadow_read_file.astra` (primera línea byte-idéntica seed↔zig) (PR D-PR2) |
 | DEC-016 | El lexer de Astra-0 (`seed/tests/selfhost/lexer.astra`) es el primer componente self-hosting: lexea `lexer_input.astra` con solo los builtins M1 y emite un token por línea `<KIND>:<lexeme>@<line>`; el stream se gatea byte a byte contra `lexer.expected` en las 4 rutas, fuera de `conformance/` (cwd) | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → 4/4 rutas (seed VM, `--emit-c`+gcc, zig VM, LLVM `--jit`) contra `lexer.expected` (PR D-PR3a; rutas y gate fuerte cerrados en DEC-017) |
 | DEC-017 | Cierre del gate del lexer self-hosting (PR3b): `lexer_gate.sh` crece a **7 rutas** ( + `--emit-obj`+link nativo, cross aarch64 bajo qemu, wasm32-wasi bajo Node WASI con preopens — cada una con skip limpio sin su toolchain) y añade el **gate fuerte** `lexer_tokens_parity.sh` (el stream de `lexer.astra` normalizado contra `astra-seed --dump-tokens`: 1:1 en KEYWORD/IDENT(`_`)/INT(hex→valor)/PUNCT/ERROR/EOF; fuera NEWLINE, columnas, contenido de STRING, FLOAT_LIT y la cola tras el primer ERROR); CI lo cablea en los jobs `seed` y `llvm` con los mismos guards, sin renombrar checks | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → **7/7 rutas** + `lexer_tokens_parity.sh` → **176 tokens** (PR D-PR3b) |
+| DEC-018 | Stdlib M2a: `ord(s) -> i64` = **primer byte** de `s` (`""` = error de runtime) y `substr(s, start, len) -> string` = `len` bytes desde `start` (**error, nunca recorte**, fuera de `[0, len(s)]`); los tres parámetros de `substr` y el de `ord` son `unknown` con guards de runtime (sin coerción en la llamada), y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/ord_basic.astra`, `expressions/ord_empty_error.astra`, `expressions/ord_int_arg.astra`, `expressions/substr_basic.astra`, `expressions/substr_bounds_error.astra`, `expressions/substr_start_error.astra`, `codegen/ord_substr.astra`, `codegen/substr_oob.astra`, `ui/builtin_shadow_ord.astra`, `ui/builtin_shadow_substr.astra` (PR D-PR4a) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -377,3 +378,92 @@
   LLVM `--emit-obj`+link, LLVM cross aarch64+qemu, LLVM wasm32-wasi+Node
   WASI) + `lexer_tokens_parity.sh` → `ok (176 tokens …)`; `io_gate.sh` →
   4/4; `make test` 286/0; `llvm_parity.sh` 176/176 skip=0.
+
+### DEC-018 — Stdlib M2a: `ord(s)` y `substr(s, start, len)`
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR4a (2026-10-28)
+- **Fecha**: 2026-10-28
+- **Decisión**:
+  - `ord(s) -> i64` devuelve el valor del **primer byte** de `s` (0..255) —
+    **byte, no codepoint**: `s[i]` ya devuelve un string de 1 byte (DEC-013) y
+    el lexer del seed recorre `char` sin UTF-8 (`research/028` §1.1), así que
+    las cuatro rutas y un `lexer.astra` futuro leen el mismo número. Un string
+    vacío **no tiene primer byte**: `ord("")` es error de runtime
+    `ord() of empty string` — nunca lee pasando el buffer, porque `""` es
+    `{NULL, 0}` en el VM y decide la longitud, no el puntero. Receptor
+    no-string → `ord expects a string, got <tipo>` con el `type_name` del VM.
+  - `substr(s, start, len) -> string` devuelve `len` bytes desde `start`.
+    **Fuera de rango es error, nunca recorte**: `start < 0 || start > len(s)`
+    → `substr start N out of bounds (len M)`; `len < 0 || start + len > len(s)`
+    → `substr length N out of bounds (len M)` (con prefijo `substr`, no el
+    `index … out of bounds` de los arrays: ese texto no dice de dónde sale).
+    `len == 0` con `start == len(s)` devuelve `""` — el llamante no pidió
+    nada —, mientras `start > len(s)` falla incluso con `len == 0`. El chequeo
+    compara contra `len(s) - start`, así que un `len` enorme (p. ej.
+    `9223372036854775807`) falla en vez de desbordar `start + len`.
+  - **Tipos: los tres parámetros de `substr` (y el de `ord`) son `unknown`
+    con guards de runtime** — el patrón de `print`/`len`/`to_string`
+    (DEC-013/DEC-014). Motivo: la llamada compara argumentos con `type_eq`
+    **exacto** y Astra-0 no tiene coerción, así que un parámetro anotado `i64`
+    rechazaría `substr(s, 1, 3)` (literal `i32` por DEC-006) y uno anotado
+    `i32` rechazaría `substr(s, 0, len(s))` (`len` devuelve `i64`); con
+    `unknown` ambos calzan sin coerción. Cada runtime rechaza con el mismo
+    texto: `substr expects a string, got <tipo>` y `substr expects an int, got
+    <tipo>` — los dos argumentos enteros comparten la frase, igual que los dos
+    guards del emisor LLVM.
+  - **Los 4 sitios a la vez** (`research/028` §2.2): seed (`typechecker.c`
+    símbolos, `vm.c` cuerpo + `GET_GLOBAL` + dispatch + marcadores `FnObj`,
+    `priv.h`, `codegen.c` `cg_builtins[]`, `codegen_runtime.h`), zig
+    (`typechecker.zig`, `vm.zig`) y LLVM (`emitter.zig` `emitOrd`/`emitSubstr`
+    + `astra_runtime_llvm.c`); JIT, wasm y aarch64 heredan el runtime LLVM sin
+    código propio.
+  - **`ord` y `substr` se suman a la lista reservada de DEC-015** (`kBuiltins`
+    en los dos typecheckers): el VM resuelve builtins por **nombre** en
+    `GET_GLOBAL` y el emisor LLVM decide la llamada por **nombre** en
+    `emitCall`, así que un binding homónimo divergiría entre rutas. Mensaje
+    idéntico: `'ord' is a builtin and cannot be redeclared` /
+    `'substr' is a builtin and cannot be redeclared`.
+- **Alternativas consideradas**: (1) anotar el receptor `s: string` (como
+  `read_file`, DEC-014) para rechazar `substr(42, …)` en compile-time —
+  descartado: dejaría `ord` y `substr` con reglas distintas (`ord` seguiría
+  siendo runtime por DEC-006) y añadiría un mensaje de compilación que mantener
+  byte-idéntico en dos checkers, sin una seguridad que el runtime no dé;
+  (2) **recortar** (clipping) cuando `start + len > len(s)` en vez de fallar —
+  descartado: el error es *más barato* de verificar en las 4 rutas (una
+  comparación contra el hueco restante, sin segunda rama) y es el mismo
+  contrato que `s[i]` (DEC-013), que ya falla en vez de devolver menos;
+  (3) tercer parámetro llamado `end` (la firma de `research/028` §1.2) — se
+  eligió `len`, porque el valor es una **longitud**, no un índice final:
+  `substr(s, 0, n)` toma `n` bytes; (4) parámetros anotados `string, i64, i64`
+  — imposible sin coerción (arriba); (5) codepoint UTF-8 en `ord` — descartado:
+  `s[i]` ya es byte y el lexer C es byte-oriented, un codepoint rompería la
+  equivalencia con `lexer.astra`; (6) reutilizar el texto de bounds de los
+  arrays (`index N out of bounds (len M)`) — descartado: no nombra el builtin
+  que falla.
+- **Coste aceptado**: 4 implementaciones en 9 ficheros de código (seed:
+  `typechecker.c`, `vm.c`, `priv.h`, `codegen.c`, `codegen_runtime.h`; zig:
+  `typechecker.zig`, `vm.zig`, `llvm/emitter.zig`,
+  `llvm/runtime/astra_runtime_llvm.c`); 10 tests (6 conformance, 2 codegen,
+  2 ui); 0 cambios de bytecode ni de AST, así que los dumps siguen
+  byte-idénticos (172 ficheros = los 164 previos + los 8 nuevos que ya
+  gatean).
+- **Evidencia**: fijado por `expressions/ord_basic.astra` (65/97/48/10/
+  `true`), `expressions/ord_empty_error.astra` (`ord() of empty string`),
+  `expressions/ord_int_arg.astra` (`ord expects a string, got int`),
+  `expressions/substr_basic.astra` (`ell`, tres `true` — entre ellos
+  `substr(s, 0, len(s)) == s` y `substr(s, 5, 0) == ""` — y `e`),
+  `expressions/substr_bounds_error.astra`
+  (`substr length 99 out of bounds (len 5)`),
+  `expressions/substr_start_error.astra`
+  (`substr start 6 out of bounds (len 5)`), `codegen/ord_substr.astra` y
+  `codegen/substr_oob.astra` (redondeo C; este último `substr start -1 out of
+  bounds (len 5)`), `ui/builtin_shadow_ord.astra` y
+  `ui/builtin_shadow_substr.astra` (primera línea byte-idéntica seed↔zig).
+  Gates del PR: `make test` **296/0**, `sweep_emit_c` total=**132** skip=3
+  fail=0, `make debug` (ASan/UBSan/LSan) **296/0**, `zig build test` verde,
+  `ui_message_parity` first_fail=0 (total=127), `dump_parity` 0 divergent
+  (172 files), `llvm_parity` **184/184** skip=0 fail=0 (opt=0 y opt=2),
+  `llvm_fuzz -n 20 -s 1` fail=0, `lexer_gate.sh` **7/7 rutas** + paridad de
+  tokens (176), `--check-constructs` OK.
+- **Spec**: `research/028` §1.2 (firmas M2) — «pendiente de escribir en
+  ARCHITECTURE».

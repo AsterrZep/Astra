@@ -876,6 +876,56 @@ static inline AstraValue astra_builtin_read_file(AstraValue *args, uint8_t argc)
     return r;
 }
 
+/* ---------- Built-in: ord (DEC-018, research/028 M2a) ----------
+ *
+ * ord(string) -> i64: the value of the FIRST BYTE (0..255), a byte and not a
+ * codepoint — `s[i]` already yields a 1-byte string and the seed's lexer is
+ * byte-oriented, so every route reads the same number. Arity, type and
+ * emptiness wording mirror vm.c's builtin_ord (`ord expects a string, got
+ * <tipo>` / `ord() of empty string`) so sweep_emit_c.sh stays byte-equal. */
+static inline AstraValue astra_builtin_ord(AstraValue *args, uint8_t argc) {
+    if (argc != 1)
+        astra_errorf("expected 1 arguments but got %u", (unsigned)argc);
+    AstraValue v = args[0];
+    if (v.tag != AST_STRING)
+        astra_errorf("ord expects a string, got %s", astra_tag_name(v.tag));
+    /* No string payload is an empty string here (the VM's `""` is {NULL, 0}),
+     * and reading data[0] of an empty payload would be a heap over-read. */
+    if (!v.as.string_val || v.as.string_val->len == 0)
+        astra_errorf("ord() of empty string");
+    return astra_int((unsigned char)v.as.string_val->data[0]);
+}
+
+/* ---------- Built-in: substr (DEC-018, research/028 M2a) ----------
+ *
+ * substr(string, start, len) -> string: `len` bytes from `start`, or a
+ * runtime error — no silent clipping, the same contract as `s[i]`. The bounds
+ * wording mirrors vm.c's builtin_substr (`substr start/length %ld out of
+ * bounds (len %zu)`); `start <= len(s)` is established first so the remaining
+ * room is exact and `start + n` can never overflow. */
+static inline AstraValue astra_builtin_substr(AstraValue *args, uint8_t argc) {
+    if (argc != 3)
+        astra_errorf("expected 3 arguments but got %u", (unsigned)argc);
+    AstraValue sv = args[0], st = args[1], ln = args[2];
+    if (sv.tag != AST_STRING)
+        astra_errorf("substr expects a string, got %s", astra_tag_name(sv.tag));
+    /* Both integer parameters word their rejection the same way, like the VM. */
+    if (st.tag != AST_INT)
+        astra_errorf("substr expects an int, got %s", astra_tag_name(st.tag));
+    if (ln.tag != AST_INT)
+        astra_errorf("substr expects an int, got %s", astra_tag_name(ln.tag));
+    int64_t slen = sv.as.string_val ? sv.as.string_val->len : 0;
+    int64_t start = st.as.int_val, n = ln.as.int_val;
+    if (start < 0 || start > slen)
+        astra_errorf("substr start %ld out of bounds (len %zu)",
+                     (long)start, (size_t)slen);
+    if (n < 0 || n > slen - start)
+        astra_errorf("substr length %ld out of bounds (len %zu)",
+                     (long)n, (size_t)slen);
+    if (n == 0) return astra_string_new("", 0);
+    return astra_string_new(sv.as.string_val->data + start, n);
+}
+
 /* ---------- Runtime error ---------- */
 /* A *hard* runtime error (div-by-zero, bounds, nil receiver, …) is fatal, full
  * stop: print `file:line: runtime error: msg` exactly like the VM's driver

@@ -234,6 +234,8 @@ static const BuiltinDef cg_builtins[] = {
     { "len",       "astra_builtin_len"       },
     { "to_string", "astra_builtin_to_string" },
     { "read_file", "astra_builtin_read_file" },
+    { "ord",       "astra_builtin_ord"       },
+    { "substr",    "astra_builtin_substr"    },
 };
 
 static const BuiltinDef *find_builtin(const char *name) {

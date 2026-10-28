@@ -1,0 +1,8 @@
+// C round-trip for the substr bounds (DEC-018): astra_builtin_substr must
+// word a negative start exactly like the seed VM — the length overrun and the
+// start > len(s) cases live in conformance/expressions/, which sweep_emit_c.sh
+// runs through both backends.
+// EXPECT-RUNTIME-ERROR: substr start -1 out of bounds (len 5)
+fn main() {
+    print(substr("hello", -1, 2))
+}

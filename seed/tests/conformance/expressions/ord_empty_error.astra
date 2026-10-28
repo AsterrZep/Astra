@@ -1,0 +1,8 @@
+// ord("") has no first byte to read (DEC-018): the rejection is a RUNTIME
+// error worded the same on the four routes, instead of reading past the
+// buffer — `""` is {NULL, 0} in the VM, so the length decides, not the
+// pointer.
+// EXPECT-RUNTIME-ERROR: ord() of empty string
+fn main() {
+    print(ord(""))
+}

@@ -1,0 +1,8 @@
+// DEC-015 extends to the M2a builtins (DEC-018): GET_GLOBAL resolves builtins
+// by *name* and the LLVM emitter dispatches emitCall by *name* before it
+// consults the fn/local tables, so a user binding called `ord` would run the
+// builtin on one route and the binding on another — reject it instead of
+// letting the four routes diverge.
+// EXPECT-ERROR: 'ord' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 8:1: error: 'ord' is a builtin and cannot be redeclared
+let ord = 5

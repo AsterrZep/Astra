@@ -1,0 +1,8 @@
+// ord takes any receiver at compile time (unknown parameter, like print and
+// to_string, DEC-018) and rejects a non-string at RUNTIME with the VM's
+// type_name — the guard a program that smuggles an int past the checker hits,
+// worded identically by the seed VM, the C backend, the zig VM and LLVM.
+// EXPECT-RUNTIME-ERROR: ord expects a string, got int
+fn main() {
+    print(ord(42))
+}

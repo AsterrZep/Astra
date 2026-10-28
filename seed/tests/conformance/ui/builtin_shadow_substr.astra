@@ -1,0 +1,8 @@
+// DEC-015 extends to the M2a builtins (DEC-018): a top-level `fn substr()`
+// would be named a *duplicate* of the builtin symbol if the reservation did
+// not fire first, losing the actual rule — reported in the first pass,
+// exactly once, like `fn print()`.
+// EXPECT-ERROR: 'substr' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 7:1: error: 'substr' is a builtin and cannot be redeclared
+fn substr() {
+}

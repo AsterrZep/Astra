@@ -1,0 +1,16 @@
+// ord(s) -> i64 (DEC-018, research/028 M2a): the value of the FIRST byte of
+// `s` — 'A' = 65, 'a' = 97, '0' = 48, '\n' = 10 — the classification a lexer
+// needs without a `char` type. A byte, not a codepoint: `s[i]` already hands
+// back a 1-byte string (DEC-013) and the seed's lexer walks bytes.
+// EXPECT: 65
+// EXPECT: 97
+// EXPECT: 48
+// EXPECT: 10
+// EXPECT: true
+fn main() {
+    print(ord("A"))
+    print(ord("a"))
+    print(ord("0"))
+    print(ord("\n"))
+    print(ord("A") == 65)
+}
