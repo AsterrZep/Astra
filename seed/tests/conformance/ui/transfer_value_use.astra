@@ -1,0 +1,7 @@
+// DEC-026 M1 — transfer has no value form: the name resolves only as the
+// callee of its direct statement call, never as a value.
+// EXPECT-ERROR: transfer must be called directly as transfer(variable)
+// EXPECT-ERROR-FIRST: 6:13: error: transfer must be called directly as transfer(variable)
+fn main() {
+    let f = transfer;
+}

@@ -3196,6 +3196,9 @@ pub const Emitter = struct {
                 // callee genérico se resuelve a la instancia concreta
                 // (`identity` → `identity<i32>`) por el nodo del callee.
                 const name = self.instanceCallee(call.callee, name0);
+                // DEC-022/026: `transfer(x);` — nil-red, no call (see
+                // emitTransfer). Sits before the fn/variant tables.
+                if (std.mem.eql(u8, name, "transfer")) return self.emitTransfer(idx);
                 if (std.mem.eql(u8, name, "print")) return self.emitPrint(idx);
                 if (std.mem.eql(u8, name, "len")) return self.emitLen(idx);
                 if (std.mem.eql(u8, name, "to_string")) return self.emitToString(idx);
@@ -3390,6 +3393,43 @@ pub const Emitter = struct {
             if (isPtrTy(rt)) self.emitTmpPush(rv);
             return .{ .ref = rv, .ty = rt, .sname = fv.sname };
         }
+        return null;
+    }
+
+    /// DEC-026 nil-red (R4): `transfer(x);` stores the nil-for-type into the
+    /// binding through emitStoreOwned (so the replaced aggregate is released
+    /// — the LLVM route owns rc) and produces no value, exactly like print.
+    /// Scalars cannot reach here: typecheck rejects them (DEC-026 §2) —
+    /// zeroInit has no scalar nil by design.
+    fn emitTransfer(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        if (args.len != 1) {
+            self.unsupported(idx, "transfer expects one variable");
+            return null;
+        }
+        const name = switch (self.tree.node(args[0])) {
+            .identifier => |nm| nm,
+            else => {
+                self.unsupported(idx, "transfer expects a variable");
+                return null;
+            },
+        };
+        if (self.lookupLocal(name)) |l| {
+            self.emitStoreOwned(l.alloca, .{ .ref = self.zeroInit(l.ty), .ty = l.ty, .payload_ty = l.payload_ty, .sname = l.sname });
+            return null;
+        }
+        if (self.lookupCapture(name) != null) {
+            // Unreachable: a captured binding is aliased, so S2 rejects the
+            // transfer before emit (defensive, mirroring emitAssign).
+            self.unsupported(idx, "cannot transfer a captured variable");
+            return null;
+        }
+        if (self.globals.get(name)) |g| {
+            self.emitStoreOwned(g.val, .{ .ref = self.zeroInit(g.ty), .ty = g.ty, .payload_ty = g.payload_ty, .sname = g.sname });
+            return null;
+        }
+        self.unsupported(idx, "transfer of an unknown variable");
         return null;
     }
 
@@ -5140,6 +5180,7 @@ pub const Emitter = struct {
                     // global de esa instancia (`c` → `c<i32>`).
                     const nm = self.instanceCallee(call.callee, nm0);
                     if (std.mem.eql(u8, nm, "print")) return null;
+                    if (std.mem.eql(u8, nm, "transfer")) return null; // DEC-026: void, statement-only
                     // len(x) -> i64 (DEC-013): el inicializador global de un
                     // `let n = len(…)` necesita el tipo sin emitir el valor.
                     if (std.mem.eql(u8, nm, "len")) return .i64_;

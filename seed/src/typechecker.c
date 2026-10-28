@@ -1046,6 +1046,13 @@ static Type *typecheck_bool_lit(TypeChecker *tc, Node *node) {
 
 static Type *typecheck_ident(TypeChecker *tc, Node *node) {
     InternedString name = node->as.ident.name;
+    /* DEC-026 M1: `transfer` has no value form — the call form is handled
+     * in typecheck_call before the callee is typechecked, so reaching here
+     * means the name is used as a value (`let f = transfer`). */
+    if (name.len == 8 && memcmp(name.str, "transfer", 8) == 0) {
+        return tc_error_type(tc, node->loc,
+                             "transfer must be called directly as transfer(variable)");
+    }
     Symbol *sym = symbol_table_lookup(tc->symbols, name);
     if (!sym) {
         return tc_error_type(tc, node->loc, "undefined variable '%.*s'",
@@ -1833,6 +1840,38 @@ static Type *check_variant_construction(TypeChecker *tc, Node *node, Type *et,
 
 static Type *typecheck_call(TypeChecker *tc, Node *node) {
     Node *callee_node = node->as.call.callee;
+
+    /* DEC-022/026 (fase E1): `transfer(x)` is a builtin in call form with
+     * statement-only semantics. Handled before any resolution so the callee
+     * Ident never reaches typecheck_ident (whose value-position rule would
+     * fire on it) and before the variant-registry probe. The form is fixed
+     * here; the S1/S2 ownership pass runs after typecheck (DEC-026 §3). */
+    if (callee_node->kind == NODE_IDENT &&
+        callee_node->as.ident.name.len == 8 &&
+        memcmp(callee_node->as.ident.name.str, "transfer", 8) == 0) {
+        size_t argc = node->as.call.args.len;
+        if (argc != 1) {
+            return tc_error_type(tc, node->loc,
+                                 "expected 1 arguments, got %zu", argc);
+        }
+        Node *arg = node->as.call.args.data[0];
+        if (arg->kind != NODE_IDENT) {
+            return tc_error_type(tc, arg->loc,
+                                 "transfer expects a variable");
+        }
+        Type *at = typecheck_node(tc, arg);
+        if (type_is_error(at)) return at;
+        switch (at->kind) {
+        case TYPE_ARRAY: case TYPE_STRUCT: case TYPE_ENUM: case TYPE_FN:
+        case TYPE_STRING: case TYPE_OPTIONAL: case TYPE_UNKNOWN:
+            break; /* aggregates (and unknown, which may instantiate one) */
+        default:
+            return tc_error_type(tc, arg->loc,
+                                 "transfer expects an aggregate, got %s",
+                                 type_kind_name(at->kind));
+        }
+        return type_new(tc->arena, TYPE_VOID);
+    }
 
     /* A bare identifier callee may name a built-in Option/Result variant:
      * `some(x)` / `ok(x)` / `err(x)`. DEC-008 (research/027 §4): a *user*
@@ -2779,10 +2818,26 @@ static Type *default_int_type(Arena *a, Node *init) {
  * emitCall (before consulting the fn/local tables), so a user binding called
  * `len`/`print`/... would run the builtin on one route and the binding on
  * another. Reject the redeclaration instead of letting the routes diverge.
+ * `transfer` joins the list with DEC-022 (fase E1): it is a builtin in call
+ * form, so its name must not be redeclareable either. File-scope so the
+ * ownership pass (DEC-026) can ask the same question of a callee.
  * Reports and returns true when `name` is builtin. */
+static const char *kBuiltins[] = {
+    "print", "len", "to_string", "read_file", "ord", "substr", "push",
+    "str_to_int", "chr", "read_line", "transfer"
+};
+
+static bool is_builtin_name(InternedString name) {
+    for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
+        const char *b = kBuiltins[i];
+        if (name.len == strlen(b) && memcmp(name.str, b, name.len) == 0)
+            return true;
+    }
+    return false;
+}
+
 static bool builtin_redeclare_error(TypeChecker *tc, SrcLoc loc,
                                     InternedString name) {
-    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int", "chr", "read_line" };
     for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
         const char *b = kBuiltins[i];
         if (name.len == strlen(b) && memcmp(name.str, b, name.len) == 0) {
@@ -3865,11 +3920,699 @@ static Type *typecheck_node(TypeChecker *tc, Node *node) {
 }
 
 /* ============================================================
+ * §8b: Ownership enforcement — S1/S2 (DEC-012/022/026; research/026 §3.3)
+ * ============================================================
+ * Intraprocedural, flow-sensitive pass that runs after a CLEAN typecheck
+ * and before emit. Threads a per-name state machine (Unico | Aliased |
+ * Escapado) plus a sticky "moved" flag, with a scope-mark stack for
+ * shadowing, pointwise joins at if/match and a conservative entry-join at
+ * loops. Type-free on purpose: typecheck already rejects transfer of
+ * scalars, so over-marking a scalar never becomes a user-visible error
+ * (DEC-026 §3). Each fn/impl method body runs with a FRESH view (module
+ * entries stashed and restored): S1 is intraprocedural, and the runtime
+ * nil-red is what catches cross-function uses of a transferred global.
+ */
+
+#define OWN_MAX_ENTRIES 512
+#define OWN_MAX_MARKS   256
+
+typedef enum { OWN_UNIQUE, OWN_ALIASED, OWN_ESCAPED } OwnState;
+
+typedef struct {
+    const char *str;
+    size_t      len;
+} OwnName;
+
+typedef struct {
+    OwnName     name;
+    OwnState    state;
+    bool        moved;
+    bool        alive;
+    OwnName     alias;           /* who aliases/carries it (message) */
+    bool        alias_is_closure;
+    size_t      decl_mark;       /* mark index at declaration (capture test) */
+} OwnEntry;
+
+typedef struct {
+    OwnName     name;
+    bool        existed;
+    OwnState    saved_state;
+    bool        saved_moved;
+    OwnName     saved_alias;
+    bool        saved_alias_closure;
+    size_t      saved_decl_mark;
+    size_t      saved_entry;     /* index into entries[] */
+} OwnMark;
+
+typedef struct {
+    size_t      n;
+    OwnEntry   *entries;         /* arena copy */
+} OwnSnap;
+
+typedef struct {
+    TypeChecker *tc;
+    OwnEntry     entries[OWN_MAX_ENTRIES];
+    size_t       n_entries;
+    OwnMark      marks[OWN_MAX_MARKS];
+    size_t       n_marks;
+    bool         in_lambda;
+    size_t       lambda_depth;   /* n_marks when the lambda body was entered */
+    OwnName      closure_name;   /* binding of the lambda being visited */
+    bool         has_closure_name;
+} OwnWalk;
+
+static OwnName own_name(InternedString is) {
+    OwnName n = { is.str, is.len };
+    return n;
+}
+
+static bool own_name_eq(OwnName a, OwnName b) {
+    return a.len == b.len && memcmp(a.str, b.str, a.len) == 0;
+}
+
+static void own_err(OwnWalk *w, SrcLoc loc, const char *fmt, ...) {
+    w->tc->error_count++;
+    fprintf(stderr, "%s:%u:%u: error: ", loc.filename, loc.line, loc.column);
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    fprintf(stderr, "\n");
+}
+
+static OwnEntry *own_find(OwnWalk *w, OwnName name) {
+    for (size_t i = w->n_entries; i-- > 0; )
+        if (w->entries[i].alive && own_name_eq(w->entries[i].name, name))
+            return &w->entries[i];
+    return NULL;
+}
+
+/* Declare (or redeclare) `name` as Unico, recording a scope mark so the
+ * block exit restores the shadowed state or tombstones the new binding. */
+static OwnEntry *own_declare(OwnWalk *w, InternedString name) {
+    OwnEntry *e = own_find(w, own_name(name));
+    if (w->n_marks >= OWN_MAX_MARKS || w->n_entries >= OWN_MAX_ENTRIES)
+        return NULL; /* bounded registry: bail conservatively (no state) */
+    OwnMark *m = &w->marks[w->n_marks];
+    m->name = own_name(name);
+    if (e) {
+        m->existed = true;
+        m->saved_state = e->state;
+        m->saved_moved = e->moved;
+        m->saved_alias = e->alias;
+        m->saved_alias_closure = e->alias_is_closure;
+        m->saved_decl_mark = e->decl_mark;
+        m->saved_entry = (size_t)(e - w->entries);
+        e->state = OWN_UNIQUE;
+        e->moved = false;
+        e->alias.str = NULL;
+        e->alias.len = 0;
+        e->alias_is_closure = false;
+        e->decl_mark = w->n_marks;
+    } else {
+        m->existed = false;
+        m->saved_entry = w->n_entries;
+        e = &w->entries[w->n_entries++];
+        e->name = own_name(name);
+        e->state = OWN_UNIQUE;
+        e->moved = false;
+        e->alive = true;
+        e->alias.str = NULL;
+        e->alias.len = 0;
+        e->alias_is_closure = false;
+        e->decl_mark = w->n_marks;
+    }
+    w->n_marks++;
+    return e;
+}
+
+/* Pop scope marks down to `depth`, restoring shadowed states and
+ * tombstoning bindings declared inside the scope. */
+static void own_pop_to(OwnWalk *w, size_t depth) {
+    while (w->n_marks > depth) {
+        w->n_marks--;
+        OwnMark *m = &w->marks[w->n_marks];
+        if (m->existed) {
+            OwnEntry *e = &w->entries[m->saved_entry];
+            e->state = m->saved_state;
+            e->moved = m->saved_moved;
+            e->alias = m->saved_alias;
+            e->alias_is_closure = m->saved_alias_closure;
+            e->decl_mark = m->saved_decl_mark;
+        } else {
+            w->entries[m->saved_entry].alive = false;
+        }
+    }
+}
+
+static OwnSnap own_save(OwnWalk *w) {
+    OwnSnap s;
+    s.n = w->n_entries;
+    s.entries = arena_new_array(w->tc->arena, OwnEntry, w->n_entries ? w->n_entries : 1);
+    if (w->n_entries)
+        memcpy(s.entries, w->entries, sizeof(OwnEntry) * w->n_entries);
+    return s;
+}
+
+static void own_restore(OwnWalk *w, OwnSnap s) {
+    if (s.n)
+        memcpy(w->entries, s.entries, sizeof(OwnEntry) * s.n);
+    w->n_entries = s.n;
+}
+
+/* Pointwise join of two snapshots (research/026 §3.3): Escapado is
+ * absorbing, Aliased beats Unico (first snapshot wins the alias name for
+ * determinism), moved is a union. Writes the merged state into w. */
+static void own_join(OwnWalk *w, OwnSnap a, OwnSnap b) {
+    /* min: snapshots taken at different times may have grown (branch-local,
+     * already tombstoned) entries — those indices are not join material. */
+    size_t n = a.n < b.n ? a.n : b.n;
+    if (n > w->n_entries) n = w->n_entries;
+    for (size_t i = 0; i < n; i++) {
+        OwnEntry *e = &w->entries[i];
+        OwnEntry *ea = &a.entries[i];
+        OwnEntry *eb = &b.entries[i];
+        e->moved = ea->moved || eb->moved;
+        OwnState sa = ea->state, sb = eb->state;
+        if (sa == OWN_ESCAPED || sb == OWN_ESCAPED) {
+            e->state = OWN_ESCAPED;
+        } else if (sa == OWN_ALIASED) {
+            e->state = OWN_ALIASED;
+            e->alias = ea->alias;
+            e->alias_is_closure = ea->alias_is_closure;
+        } else if (sb == OWN_ALIASED) {
+            e->state = OWN_ALIASED;
+            e->alias = eb->alias;
+            e->alias_is_closure = eb->alias_is_closure;
+        } else {
+            e->state = OWN_UNIQUE;
+        }
+        /* alive/decl_mark/name come from the live entry, not the snapshot */
+    }
+}
+
+static void own_visit(OwnWalk *w, Node *n, bool stmt_ok);
+
+/* A use of `name`: S1 (moved) and, inside a lambda, capture-marking of an
+ * outer binding (research/026 §3.3: `let c = |..| x ..` aliases x). */
+static void own_use(OwnWalk *w, Node *node) {
+    OwnName name = own_name(node->as.ident.name);
+    OwnEntry *e = own_find(w, name);
+    if (!e) return;
+    if (e->moved) {
+        own_err(w, node->loc, "use of transferred variable '%.*s'",
+                (int)name.len, name.str);
+        return;
+    }
+    if (w->in_lambda && e->decl_mark < w->lambda_depth &&
+        e->state == OWN_UNIQUE) {
+        e->state = OWN_ALIASED;
+        if (w->has_closure_name) {
+            e->alias = w->closure_name;
+        } else {
+            e->alias.str = "<lambda>";
+            e->alias.len = 8;
+        }
+        e->alias_is_closure = true;
+    }
+}
+
+/* Mark the root binding of a container/escape site as Escaped. */
+static void own_escape_root(OwnWalk *w, Node *n) {
+    while (n && (n->kind == NODE_FIELD_ACCESS || n->kind == NODE_INDEX)) {
+        n = n->kind == NODE_FIELD_ACCESS ? n->as.field_access.object
+                                         : n->as.index.object;
+    }
+    if (!n || n->kind != NODE_IDENT) return;
+    OwnEntry *e = own_find(w, own_name(n->as.ident.name));
+    if (e) e->state = OWN_ESCAPED;
+}
+
+/* `transfer(x);` in statement position: S2 (state) then mark moved.
+ * Errors sit on the call node; the S1 re-transfer sits on the argument
+ * (it is a use of that ident). */
+static void own_transfer(OwnWalk *w, Node *call, bool stmt_ok) {
+    if (!stmt_ok) {
+        own_err(w, call->loc, "transfer must be its own statement");
+        return;
+    }
+    Node *arg = call->as.call.args.data[0]; /* form fixed by typecheck */
+    OwnName name = own_name(arg->as.ident.name);
+    OwnEntry *e = own_find(w, name);
+    if (!e) {
+        /* A name not in this scope's sigma is a global seen from a fn —
+         * globals are shared by definition (DEC-026 §3). */
+        own_err(w, call->loc, "cannot transfer '%.*s': value has escaped",
+                (int)name.len, name.str);
+        return;
+    }
+    if (e->moved) {
+        own_err(w, arg->loc, "use of transferred variable '%.*s'",
+                (int)name.len, name.str);
+        return;
+    }
+    if (e->state == OWN_ALIASED) {
+        if (e->alias_is_closure)
+            own_err(w, call->loc,
+                    "cannot transfer '%.*s': value is aliased by closure '%.*s'",
+                    (int)name.len, name.str,
+                    (int)e->alias.len, e->alias.str);
+        else
+            own_err(w, call->loc,
+                    "cannot transfer '%.*s': value is aliased by '%.*s'",
+                    (int)name.len, name.str,
+                    (int)e->alias.len, e->alias.str);
+        return;
+    }
+    if (e->state == OWN_ESCAPED) {
+        own_err(w, call->loc, "cannot transfer '%.*s': value has escaped",
+                (int)name.len, name.str);
+        return;
+    }
+    e->moved = true;
+}
+
+static bool own_is_transfer(Node *n) {
+    return n && n->kind == NODE_CALL && n->as.call.callee->kind == NODE_IDENT &&
+           n->as.call.callee->as.ident.name.len == 8 &&
+           memcmp(n->as.call.callee->as.ident.name.str, "transfer", 8) == 0;
+}
+
+/* A non-builtin callee (user fn, method, variant) may retain its
+ * arguments; builtins (print/len/...) do not (research/026 §3.3). */
+static bool own_callee_escapes(Node *callee) {
+    if (callee->kind != NODE_IDENT) return true;
+    return !is_builtin_name(callee->as.ident.name);
+}
+
+static void own_walk_pattern(OwnWalk *w, Node *pat) {
+    if (!pat) return;
+    switch (pat->kind) {
+    case NODE_PATTERN_BIND:
+        own_declare(w, pat->as.pattern_bind.name);
+        break;
+    case NODE_PATTERN_VARIANT_BIND:
+        for (size_t i = 0; i < pat->as.pattern_variant_bind.bindings.len; i++)
+            own_declare(w, pat->as.pattern_variant_bind.bindings.data[i]);
+        break;
+    case NODE_PATTERN_BUILTIN_VARIANT:
+        own_walk_pattern(w, pat->as.pattern_builtin_variant.payload);
+        break;
+    case NODE_PATTERN_OR:
+        for (size_t i = 0; i < pat->as.pattern_or.alts.len; i++)
+            own_walk_pattern(w, pat->as.pattern_or.alts.data[i]);
+        break;
+    default:
+        break;
+    }
+}
+
+/* fn/impl-method body: fresh sigma (stash the caller's entries and marks,
+ * declare the params Unico, walk, restore). S1 is intraprocedural. */
+static void own_walk_fn(OwnWalk *w, Node *fn) {
+    OwnSnap stash = own_save(w);
+    OwnMark mark_stash[OWN_MAX_MARKS];
+    size_t mark_n = w->n_marks;
+    if (mark_n) memcpy(mark_stash, w->marks, sizeof(OwnMark) * mark_n);
+    bool saved_in_lambda = w->in_lambda;
+    size_t saved_lambda_depth = w->lambda_depth;
+    OwnName saved_closure = w->closure_name;
+    bool saved_has_closure = w->has_closure_name;
+
+    w->n_entries = 0;
+    w->n_marks = 0;
+    w->in_lambda = false;
+    w->has_closure_name = false;
+
+    for (size_t i = 0; i < fn->as.fn_decl.params.len; i++)
+        own_declare(w, fn->as.fn_decl.params.data[i]);
+    if (fn->as.fn_decl.body)
+        own_visit(w, fn->as.fn_decl.body, true);
+
+    memcpy(w->entries, stash.entries, sizeof(OwnEntry) * stash.n);
+    w->n_entries = stash.n;
+    if (mark_n) memcpy(w->marks, mark_stash, sizeof(OwnMark) * mark_n);
+    w->n_marks = mark_n;
+    w->in_lambda = saved_in_lambda;
+    w->lambda_depth = saved_lambda_depth;
+    w->closure_name = saved_closure;
+    w->has_closure_name = saved_has_closure;
+}
+
+/* Lambda: same sigma as the enclosing scope (captures must be visible),
+ * own params declared, capture-marking active for the body. */
+static void own_walk_lambda(OwnWalk *w, Node *n) {
+    size_t depth = w->n_marks;
+    bool saved_in_lambda = w->in_lambda;
+    size_t saved_lambda_depth = w->lambda_depth;
+    w->in_lambda = true;
+    w->lambda_depth = depth;
+    for (size_t i = 0; i < n->as.lambda.params.len; i++)
+        own_declare(w, n->as.lambda.params.data[i]);
+    if (n->as.lambda.body)
+        own_visit(w, n->as.lambda.body, true);
+    own_pop_to(w, depth);
+    w->in_lambda = saved_in_lambda;
+    w->lambda_depth = saved_lambda_depth;
+}
+
+static void own_visit_stmts(OwnWalk *w, Node *body) {
+    if (!body || body->kind != NODE_BLOCK) {
+        if (body) own_visit(w, body, true);
+        return;
+    }
+    size_t depth = w->n_marks;
+    for (size_t i = 0; i < body->as.block.stmts.len; i++)
+        own_visit(w, body->as.block.stmts.data[i], true);
+    if (body->as.block.last_expr)
+        own_visit(w, body->as.block.last_expr, false);
+    own_pop_to(w, depth);
+}
+
+static void own_visit(OwnWalk *w, Node *n, bool stmt_ok) {
+    if (!n) return;
+    switch (n->kind) {
+    case NODE_IDENT:
+        own_use(w, n);
+        break;
+
+    case NODE_CALL:
+        if (own_is_transfer(n)) {
+            own_transfer(w, n, stmt_ok);
+            break;
+        }
+        own_visit(w, n->as.call.callee, false);
+        {
+            bool esc = own_callee_escapes(n->as.call.callee);
+            for (size_t i = 0; i < n->as.call.args.len; i++) {
+                Node *arg = n->as.call.args.data[i];
+                own_visit(w, arg, false);
+                if (esc) own_escape_root(w, arg);
+            }
+        }
+        break;
+
+    case NODE_SOME_EXPR: case NODE_OK_EXPR: case NODE_ERR_EXPR: {
+        Node *inner = n->kind == NODE_SOME_EXPR ? n->as.some_expr.value
+                    : n->kind == NODE_OK_EXPR   ? n->as.ok_expr.value
+                                                 : n->as.err_expr.value;
+        own_visit(w, inner, false);
+        own_escape_root(w, inner); /* payload enters a container */
+        break;
+    }
+
+    case NODE_VAR_DECL: {
+        InternedString name = n->as.var_decl.name;
+        own_declare(w, name);
+        Node *init = n->as.var_decl.value;
+        if (!init) break;
+        if (init->kind == NODE_IDENT) {
+            /* The init is a use first (S1 if moved, capture inside a
+             * lambda), then `let y = x` aliases both handles — the sound
+             * reading of research/026 §3.3's row (DEC-026 §3). */
+            own_visit(w, init, false);
+            OwnEntry *other = own_find(w, own_name(init->as.ident.name));
+            OwnEntry *self = own_find(w, own_name(name));
+            if (self && other && !self->moved && !other->moved) {
+                self->state = OWN_ALIASED;
+                self->alias = own_name(init->as.ident.name);
+                self->alias_is_closure = false;
+                if (other->state == OWN_UNIQUE) {
+                    other->state = OWN_ALIASED;
+                    other->alias = own_name(name);
+                    other->alias_is_closure = false;
+                }
+            }
+            break;
+        }
+        if (init->kind == NODE_LAMBDA) {
+            OwnName saved = w->closure_name;
+            bool has_saved = w->has_closure_name;
+            w->closure_name = own_name(name);
+            w->has_closure_name = true;
+            own_visit(w, init, false);
+            w->closure_name = saved;
+            w->has_closure_name = has_saved;
+            break;
+        }
+        own_visit(w, init, false);
+        break;
+    }
+
+    case NODE_CONST_DECL:
+        own_declare(w, n->as.const_decl.name);
+        own_visit(w, n->as.const_decl.value, false);
+        break;
+
+    case NODE_ASSIGN: {
+        Node *target = n->as.assign.target;
+        Node *value = n->as.assign.value;
+        own_visit(w, value, false);
+        if (target && target->kind == NODE_IDENT) {
+            own_use(w, target); /* a write is a use (S1) */
+            OwnEntry *self = own_find(w, own_name(target->as.ident.name));
+            if (value && value->kind == NODE_IDENT) {
+                OwnEntry *other = own_find(w, own_name(value->as.ident.name));
+                /* y was an alias of z: z escapes (research/026 §3.3) */
+                if (self && self->state == OWN_ALIASED && self->alias.len) {
+                    OwnEntry *z = own_find(w, self->alias);
+                    if (z && z != self) z->state = OWN_ESCAPED;
+                }
+                if (self) {
+                    self->state = OWN_ALIASED;
+                    self->alias = own_name(value->as.ident.name);
+                    self->alias_is_closure = false;
+                }
+                if (other && other->state == OWN_UNIQUE) {
+                    other->state = OWN_ALIASED;
+                    other->alias = own_name(target->as.ident.name);
+                    other->alias_is_closure = false;
+                } else if (other) {
+                    /* already aliased/escaped: keep */
+                }
+            } else {
+                if (self && self->state == OWN_ALIASED && self->alias.len) {
+                    OwnEntry *z = own_find(w, self->alias);
+                    if (z && z != self) z->state = OWN_ESCAPED;
+                }
+                if (self) {
+                    self->state = OWN_UNIQUE; /* fresh object */
+                    self->alias.str = NULL;
+                    self->alias.len = 0;
+                    self->alias_is_closure = false;
+                }
+            }
+        } else if (target) {
+            /* container store: the value escapes into it */
+            own_visit(w, target, false);
+            own_escape_root(w, value);
+        }
+        break;
+    }
+
+    case NODE_COMPOUND_ASSIGN: {
+        Node *target = n->as.assign.target;
+        if (target && target->kind == NODE_IDENT) own_use(w, target);
+        else if (target) own_visit(w, target, false);
+        own_visit(w, n->as.assign.value, false);
+        if (target && target->kind == NODE_IDENT) {
+            OwnEntry *self = own_find(w, own_name(target->as.ident.name));
+            if (self) {
+                self->state = OWN_UNIQUE; /* result is a fresh scalar */
+                self->alias.str = NULL;
+                self->alias.len = 0;
+                self->alias_is_closure = false;
+            }
+        }
+        break;
+    }
+
+    case NODE_BLOCK: {
+        size_t depth = w->n_marks;
+        for (size_t i = 0; i < n->as.block.stmts.len; i++)
+            own_visit(w, n->as.block.stmts.data[i], true);
+        if (n->as.block.last_expr)
+            own_visit(w, n->as.block.last_expr, false);
+        own_pop_to(w, depth);
+        break;
+    }
+
+    case NODE_IF: {
+        own_visit(w, n->as.if_expr.cond, false);
+        OwnSnap pre = own_save(w);
+        own_visit_stmts(w, n->as.if_expr.then_block);
+        OwnSnap then_s = own_save(w);
+        own_restore(w, pre);
+        if (n->as.if_expr.else_block) {
+            own_visit_stmts(w, n->as.if_expr.else_block);
+            OwnSnap else_s = own_save(w);
+            own_restore(w, pre);
+            own_join(w, then_s, else_s);
+        } else {
+            own_restore(w, pre);
+            own_join(w, then_s, pre);
+        }
+        break;
+    }
+
+    case NODE_WHILE: {
+        own_visit(w, n->as.while_expr.cond, false);
+        OwnSnap pre = own_save(w);
+        own_visit_stmts(w, n->as.while_expr.body);
+        OwnSnap body_s = own_save(w);
+        own_restore(w, pre);
+        own_join(w, pre, body_s); /* conservative: entry ⊔ body, once */
+        break;
+    }
+
+    case NODE_FOR: {
+        own_visit(w, n->as.for_expr.iter, false);
+        size_t depth = w->n_marks;
+        own_declare(w, n->as.for_expr.var);
+        OwnSnap pre = own_save(w);
+        own_visit_stmts(w, n->as.for_expr.body);
+        OwnSnap body_s = own_save(w);
+        own_restore(w, pre);
+        own_join(w, pre, body_s);
+        own_pop_to(w, depth);
+        break;
+    }
+
+    case NODE_MATCH: {
+        own_visit(w, n->as.match_expr.target, false);
+        OwnSnap pre = own_save(w);
+        OwnSnap acc = pre;
+        bool first = true;
+        for (size_t i = 0; i < n->as.match_expr.arms.len; i++) {
+            MatchArm *arm = &n->as.match_expr.arms.data[i];
+            own_restore(w, pre);
+            size_t depth = w->n_marks;
+            own_walk_pattern(w, arm->pattern);
+            own_visit(w, arm->guard, false);
+            own_visit_stmts(w, arm->body);
+            OwnSnap arm_s = own_save(w);
+            own_pop_to(w, depth);
+            if (first) {
+                acc = arm_s;
+                first = false;
+            } else {
+                own_join(w, acc, arm_s);
+                acc = own_save(w);
+            }
+        }
+        own_restore(w, pre);
+        if (!first) own_join(w, acc, pre);
+        break;
+    }
+
+    case NODE_LAMBDA:
+        own_walk_lambda(w, n);
+        break;
+
+    case NODE_FN_DECL:
+        own_walk_fn(w, n);
+        break;
+
+    case NODE_IMPL:
+        for (size_t i = 0; i < n->as.impl_decl.items.len; i++)
+            own_visit(w, n->as.impl_decl.items.data[i], stmt_ok);
+        break;
+
+    case NODE_TRAIT:
+        for (size_t i = 0; i < n->as.trait_decl.items.len; i++)
+            own_visit(w, n->as.trait_decl.items.data[i], stmt_ok);
+        break;
+
+    case NODE_RETURN:
+        own_visit(w, n->as.return_expr.value, false);
+        break;
+
+    case NODE_BREAK: case NODE_CONTINUE:
+        break;
+
+    case NODE_MODULE:
+        for (size_t i = 0; i < n->as.module.items.len; i++)
+            own_visit(w, n->as.module.items.data[i], true);
+        break;
+
+    case NODE_BINARY_OP:
+        own_visit(w, n->as.binary.left, false);
+        own_visit(w, n->as.binary.right, false);
+        break;
+
+    case NODE_UNARY_OP:
+        own_visit(w, n->as.unary.operand, false);
+        break;
+
+    case NODE_INDEX:
+        own_visit(w, n->as.index.object, false);
+        own_visit(w, n->as.index.index, false);
+        break;
+
+    case NODE_FIELD_ACCESS:
+        own_visit(w, n->as.field_access.object, false);
+        break;
+
+    case NODE_ARRAY_LIT:
+        for (size_t i = 0; i < n->as.array_lit.elems.len; i++) {
+            Node *el = n->as.array_lit.elems.data[i];
+            own_visit(w, el, false);
+            own_escape_root(w, el); /* elements enter a container */
+        }
+        break;
+
+    case NODE_STRUCT_LIT:
+        for (size_t i = 0; i < n->as.struct_lit.field_values.len; i++) {
+            Node *fv = n->as.struct_lit.field_values.data[i];
+            own_visit(w, fv, false);
+            own_escape_root(w, fv);
+        }
+        break;
+
+    case NODE_TRY_EXPR:
+        own_visit(w, n->as.try_expr.inner, false);
+        break;
+
+    case NODE_RANGE:
+        own_visit(w, n->as.range.start, false);
+        own_visit(w, n->as.range.end, false);
+        break;
+
+    /* Type-only / no-runtime nodes. */
+    case NODE_INT_LIT: case NODE_FLOAT_LIT: case NODE_STRING_LIT:
+    case NODE_BOOL_LIT: case NODE_NONE_EXPR:
+    case NODE_TYPE_IDENT: case NODE_TYPE_OPTIONAL: case NODE_TYPE_ARRAY:
+    case NODE_TYPE_FN: case NODE_TYPE_PARAM:
+    case NODE_STRUCT_DECL: case NODE_ENUM_DECL: case NODE_PAYLOAD:
+    case NODE_USE: case NODE_IMPORT: case NODE_FROM: case NODE_IMPORT_ITEM:
+    case NODE_PATTERN_WILDCARD: case NODE_OPTIONAL_CHAIN:
+        break;
+
+    default:
+        /* Unknown runtime node: walk nothing rather than guess — the
+         * suite pins every construct that reaches here. */
+        break;
+    }
+}
+
+/* Entry point: only after a clean typecheck (DEC-026 §3). */
+static void enforce_ownership(TypeChecker *tc, Node *module) {
+    OwnWalk w = {0};
+    w.tc = tc;
+    own_visit(&w, module, true);
+}
+
+/* ============================================================
  * §9: Public API
  * ============================================================ */
 
 Type *typecheck(TypeChecker *tc, Node *node) {
-    return typecheck_node(tc, node);
+    Type *t = typecheck_node(tc, node);
+    /* Ownership enforcement (S1/S2, DEC-026 §3) runs only when typecheck
+     * was clean: a rejected program already has its first line pinned. */
+    if (node->kind == NODE_MODULE && tc->error_count == 0)
+        enforce_ownership(tc, node);
+    return t;
 }
 
 GenericInstance *typechecker_instances(TypeChecker *tc, size_t *out_count) {

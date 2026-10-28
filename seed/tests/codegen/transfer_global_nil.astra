@@ -1,0 +1,13 @@
+// C round-trip for the R4 nil-red across a function boundary: the global
+// must be nil in the compiled program too (byte-identical error text).
+// EXPECT-RUNTIME-ERROR: cannot index nil
+let mut g = [1, 2, 3];
+transfer(g);
+
+fn peek() {
+    print(g[0]);
+}
+
+fn main() {
+    peek();
+}

@@ -1,0 +1,9 @@
+// DEC-026 (fase E1) — the happy path: a unique aggregate is moved, the
+// binding is invalidated (nil-red R4) and nothing touches it afterwards,
+// so the program compiles and runs on every route.
+// EXPECT: moved
+fn main() {
+    let mut a = [1, 2, 3];
+    transfer(a);
+    print("moved");
+}

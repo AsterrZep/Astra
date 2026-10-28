@@ -1,0 +1,9 @@
+// DEC-026 S1 — after a legal transfer the binding is moved: any later use
+// (here a read through the index) is a compile error (R4 static half).
+// EXPECT-ERROR: use of transferred variable 'a'
+// EXPECT-ERROR-FIRST: 8:11: error: use of transferred variable 'a'
+fn main() {
+    let mut a = [1, 2, 3];
+    transfer(a);
+    print(a[0]);
+}

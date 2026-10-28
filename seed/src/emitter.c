@@ -1440,6 +1440,42 @@ static void emit_expr(Emitter *e, Node *node) {
          * (`Paso(x)`); the checker already decided, so mirror its rule here:
          * variant first, function call otherwise. */
         Node *callee = node->as.call.callee;
+        /* DEC-022/026 nil-red (R4): `transfer(x);` never becomes a call.
+         * The ownership pass (S1/S2) already ran, so this only stores nil
+         * into the binding and pushes one value for the statement POP:
+         * CONST nil; SET x; CONST nil (net +1, discarded by the stmt).
+         * The name therefore never reaches GET_GLOBAL on any bytecode
+         * route — a slip outside statement position would fail loudly
+         * ("undefined variable") instead of diverging. The value itself
+         * is not moved anywhere: with no fiber crossing yet, invalidating
+         * the sender IS the move (research/026 §3.4 «check sin cruce»). */
+        if (callee->kind == NODE_IDENT &&
+            callee->as.ident.name.len == 8 &&
+            memcmp(callee->as.ident.name.str, "transfer", 8) == 0) {
+            uint32_t line = node->loc.line;
+            Node *arg = node->as.call.args.data[0]; /* 1 Ident arg (typecheck) */
+            InternedString name = arg->as.ident.name;
+            uint32_t nil_idx = add_constant(e, value_nil());
+            emit_inst_index(e, OPCODE_CONST, nil_idx, line);
+            int slot = find_local(e, name);
+            if (slot >= 0) {
+                emit_inst_index(e, OPCODE_SET_LOCAL, (uint32_t)slot, line);
+            } else if (find_capture(e, name) >= 0) {
+                /* Unreachable: a captured binding is aliased, so S2 rejects
+                 * the transfer before emit. Refuse instead of writing the
+                 * closure's snapshot copy (same stance as assign). */
+                fprintf(stderr,
+                        "%s:%u: error: cannot transfer captured variable '%.*s'\n",
+                        node->loc.filename ? node->loc.filename : "?", line,
+                        (int)name.len, name.str);
+                e->error_count++;
+            } else {
+                uint32_t idx = add_constant(e, value_string(name.str, name.len));
+                emit_inst_index(e, OPCODE_SET_GLOBAL, idx, line);
+            }
+            emit_inst_index(e, OPCODE_CONST, nil_idx, line);
+            break;
+        }
         /* Static method dispatch (Phase 2.3 step 4): the checker annotated
          * the callee with its mangled global, so push that function, then the
          * receiver (argument 0), then the source arguments. */

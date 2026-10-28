@@ -1,0 +1,10 @@
+// DEC-026 S2 (closure capture) — a lambda captures the handle by value
+// (DEC-004), so `a` is aliased by `f` and cannot be transferred.
+// EXPECT-ERROR: cannot transfer 'a': value is aliased by closure 'f'
+// EXPECT-ERROR-FIRST: 8:5: error: cannot transfer 'a': value is aliased by closure 'f'
+fn main() {
+    let mut a = [1, 2, 3];
+    let f = |i: i32| { a[i] };
+    transfer(a);
+    print(f(0));
+}

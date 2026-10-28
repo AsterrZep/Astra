@@ -1,0 +1,9 @@
+// DEC-026 M2 — transfer only as its own statement: nested inside a call's
+// arguments the nil-red could not be sequenced and S1/S2 would not fire at
+// the right point.
+// EXPECT-ERROR: transfer must be its own statement
+// EXPECT-ERROR-FIRST: 8:11: error: transfer must be its own statement
+fn main() {
+    let mut a = [1, 2, 3];
+    print(transfer(a));
+}

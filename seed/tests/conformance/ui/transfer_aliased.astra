@@ -1,0 +1,10 @@
+// DEC-026 S2 — the critique program of research/025 §2.2: `let mut b = a`
+// shares the handle, so `transfer(a)` must be rejected at compile time.
+// EXPECT-ERROR: cannot transfer 'a': value is aliased by 'b'
+// EXPECT-ERROR-FIRST: 8:5: error: cannot transfer 'a': value is aliased by 'b'
+fn main() {
+    let mut a = [1, 2, 3];
+    let mut b = a;
+    transfer(a);
+    b[0] = 99;
+}

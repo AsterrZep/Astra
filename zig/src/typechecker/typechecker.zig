@@ -174,6 +174,149 @@ const GenericBinding = struct { name: []const u8, type_: *Type };
 /// method entry, so scanning it would report a satisfied bound as missing.
 const ImplRecord = struct { type_name: []const u8, trait_name: []const u8 };
 
+/// DEC-015/022: reserved builtin names — byte-identical to seed's
+/// `kBuiltins` (builtin_redeclare_error + the ownership pass share it).
+const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int", "chr", "read_line", "transfer" };
+
+fn ownIsBuiltinName(name: []const u8) bool {
+    for (k_builtins) |b| {
+        if (std.mem.eql(u8, name, b)) return true;
+    }
+    return false;
+}
+
+// ── Ownership enforcement state (DEC-012/022/026; research/026 §3.3) ──
+// Data for the S1/S2 pass; all logic lives in the TypeChecker methods
+// added at the end of the struct (they need errFmt). Type-free on purpose:
+// typecheck already rejects transfer of scalars (DEC-026 §2).
+
+const OwnState = enum { unique, aliased, escaped };
+
+const OwnEntry = struct {
+    name: []const u8 = "",
+    state: OwnState = .unique,
+    moved: bool = false,
+    alive: bool = true,
+    alias: []const u8 = "",
+    alias_is_closure: bool = false,
+    decl_mark: usize = 0,
+};
+
+const OwnMark = struct {
+    name: []const u8 = "",
+    existed: bool = false,
+    saved_state: OwnState = .unique,
+    saved_moved: bool = false,
+    saved_alias: []const u8 = "",
+    saved_alias_closure: bool = false,
+    saved_decl_mark: usize = 0,
+    saved_entry: usize = 0,
+};
+
+const own_max_entries = 512;
+const own_max_marks = 256;
+
+const OwnWalk = struct {
+    entries: [own_max_entries]OwnEntry = undefined,
+    n_entries: usize = 0,
+    marks: [own_max_marks]OwnMark = undefined,
+    n_marks: usize = 0,
+    in_lambda: bool = false,
+    lambda_depth: usize = 0,
+    closure_name: []const u8 = "",
+    has_closure_name: bool = false,
+};
+
+fn ownFindIdx(w: *OwnWalk, name: []const u8) ?usize {
+    var i = w.n_entries;
+    while (i > 0) {
+        i -= 1;
+        if (w.entries[i].alive and std.mem.eql(u8, w.entries[i].name, name)) return i;
+    }
+    return null;
+}
+
+fn ownDeclare(w: *OwnWalk, name: []const u8) void {
+    if (w.n_marks >= own_max_marks or w.n_entries >= own_max_entries) return;
+    const mark_idx = w.n_marks;
+    if (ownFindIdx(w, name)) |ei| {
+        const e = &w.entries[ei];
+        w.marks[mark_idx] = .{
+            .name                = name,
+            .existed             = true,
+            .saved_state         = e.state,
+            .saved_moved         = e.moved,
+            .saved_alias         = e.alias,
+            .saved_alias_closure = e.alias_is_closure,
+            .saved_decl_mark     = e.decl_mark,
+            .saved_entry         = ei,
+        };
+        e.state = .unique;
+        e.moved = false;
+        e.alias = "";
+        e.alias_is_closure = false;
+        e.decl_mark = mark_idx;
+    } else {
+        const ei = w.n_entries;
+        w.marks[mark_idx] = .{ .name = name, .existed = false, .saved_entry = ei };
+        w.entries[ei] = .{ .name = name, .state = .unique, .moved = false, .alive = true, .decl_mark = mark_idx };
+        w.n_entries += 1;
+    }
+    w.n_marks += 1;
+}
+
+fn ownPopTo(w: *OwnWalk, depth: usize) void {
+    while (w.n_marks > depth) {
+        w.n_marks -= 1;
+        const m = w.marks[w.n_marks];
+        if (m.existed) {
+            const e = &w.entries[m.saved_entry];
+            e.state = m.saved_state;
+            e.moved = m.saved_moved;
+            e.alias = m.saved_alias;
+            e.alias_is_closure = m.saved_alias_closure;
+            e.decl_mark = m.saved_decl_mark;
+        } else {
+            w.entries[m.saved_entry].alive = false;
+        }
+    }
+}
+
+fn ownSave(a: std.mem.Allocator, w: *OwnWalk) []OwnEntry {
+    const buf = a.alloc(OwnEntry, w.n_entries) catch @panic("OOM");
+    if (w.n_entries > 0) @memcpy(buf, w.entries[0..w.n_entries]);
+    return buf;
+}
+
+fn ownRestore(w: *OwnWalk, snap: []const OwnEntry) void {
+    if (snap.len > 0) @memcpy(w.entries[0..snap.len], snap);
+    w.n_entries = snap.len;
+}
+
+fn ownJoin(w: *OwnWalk, aa: []const OwnEntry, bb: []const OwnEntry) void {
+    const n = @min(aa.len, bb.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const e = &w.entries[i];
+        const ea = aa[i];
+        const eb = bb[i];
+        e.moved = ea.moved or eb.moved;
+        if (ea.state == .escaped or eb.state == .escaped) {
+            e.state = .escaped;
+        } else if (ea.state == .aliased) {
+            e.state = .aliased;
+            e.alias = ea.alias;
+            e.alias_is_closure = ea.alias_is_closure;
+        } else if (eb.state == .aliased) {
+            e.state = .aliased;
+            e.alias = eb.alias;
+            e.alias_is_closure = eb.alias_is_closure;
+        } else {
+            e.state = .unique;
+        }
+    }
+}
+
 pub const TypeChecker = struct {
     a: std.mem.Allocator,
     filename: []const u8,
@@ -625,6 +768,11 @@ pub const TypeChecker = struct {
     // ── Expressions ───────────────────────────────────────────────
 
     fn checkIdent(self: *TypeChecker, name: []const u8, loc: lexer.Loc) *Type {
+        // DEC-026 M1: `transfer` has no value form — the call form is
+        // handled in checkCall before the callee reaches here.
+        if (std.mem.eql(u8, name, "transfer")) {
+            return self.errorType(loc, "transfer must be called directly as transfer(variable)", .{});
+        }
         if (self.lookup(name)) |sym| {
             if (sym.module_exports != null) {
                 return self.errorType(loc, "module '{s}' is not a value", .{name});
@@ -1166,6 +1314,30 @@ pub const TypeChecker = struct {
 
     fn checkCall(self: *TypeChecker, callee_idx: u32, args: ast.List, loc: lexer.Loc) *Type {
         const arg_slice = self.tree.extraSlice(args);
+
+        // DEC-022/026 (fase E1): `transfer(x)` is a statement-only builtin
+        // in call form. Handled before any resolution so the callee ident
+        // never reaches checkIdent (whose value-position rule would fire on
+        // it) and before the variant-registry probe. S1/S2 run afterwards in
+        // enforceOwnership (DEC-026 §3).
+        if (isTag(self.tree.node(callee_idx), .identifier) and
+            std.mem.eql(u8, self.tree.node(callee_idx).identifier, "transfer"))
+        {
+            if (arg_slice.len != 1) {
+                return self.errorType(loc, "expected 1 arguments, got {d}", .{arg_slice.len});
+            }
+            const arg_idx = arg_slice[0];
+            if (!isTag(self.tree.node(arg_idx), .identifier)) {
+                return self.errorType(self.tree.loc(arg_idx), "transfer expects a variable", .{});
+            }
+            const at = self.checkNode(arg_idx);
+            if (isErrorType(at)) return at;
+            switch (at.kind) {
+                .array, .struct_, .enum_, .fn_type, .string, .optional, .unknown => {},
+                else => return self.errorType(self.tree.loc(arg_idx), "transfer expects an aggregate, got {s}", .{at.kind.name()}),
+            }
+            return self.newType(.void);
+        }
 
         // A bare identifier callee may name a built-in Option/Result variant.
         // DEC-008 (research/027 §4): a *user* variant is only legal in the
@@ -1867,7 +2039,6 @@ pub const TypeChecker = struct {
     // binding on another. Reports and returns true when `name` is builtin —
     // byte-identical to seed's builtin_redeclare_error.
     fn builtinRedeclareError(self: *TypeChecker, loc: lexer.Loc, name: []const u8) bool {
-        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int", "chr", "read_line" };
         for (k_builtins) |b| {
             if (std.mem.eql(u8, name, b)) {
                 self.errFmt(loc, "'{s}' is a builtin and cannot be redeclared", .{name});
@@ -2170,7 +2341,20 @@ pub const TypeChecker = struct {
 
     /// Public entry point: type-check a whole module and accumulate errors.
     pub fn check(self: *TypeChecker, root: u32) void {
+        // Capture the ORIGINAL item list: checkNode appends generic
+        // instance wrappers that share source bodies — the ownership pass
+        // must see each body once.
+        var before: ?ast.List = null;
+        if (isTag(self.tree.node(root), .source_file))
+            before = self.tree.node(root).source_file;
         _ = self.checkNode(root);
+        if (self.error_count != 0) return;
+        var w: OwnWalk = .{};
+        if (before) |list| {
+            for (self.tree.extraSlice(list)) |it| self.ownVisit(&w, it, true);
+        } else {
+            self.ownVisit(&w, root, true);
+        }
     }
 
     // ── Dispatch ──────────────────────────────────────────────────
@@ -2587,6 +2771,404 @@ pub const TypeChecker = struct {
             }
             const list = self.tree.addExtra(new_items.items) catch @panic("OOM");
             self.tree.nodes.items[module].source_file = list;
+        }
+    }
+
+    // ── Ownership enforcement (S1/S2; DEC-012/022/026, research/026 §3.3) ──
+    // Mirror of seed/src/typechecker.c §8b: intraprocedural, flow-sensitive,
+    // name-keyed state machine run after a CLEAN check. Each fn body gets a
+    // fresh view (entries/marks stashed and restored); lambdas share the
+    // enclosing sigma so captures are visible.
+
+    fn ownUse(self: *TypeChecker, w: *OwnWalk, idx: u32) void {
+        const n = self.tree.node(idx);
+        if (!isTag(n, .identifier)) return;
+        const name = n.identifier;
+        const ei = ownFindIdx(w, name) orelse return;
+        const e = &w.entries[ei];
+        if (e.moved) {
+            self.errFmt(self.tree.loc(idx), "use of transferred variable '{s}'", .{name});
+            return;
+        }
+        if (w.in_lambda and e.decl_mark < w.lambda_depth and e.state == .unique) {
+            e.state = .aliased;
+            e.alias = if (w.has_closure_name) w.closure_name else "<lambda>";
+            e.alias_is_closure = true;
+        }
+    }
+
+    fn ownEscapeRoot(self: *TypeChecker, w: *OwnWalk, idx: u32) void {
+        var cur = idx;
+        while (true) {
+            const n = self.tree.node(cur);
+            switch (n) {
+                .field_access => |fa| cur = fa.object,
+                .index_expr => |ix| cur = ix.object,
+                .identifier => |name| {
+                    if (ownFindIdx(w, name)) |ei| w.entries[ei].state = .escaped;
+                    return;
+                },
+                else => return,
+            }
+        }
+    }
+
+    fn ownTransfer(self: *TypeChecker, w: *OwnWalk, call_idx: u32, stmt_ok: bool) void {
+        const call_loc = self.tree.loc(call_idx);
+        if (!stmt_ok) {
+            self.errFmt(call_loc, "transfer must be its own statement", .{});
+            return;
+        }
+        const args = self.tree.extraSlice(self.tree.node(call_idx).call_expr.args);
+        if (args.len != 1) return; // the form is fixed by checkCall
+        const arg_idx = args[0];
+        const arg_node = self.tree.node(arg_idx);
+        if (!isTag(arg_node, .identifier)) return;
+        const name = arg_node.identifier;
+        const ei = ownFindIdx(w, name) orelse {
+            self.errFmt(call_loc, "cannot transfer '{s}': value has escaped", .{name});
+            return;
+        };
+        const e = &w.entries[ei];
+        if (e.moved) {
+            self.errFmt(self.tree.loc(arg_idx), "use of transferred variable '{s}'", .{name});
+            return;
+        }
+        if (e.state == .aliased) {
+            if (e.alias_is_closure)
+                self.errFmt(call_loc, "cannot transfer '{s}': value is aliased by closure '{s}'", .{ name, e.alias })
+            else
+                self.errFmt(call_loc, "cannot transfer '{s}': value is aliased by '{s}'", .{ name, e.alias });
+            return;
+        }
+        if (e.state == .escaped) {
+            self.errFmt(call_loc, "cannot transfer '{s}': value has escaped", .{name});
+            return;
+        }
+        e.moved = true;
+    }
+
+    fn ownWalkPattern(self: *TypeChecker, w: *OwnWalk, pat: u32) void {
+        const n = self.tree.node(pat);
+        switch (n) {
+            .pattern_bind => |name| ownDeclare(w, name),
+            .pattern_variant_bind => |vb| {
+                for (self.tree.extraSlice(vb.bindings)) |b| {
+                    const bn = self.tree.node(b);
+                    if (isTag(bn, .pattern_bind)) ownDeclare(w, bn.pattern_bind);
+                }
+            },
+            .pattern_builtin_variant => |bv| {
+                if (bv.payload) |payload| self.ownWalkPattern(w, payload);
+            },
+            .pattern_or => |alts| {
+                for (self.tree.extraSlice(alts)) |a| self.ownWalkPattern(w, a);
+            },
+            else => {},
+        }
+    }
+
+    /// `let`/`const` shared body: declare, then handle Ident-alias /
+    /// lambda-capture / general-init (mirror of the seed's NODE_VAR_DECL).
+    fn ownVarLike(self: *TypeChecker, w: *OwnWalk, name: []const u8, init_idx_arg: ?u32) void {
+        ownDeclare(w, name);
+        const init_idx = init_idx_arg orelse return;
+        const in = self.tree.node(init_idx);
+        if (isTag(in, .identifier)) {
+            // The init is a use first (S1 if moved, capture inside a
+            // lambda), then both handles alias (DEC-026 §3 — the sound
+            // reading of research/026 §3.3's row).
+            self.ownVisit(w, init_idx, false);
+            const self_e = ownFindIdx(w, name);
+            const other_e = ownFindIdx(w, in.identifier);
+            if (self_e != null and other_e != null and
+                !w.entries[self_e.?].moved and !w.entries[other_e.?].moved)
+            {
+                w.entries[self_e.?].state = .aliased;
+                w.entries[self_e.?].alias = in.identifier;
+                w.entries[self_e.?].alias_is_closure = false;
+                if (w.entries[other_e.?].state == .unique) {
+                    w.entries[other_e.?].state = .aliased;
+                    w.entries[other_e.?].alias = name;
+                    w.entries[other_e.?].alias_is_closure = false;
+                }
+            }
+        } else if (isTag(in, .lambda_expr)) {
+            const saved_name = w.closure_name;
+            const saved_has = w.has_closure_name;
+            w.closure_name = name;
+            w.has_closure_name = true;
+            self.ownVisit(w, init_idx, false);
+            w.closure_name = saved_name;
+            w.has_closure_name = saved_has;
+        } else {
+            self.ownVisit(w, init_idx, false);
+        }
+    }
+
+    /// fn/impl-method body: fresh sigma (stash, declare params, walk, restore).
+    fn ownWalkFn(self: *TypeChecker, w: *OwnWalk, fn_idx: u32) void {
+        const f = self.tree.node(fn_idx).fn_decl;
+        const stash = ownSave(self.a, w);
+        const mark_stash = self.a.alloc(OwnMark, w.n_marks) catch @panic("OOM");
+        if (w.n_marks > 0) @memcpy(mark_stash, w.marks[0..w.n_marks]);
+        const saved_in_lambda = w.in_lambda;
+        const saved_lambda_depth = w.lambda_depth;
+        const saved_closure = w.closure_name;
+        const saved_has = w.has_closure_name;
+
+        w.n_entries = 0;
+        w.n_marks = 0;
+        w.in_lambda = false;
+        w.has_closure_name = false;
+
+        for (self.tree.extraSlice(f.params)) |p| {
+            const pn = self.tree.node(p);
+            if (isTag(pn, .param)) ownDeclare(w, pn.param.name);
+        }
+        self.ownVisit(w, f.body, true);
+
+        ownRestore(w, stash);
+        if (mark_stash.len > 0) @memcpy(w.marks[0..mark_stash.len], mark_stash);
+        w.n_marks = mark_stash.len;
+        w.in_lambda = saved_in_lambda;
+        w.lambda_depth = saved_lambda_depth;
+        w.closure_name = saved_closure;
+        w.has_closure_name = saved_has;
+    }
+
+    fn ownWalkLambda(self: *TypeChecker, w: *OwnWalk, idx: u32) void {
+        const l = self.tree.node(idx).lambda_expr;
+        const depth = w.n_marks;
+        const saved_in_lambda = w.in_lambda;
+        const saved_lambda_depth = w.lambda_depth;
+        w.in_lambda = true;
+        w.lambda_depth = depth;
+        for (self.tree.extraSlice(l.params)) |p| {
+            const pn = self.tree.node(p);
+            if (isTag(pn, .param)) ownDeclare(w, pn.param.name);
+        }
+        self.ownVisit(w, l.body, true);
+        ownPopTo(w, depth);
+        w.in_lambda = saved_in_lambda;
+        w.lambda_depth = saved_lambda_depth;
+    }
+
+    fn ownVisitStmts(self: *TypeChecker, w: *OwnWalk, body: u32) void {
+        const n = self.tree.node(body);
+        if (!isTag(n, .block)) {
+            self.ownVisit(w, body, true);
+            return;
+        }
+        const depth = w.n_marks;
+        for (self.tree.extraSlice(n.block.stmts)) |s| self.ownVisit(w, s, true);
+        if (n.block.tail) |t| self.ownVisit(w, t, false);
+        ownPopTo(w, depth);
+    }
+
+    fn ownVisit(self: *TypeChecker, w: *OwnWalk, idx: u32, stmt_ok: bool) void {
+        const n = self.tree.node(idx);
+        switch (n) {
+            .identifier => self.ownUse(w, idx),
+            .expr_stmt => |inner| self.ownVisit(w, inner, stmt_ok),
+            .call_expr => |c| {
+                if (isTag(self.tree.node(c.callee), .identifier) and
+                    std.mem.eql(u8, self.tree.node(c.callee).identifier, "transfer"))
+                {
+                    self.ownTransfer(w, idx, stmt_ok);
+                    return;
+                }
+                self.ownVisit(w, c.callee, false);
+                const cal = self.tree.node(c.callee);
+                const esc = if (isTag(cal, .identifier)) !ownIsBuiltinName(cal.identifier) else true;
+                for (self.tree.extraSlice(c.args)) |arg| {
+                    self.ownVisit(w, arg, false);
+                    if (esc) self.ownEscapeRoot(w, arg);
+                }
+            },
+            .some_expr => |v| {
+                self.ownVisit(w, v, false);
+                self.ownEscapeRoot(w, v);
+            },
+            .ok_expr, .err_expr => |v| {
+                self.ownVisit(w, v, false);
+                self.ownEscapeRoot(w, v);
+            },
+            .none_expr, .nil_literal, .int_literal, .float_literal,
+            .string_literal, .bool_literal, .break_stmt, .continue_stmt,
+            => {},
+            .var_decl => |v| self.ownVarLike(w, v.name, v.value),
+            .const_decl => |v| self.ownVarLike(w, v.name, v.value),
+            .assignment => |asn| {
+                self.ownVisit(w, asn.value, false);
+                const t = self.tree.node(asn.target);
+                if (isTag(t, .identifier)) {
+                    self.ownUse(w, asn.target);
+                    const self_e = ownFindIdx(w, t.identifier);
+                    const value_is_ident = isTag(self.tree.node(asn.value), .identifier);
+                    if (value_is_ident) {
+                        const vname = self.tree.node(asn.value).identifier;
+                        if (self_e) |si| {
+                            const se = &w.entries[si];
+                            if (se.state == .aliased and se.alias.len > 0) {
+                                if (ownFindIdx(w, se.alias)) |zi| {
+                                    if (zi != si) w.entries[zi].state = .escaped;
+                                }
+                            }
+                            se.state = .aliased;
+                            se.alias = vname;
+                            se.alias_is_closure = false;
+                        }
+                        if (ownFindIdx(w, vname)) |oi| {
+                            if (w.entries[oi].state == .unique) {
+                                w.entries[oi].state = .aliased;
+                                w.entries[oi].alias = t.identifier;
+                                w.entries[oi].alias_is_closure = false;
+                            }
+                        }
+                    } else {
+                        if (self_e) |si| {
+                            const se = &w.entries[si];
+                            if (se.state == .aliased and se.alias.len > 0) {
+                                if (ownFindIdx(w, se.alias)) |zi| {
+                                    if (zi != si) w.entries[zi].state = .escaped;
+                                }
+                            }
+                            se.state = .unique;
+                            se.alias = "";
+                            se.alias_is_closure = false;
+                        }
+                    }
+                } else {
+                    self.ownVisit(w, asn.target, false);
+                    self.ownEscapeRoot(w, asn.value);
+                }
+            },
+            .compound_assignment => |ca| {
+                const t = self.tree.node(ca.target);
+                if (isTag(t, .identifier)) {
+                    self.ownUse(w, ca.target);
+                    self.ownVisit(w, ca.value, false);
+                    if (ownFindIdx(w, t.identifier)) |ei| {
+                        w.entries[ei].state = .unique;
+                        w.entries[ei].alias = "";
+                        w.entries[ei].alias_is_closure = false;
+                    }
+                } else {
+                    self.ownVisit(w, ca.target, false);
+                    self.ownVisit(w, ca.value, false);
+                }
+            },
+            .block => |b| {
+                const depth = w.n_marks;
+                for (self.tree.extraSlice(b.stmts)) |s| self.ownVisit(w, s, true);
+                if (b.tail) |t| self.ownVisit(w, t, false);
+                ownPopTo(w, depth);
+            },
+            .if_expr => |i| {
+                self.ownVisit(w, i.cond, false);
+                const pre = ownSave(self.a, w);
+                self.ownVisitStmts(w, i.then_block);
+                const then_s = ownSave(self.a, w);
+                ownRestore(w, pre);
+                if (i.else_block) |elseb| {
+                    self.ownVisitStmts(w, elseb);
+                    const else_s = ownSave(self.a, w);
+                    ownRestore(w, pre);
+                    ownJoin(w, then_s, else_s);
+                } else {
+                    ownRestore(w, pre);
+                    ownJoin(w, then_s, pre);
+                }
+            },
+            .while_expr => |wh| {
+                self.ownVisit(w, wh.cond, false);
+                const pre = ownSave(self.a, w);
+                self.ownVisitStmts(w, wh.body);
+                const body_s = ownSave(self.a, w);
+                ownRestore(w, pre);
+                ownJoin(w, pre, body_s); // conservative: entry ⊔ body, once
+            },
+            .for_expr => |fe| {
+                self.ownVisit(w, fe.iter, false);
+                const depth = w.n_marks;
+                ownDeclare(w, fe.var_name);
+                const pre = ownSave(self.a, w);
+                self.ownVisitStmts(w, fe.body);
+                const body_s = ownSave(self.a, w);
+                ownRestore(w, pre);
+                ownJoin(w, pre, body_s);
+                ownPopTo(w, depth);
+            },
+            .match_expr => |m| {
+                self.ownVisit(w, m.target, false);
+                const pre = ownSave(self.a, w);
+                var acc = pre;
+                var first = true;
+                for (self.tree.extraSlice(m.arms)) |arm_idx| {
+                    const arm = self.tree.node(arm_idx).match_arm;
+                    ownRestore(w, pre);
+                    const depth = w.n_marks;
+                    self.ownWalkPattern(w, arm.pattern);
+                    if (arm.guard) |g| self.ownVisit(w, g, false);
+                    self.ownVisitStmts(w, arm.body);
+                    const arm_s = ownSave(self.a, w);
+                    ownPopTo(w, depth);
+                    if (first) {
+                        acc = arm_s;
+                        first = false;
+                    } else {
+                        ownJoin(w, acc, arm_s);
+                        acc = ownSave(self.a, w);
+                    }
+                }
+                ownRestore(w, pre);
+                if (!first) ownJoin(w, acc, pre);
+            },
+            .lambda_expr => self.ownWalkLambda(w, idx),
+            .fn_decl => self.ownWalkFn(w, idx),
+            .impl_decl => |im| {
+                for (self.tree.extraSlice(im.items)) |it| self.ownVisit(w, it, stmt_ok);
+            },
+            .trait_decl => |tr| {
+                for (self.tree.extraSlice(tr.items)) |it| self.ownVisit(w, it, stmt_ok);
+            },
+            .return_stmt => |v| {
+                if (v) |vi| self.ownVisit(w, vi, false);
+            },
+            .source_file => |items| {
+                for (self.tree.extraSlice(items)) |it| self.ownVisit(w, it, true);
+            },
+            .binary_expr => |b| {
+                self.ownVisit(w, b.left, false);
+                self.ownVisit(w, b.right, false);
+            },
+            .unary_expr => |u| self.ownVisit(w, u.operand, false),
+            .index_expr => |ix| {
+                self.ownVisit(w, ix.object, false);
+                self.ownVisit(w, ix.index, false);
+            },
+            .field_access => |fa| self.ownVisit(w, fa.object, false),
+            .array_literal => |l| {
+                for (self.tree.extraSlice(l)) |el| {
+                    self.ownVisit(w, el, false);
+                    self.ownEscapeRoot(w, el);
+                }
+            },
+            .struct_literal => |sl| {
+                for (self.tree.extraSlice(sl.fields)) |fidx| {
+                    const f = self.tree.node(fidx).struct_init_field;
+                    self.ownVisit(w, f.value, false);
+                    self.ownEscapeRoot(w, f.value);
+                }
+            },
+            .try_expr => |v| self.ownVisit(w, v, false),
+            .range_expr => |r| {
+                if (r.start_node) |st| self.ownVisit(w, st, false);
+                if (r.end_node) |en| self.ownVisit(w, en, false);
+            },
+            // Type-only / declaration nodes with no runtime effect.
+            else => {},
         }
     }
 };

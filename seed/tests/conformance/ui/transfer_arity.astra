@@ -1,0 +1,8 @@
+// DEC-026 §1 — exactly one argument, same wording as the generic arity
+// check (typecheck_call's `expected %zu arguments, got %zu`).
+// EXPECT-ERROR: expected 1 arguments, got 0
+// EXPECT-ERROR-FIRST: 7:5: error: expected 1 arguments, got 0
+fn main() {
+    let mut a = [1, 2, 3];
+    transfer();
+}

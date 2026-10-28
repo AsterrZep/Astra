@@ -1,0 +1,8 @@
+// DEC-026 §1 — the argument must be a bare variable so the emitter knows
+// exactly which binding to invalidate.
+// EXPECT-ERROR: transfer expects a variable
+// EXPECT-ERROR-FIRST: 7:14: error: transfer expects a variable
+fn main() {
+    let mut a = [1, 2, 3];
+    transfer(a[0]);
+}
