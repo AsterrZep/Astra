@@ -1,0 +1,9 @@
+// to_string converts integers only, and it is THE way to put a number
+// inside a string (`"n=" + n` is a compile error).
+fn main() {
+    print(to_string(42))
+    print(to_string(-7))
+    let n = 42
+    print(to_string(n) == "42")
+    print("n=" + to_string(n))
+}

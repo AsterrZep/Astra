@@ -1,0 +1,12 @@
+// some(x) / none: the Option constructors (bare spelling, by design).
+fn main() {
+    let x = some(42);
+    let y = none;
+    print(x);
+    print(y);
+
+    let a: i32? = some(1);
+    let b: i32? = none;
+    print(a == some(1));
+    print(b == none);
+}

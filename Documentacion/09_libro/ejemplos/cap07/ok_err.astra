@@ -1,0 +1,11 @@
+// ok(x) / err(e): the Result constructors (bare spelling, like some/none).
+// Construction, printing and equality work; see result_match_quirk.astra
+// for what match on a Result does today.
+fn main() {
+    let good = ok("hello");
+    let bad = err("failed");
+    print(good);
+    print(bad);
+    print(good == ok("hello"));
+    print(err("x") == err("x"));
+}

@@ -1,0 +1,6 @@
+// The typechecker accepts any receiver for len (like print); each runtime
+// rejects a non-collection with this error.
+fn main() {
+    let n = len(1)
+    print(n)
+}

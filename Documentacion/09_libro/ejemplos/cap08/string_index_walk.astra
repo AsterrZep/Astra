@@ -1,0 +1,14 @@
+// Walking a string byte by byte: len(s) is i64, so the counter must be
+// `let mut i: i64` or the comparison is a compile error.
+fn main() {
+    let s = "hello"
+    print(s[0])
+    let mut w = ""
+    let mut i: i64 = 1
+    while i < len(s) {
+        w = w + s[i]
+        i = i + 1
+    }
+    print(w)
+    print(s[4] == "o")
+}

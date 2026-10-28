@@ -1,0 +1,9 @@
+// DEC-001: `let b = a` shares the handle. A write through one binding is
+// visible through the other (let mut <-> let mut).
+fn main() {
+    let mut a = [1, 2, 3];
+    let mut b = a;
+    b[0] = 99;
+    print(a[0]);
+    print(b[0]);
+}

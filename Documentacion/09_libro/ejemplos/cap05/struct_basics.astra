@@ -1,0 +1,18 @@
+// Struct declaration, literal (field order does not matter), field access
+// and printing the whole value.
+struct Point {
+    x: i32
+    y: i32
+}
+
+fn sum(p: Point) -> i32 {
+    return p.x + p.y;
+}
+
+fn main() {
+    let q = Point { y: 1, x: 2 };
+    print(q.x);
+    print(q.y);
+    print(q);
+    print(sum(q));
+}

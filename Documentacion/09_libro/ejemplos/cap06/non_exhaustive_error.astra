@@ -1,0 +1,12 @@
+// A match over an enum without a wildcard must cover every variant.
+enum Color {
+    Rojo
+    Verde
+}
+
+fn main() {
+    let c = Color.Rojo;
+    print(match c {
+        Color.Rojo => 1,
+    });
+}

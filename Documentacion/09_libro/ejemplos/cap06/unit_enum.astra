@@ -1,0 +1,20 @@
+// Unit variants and an exhaustive match (no wildcard needed over an enum).
+enum Color {
+    Rojo
+    Verde
+    Azul
+}
+
+fn name(c: Color) -> string {
+    return match c {
+        Color.Rojo => "rojo",
+        Color.Verde => "verde",
+        Color.Azul => "azul",
+    };
+}
+
+fn main() {
+    print(name(Color.Rojo));
+    print(name(Color.Verde));
+    print(name(Color.Azul));
+}

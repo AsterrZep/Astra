@@ -1,0 +1,27 @@
+// The `?` operator over Option: unwrap when present, early-return `none`
+// from the enclosing function otherwise.
+fn increment(x: i32?) -> i32? {
+    let v = x?            // unwraps when present, propagates none otherwise
+    return some(v + 1)
+}
+
+fn halve(x: i32) -> i32? {
+    if x < 0 {
+        return none
+    }
+    return some(x / 2)
+}
+
+fn pipeline(x: i32) -> i32? {
+    let a = halve(x)?                 // early return propagates through here
+    let b = increment(some(a))?
+    return some(b * 2)
+}
+
+fn main() {
+    print(increment(some(3)))
+    print(increment(none))
+    print(pipeline(16))
+    print(pipeline(-1))               // absence comes back out of two frames
+    print(pipeline(1))
+}

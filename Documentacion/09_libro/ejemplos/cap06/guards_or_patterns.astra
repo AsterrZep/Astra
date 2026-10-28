@@ -1,0 +1,24 @@
+// Or-patterns, the `_` catch-all, and a guard over a payload binding.
+enum E { A B(i32) C(i32, i32) }
+
+fn band(n: i32) -> string {
+    return match n {
+        0 => "cero",
+        1 | 2 | 3 => "bajo",
+        _ => "alto",
+    };
+}
+
+fn main() {
+    print(band(0));
+    print(band(2));
+    print(band(7));
+
+    let v1 = E.B(1);
+    print(match v1 { E.B(n) if n > 1 => n, _ => 0 });
+    let v2 = E.B(2);
+    print(match v2 { E.B(n) if n > 1 => n, _ => 0 });
+
+    let c = E.C(9, 2);
+    print(match c { E.C(x, y) if x > y => 1, _ => 0 });
+}

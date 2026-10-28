@@ -1,0 +1,9 @@
+// The other half of the contract: a `let` binding never accepts a write,
+// not even to a field.
+struct P { x: i32 }
+
+fn main() {
+    let p = P { x: 1 };
+    p.x = 5;
+    print(p.x);
+}

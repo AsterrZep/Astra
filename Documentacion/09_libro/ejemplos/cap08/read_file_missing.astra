@@ -1,0 +1,4 @@
+// Every open/read failure collapses into one run-time error.
+fn main() {
+    print(read_file("astra_libro_missing.txt"))
+}

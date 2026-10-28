@@ -1,0 +1,11 @@
+// CURRENT QUIRK: the exhaustiveness checker treats every tagged value as an
+// Option, so a `match` over a Result demands a `none` arm. With the dummy
+// arm in place the ok/err arms fire correctly at run time.
+fn main() {
+    let good = ok("hello");
+    match good {
+        ok(msg) => print(msg),
+        err(e) => print(e),
+        none => print("impossible for a Result"),
+    }
+}

@@ -1,0 +1,13 @@
+// Qualified construction gives every enum its own namespace: two enums may
+// declare the same variant name without colliding (DEC-008).
+enum A { Some2(i32) None2 }
+enum B { Some2(i32) None2 }
+
+fn main() {
+    let a = A.Some2(1);
+    let b = B.Some2(2);
+    print(match a { A.Some2(n) => n, A.None2 => 0 });
+    print(match b { B.Some2(n) => n, B.None2 => 0 });
+    let c = A.None2;
+    print(match c { A.Some2(n) => n + 2, A.None2 => 3 });
+}
