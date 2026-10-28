@@ -27,6 +27,7 @@
 | DEC-017 | Cierre del gate del lexer self-hosting (PR3b): `lexer_gate.sh` crece a **7 rutas** ( + `--emit-obj`+link nativo, cross aarch64 bajo qemu, wasm32-wasi bajo Node WASI con preopens — cada una con skip limpio sin su toolchain) y añade el **gate fuerte** `lexer_tokens_parity.sh` (el stream de `lexer.astra` normalizado contra `astra-seed --dump-tokens`: 1:1 en KEYWORD/IDENT(`_`)/INT(hex→valor)/PUNCT/ERROR/EOF; fuera NEWLINE, columnas, contenido de STRING, FLOAT_LIT y la cola tras el primer ERROR); CI lo cablea en los jobs `seed` y `llvm` con los mismos guards, sin renombrar checks | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → **7/7 rutas** + `lexer_tokens_parity.sh` → **176 tokens** (PR D-PR3b) |
 | DEC-018 | Stdlib M2a: `ord(s) -> i64` = **primer byte** de `s` (`""` = error de runtime) y `substr(s, start, len) -> string` = `len` bytes desde `start` (**error, nunca recorte**, fuera de `[0, len(s)]`); los tres parámetros de `substr` y el de `ord` son `unknown` con guards de runtime (sin coerción en la llamada), y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/ord_basic.astra`, `expressions/ord_empty_error.astra`, `expressions/ord_int_arg.astra`, `expressions/substr_basic.astra`, `expressions/substr_bounds_error.astra`, `expressions/substr_start_error.astra`, `codegen/ord_substr.astra`, `codegen/substr_oob.astra`, `ui/builtin_shadow_ord.astra`, `ui/builtin_shadow_substr.astra` (PR D-PR4a) |
 | DEC-019 | Stdlib M2b: `push(arr, v) -> array` devuelve un array **NUEVO** (copia manual; el llamante re-bindea `a = push(a, v)` y el viejo queda intacto — crecer in-place es imposible en la ruta LLVM, cuyo objeto guarda los elementos **en línea** y es compartido por todos los bindings) con **guard de homogeneidad en runtime** (`push element has type X, expected Y`), y `str_to_int(s) -> i64` = el decimal de `to_string` con **error de runtime** para entradas inválidas, vacías o fuera de rango (acepta `-`, no `+` ni espacios ni `0x`); ambos parámetros `unknown` con guards (patrón `ord`, DEC-018), retorno de `push` `array<unknown>`, y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/push_basic.astra`, `expressions/push_alias.astra`, `expressions/push_int_arg.astra`, `expressions/push_elem_error.astra`, `expressions/push_nil.astra`, `expressions/str_to_int_basic.astra`, `expressions/str_to_int_invalid.astra`, `expressions/str_to_int_empty.astra`, `expressions/str_to_int_range.astra`, `expressions/str_to_int_int_arg.astra`, `expressions/str_to_int_nul.astra`, `codegen/push_roundtrip.astra`, `codegen/push_elem_error.astra`, `ui/builtin_shadow_push.astra`, `ui/builtin_shadow_str_to_int.astra` (PR D-PR4b) |
+| DEC-021 | El manifest del proyecto y la CLI unificada se llaman **`astraea`** — `astraea.toml` + `astraea.lock` + comando `astraea` (estilo Cargo: nombre propio del *tool*, no del lenguaje); el `astra.toml` actual se queda como marcador de raíz **hasta** que la CLI exista, y el rename llega de una vez en ese PR (nota: la DEC-020 la crea el PR de M3) | **Propuesta** (dirección decidida 2026-10-28; implementación bloqueada hasta la CLI unificada) | 2026-10-28 | Mediciones de registros 2026-10-28 (sección abajo) · Spec: `ARCHITECTURE.md` §33.2 |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -615,3 +616,54 @@
   **7/7 rutas** + paridad de tokens (176), `--check-constructs` OK.
 - **Spec**: `research/028` §1.2 (firmas M2) — «pendiente de escribir en
   ARCHITECTURE».
+
+### DEC-021 — Nombre del manifest y de la CLI futura: `astraea`
+- **Estado**: **Propuesta** — dirección decidida el 2026-10-28; la
+  implementación (rename `astra.toml` → `astraea.toml` + bautizo del CLI)
+  queda **bloqueada hasta que exista la CLI unificada** («Aún no existe»,
+  `09_libro/13_toolchain_cli.md`). Al implementarse pasa a
+  `Aceptada (test-pinned)` con el test de raíz del módulo.
+  *(La DEC-020 la crea el PR de M3 — por eso la numeración salta.)*
+- **Fecha**: 2026-10-28.
+- **Decisión**: el manifest del proyecto se llama **`astraea.toml`** (con
+  `astraea.lock` al estilo `Cargo.lock`) y la CLI unificada se llama
+  **`astraea`** — patrón «nombre propio de la herramienta» (`Cargo.toml`,
+  `pubspec.yaml`), no «nombre del lenguaje» (`go.mod`, `pyproject.toml`).
+  Mientras tanto sigue vigente `astra.toml` como marcador de raíz (es lo que
+  hoy busca `zig/src/modules/modules.zig`).
+- **Investigación de nombres (MEDIDA el 2026-10-28**, npm/crates.io/PyPI/GitHub,
+  200=ocupado / 404=libre):
+
+  | Nombre | npm | crates | PyPI | GH org | Veredicto |
+  |:-------|:---:|:------:|:----:|:------:|:----------|
+  | **`astraea`** | 200 | ✅ 404 | ✅ 404 | ✅ 404 | **elegido**: libre donde importa; ortografía canónica de la diosa |
+  | `astrea` | 200 | 200 | 200 | 200 | descartada: ocupada en los 4 que cuentan |
+  | `astro` | — | — | — | — | descartada: marca enorme **astro.build** + una-letra de `astra` |
+  | `rigel`/`deneb`/`oort`/… | 200 casi todos | parcial | — | — | descartados: sin parentesco ni filosofía (datos en el informe de la sesión) |
+
+- **Por qué `astraea`**: (a) **filosofía** — la doncella de las estrellas,
+  diosa de la **justicia**: «las reglas hechas de estrellas que se cumplen»,
+  que es exactamente lo que hace el ecosistema de decisiones/gates de este
+  repo; (b) **familia con Astra sin la trampa de Astro** — contiene `astra`
+  (más la `e`), la relación se explica sola (hermana mitológica), mientras
+  `astro` la sustituía por una letra y colisionaba con astro.build;
+  (c) precedente: el ecosistema Rust convive con nombres de familia
+  (`rust`/`rustup`/`rustfmt`) porque los roles son distintos — aquí
+  lenguaje=`astra`, administrador=`astraea`.
+- **Alternativas consideradas y descartadas**: `astra.toml` (status quo — se
+  mantiene hasta que la CLI exista; es la escuela `go.mod`), `astro.toml`
+  (marca ajena + una-letra), `Astrea` corta (ocupada en crates/PyPI/GH org),
+  `rigel`/`oort`/`spica` (breves y casi libres, pero sin significado
+  filosófico ni relación con Astra), mantener `Cargo.toml`-style con otro
+  vocabulario no astronómico (fuera del brief).
+- **Coste aceptado**: el rename es **barato hoy** (~1 literal en
+  `modules.zig` + ~15 referencias en docs + 1 test unitario) y **caro tras
+  el package manager** (proyectos/registros de usuarios) — por eso se
+  decide YA y se deja bloqueada la ejecución hasta la CLI, no al revés.
+  Riesgo residual aceptado: `astra`/`astraea` comparten raíz — mitigado por
+  roles claros y por la diferencia de sílaba (a-la-astro, que era
+  sustitución de una letra final + marca tomada).
+- **Evidencia**: las mediciones de la tabla de arriba (curl a
+  `registry.npmjs.org`, `crates.io/api/v1/crates`, `pypi.org/pypi`,
+  `api.github.com` el 2026-10-28).
+- **Spec**: `ARCHITECTURE.md` §33.2 (puntero añado en este PR).
