@@ -1,0 +1,24 @@
+// Regression: the minimal generic-dispatch subset that used to crash the
+// *zig* emitter (not the seed, not the C backend). `instantiate.astra` mixes
+// these two declarations with fwd/count/wrap and happened to pass; with only
+// identity+choose the shared `extra` buffer outgrew its capacity while
+// `checkModule` was still iterating the module item list, so the rebuilt
+// list copied stale (undefined) node indices and
+// `emitter.collectModuleGlobals` read them as 0xAAAAAAAA.
+// EXPECT: 1
+// EXPECT: hola
+// EXPECT: 1
+// EXPECT: b
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn choose<T>(cond: bool, a: T, b: T) -> T {
+    if cond { return a }
+    b
+}
+
+print(identity(1))
+print(identity("hola"))
+print(choose(true, 1, 2))
+print(choose(false, "a", "b"))
