@@ -19,7 +19,7 @@
 | DEC-009 | Los VMs (seed/zig) y el backend C no liberan memoria (arena/vitalicio); la ruta LLVM libera con ARC — divergencia **documentada y gateada** con techo de RSS | Aceptada (test-pinned + gate) | 2026-10-27 | `memory/loop_reuse.astra` + gate `zig/tests/llvm_mem.sh` (techo 64 MB, CI job `llvm`) |
 | DEC-010 | Los floats se imprimen con formato `%g` | Aceptada (test-pinned) | 2026-09 | conformance de expresiones |
 | DEC-011 | Las sentencias se terminan con `;` o con newline | Aceptada (test-pinned) | 2026-09 | suite de conformidad (estilo mixto) |
-| DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: compartir intra-fibra gratis — DEC-001 —; toda frontera exige valor único: estático si se prueba, walk `rc==1` en runtime si no; escapes = `.copy()` o `Atomic[T]`; walk = gate del primer cruce real) | **Aceptada (doc)** — ratificada 2026-10-28 (Fase 0 completa: `ARCHITECTURE.md` §2.6 + invariant 8 de AGENTS + DEC-022/023); **implementación pospuesta** al PR «fase E» (constructo + S1/S2/S3 en 2 frontends + `.copy()` × 4 motores) | 2026-10-27 | `research/026` §3–§5; `ARCHITECTURE.md` §2.6; `research/031` §1-P1/P2/P8 (huecos cerrados con DEC-022/023); pin futuro: `ui/transfer_*`, `conformance/transfer/*` (PR fase E) |
+| DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: compartir intra-fibra gratis — DEC-001 —; toda frontera exige valor único: estático si se prueba, walk `rc==1` en runtime si no; escapes = `.copy()` o `Atomic[T]`; walk = gate del primer cruce real) | **Aceptada (test-pinned)** — ratificada 2026-10-28 y fijada por el PR fase-E1 (S1/S2 + nil-red en 4 rutas); S3/`spawn` y `.copy()` siguen fuera (DEC-026 §5) | 2026-10-27 | `research/026` §3–§5; `ARCHITECTURE.md` §2.6; `ui/transfer_{aliased,used_after,captured,escaped}.astra`, `conformance/transfer/transfer_{unique,global_nil}.astra` (PR fase-E1) |
 | DEC-013 | Stdlib M1: `len(x) -> i64` para arrays y strings; `s[i]` → **string de 1 byte** (OOB = error de runtime con el texto de los arrays); los strings son inmutables (`s[i] = …` es error de compilación) | Aceptada (test-pinned) | 2026-10-27 | `arrays/len_array.astra`, `expressions/len_string.astra`, `expressions/str_index.astra`, `expressions/str_index_oob.astra`, `expressions/len_int_runtime_error.astra`, `ui/str_index_assign_rejected.astra`, `codegen/str_index.astra`, `codegen/len_builtin.astra` (PR D-PR1) |
 | DEC-014 | Stdlib M1: `to_string(x) -> string` **solo enteros** (otros tipos = error de runtime con el texto de las 4 rutas) y `read_file(path: string) -> string` (todo fallo de apertura/lectura colapsa en `cannot open file '<path>'`); la lectura positiva vive fuera de `conformance/` | Aceptada (test-pinned) | 2026-10-27 | `expressions/to_string_roundtrip.astra`, `expressions/to_string_float_rejected.astra`, `expressions/read_file_missing.astra`, `expressions/read_file_nil_path.astra`, `codegen/to_string.astra`, `codegen/read_file_missing.astra`, `seed/tests/selfhost/io_gate.sh` (4 rutas) (PR D-PR2) |
 | DEC-015 | Los nombres de builtin (`print`, `len`, `to_string`, `read_file`) están **reservados**: redeclararlos con `let`/`const`/`fn` en cualquier ámbito es error de compilación, idéntico en los dos typecheckers | Aceptada (test-pinned) | 2026-10-27 | `ui/builtin_shadow_print.astra`, `ui/builtin_shadow_len.astra`, `ui/builtin_shadow_to_string.astra`, `ui/builtin_shadow_read_file.astra` (primera línea byte-idéntica seed↔zig) (PR D-PR2) |
@@ -29,10 +29,11 @@
 | DEC-019 | Stdlib M2b: `push(arr, v) -> array` devuelve un array **NUEVO** (copia manual; el llamante re-bindea `a = push(a, v)` y el viejo queda intacto — crecer in-place es imposible en la ruta LLVM, cuyo objeto guarda los elementos **en línea** y es compartido por todos los bindings) con **guard de homogeneidad en runtime** (`push element has type X, expected Y`), y `str_to_int(s) -> i64` = el decimal de `to_string` con **error de runtime** para entradas inválidas, vacías o fuera de rango (acepta `-`, no `+` ni espacios ni `0x`); ambos parámetros `unknown` con guards (patrón `ord`, DEC-018), retorno de `push` `array<unknown>`, y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/push_basic.astra`, `expressions/push_alias.astra`, `expressions/push_int_arg.astra`, `expressions/push_elem_error.astra`, `expressions/push_nil.astra`, `expressions/str_to_int_basic.astra`, `expressions/str_to_int_invalid.astra`, `expressions/str_to_int_empty.astra`, `expressions/str_to_int_range.astra`, `expressions/str_to_int_int_arg.astra`, `expressions/str_to_int_nul.astra`, `codegen/push_roundtrip.astra`, `codegen/push_elem_error.astra`, `ui/builtin_shadow_push.astra`, `ui/builtin_shadow_str_to_int.astra` (PR D-PR4b) |
 | DEC-020 | Stdlib M3 (cierre del MVP): `chr(i: i64) -> string` = string de **1 byte** cuyo primer byte es `i` (rango `[0, 255]` en runtime, fuera = error `chr value N out of bounds (0..255)` — la inversa de `ord`, DEC-018), `read_line() -> string` = una línea de **stdin** sin el `\n` final (EOF sin datos = error de runtime `end of input`; la ruta wasm sin stdin da el mismo EOF, comportamiento documentado), y `for c in s { … }` sobre un string itera **byte a byte** con `c: string` de 1 byte (abierto en los dos typecheckers y emitido vía el LEN+INDEX que las cuatro rutas ya tenían); `chr` y `read_line` se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/chr_basic.astra`, `expressions/chr_oob_error.astra`, `expressions/chr_int_arg_error.astra`, `expressions/read_line_eof_error.astra`, `loops/for_string.astra`, `codegen/chr_oob.astra`, `codegen/for_string.astra`, `seed/tests/selfhost/io_gate.sh` (lectura positiva de `read_line` con stdin desde `stdin_lines.txt`, 4 rutas) (PR D-PR5) |
 | DEC-021 | El manifest del proyecto y la CLI unificada se llaman **`astraea`** — `astraea.toml` + `astraea.lock` + comando `astraea` (estilo Cargo: nombre propio del *tool*, no del lenguaje); el `astra.toml` actual se queda como marcador de raíz **hasta** que la CLI exista, y el rename llega de una vez en ese PR (nota: la DEC-020 la crea el PR de M3) | **Propuesta** (dirección decidida 2026-10-28; implementación bloqueada hasta la CLI unificada) | 2026-10-28 | Mediciones de registros 2026-10-28 (sección abajo) · Spec: `ARCHITECTURE.md` §33.2 |
-| DEC-022 | `transfer(x)` es un **builtin** con sintaxis de llamada `transfer(x)` — no keyword: sin `constructs/transfer.c` ni fila de registro (`--check-constructs` sigue 47/27); el nombre se suma a las listas reservadas de DEC-015 en los dos typecheckers; la semántica (S1/S2 + invalidación R4) entra en el mismo PR que el constructo (fase E de DEC-012) | **Aceptada (doc)** — comportamiento pinneado por el PR fase E (`ui/builtin_shadow_transfer.astra`, `ui/transfer_*`, `conformance/transfer/*`) | 2026-10-28 | `research/026` §3.2/§3.5 (superficie `transfer(e)`); `research/031` §1-P2 y §3-E; AGENTS invariant 6; patrón DEC-013..020 |
+| DEC-022 | `transfer(x)` es un **builtin** con sintaxis de llamada `transfer(x)` — no keyword: sin `constructs/transfer.c` ni fila de registro (`--check-constructs` sigue 47/27); el nombre se suma a las listas reservadas de DEC-015 en los dos typecheckers; la semántica (S1/S2 + invalidación R4) entra en el mismo PR que el constructo (fase E de DEC-012) | **Aceptada (test-pinned)** — PR fase-E1 | 2026-10-28 | `ui/builtin_shadow_transfer.astra` (reserva), `ui/transfer_{value_use,nested,scalar,nonvar,arity}.astra` (forma), `conformance/transfer/*` (nil-red) |
 | DEC-023 | RT1 (walk `rc==1` en el cruce) vive en **M4** (ruta LLVM, que ya tiene rc desde M4.e) hasta que una decisión futura añada rc al VM Zig; M3 queda sin RT1 mientras DEC-009 mantenga la divergencia arena — el walk es gate de la primera feature con cruce real (scheduler/send), no antes | **Aceptada (doc)** — sin código hoy; el pin (`EXPECT-RUNTIME-ERROR: cannot transfer: value graph is shared`) llega con el scheduler, suite Phase 2 | 2026-10-28 | `research/031` §1-P1 («RT1 vive en M4…») y §3-F; `research/027` §3.2 op. 3A; `research/026` §3.2 fila RT1 (enmendada por cita) |
 | DEC-024 | Stdlib post-M3 en **Astra puro** (no builtins, plan de `research/028` §1.2): funciones `contains(s, sub) -> bool` (aguja vacía = `true`), `index_of(s, sub) -> i64?` (ocurrencia más a la izquierda; ausente = `none`; aguja vacía = `some(0)`), y `split(s, sep) -> [string]` (campos se preservan, sep al inicio/final da campo vacío, sin sep = `[s]`, **`sep` vacío = array de bytes de `s`** — caso especial tipo JS; nunca error, porque el código de usuario no puede lanzar errores de runtime) — cada test define sus helpers en línea (no existe stdlib compartida: el seed compila un fichero y `std/…` está rechazado) y los nombres **no** se reservan (libres para el usuario y para un futuro `Array.contains` de `research/015`) | Aceptada (test-pinned) | 2026-10-28 | `conformance/stdlib/{contains_basic,index_of_basic,split_basic,split_fields,split_chars_empty_sep}.astra`, `codegen/{contains,split}_roundtrip.astra`, `codegen/split_fields.astra` (4 rutas verificadas) (PR stdlib-postM3) |
 | DEC-025 | **`parser.astra` es el segundo componente self-hosting**: parser de Astra-0 (v1) en Astra-0 que lee `parser_input.astra` (subconjunto: items `const`/`fn` con params y retorno, statements con `;` obligatorio, `let`(+mut, tipo opcional), assign, if/else/else-if, while, return, break; exprs con literales int decimal/string plano/bool, unary -/!, precedencia de la tabla de operadores, calls, index, paréntesis, array literals); emite el AST como **s-expresión prefijo de una línea** y se gatea contra `parser.expected`, golden generado por `--dump-ast | normalize_ast.awk` (implementaciones independientes: parser C vs Astra-0) en **7 rutas** + **freshness check** del golden en cada corrida; fuerza `;` en todo statement y no modela NEWLINE-terminador, escapes de string ni literales hex — límites declarados, no accidental | Aceptada (test-pinned) | 2026-10-28 | `seed/tests/selfhost/parser_gate.sh` → 5/5 rutas locales (seed VM, `--emit-c`+gcc, zig VM, `--jit`, `--emit-obj`+link; cross/wasm skip limpio sin toolchain) + freshness `--dump-ast` == golden · CI jobs `seed` y `llvm` · fixture `parser_input.astra` (corre: 31/true) (PR parser-selfhost) |
+| DEC-026 | **Fase E v1 de enforcement — detalles de `transfer` sin fibras**: solo la forma-directa-sentencia `transfer(x);` (1 argumento, variable desnuda); tipos escalar rechazados en compile-time (`transfer expects an aggregate, got i32`); S1/S2 como pasada post-typecheck en los 2 frontends con las semánticas de `research/026` §3.3 (Único/Aliased/Escapado + movidos, alcance por bloques, joins conservadores en if/loops, alias por `let y = x` **sonoro** (ambos → Aliased), escapes por call no-builtin/contenedor/captura, globales usados desde fn = Escapado al transferir); nil-red de R4 en los emisores (`CONST nil; SET` del binding, observable solo en globales entre funciones — S1 es intraprocedural); mensajes nuevos: M1 `transfer must be called directly as transfer(variable)`, M2 `transfer must be its own statement`, S2-escaped `cannot transfer 'x': value has escaped`; S3/`spawn` y `.copy()` quedan fuera (siguiente PR / Phase 2) | Aceptada (test-pinned) | 2026-10-28 | `ui/transfer_{aliased,used_after,captured,escaped,nested,value_use,scalar,bad_form}.astra`, `ui/builtin_shadow_transfer.astra`, `conformance/transfer/transfer_unique.astra`, `conformance/transfer/transfer_global_nil.astra` (EXPECT-RUNTIME-ERROR), `codegen/transfer_unique.astra` (PR fase-E1) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -945,3 +946,67 @@
 - **Spec**: alcance y límites en la cabecera de `parser.astra`; plan de
   crecimiento (patrones, `fn` completo con NEWLINE, `--dump-ast` como gate
   fuerte vivo) en `PHASE1_PROGRESS` §selfhosting.
+
+### DEC-026 — Fase E v1: `transfer` sin fibras (S1/S2 + nil-red)
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR fase-E1
+  (2026-10-28).
+- **Fecha**: 2026-10-28.
+- **Decisión**: los detalles que DEC-012/022 dejaron abiertos para el PR
+  fase E, sin fibras («check sin cruce», `research/026` §3.4):
+  1. **Forma**: solo `transfer(x);` como sentencia, 1 argumento, **variable
+     desnuda**. `transfer()`/`transfer(a, b)` → `expected 1 arguments, got N`
+     (formato genérico); `transfer(a + 1)` / `transfer(a[0])` →
+     `transfer expects a variable`; valor-fuente (`let f = transfer`) → M1
+     `transfer must be called directly as transfer(variable)` (typecheck);
+     anidado (`print(transfer(a))`, `let y = transfer(a)`, tail-expr) → M2
+     `transfer must be its own statement` (pasada de ownership). Retorna
+     void.
+  2. **Tipos**: solo agregados — `array`, `struct`, `enum`, `fn`, `string`,
+     `optional` y `unknown`; escalares (`i32`/`i64`/`u32`/`u64`/`f64`/`bool`)
+     → `transfer expects an aggregate, got <tipo>` en compile-time. Razones:
+     un escalar no tiene nil en el modelo LLVM (`emitter.zig` rechaza `let`
+     escalar sin inicializador) y `val` cruza siempre gratis (§2.6 regla 2).
+  3. **S1/S2**: pasada post-typecheck (`enforce_ownership` en seed y zig),
+     solo si el typecheck limpió; intraprocedural, sensible al flujo, sin
+     CFG: σ por nombre con `Único | Aliased | Escapado` + conjunto
+     `movidos`, alcance por bloques con pila de marks (shadowing restaura),
+     joins punto a punto (`Escapado` absorbente) en `if`/`match` y
+     `join(entrada, cuerpo)` una vez en bucles. Transiciones de
+     `research/026` §3.3 con dos precisiones: **`let y = x` / `y = x` con
+     valor Ident dejan ambos `Aliased`** (la fila literal de 026 copiaba
+     `σ(x)` y sería falsa negativa si `σ(x)==Único`), y `f(x)`/contenedor/
+     captura de closure marcan escape/alias **sin comprobar tipos** — solo
+     un agregado puede transferirse, así que el sobre-marcaje de escalares
+     es inobservable. Parámetros arrancan `Único`; un nombre **no presente
+     en σ** (global usado desde una fn) se trata como `Escapado` al
+     transferirlo: los globales son compartidos por definición.
+     Mensajes: S2-alias `cannot transfer 'a': value is aliased by 'b'`,
+     S2-captura `… aliased by closure 'f'`, S2-escape (nuevo, no specado
+     por 026) `cannot transfer 'a': value has escaped`, S1
+     `use of transferred variable 'a'` (incluye re-transfer). Loc: el nodo
+     call para S2/tipos/forma, el Ident de uso para S1, el Ident argumento
+     para M2-anidado… (fijados por `EXPECT-ERROR-FIRST` en cada test).
+  4. **R4 nil-red**: la sentencia `transfer(x)` se emite como
+     `CONST nil; SET_LOCAL/GLOBAL x; CONST nil` (neto +1, el POP de
+     sentencia lo descarta) — **sin CALL**: el nombre nunca llega a
+     `GET_GLOBAL`, así que `vm.c`/`codegen.c`/runtime LLVM no necesitan
+     cuerpo para `transfer` (un camino que se escape falla ruidoso:
+     «undefined variable» en VM/C, «not found» en LLVM). En LLVM: `store`
+     de `zeroInit(tipo)` en el alloca del binding (mismo nil que un `let`
+     sin inicializador). observable solo en **globales** entre funciones
+     (S1 es intraprocedural): `transfer_global_nil.astra`.
+  5. **Fuera de v1**: S3/`spawn` (`ui/spawn_global_atomic` se pospone con el
+     spawn — `research/026` §3.6 «y spawn cuando entre»), `.copy()`
+     (PR fase-E2), RT1 (DEC-023, M4), `AtomicRef`, v2/v3.
+- **Alternativas consideradas**: builtin con FnObj + CALL en los 4 motores
+  (~8–9 ficheros de plumbing) — descartado: el emitter ya es el sitio que
+  026 §3.2 designa para la invalidación, y sin CALL no hay riesgo de
+  divergencia por nombre; checks-only sin nil-red — descartado: R4 exige la
+  red runtime para el caso global; rechazar transfer de globals —
+  descartado: es el caso que la nil-red existe para observar.
+- **Coste aceptado**: 2 typecheckers (registro + early-path + M1 + pasada),
+  2 emisores (seed + zig) + el LLVM (store nil), sin cambios de VM/C.
+- **Evidencia**: los 11 `ui/` + `conformance/transfer/` + `codegen/` del PR
+  fase-E1 en las 4 rutas; `ui_message_parity.sh` con primera línea
+  byte-idéntica; `--check-constructs` sigue 47/27 (DEC-022: sin keyword).
+- **Spec**: `ARCHITECTURE.md` §2.6 (regla) + este apéndice (detalles v1).

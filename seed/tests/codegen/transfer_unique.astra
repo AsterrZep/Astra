@@ -1,0 +1,9 @@
+// C round-trip for the fase-E1 nil-red (DEC-026 §4): the bytecode route
+// lowers `transfer(x);` to CONST nil; SET x; CONST nil — the C backend
+// must reproduce it through the generic SET_LOCAL/SET_GLOBAL handlers.
+// EXPECT: moved
+fn main() {
+    let mut a = [1, 2, 3];
+    transfer(a);
+    print("moved");
+}

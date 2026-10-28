@@ -1445,6 +1445,31 @@ pub const Emitter = struct {
             },
             .call_expr => |c| {
                 const callee = self.tree.node(c.callee);
+                // DEC-022/026 nil-red (R4): `transfer(x);` never becomes a
+                // call — store nil into the binding and push one value for
+                // the statement POP (CONST nil; SET x; CONST nil). The name
+                // therefore never reaches get_global on the bytecode route;
+                // a slip outside statement position fails loudly instead of
+                // diverging (mirror of seed/src/emitter.c).
+                if (std.meta.activeTag(callee) == .identifier and std.mem.eql(u8, callee.identifier, "transfer")) {
+                    const arg_idx = self.tree.extraSlice(c.args)[0];
+                    const name = self.tree.node(arg_idx).identifier;
+                    const nil_idx = self.addConstant(bc.vNil());
+                    self.emitInstIndex(.const_, nil_idx, ln);
+                    if (self.findLocal(name)) |slot| {
+                        self.emitInstIndex(.set_local, @intCast(slot), ln);
+                    } else if (self.findCapture(name) != null) {
+                        // Unreachable: a captured binding is aliased, so S2
+                        // rejects the transfer before emit.
+                        self.err(ln, "cannot transfer captured variable '{s}'", .{name});
+                    } else {
+                        const ci = self.addConstant(bc.vString(self.globalName(name)));
+                        self.emitInstIndex(.set_global, ci, ln);
+                    }
+                    self.emitInstIndex(.const_, nil_idx, ln);
+                    self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
+                    return;
+                }
                 // Static method dispatch (Phase 2.3 step 4): the checker
                 // annotated the callee with its mangled global, so push that
                 // function, then the receiver (argument 0), then the source

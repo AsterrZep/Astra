@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Fase E1 — enforcement entre fibras v1 (DEC-012/022 `test-pinned`,
+  DEC-026)**: `transfer(x)` como builtin de forma-sentencia (sin keyword;
+  `--check-constructs` sigue 47/27) con los checks estáticos **S1/S2** en
+  los dos typecheckers (pasada post-typecheck, σ `Único/Aliased/Escapado` +
+  `movidos`, joins en if/loops, capturas de closure, escapes por
+  call-no-builtin/contenedor) y la **nil-red R4** en los tres emisores
+  (`CONST nil; SET` en seed/zig, `store zeroInit` en LLVM — sin CALL: el
+  nombre nunca llega a `GET_GLOBAL`). Mensajes byte-idénticos seed↔zig
+  (10 casos `ui/`, first_fail=0 en 139); camino feliz + red observada en
+  `conformance/transfer/` (`transfer_unique`, `transfer_global_nil` — la
+  frontera fn↔global que S1 intraprocedural no cubre) + twins C en
+  `tests/codegen/`. Quedan fuera (DEC-026 §5): S3/`spawn`, `.copy()`
+  (fase E2) y RT1 (DEC-023, M4). Gates: seed **340/0**, sweep 157/0fail,
+  zig 74/74, dump_parity 204/0, ui parity 139/0, llvm_parity **216/216**
+  ×2, jit 216, sanitize ASan+LSan ok, mem techo ok.
+
 - **Ciclo post-M3 «camino óptimo» (2026-10-28, PRs #31–#34)**: remate de
   docs, decisiones y dos componentes self-hosting:
   - **Contadores verificados** en `INDICE`/`README`/`AGENTS`/`CHANGELOG`

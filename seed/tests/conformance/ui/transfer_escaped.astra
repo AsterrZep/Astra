@@ -1,0 +1,12 @@
+// DEC-026 S2 (escape) — a user call may retain its argument, so after
+// `consume(a)` the value is Escapado and transfer must refuse it.
+// EXPECT-ERROR: cannot transfer 'a': value has escaped
+// EXPECT-ERROR-FIRST: 11:5: error: cannot transfer 'a': value has escaped
+fn consume(x: [i32]) {
+    print(x[0]);
+}
+fn main() {
+    let mut a = [1, 2, 3];
+    consume(a);
+    transfer(a);
+}

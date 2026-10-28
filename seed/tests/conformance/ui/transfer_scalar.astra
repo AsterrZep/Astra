@@ -1,0 +1,8 @@
+// DEC-026 §2 — only aggregates cross: a scalar has no nil in the LLVM model
+// (and `val` crosses for free, ARCHITECTURE §2.6 rule 2).
+// EXPECT-ERROR: transfer expects an aggregate, got i32
+// EXPECT-ERROR-FIRST: 7:14: error: transfer expects an aggregate, got i32
+fn main() {
+    let x = 5;
+    transfer(x);
+}

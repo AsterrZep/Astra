@@ -1,0 +1,7 @@
+// DEC-015/022 (fase E1): `transfer` joins the reserved builtin names — its
+// call form is resolved by name in both typecheckers, so a user binding of
+// the same name would diverge (and the ownership pass would never see it).
+// EXPECT-ERROR: 'transfer' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 7:1: error: 'transfer' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 6:1: error: 'transfer' is a builtin and cannot be redeclared
+let transfer = 5
