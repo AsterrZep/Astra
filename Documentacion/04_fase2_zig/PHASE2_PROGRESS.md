@@ -793,18 +793,33 @@ C backend y zig.
 
 ## 11. Enforcement entre fibras (fase E) — plan de gates (2026-10-28)
 
-DEC-012 está **ratificada** (`Aceptada (doc)`, 2026-10-28) con la sintaxis
-en DEC-022 (`transfer(x)`, builtin) y el alcance del walk RT1 en DEC-023
-(solo M4 hasta que una DEC añada rc al VM Zig). No hay código: `grep
-'"transfer"'` → 0 en ambos árboles. Cuando arranque el PR «fase E», el
-gate mínimo que debe llevar **en el mismo PR** (invariante 8 de AGENTS):
+DEC-012 está **ratificada y fijada** (`Aceptada (test-pinned)`, con la
+sintaxis en DEC-022 y el alcance del walk RT1 en DEC-023 — solo M4 hasta
+que una DEC añada rc al VM Zig). **Fase-E1 cerrada el 2026-10-28**: el
+builtin `transfer(x)` (forma de sentencia, solo agregados) con S1/S2 en
+los dos typecheckers y la nil-red R4 en los tres emisores (seed, zig,
+LLVM — sin CALL: `CONST nil; SET` / `store zeroInit`). Checklist de la
+invariante 8 de AGENTS:
 
-- `ui/transfer_{aliased,used_after,captured}.astra` — S1/S2 en los dos
-  typecheckers, primera línea byte-idéntica seed↔zig (`ui_message_parity.sh`).
-- `ui/spawn_global_atomic.astra` — rechazo de cruce sin unicidad.
-- `conformance/transfer/transfer_{unique,copy}.astra` — camino feliz
-  (move + nil invalidation) y `.copy()`, ejecutándose en las 4 rutas.
-- `ui/builtin_shadow_transfer.astra` — nombre reservado (DEC-015/022).
-- RT1 (`rc==1` en el cruce): **no** en esta fase — es el gate del primer
+- ✅ `ui/transfer_{aliased,used_after,captured,escaped}.astra` — S1/S2 en
+  los dos typecheckers, primera línea byte-idéntica seed↔zig
+  (`ui_message_parity.sh` → first_fail=0 sobre 139).
+- ✅ `ui/transfer_{value_use,nested,scalar,nonvar,arity}.astra` — forma y
+  tipos (DEC-026 §1–§2) + `ui/builtin_shadow_transfer.astra` — nombre
+  reservado (DEC-015/022).
+- ✅ `conformance/transfer/transfer_unique.astra` +
+  `transfer_global_nil.astra` (EXPECT-RUNTIME-ERROR: la nil-red observada
+  en la frontera fn↔global, que S1 intraprocedural no cubre) + twins en
+  `tests/codegen/` — 4 rutas.
+- ⏭️ `ui/spawn_global_atomic.astra` (S3) — **pospuesto con `spawn`**
+  (`research/026` §3.6 «y spawn cuando entre»; DEC-026 §5).
+- ⏭️ `transfer_copy.astra`/`.copy()` — PR fase-E2.
+- RT1 (`rc==1` en el cruce): **no** en esta fase — gate del primer
   scheduler/send, en M4 (DEC-023); su pin vive en la suite Phase 2.
-- `--check-constructs` debe seguir en 47/27 (DEC-022: sin keyword nueva).
+- ✅ `--check-constructs` sigue en 47/27 (DEC-022: sin keyword nueva).
+
+**Gates fase-E1 (2026-10-28)**: seed `make test` **340/0** · sweep
+**157 total, 0 fail** · zig `build test` **74/74** · `ui_message_parity`
+first_fail=0 (139) · `dump_parity` **204/0** · `llvm_parity` **216/216**
+(plain y `ASTRA_LLVM_OPT=2`) · `llvm_jit` 216/216 · `llvm_sanitize`
+ASan+LSan ok · `llvm_mem` techo ok · lexer/io/parser gates ok.
