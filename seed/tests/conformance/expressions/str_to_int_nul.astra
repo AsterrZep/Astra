@@ -1,0 +1,11 @@
+// str_to_int displays the offending literal truncated at the first NUL and
+// at 64 bytes (DEC-019): every %s-based error path in the four runtimes
+// stops at NUL, and without one common cap their buffers (seed 512, C backend
+// 192, LLVM 128, zig uncapped) would word a long input four different ways.
+// The expectation only contains `'1'`, so an untruncated message
+// (`'1<NUL>x'`) fails the containment check — the NUL precedent for value
+// printing is types/string_nul.astra.
+// EXPECT-RUNTIME-ERROR: str_to_int: invalid integer literal '1'
+fn main() {
+    print(str_to_int("1\0x"))
+}

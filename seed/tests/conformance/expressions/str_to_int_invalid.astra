@@ -1,0 +1,8 @@
+// Anything that is not one optional `-` followed by decimal digits is an
+// ERROR naming the input (DEC-019) — `+`, whitespace, `_` and the
+// 0x/0b/0o spellings belong to the lexer, not to str_to_int, and a silent 0
+// would hide a miscalculated lexeme. Worded identically on the four routes.
+// EXPECT-RUNTIME-ERROR: str_to_int: invalid integer literal '12a'
+fn main() {
+    print(str_to_int("12a"))
+}

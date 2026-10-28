@@ -310,6 +310,8 @@ pub const VM = struct {
     builtin_read_file_fn: *FnObj = undefined,
     builtin_ord_fn: *FnObj = undefined,
     builtin_substr_fn: *FnObj = undefined,
+    builtin_push_fn: *FnObj = undefined,
+    builtin_str_to_int_fn: *FnObj = undefined,
 
     error_msg: []const u8 = "",
     error_line: u32 = 0,
@@ -361,6 +363,12 @@ pub const VM = struct {
         const sub = try a.create(FnObj);
         sub.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
         vm.builtin_substr_fn = sub;
+        const pushf = try a.create(FnObj);
+        pushf.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_push_fn = pushf;
+        const sti = try a.create(FnObj);
+        sti.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_str_to_int_fn = sti;
         return vm;
     }
 
@@ -847,6 +855,10 @@ pub const VM = struct {
                         if (!self.push(bc.vFn(self.builtin_ord_fn))) return .runtime_error;
                     } else if (std.mem.eql(u8, name, "substr")) {
                         if (!self.push(bc.vFn(self.builtin_substr_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "push")) {
+                        if (!self.push(bc.vFn(self.builtin_push_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "str_to_int")) {
+                        if (!self.push(bc.vFn(self.builtin_str_to_int_fn))) return .runtime_error;
                     } else {
                         var found = false;
                         var i: usize = 0;
@@ -1274,6 +1286,10 @@ pub const VM = struct {
                             (self.builtinOrd(args, line) orelse return .runtime_error)
                         else if (fn_obj == self.builtin_substr_fn)
                             (self.builtinSubstr(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_push_fn)
+                            (self.builtinPush(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_str_to_int_fn)
+                            (self.builtinStrToInt(args, line) orelse return .runtime_error)
                         else
                             try self.builtinPrint(args);
                         self.sp = fn_idx;
@@ -1599,6 +1615,105 @@ pub const VM = struct {
         }
         const from: usize = @intCast(start);
         return bc.vString(str[from .. from + @as(usize, @intCast(n))]);
+    }
+
+    /// Builtin `push(arr, value) -> array` (DEC-019, research/028 M2b): a NEW
+    /// array with `value` appended — the caller rebinds (`a = push(a, x)`),
+    /// so the array it came from is untouched for everyone who still holds
+    /// it. In-place growth would be possible here (the arena just bumps), but
+    /// the LLVM object stores its elements inline and is shared by every
+    /// binding, so only the copy is correct on all four routes; the copy is
+    /// O(n) (n pushes are O(n²)). The element must match the array's element
+    /// kind — Astra-0 arrays are homogeneous and only an `unknown` builtin
+    /// parameter could smuggle a mismatch past the checker. Returns null
+    /// with the VM error set; the wording mirrors the seed's builtin_push.
+    fn builtinPush(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 2) {
+            _ = self.rt(line, "expected 2 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const av = args[0];
+        if (tag(av) != .array) {
+            _ = self.rt(line, "push expects an array, got {s}", .{typeName(av)});
+            return null;
+        }
+        const a = av.array;
+        const v = args[1];
+        if (a.len > 0 and tag(a.elems[0]) != tag(v)) {
+            _ = self.rt(line, "push element has type {s}, expected {s}", .{
+                typeName(v), typeName(a.elems[0]),
+            });
+            return null;
+        }
+        const na = self.newArray(a.len + 1) catch {
+            _ = self.rt(line, "out of memory pushing to array", .{});
+            return null;
+        };
+        for (a.elems, 0..) |e, i| na.elems[i] = e;
+        na.elems[a.len] = v;
+        return .{ .array = na };
+    }
+
+    /// Builtin `str_to_int(s) -> i64` (DEC-019, research/028 M2b): the
+    /// decimal rendering to_string produces — `str_to_int(to_string(n))`
+    /// round-trips for every int the language can name. A leading `-` is part
+    /// of that rendering and is accepted; `+`, whitespace, `_` and the
+    /// `0x`/`0b`/`0o` spellings are not (the lexer owns them). Anything else —
+    /// including the empty string — is one runtime error naming the input,
+    /// and the magnitude is capped at i64 max exactly like the lexer's
+    /// accumulate_digit, so "-9223372036854775808" fails just as the source
+    /// literal does. Returns null with the VM error set.
+    fn builtinStrToInt(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 1) {
+            _ = self.rt(line, "expected 1 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const s = args[0];
+        if (tag(s) != .string) {
+            _ = self.rt(line, "str_to_int expects a string, got {s}", .{typeName(s)});
+            return null;
+        }
+        const str = s.string;
+        var i: usize = 0;
+        var neg = false;
+        if (i < str.len and str[i] == '-') {
+            neg = true;
+            i += 1;
+        }
+        var acc: u64 = 0;
+        var any = false;
+        while (i < str.len) : (i += 1) {
+            const c = str[i];
+            if (c < '0' or c > '9') {
+                // The literal is DISPLAYED truncated to 64 bytes and up to
+                // the first NUL — exactly what printf's `%.*s` does in the
+                // seed, the C backend and the LLVM runtime, whose error
+                // buffers cap at different sizes; without this the message
+                // for a NUL-bearing or very long input would differ here.
+                var disp = str;
+                if (disp.len > 64) disp = disp[0..64];
+                if (std.mem.indexOfScalar(u8, disp, 0)) |z| disp = disp[0..z];
+                _ = self.rt(line, "str_to_int: invalid integer literal '{s}'", .{disp});
+                return null;
+            }
+            any = true;
+            const d: u64 = c - '0';
+            if (acc > (@as(u64, std.math.maxInt(i64)) - d) / 10) {
+                _ = self.rt(line, "str_to_int: integer literal is out of range for i64", .{});
+                return null;
+            }
+            acc = acc * 10 + d;
+        }
+        if (!any) {
+            // Empty string or just "-": same display rule as above.
+            var disp = str;
+            if (disp.len > 64) disp = disp[0..64];
+            if (std.mem.indexOfScalar(u8, disp, 0)) |z| disp = disp[0..z];
+            _ = self.rt(line, "str_to_int: invalid integer literal '{s}'", .{disp});
+            return null;
+        }
+        const mag: i64 = @intCast(acc);
+        return bc.vInt(if (neg) -mag else mag);
     }
 };
 

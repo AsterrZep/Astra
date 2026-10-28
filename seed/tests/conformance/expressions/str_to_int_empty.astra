@@ -1,0 +1,7 @@
+// The empty string has no digits to read: same rejection as any other
+// invalid input, one message (DEC-019) — `str_to_int: invalid integer
+// literal ''` — instead of a silent 0 that would read as a parsed value.
+// EXPECT-RUNTIME-ERROR: str_to_int: invalid integer literal ''
+fn main() {
+    print(str_to_int(""))
+}

@@ -1,0 +1,19 @@
+// push does NOT grow in place: it returns a new array and the caller rebinds
+// (DEC-019), so an alias of the old array still sees the old length — unlike
+// `b[0] = 99` (arrays/alias_write), which writes through the shared handle.
+// The asymmetry is the LLVM backend's: its array object stores elements
+// inline, so growing would relocate the object and leave every alias
+// pointing at the old one.
+// EXPECT: 2
+// EXPECT: 3
+// EXPECT: [1, 2]
+// EXPECT: [1, 2, 3]
+fn main() {
+    let mut a = [1, 2]
+    let mut b = a
+    b = push(b, 3)
+    print(len(a))
+    print(len(b))
+    print(a)
+    print(b)
+}

@@ -1,0 +1,12 @@
+// The element must match the array's element kind (DEC-019): Astra-0 arrays
+// are homogeneous and the checker enforces it everywhere except through an
+// `unknown` builtin parameter, so `push` checks at runtime and reports with
+// the array checker's phrasing, abbreviated as the VM has no element index.
+// The C/zig VMs compare the value's dynamic kind against the first element's;
+// LLVM rejects the same pair statically and words it identically.
+// EXPECT-RUNTIME-ERROR: push element has type float, expected int
+fn main() {
+    let mut a = [1, 2]
+    a = push(a, 3.5)
+    print(a)
+}

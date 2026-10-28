@@ -1,0 +1,8 @@
+// DEC-015 extends to the M2b builtins (DEC-019): a top-level `fn
+// str_to_int()` would be named a *duplicate* of the builtin symbol if the
+// reservation did not fire first, losing the actual rule — reported in the
+// first pass, exactly once, like `fn print()`.
+// EXPECT-ERROR: 'str_to_int' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 7:1: error: 'str_to_int' is a builtin and cannot be redeclared
+fn str_to_int() {
+}

@@ -447,6 +447,33 @@ pub const TypeChecker = struct {
         sub_params[2] = self.newType(.unknown);
         self.insert(.{ .name = "substr", .type_ = self.newFn(sub_params, self.newType(.string)), .is_mut = false, .is_fn = true });
 
+        // push(arr, value) -> array (DEC-019, research/028 M2b): a NEW array
+        // with value appended — the caller rebinds (`a = push(a, x)`). Both
+        // parameters are unknown like print's, and the return is
+        // array<unknown>: the checker cannot compare the element against the
+        // array's type without breaking literal adoption (DEC-006); each
+        // runtime rejects a mismatch with the same defensive text
+        // (`push expects an array, got <tipo>` / `push element has type <X>,
+        // expected <Y>`).
+        const push_params = try self.a.alloc(*Type, 2);
+        push_params[0] = self.newType(.unknown);
+        push_params[1] = self.newType(.unknown);
+        self.insert(.{
+            .name = "push",
+            .type_ = self.newFn(push_params, self.newArray(self.newType(.unknown))),
+            .is_mut = false,
+            .is_fn = true,
+        });
+
+        // str_to_int(s) -> i64 (DEC-019, research/028 M2b): the decimal
+        // to_string produces; unknown parameter like ord's — an invalid or
+        // out-of-range input is one runtime error on every route, not an
+        // optional (a `some`/`none` builtin would need the pair ABI in four
+        // places and a `match` in every caller).
+        const sti_params = try self.a.alloc(*Type, 1);
+        sti_params[0] = self.newType(.unknown);
+        self.insert(.{ .name = "str_to_int", .type_ = self.newFn(sti_params, self.newType(.int64)), .is_mut = false, .is_fn = true });
+
         // Option: some(T) -> Option, none -> Option
         {
             const opt = self.pool.enumType("Option") catch @panic("OOM");
@@ -1820,7 +1847,7 @@ pub const TypeChecker = struct {
     // binding on another. Reports and returns true when `name` is builtin —
     // byte-identical to seed's builtin_redeclare_error.
     fn builtinRedeclareError(self: *TypeChecker, loc: lexer.Loc, name: []const u8) bool {
-        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr" };
+        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int" };
         for (k_builtins) |b| {
             if (std.mem.eql(u8, name, b)) {
                 self.errFmt(loc, "'{s}' is a builtin and cannot be redeclared", .{name});

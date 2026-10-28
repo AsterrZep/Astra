@@ -1,0 +1,8 @@
+// push takes any receiver at compile time (unknown parameters, like print and
+// ord, DEC-019) and rejects a non-array at RUNTIME with the VM's type_name —
+// the guard a program that smuggles an int past the checker hits, worded
+// identically by the seed VM, the C backend, the zig VM and LLVM.
+// EXPECT-RUNTIME-ERROR: push expects an array, got int
+fn main() {
+    print(push(42, 1))
+}

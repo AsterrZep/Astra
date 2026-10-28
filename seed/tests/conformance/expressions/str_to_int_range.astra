@@ -1,0 +1,9 @@
+// A magnitude past i64 max is an ERROR, never a silent wrap (DEC-019): the
+// accumulator is capped exactly like the seed lexer's accumulate_digit, with
+// the lexer's own wording under the str_to_int prefix — i64 min is equally
+// out of reach, because the source literal -9223372036854775808 fails the
+// same way (the sign is not part of the literal the lexer accumulates).
+// EXPECT-RUNTIME-ERROR: str_to_int: integer literal is out of range for i64
+fn main() {
+    print(str_to_int("9223372036854775808"))
+}
