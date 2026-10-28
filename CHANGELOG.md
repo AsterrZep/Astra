@@ -46,8 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     requeridos siguen reportando), caché de Zig, `llvm_parity` **falla con
     skips** (la regresión de DEC-008 se escondió un merge en un skip
     silencioso) y gate de techo de RSS.
-  - Gates al cierre: `make test` **312/0** · `dump_parity` **186/0** ·
-    `llvm_parity` **197/197** · `lexer_gate` **7/7 + 176 tokens**.
+  - Gates al cierre: `make test` **319/0** · `dump_parity` **193/0** ·
+    `llvm_parity` **205/205** · `lexer_gate` **7/7 + 176 tokens** ·
+    `io_gate` **8/8** · `sweep_emit_c` **149 total, 3 skip, 0 fail**.
 
 ### Added
 - **Backend LLVM: des-boxing de Option/Result (M6.c, etapa c.2 — payloads

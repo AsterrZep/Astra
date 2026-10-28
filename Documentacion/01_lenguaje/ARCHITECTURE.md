@@ -2,10 +2,10 @@
 
 Lenguaje de programación multi-paradigma, de propósito general y científico, diseñado para unir la ergonomía de Python/TypeScript con la velocidad nativa de C/Rust, sin la complejidad del Borrow Checker ni las pausas de GC tradicionales.
 
-> **Decisiones de runtime (2026-10-28)**: las decisiones `DEC-006`–`DEC-019`
+> **Decisiones de runtime (2026-10-28)**: las decisiones `DEC-006`–`DEC-020`
 > de [`DECISIONES.md`](DECISIONES.md) — anchuras de enteros, wrap, scopes de
-> variantes de enums, divergencia de memoria, semántica de agregados, los
-> 8 builtins del stdlib, reserva de nombres y los gates de selfhosting —
+> variantes de enums, divergencia de memoria, los 10 builtins del stdlib +
+> `for c in s`, reserva de nombres y los gates de selfhosting —
 > **forman parte de esta especificación**, cada una con su test de
 > conformidad como evidencia. Cuando este documento y `DECISIONES.md`
 > difieran en runtime, manda `DECISIONES.md`.
@@ -38,6 +38,13 @@ Lenguaje de programación multi-paradigma, de propósito general y científico, 
 - **ARC (Atomic Reference Counting):** Conteo de referencias atómico para objetos compartidos entre fibras en diferentes núcleos.
 - **ARC No-Atómico Local a la Fibra:** Para objetos que no cruzan fronteras de fibras, se usa RC no atómico (transferencia de propiedad estricta). Si un objeto debe compartirse entre fibras, se fuerza la promoción a `AtomicRef[T]` o se realiza deep copy. *(La regla de cruce que decide cuándo aplica esto está en §2.6 — especificada, no implementada.)*
 - **ORC (Ownership-based Reference Counting):** Detecta y libera ciclos de memoria mediante el algoritmo de Trial Deletion (Bacon-Rajan) sin Stop-The-World.
+- **Divergencia de Astra-0, gateada (DEC-009):** hoy los VMs (seed y zig) y el
+  backend C **no liberan memoria** (arena/vitalicio); solo la ruta LLVM aplica
+  ARC (M4.e, sin detección de ciclos). Es una divergencia deliberada, decidida
+  y acotada por techo de RSS (`zig/tests/llvm_mem.sh`, 64 MB, CI job `llvm`).
+  Los párrafos anteriores de esta sección describen el modelo objetivo; el
+  estado real de implementación vive en la fila correspondiente de
+  `INDICE.md`.
 
 ### 2.3 Algoritmo de Eliminación de Prueba (Trial Deletion)
 
@@ -597,13 +604,39 @@ enum Arbol<T> {
 
 ### 11.2 Pattern Matching
 
+> **Construcción y patrones calificados (DEC-008, Astra-0 actual):** las
+> variantes de un enum viven en el namespace de su enum y la construcción
+> `Enum.Variant(...)` es la **única legal** para variantes de usuario —
+> `Some2(1)` se rechaza siempre con `use Enum.Variant to construct 'Some2'`.
+> Los patrones exigen la misma calificación (`Forma.Circulo(r) => …`), como
+> fijan `enums/qualified_construction.astra` y
+> `ui/enum_bare_construction_rejected.astra`. Los builtins de Option/Result
+> (`some/ok/err/none`) siguen sin calificar. Ejemplo real ejecutable:
+>
+> ```astra
+> enum Forma { Circulo(f64) Rectangulo(f64, f64) }
+> fn area(f: Forma) -> f64 {
+>     match f {
+>         Forma.Circulo(r) => 3.14159 * r * r,
+>         Forma.Rectangulo(w, h) => w * h,
+>     }
+> }
+> ```
+>
+> Límites de Astra-0 hoy (además de los de la nota §11.1): los or-patterns
+> de variantes calificados (`Color.Rojo | Color.Verde`) y los patrones
+> anidados calificados (`Mensaje.CambiarColor(Color.Rojo)`) aún no parsean;
+> las cargas de un patrón de variante solo aceptan bindings con nombre, no
+> `_` por campo. El resto de esta sección es la gramática objetivo del
+> lenguaje completo.
+
 ```
 # match como expresión
 fn area(forma: Forma) -> Float {
     match forma {
-        Circulo(r) => Float.PI * r * r
-        Rectangulo(ancho, alto) => ancho * alto
-        Triangulo(a, b, c) =>
+        Forma.Circulo(r) => Float.PI * r * r
+        Forma.Rectangulo(ancho, alto) => ancho * alto
+        Forma.Triangulo(a, b, c) =>
             let s = (a + b + c) / 2.0
             sqrt(s * (s-a) * (s-b) * (s-c))
     }
@@ -612,10 +645,10 @@ fn area(forma: Forma) -> Float {
 # Guards
 fn clasificar(forma: Forma) -> String {
     match forma {
-        Circulo(r) if r < 0.0 => "Radio negativo"
-        Circulo(r) if r > 100.0 => "Círculo grande"
-        Circulo(_) => "Círculo normal"
-        Rectangulo(w, h) if w == h => "Cuadrado"
+        Forma.Circulo(r) if r < 0.0 => "Radio negativo"
+        Forma.Circulo(r) if r > 100.0 => "Círculo grande"
+        Forma.Circulo(_) => "Círculo normal"
+        Forma.Rectangulo(w, h) if w == h => "Cuadrado"
         _ => "Otro"
     }
 }
@@ -623,15 +656,15 @@ fn clasificar(forma: Forma) -> String {
 # Or-patterns
 fn es_primario(color: Color) -> Bool {
     match color {
-        Rojo | Verde | Azul => true
+        Color.Rojo | Color.Verde | Color.Azul => true
         _ => false
     }
 }
 
 # Patrones anidados
 match mensaje {
-    CambiarColor(Rojo) => "Cambio a rojo"
-    Mover(x, y) if x < 0 => "Movimiento negativo"
+    Mensaje.CambiarColor(Color.Rojo) => "Cambio a rojo"
+    Mensaje.Mover(x, y) if x < 0 => "Movimiento negativo"
     _ => "Otro"
 }
 ```
@@ -1677,6 +1710,13 @@ enum Option<T> {
 
 ### 29.3 Propagación con `?`
 
+> **Nota Astra-0 (DEC-014):** el builtin real `read_file` no devuelve
+> `Result` ni hay `FileError`/`AppError`: es
+> `read_file(path: string) -> string` y **todo** fallo de apertura/lectura
+> colapsa en el error de runtime `cannot open file '<path>'`. El ejemplo
+> siguiente es la forma objetivo del lenguaje completo (con `Result<T, E>`
+> estático distinto, aún Tier 2 — `research/002` §5.2).
+
 ```astra
 fn read_config(path: &str) -> Result<Config, AppError> {
     let content = read_file(path)?;           // auto-convert FileError → AppError
@@ -1789,6 +1829,14 @@ Result<T, ()> con niche = same size as T
 let x = 5;
 let x = 10;               // shadowing, sin error (comportamiento actual de ambos compiladores)
 ```
+
+> **Excepción — nombres de builtin reservados (DEC-015, Astra-0 actual):**
+> el shadowing tiene un límite: redeclarar un nombre de builtin
+> (`print`, `len`, `to_string`, `read_file`, `ord`, `substr`, `push`,
+> `str_to_int`, `chr`, `read_line`) con `let`/`const`/`fn` **en cualquier
+> ámbito** es error de compilación, idéntico en los dos typecheckers
+> (`ui/builtin_shadow_*.astra`, mensajes byte-idénticos seed↔zig). La lista
+> crece con cada builtin nuevo (DEC-018/019/020).
 
 ### 30.2 let vs let mut
 
@@ -1918,6 +1966,36 @@ int + float → COMPILE ERROR (requiere explícito)
 Ni minimalista (Go) ni maximalista (Python). Un stdlib completo pero no monolítico: ~64 módulos, ~1210 funciones.
 
 ### 32.2 Estructura del Stdlib
+
+#### Builtins de Astra-0 (implementados, DEC-013..020)
+
+El subconjunto Astra-0 tiene hoy **10 builtins + azúcar de iteración**,
+implementados en las 4 rutas (VM seed, backend C, VM zig, LLVM) con
+mensajes de error de runtime byte-idénticos, cada uno fijado por tests de
+conformidad (ver la tabla de evidencia en `DECISIONES.md`):
+
+| Builtin | Firma (Astra-0) | Decisión |
+|:--------|:----------------|:---------|
+| `len(x)` | `len(x: array\|string) -> i64` | DEC-013 |
+| `s[i]` | string indexado → string de 1 byte (inmutable) | DEC-013 |
+| `to_string(x)` | `to_string(x: i64) -> string` (solo enteros) | DEC-014 |
+| `read_file(path)` | `read_file(path: string) -> string` (errores colapsan en `cannot open file '<path>'`) | DEC-014 |
+| `ord(s)` | `ord(s: string) -> i64` = primer byte (`""` = error) | DEC-018 |
+| `substr(s, start, len)` | `-> string`; error, nunca recorta | DEC-018 |
+| `push(arr, v)` | `-> array` **nuevo** (re-bindear: `a = push(a, v)`) | DEC-019 |
+| `str_to_int(s)` | `-> i64`; error en entradas inválidas | DEC-019 |
+| `chr(i)` | `chr(i: i64) -> string` de 1 byte (`[0, 255]`) | DEC-020 |
+| `read_line()` | `read_line() -> string` = línea de stdin sin `\n` (EOF sin datos = error) | DEC-020 |
+| `for c in s { … }` | itera un string byte a byte; `c: string` de 1 byte | DEC-020 |
+
+Estos nombres están **reservados** (DEC-015, §30.1) y el lexer
+self-hosteado (`seed/tests/selfhost/lexer.astra`, DEC-016/017) es el
+primer componente escrito en Astra-0, gateado en 7 rutas con paridad de
+176 tokens contra `--dump-tokens`. Todo lo demás del árbol
+`astra-stdlib/` de abajo es diseño futuro (`research/015`); `std/…`
+se rechaza hoy en la CLI.
+
+#### Estructura futura (diseño, no implementado)
 
 ```
 astra-stdlib/
@@ -2463,7 +2541,20 @@ fn main() {
 }
 ```
 
-**Target inicial**: 100-200 tests cubriendo features core.
+**Target inicial**: 100-200 tests cubriendo features core. (Superado: la
+suite viva está en `seed/tests/conformance/` — 319 casos en verde
+2026-10-28 — y se ejecuta en las 4 rutas.)
+
+> **Gates de self-hosting (DEC-016/017, implementados):** los componentes
+> escritos en Astra-0 viven en `seed/tests/selfhost/` (fuera de
+> `conformance/`, por el cwd y los preopens de wasm) y se gatean con un
+> patrón propio: `lexer_gate.sh` ejecuta el programa en **7 rutas**
+> (VM seed, `--emit-c`+gcc, VM zig, LLVM `--jit`, `--emit-obj`+link,
+> cross aarch64 bajo qemu, wasm32-wasi bajo Node) contra un golden
+> commiteado, y `lexer_tokens_parity.sh` es el **gate fuerte** que
+> normaliza el stream del lexer en Astra-0 y lo compara contra
+> `astra-seed --dump-tokens` (176 tokens, 1:1). Cualquier componente
+> self-hosteado futuro (p. ej. `parser.astra`) hereda este diseño.
 
 ### 39.3 Sanitizers
 

@@ -1,4 +1,7 @@
-// Match on Result values
+// Control de flujo con `return` en una fn sin retorno (el nombre histórico
+// «result_match» es engañoso: el fichero no toca `match` ni `Result` — la
+// evidencia real de match/Result está en `nested_option_result`,
+// `try_operator` y `result_basic`; ver PHASE1_PROGRESS §tablas).
 // EXPECT: 50
 // EXPECT: error: bad
 fn divide(a: i32, b: i32) {
