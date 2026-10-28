@@ -162,6 +162,10 @@ fn runGraph(a: std.mem.Allocator, graph: modules.Graph, linked: Compiled) ![]con
     var out_buf: [4096]u8 = undefined;
     var out_w = std.Io.Writer.fixed(&out_buf);
     var machine = try vm.VM.init(a, &out_w);
+    // stdin pinned to EOF, same reason as conformance.runProgram: `in == null`
+    // would hand read_line the test binary's `--listen=-` protocol pipe (fd 0)
+    // and deadlock the suite instead of failing deterministically.
+    machine.in = std.Io.Reader.ending;
     const own_types = try a.alloc(emitter.ModuleTypes, n);
     for (own_types) |*t| t.* = .{};
     for (graph.modules, 0..) |*m, i| {

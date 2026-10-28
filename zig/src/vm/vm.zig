@@ -1867,6 +1867,10 @@ fn runSource(a: std.mem.Allocator, source: []const u8, buf: []u8) !RunOut {
     try testing.expectEqual(@as(usize, 0), em.error_count);
     var w = std.Io.Writer.fixed(buf);
     var machine = try VM.init(a, &w);
+    // stdin pinned to EOF for the in-process test helper: `in == null` would
+    // make read_line read the TEST BINARY's fd 0 (the `--listen=-` protocol
+    // pipe under `zig build test`) and hang the whole suite (CI 40743305356).
+    machine.in = std.Io.Reader.ending;
     const res = try machine.run(em.code.items, em.constants.items);
     return .{ .res = res, .out = w.buffered(), .err = machine.error_msg };
 }
