@@ -264,6 +264,13 @@ struct VM {
     FnObj      *builtin_substr_fn;
     FnObj      *builtin_push_fn;
     FnObj      *builtin_str_to_int_fn;
+    FnObj      *builtin_chr_fn;
+    FnObj      *builtin_read_line_fn;
+    /* stdin line buffer for read_line (DEC-020): one arena buffer grown across
+     * consecutive calls, so a lexer reads the source line by line without
+     * fread consuming the bytes of the NEXT line. */
+    char       *stdin_buf;
+    size_t      stdin_cap;
 
     const char *error_msg;
     uint32_t    error_line;

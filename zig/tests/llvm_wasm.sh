@@ -152,7 +152,10 @@ while IFS= read -r f; do
     fi
 
     # Reference: native zig VM (the same reference the other gates use).
-    "$ASTRA_ZIG" $extra "$f" >"$work/vm.out" 2>"$work/vm.err"
+    # stdin pinned empty (/dev/null): read_line-at-EOF (DEC-020) must fail
+    # deterministically, not block on the caller's terminal (CI has no TTY) —
+    # and never eat this loop's < <(find …) fixture-list pipe.
+    "$ASTRA_ZIG" $extra "$f" </dev/null >"$work/vm.out" 2>"$work/vm.err"
     vm_rc=$?
 
     # wasm route, step 1: emit a wasm32 object (TargetMachineEmitToFile).
@@ -183,8 +186,9 @@ while IFS= read -r f; do
     # Step 3: run under Node WASI and compare stdout/stderr/exit vs the VM.
     # --no-warnings keeps Node's "WASI is an experimental feature" note off
     # stderr (the comparison is byte-for-byte).
+    # stdin pinned empty (/dev/null), same reason as the VM reference above.
     "$NODE" --no-warnings "$WASI_RUNNER" "$work/bin.wasm" \
-        >"$work/wasm.out" 2>"$work/wasm.err"
+        </dev/null >"$work/wasm.out" 2>"$work/wasm.err"
     wasm_rc=$?
 
     bad=0

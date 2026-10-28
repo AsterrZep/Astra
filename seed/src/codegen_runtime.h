@@ -999,6 +999,60 @@ static inline AstraValue astra_builtin_str_to_int(AstraValue *args, uint8_t argc
     return astra_int(neg ? -(int64_t)acc : (int64_t)acc);
 }
 
+/* ---------- Built-in: chr (DEC-020, research/028 M3) ----------
+ *
+ * chr(int) -> string: the 1-byte string whose FIRST BYTE is the value — the
+ * inverse of `ord` (DEC-018), a byte and not a codepoint, so `chr(ord(s))`
+ * round-trips a 1-byte `s`. Out of range is a runtime error, never a masked
+ * low byte. Arity, type and bounds wording mirror vm.c's builtin_chr
+ * (`chr expects an int, got <tipo>` / `chr value %ld out of bounds (0..255)`)
+ * so sweep_emit_c.sh stays byte-equal. */
+static inline AstraValue astra_builtin_chr(AstraValue *args, uint8_t argc) {
+    if (argc != 1)
+        astra_errorf("expected 1 arguments but got %u", (unsigned)argc);
+    AstraValue v = args[0];
+    if (v.tag != AST_INT)
+        astra_errorf("chr expects an int, got %s", astra_tag_name(v.tag));
+    int64_t code = v.as.int_val;
+    if (code < 0 || code > 255)
+        astra_errorf("chr value %ld out of bounds (0..255)", (long)code);
+    char b = (char)(unsigned char)code;
+    return astra_string_new(&b, 1);
+}
+
+/* ---------- Built-in: read_line (DEC-020, research/028 M3) ----------
+ *
+ * read_line() -> string: one line of STANDARD INPUT up to (not including) the
+ * trailing `\n`, or a runtime error `end of input` on EOF with no data. stdin
+ * is read a byte at a time through fgetc so the SAME static buffer serves
+ * every consecutive call (fread-by-blocks would consume the next line's bytes
+ * into a discarded buffer); a final line without `\n` returns what it has, an
+ * empty line yields "". Arity wording mirrors vm.c's argc check so the routes
+ * stay byte-equal. The buffer is static because this backend's builtins have
+ * no arena; astra_string_new copies the bytes out, so the reuse is safe. */
+static inline AstraValue astra_builtin_read_line(AstraValue *args, uint8_t argc) {
+    (void)args;
+    if (argc != 0)
+        astra_errorf("expected 0 arguments but got %u", (unsigned)argc);
+    static char *buf = NULL;
+    static size_t cap = 0;
+    size_t len = 0;
+    int c;
+    while ((c = fgetc(stdin)) != EOF && c != '\n') {
+        if (len == cap) {
+            cap = cap ? cap * 2 : 4096;
+            char *bigger = (char *)realloc(buf, cap);
+            if (!bigger)
+                astra_errorf("out of memory reading stdin");
+            buf = bigger;
+        }
+        buf[len++] = (char)c;
+    }
+    if (c == EOF && len == 0 && ferror(stdin) == 0)
+        astra_errorf("end of input");
+    return astra_string_new(buf, (int64_t)len);
+}
+
 /* ---------- Runtime error ---------- */
 /* A *hard* runtime error (div-by-zero, bounds, nil receiver, …) is fatal, full
  * stop: print `file:line: runtime error: msg` exactly like the VM's driver

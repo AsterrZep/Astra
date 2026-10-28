@@ -770,6 +770,40 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         symbol_table_insert(tc->symbols, sym);
     }
 
+    /* chr(i) -> string (DEC-020, research/028 M3): the 1-byte string whose
+     * first byte is `i` (0..255) — the inverse of `ord` (DEC-018). The
+     * parameter is unknown as ord's, so `chr(65)` (i32 literal, DEC-006) type
+     * checks and the runtime guard rejects a non-int / out-of-range value with
+     * `chr expects an int, got <tipo>` / `chr value N out of bounds (0..255)`. */
+    {
+        Type **params = arena_new_array(arena, Type *, 1);
+        params[0] = type_new(arena, TYPE_UNKNOWN);
+        Type *chr_type = type_new_fn(arena, params, 1, type_new(arena, TYPE_STRING));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "chr"),
+            .type = chr_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
+    /* read_line() -> string (DEC-020, research/028 M3): one line of stdin up
+     * to (not including) the trailing `\n`, or a runtime error `end of input`
+     * on EOF with no data. No parameters: the runtime's argc check reports
+     * `expected 0 arguments but got N`. */
+    {
+        Type **params = arena_new_array(arena, Type *, 0);
+        Type *rl_type = type_new_fn(arena, params, 0, type_new(arena, TYPE_STRING));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "read_line"),
+            .type = rl_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
     /* Register built-in Option enum: some(T) -> Option[T], none -> Option[T] */
     {
         Type *opt_type = type_new(arena, TYPE_ENUM);
@@ -2225,12 +2259,18 @@ static Type *typecheck_for(TypeChecker *tc, Node *node) {
         Type *iter = typecheck_node(tc, iter_node);
         if (type_is_error(iter)) return iter;
 
-        if (iter->kind != TYPE_ARRAY) {
+        if (iter->kind != TYPE_ARRAY && iter->kind != TYPE_STRING) {
             return tc_error_type(tc, iter_node->loc,
-                                 "for loop must iterate over an array or range, got %s",
+                                 "for loop must iterate over an array, string or range, got %s",
                                  type_kind_name(iter->kind));
         }
-        var_type = iter->as.array.elem;
+        // Un string itera BYTE a BYTE, con `c` como string de 1 byte — el mismo
+        // modelo que `s[i]` (DEC-013) y que el emitter, que reutiliza LEN+INDEX
+        // sin distinguir receiver. El elemento es TYPE_STRING, así que el cuerpo
+        // del bucle ve `c` con el tipo correcto.
+        var_type = (iter->kind == TYPE_STRING)
+            ? type_new(tc->arena, TYPE_STRING)
+            : iter->as.array.elem;
     }
 
     symbol_table_push_scope(tc->symbols);
@@ -2742,7 +2782,7 @@ static Type *default_int_type(Arena *a, Node *init) {
  * Reports and returns true when `name` is builtin. */
 static bool builtin_redeclare_error(TypeChecker *tc, SrcLoc loc,
                                     InternedString name) {
-    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int" };
+    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int", "chr", "read_line" };
     for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
         const char *b = kBuiltins[i];
         if (name.len == strlen(b) && memcmp(name.str, b, name.len) == 0) {

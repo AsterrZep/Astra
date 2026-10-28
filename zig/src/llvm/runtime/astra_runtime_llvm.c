@@ -691,6 +691,75 @@ void astra_llvm_substr_int_fail(unsigned line, const void *p) {
     astra_llvm_fail(line, buf);
 }
 
+/* ---- chr / read_line (DEC-020, research/028 M3) ------------------------- */
+
+/* `chr(i64) -> string`: el string de 1 byte cuyo PRIMER byte es el valor — la
+ * inversa de `ord` (DEC-018), byte y no codepoint, así `chr(ord(s))`
+ * round-tripea un `s` de 1 byte. Fuera de [0, 255] es error de runtime, nunca
+ * el byte bajo enmascarado. El nil / caja del argumento lo trae el guard del
+ * emisor con type_name; aquí se ve el rango con el valor real. El bloque sale
+ * por astra_llvm_alloc (rc/kind) como str_index/substr. */
+void *astra_llvm_chr(unsigned line, int64_t v) {
+    if (v < 0 || v > 255) {
+        char msg[64];
+        snprintf(msg, sizeof msg, "chr value %lld out of bounds (0..255)", (long long)v);
+        astra_llvm_fail(line, msg);
+        return NULL; /* noreturn en el IR; en C, para el compilador */
+    }
+    AstraLLVMStr *out = (AstraLLVMStr *)astra_llvm_alloc(
+        line, (int64_t)sizeof(int64_t) + 1 + 1, ASTRA_LLVM_KIND_STR);
+    out->len = 1;
+    out->data[0] = (char)(unsigned char)v;
+    out->data[1] = '\0';
+    return out;
+}
+
+/* `chr` sobre caja/par (espejo de astra_llvm_substr_int_fail): la caja es
+ * nil/ok/err/some, nunca un entero plano, y type_name del VM lo dice. */
+void astra_llvm_chr_fail(unsigned line, const void *p) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "chr expects an int, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
+/* `read_line() -> string`: una línea de STANDARD INPUT hasta (sin incluir) el
+ * `\n` final, o error de runtime `end of input` en EOF sin datos. stdin se lee
+ * byte a byte con fgetc para que el MISMO buffer estático sirva a cada llamada
+ * consecutiva (un lexer lee el fuente línea a línea; fread por bloques se
+ * comería los bytes de la SIGUIENTE línea en un buffer desechado). Una última
+ * línea sin `\n` devuelve lo que hay, una línea vacía devuelve "". El fallo de
+ * arity lo trae el emisor: `read_line` no toma argumentos. El bloque sale por
+ * astra_llvm_alloc (rc/kind); el buffer es estático porque astra_string_new
+ * copia los bytes hacia fuera. */
+void *astra_llvm_read_line(unsigned line) {
+    static char *buf = NULL;
+    static size_t cap = 0;
+    size_t len = 0;
+    int c;
+    while ((c = fgetc(stdin)) != EOF && c != '\n') {
+        if (len == cap) {
+            cap = cap ? cap * 2 : 4096;
+            char *bigger = (char *)realloc(buf, cap);
+            if (!bigger) {
+                astra_llvm_fail(line, "out of memory reading stdin");
+                return NULL;
+            }
+            buf = bigger;
+        }
+        buf[len++] = (char)c;
+    }
+    if (c == EOF && len == 0 && ferror(stdin) == 0) {
+        astra_llvm_fail(line, "end of input");
+        return NULL; /* noreturn en el IR; en C, para el compilador */
+    }
+    AstraLLVMStr *out = (AstraLLVMStr *)astra_llvm_alloc(
+        line, (int64_t)sizeof(int64_t) + (int64_t)len + 1, ASTRA_LLVM_KIND_STR);
+    out->len = (int64_t)len;
+    if (len > 0) memcpy(out->data, buf, len);
+    out->data[len] = '\0';
+    return out;
+}
+
 /* ---- push / str_to_int (DEC-019, research/028 M2b) ---------------------- */
 
 /* Espejo de astra_llvm_release_slot (definido abajo, con los destructores):

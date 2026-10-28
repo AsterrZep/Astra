@@ -1,0 +1,7 @@
+// chr() with a non-int argument is a RUNTIME error (DEC-020): the parameter
+// is `unknown` (like ord/substr, DEC-018), so a string reaches runtime and the
+// guard reports the receiver's type the same on the four routes.
+// EXPECT-RUNTIME-ERROR: chr expects an int, got string
+fn main() {
+    print(chr("A"))
+}

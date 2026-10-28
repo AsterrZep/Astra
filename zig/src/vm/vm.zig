@@ -312,6 +312,13 @@ pub const VM = struct {
     builtin_substr_fn: *FnObj = undefined,
     builtin_push_fn: *FnObj = undefined,
     builtin_str_to_int_fn: *FnObj = undefined,
+    builtin_chr_fn: *FnObj = undefined,
+    builtin_read_line_fn: *FnObj = undefined,
+    /// stdin line buffer for read_line (DEC-020): one allocator buffer grown
+    /// across consecutive calls, so a lexer reads the source line by line
+    /// without a block-read consuming the next line's bytes.
+    stdin_buf: []u8 = &.{},
+    stdin_cap: usize = 0,
 
     error_msg: []const u8 = "",
     error_line: u32 = 0,
@@ -369,6 +376,12 @@ pub const VM = struct {
         const sti = try a.create(FnObj);
         sti.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
         vm.builtin_str_to_int_fn = sti;
+        const chr = try a.create(FnObj);
+        chr.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_chr_fn = chr;
+        const rline = try a.create(FnObj);
+        rline.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_read_line_fn = rline;
         return vm;
     }
 
@@ -859,6 +872,10 @@ pub const VM = struct {
                         if (!self.push(bc.vFn(self.builtin_push_fn))) return .runtime_error;
                     } else if (std.mem.eql(u8, name, "str_to_int")) {
                         if (!self.push(bc.vFn(self.builtin_str_to_int_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "chr")) {
+                        if (!self.push(bc.vFn(self.builtin_chr_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "read_line")) {
+                        if (!self.push(bc.vFn(self.builtin_read_line_fn))) return .runtime_error;
                     } else {
                         var found = false;
                         var i: usize = 0;
@@ -1290,6 +1307,10 @@ pub const VM = struct {
                             (self.builtinPush(args, line) orelse return .runtime_error)
                         else if (fn_obj == self.builtin_str_to_int_fn)
                             (self.builtinStrToInt(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_chr_fn)
+                            (self.builtinChr(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_read_line_fn)
+                            (self.builtinReadLine(args, line) orelse return .runtime_error)
                         else
                             try self.builtinPrint(args);
                         self.sp = fn_idx;
@@ -1715,6 +1736,96 @@ pub const VM = struct {
         const mag: i64 = @intCast(acc);
         return bc.vInt(if (neg) -mag else mag);
     }
+
+    /// Builtin `chr(i) -> string` (DEC-020, research/028 M3): the 1-byte string
+    /// whose FIRST BYTE is `i` (0..255) — the inverse of `ord` (DEC-018), a
+    /// byte and not a codepoint, so `chr(ord(s))` round-trips a 1-byte `s`.
+    /// Out of range is a runtime error, never a masked low byte. Returns null
+    /// with the VM error set; the wording mirrors the seed's builtin_chr.
+    fn builtinChr(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 1) {
+            _ = self.rt(line, "expected 1 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const v = args[0];
+        if (tag(v) != .int) {
+            _ = self.rt(line, "chr expects an int, got {s}", .{typeName(v)});
+            return null;
+        }
+        const code = v.int;
+        if (code < 0 or code > 255) {
+            _ = self.rt(line, "chr value {d} out of bounds (0..255)", .{code});
+            return null;
+        }
+        const owned = self.a.alloc(u8, 1) catch {
+            _ = self.rt(line, "out of memory in chr", .{});
+            return null;
+        };
+        owned[0] = @intCast(@as(u8, @truncate(@as(u64, @intCast(code)))));
+        return bc.vString(owned);
+    }
+
+    /// Builtin `read_line() -> string` (DEC-020, research/028 M3): one line of
+    /// STANDARD INPUT up to (not including) the trailing `\n`, or a runtime
+    /// error `end of input` on EOF with no data. stdin is read a byte at a time
+    /// through a single self.in reader (or the raw fd when unset — the
+    /// conformance runner leaves `in` null) so the SAME buffer serves every
+    /// consecutive call (a lexer reads the source line by line). A final line
+    /// without `\n` returns what it has; an empty line yields "". Returns null
+    /// with the VM error set; the wording mirrors the seed's builtin_read_line.
+    fn builtinReadLine(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 0) {
+            _ = self.rt(line, "expected 0 arguments but got {d}", .{args.len});
+            return null;
+        }
+        // Grow `stdin_buf` in place; the bytes are copied out by vString only
+        // after the whole line is read, so reuse across calls is safe.
+        var len: usize = 0;
+        var first = true;
+        var c: u8 = 0;
+        while (true) {
+            const got: ?u8 = if (self.in) |rdr|
+                rdr.takeByte() catch null
+            else blk: {
+                // Fallback: the VM's `in` reader is unset (conformance runs the
+                // program in-process with no stdin wired). Use the raw fd 0.
+                var byte: [1]u8 = undefined;
+                const n = std.posix.read(std.posix.STDIN_FILENO, &byte) catch 0;
+                break :blk if (n == 1) byte[0] else null;
+            };
+            if (got) |b| {
+                if (b == '\n') break;
+                c = b;
+            } else {
+                // EOF (or a read error): return what we have, or report EOF if
+                // this call saw no bytes at all — the deterministic `end of
+                // input` the conformance case pins (closed / /dev/null stdin).
+                if (first) {
+                    _ = self.rt(line, "end of input", .{});
+                    return null;
+                }
+                break;
+            }
+            first = false;
+            if (len == self.stdin_cap) {
+                const bigger = self.a.alloc(u8, if (self.stdin_cap == 0) 4096 else self.stdin_cap * 2) catch {
+                    _ = self.rt(line, "out of memory reading stdin", .{});
+                    return null;
+                };
+                @memcpy(bigger[0..len], self.stdin_buf);
+                self.stdin_buf = bigger;
+                self.stdin_cap = if (self.stdin_cap == 0) 4096 else self.stdin_cap * 2;
+            }
+            self.stdin_buf[len] = c;
+            len += 1;
+        }
+        const owned = self.a.alloc(u8, len) catch {
+            _ = self.rt(line, "out of memory reading stdin", .{});
+            return null;
+        };
+        @memcpy(owned, self.stdin_buf[0..len]);
+        return bc.vString(owned);
+    }
 };
 
 fn fieldIndex(def: *const StructDef, field: []const u8) ?usize {
@@ -1756,6 +1867,10 @@ fn runSource(a: std.mem.Allocator, source: []const u8, buf: []u8) !RunOut {
     try testing.expectEqual(@as(usize, 0), em.error_count);
     var w = std.Io.Writer.fixed(buf);
     var machine = try VM.init(a, &w);
+    // stdin pinned to EOF for the in-process test helper: `in == null` would
+    // make read_line read the TEST BINARY's fd 0 (the `--listen=-` protocol
+    // pipe under `zig build test`) and hang the whole suite (CI 40743305356).
+    machine.in = std.Io.Reader.ending;
     const res = try machine.run(em.code.items, em.constants.items);
     return .{ .res = res, .out = w.buffered(), .err = machine.error_msg };
 }

@@ -27,6 +27,7 @@
 | DEC-017 | Cierre del gate del lexer self-hosting (PR3b): `lexer_gate.sh` crece a **7 rutas** ( + `--emit-obj`+link nativo, cross aarch64 bajo qemu, wasm32-wasi bajo Node WASI con preopens — cada una con skip limpio sin su toolchain) y añade el **gate fuerte** `lexer_tokens_parity.sh` (el stream de `lexer.astra` normalizado contra `astra-seed --dump-tokens`: 1:1 en KEYWORD/IDENT(`_`)/INT(hex→valor)/PUNCT/ERROR/EOF; fuera NEWLINE, columnas, contenido de STRING, FLOAT_LIT y la cola tras el primer ERROR); CI lo cablea en los jobs `seed` y `llvm` con los mismos guards, sin renombrar checks | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → **7/7 rutas** + `lexer_tokens_parity.sh` → **176 tokens** (PR D-PR3b) |
 | DEC-018 | Stdlib M2a: `ord(s) -> i64` = **primer byte** de `s` (`""` = error de runtime) y `substr(s, start, len) -> string` = `len` bytes desde `start` (**error, nunca recorte**, fuera de `[0, len(s)]`); los tres parámetros de `substr` y el de `ord` son `unknown` con guards de runtime (sin coerción en la llamada), y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/ord_basic.astra`, `expressions/ord_empty_error.astra`, `expressions/ord_int_arg.astra`, `expressions/substr_basic.astra`, `expressions/substr_bounds_error.astra`, `expressions/substr_start_error.astra`, `codegen/ord_substr.astra`, `codegen/substr_oob.astra`, `ui/builtin_shadow_ord.astra`, `ui/builtin_shadow_substr.astra` (PR D-PR4a) |
 | DEC-019 | Stdlib M2b: `push(arr, v) -> array` devuelve un array **NUEVO** (copia manual; el llamante re-bindea `a = push(a, v)` y el viejo queda intacto — crecer in-place es imposible en la ruta LLVM, cuyo objeto guarda los elementos **en línea** y es compartido por todos los bindings) con **guard de homogeneidad en runtime** (`push element has type X, expected Y`), y `str_to_int(s) -> i64` = el decimal de `to_string` con **error de runtime** para entradas inválidas, vacías o fuera de rango (acepta `-`, no `+` ni espacios ni `0x`); ambos parámetros `unknown` con guards (patrón `ord`, DEC-018), retorno de `push` `array<unknown>`, y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/push_basic.astra`, `expressions/push_alias.astra`, `expressions/push_int_arg.astra`, `expressions/push_elem_error.astra`, `expressions/push_nil.astra`, `expressions/str_to_int_basic.astra`, `expressions/str_to_int_invalid.astra`, `expressions/str_to_int_empty.astra`, `expressions/str_to_int_range.astra`, `expressions/str_to_int_int_arg.astra`, `expressions/str_to_int_nul.astra`, `codegen/push_roundtrip.astra`, `codegen/push_elem_error.astra`, `ui/builtin_shadow_push.astra`, `ui/builtin_shadow_str_to_int.astra` (PR D-PR4b) |
+| DEC-020 | Stdlib M3 (cierre del MVP): `chr(i: i64) -> string` = string de **1 byte** cuyo primer byte es `i` (rango `[0, 255]` en runtime, fuera = error `chr value N out of bounds (0..255)` — la inversa de `ord`, DEC-018), `read_line() -> string` = una línea de **stdin** sin el `\n` final (EOF sin datos = error de runtime `end of input`; la ruta wasm sin stdin da el mismo EOF, comportamiento documentado), y `for c in s { … }` sobre un string itera **byte a byte** con `c: string` de 1 byte (abierto en los dos typecheckers y emitido vía el LEN+INDEX que las cuatro rutas ya tenían); `chr` y `read_line` se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/chr_basic.astra`, `expressions/chr_oob_error.astra`, `expressions/chr_int_arg_error.astra`, `expressions/read_line_eof_error.astra`, `loops/for_string.astra`, `codegen/chr_oob.astra`, `codegen/for_string.astra`, `seed/tests/selfhost/io_gate.sh` (lectura positiva de `read_line` con stdin desde `stdin_lines.txt`, 4 rutas) (PR D-PR5) |
 | DEC-021 | El manifest del proyecto y la CLI unificada se llaman **`astraea`** — `astraea.toml` + `astraea.lock` + comando `astraea` (estilo Cargo: nombre propio del *tool*, no del lenguaje); el `astra.toml` actual se queda como marcador de raíz **hasta** que la CLI exista, y el rename llega de una vez en ese PR (nota: la DEC-020 la crea el PR de M3) | **Propuesta** (dirección decidida 2026-10-28; implementación bloqueada hasta la CLI unificada) | 2026-10-28 | Mediciones de registros 2026-10-28 (sección abajo) · Spec: `ARCHITECTURE.md` §33.2 |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
@@ -617,6 +618,110 @@
 - **Spec**: `research/028` §1.2 (firmas M2) — «pendiente de escribir en
   ARCHITECTURE».
 
+### DEC-020 — Stdlib M3: `chr(i)`, `read_line()` y `for c in s` (cierre del MVP)
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR5 (2026-10-28)
+- **Fecha**: 2026-10-28
+- **Decisión**:
+  - `chr(i: i64) -> string` devuelve el string de **1 byte** cuyo primer byte
+    es `i` — la inversa exacta de `ord(s)` (DEC-018): `chr(ord(s))` round-tripea
+    cualquier `s` de 1 byte, y el lexer del futuro self-hosting la necesita
+    para reconstruir strings a partir de códigos clasificados. Es **byte**, no
+    codepoint, coherente con `s[i]` (DEC-013) y `ord` (DEC-018). El rango
+    `[0, 255]` se comprueba en runtime: fuera de él es **error de runtime**
+    `chr value N out of bounds (0..255)` (texto fijo, idéntico en las cuatro
+    rutas) — **nunca** el byte bajo enmascarado, que ocultaría un error del
+    llamante (mismo contrato «error, nunca recorte» que `substr` bounds,
+    DEC-018). El parámetro es `unknown` con guard de runtime, patrón `ord`
+    (DEC-018): `chr(65)` (literal i32, DEC-006) y `chr(len(s))` (i64) calzan
+    igual, y un receptor no-int (`chr("a")`) cae en `chr expects an int, got
+    <tipo>` en las cuatro rutas.
+  - `read_line() -> string` lee **una línea de stdin** hasta (sin incluir) el
+    `\n` final y la devuelve **sin el `\n`**; una última línea sin `\n` devuelve
+    lo que hay (convención estándar de lector) y una línea vacía devuelve `""`.
+    **EOF sin datos** (la stdin está vacía, cerrada o es `/dev/null`) es **error
+    de runtime** `end of input`, texto fijo en las cuatro rutas. La stdin se lee
+    **byte a byte** (`fgetc` en las tres rutas C, `takeByte` en el zig VM), no
+    por bloques: un `fread` comería los bytes de la **siguiente** línea en un
+    buffer desechado y la segunda llamada perdería datos — el lexer lee el
+    fuente línea a línea y esa es la razón de ser del builtin. El búfer de
+    lectura es único y se reutiliza entre llamadas (arena en seed/zig, `static`
+    en C y LLVM). Sin parámetros: el chequeo de arity reporta `expected 0
+    arguments but got N`, igual que el resto de builtins.
+    **wasm sin stdin**: WASI expone stdin como `/dev/null` implícito (el runner
+    `demo/wasi_run.mjs` no la cablea), así que la primera `read_line()` da el
+    **mismo** `end of input` determinista — comportamiento razonable y
+    documentado aquí; el caso positivo (leer una línea de verdad) vive fuera de
+    `conformance/`, en `io_gate.sh`, que redirige stdin desde un fixture.
+  - `for c in s { … }` sobre un string itera **byte a byte**, con `c` como
+    **string de 1 byte** — el mismo modelo que `s[i]` (DEC-013) y `ord`
+    (DEC-018), para que un lexer pueda comparar `c` contra un literal de string
+    sin `ord`. El typechecker acepta `TYPE_STRING` como iterable en los **dos**
+    typecheckers (el mensaje de rechazo pasa a nombrar `array, string or range`);
+    la emisión no necesita opcode nuevo: las cuatro rutas ya tenían el camino
+    LEN+INDEX que recorre un array por índice, y `OPCODE_INDEX`/`astra_string_get`
+    sobre un string ya devuelven el byte correcto (DEC-013). Un string vacío itera
+    cero veces; `break`/`continue` se comportan como en arrays.
+  - **Los 4 sitios a la vez** (`research/028` §2.2): seed (`typechecker.c`
+    símbolos + `kBuiltins` + chequeo `for`, `vm.c` cuerpo + `GET_GLOBAL` +
+    dispatch + marcadores `FnObj`, `priv.h`, `codegen_runtime.h`), zig
+    (`typechecker.zig` + `k_builtins` + chequeo `for`, `vm.zig`) y LLVM
+    (`emitter.zig` `emitChr`/`emitReadLine`/chequeo `for` + `astra_runtime_llvm.c`
+    `astra_llvm_chr`/`astra_llvm_read_line`); JIT, wasm y aarch64 heredan el
+    runtime LLVM sin código propio. Los dos nombres nuevos (`chr`, `read_line`)
+    se suman a la lista reservada de DEC-015 en los dos typecheckers.
+- **Alternativas consideradas**:
+  (1) **`chr` enmascarando el byte bajo** (`i & 0xFF`, sin error) — descartado:
+    `chr(256)` daría `"0"` y `chr(-1)` daría `"\xFF"` en silencio, ocultando un
+    bug del llamante; el contrato del repo para rangos es el error de runtime
+    (substr bounds, DEC-018); (2) **`read_line() -> string?`** (la firma de
+    `research/028` §1.2, con `none` en EOF) — descartado: obligaría a construir
+    `some`/`none` desde un builtin en las cuatro rutas (el par M6.c sólo se
+    desempaqueta en la ABI de funciones nombradas) y a `match`/`?` en **cada**
+    llamante para usar la línea; el estilo del repo es el error de runtime
+    consistente (DEC-018/019), y `read_line()` en un bucle `while` es la forma
+    natural de leer hasta EOF sin optional; (3) **`read_line` leyendo por
+    bloques** (`fread` de 4 KB, como `read_file`) — descartado: el búfer se
+    descartaría al volver y la **segunda** llamada perdería el resto de la
+    línea anterior; el byte a byte es la única implementación correcta con un
+    búfer de línea reutilizable, y el coste (una syscall por byte en el peor
+    caso) es irrelevante para el uso previsto (lexer leyendo su fuente);
+  (4) **`for c in s` con `c: i64`** (el código numérico, estilo Go) —
+    descartado: `match c { "(" => … }` ya funciona en cuatro rutas con strings
+    (p8 de research/028) y con `i64` habría que escribir `ord(c)` en cada
+    comparación; el string de 1 byte es coherente con `s[i]` (DEC-013);
+  (5) **`char_at(s, i)` builtin en vez de `s[i]`/iteración** — descartado:
+    `s[i]` ya existe (DEC-013) y `for c in s` reutiliza el LEN+INDEX, sin
+    consumir presupuesto de builtin.
+- **Coste aceptado**: 4 implementaciones en 9 ficheros de código (seed:
+  `typechecker.c`, `vm.c`, `priv.h`, `codegen_runtime.h`; zig:
+  `typechecker.zig`, `vm.zig`; LLVM: `emitter.zig`,
+  `llvm/runtime/astra_runtime_llvm.c`) + los dos typecheckers para el chequeo
+  `for`; 7 tests (5 conformance, 2 codegen) + el stage de `io_gate.sh` para la
+  lectura positiva de `read_line`; 0 cambios de bytecode ni de AST, así que los
+  dumps siguen byte-idénticos. `for c in s` emite **exactamente** el mismo
+  LEN+INDEX que `for x en arr` — sin opcode nuevo — y el C backend no necesitó
+  cambio: su `OPCODE_INDEX` ya trataba `AST_STRING` desde DEC-013.
+- **Evidencia**: fijado por `expressions/chr_basic.astra` (`chr(65)=="A"`,
+  `chr(ord("Z"))=="Z"`, byte 0, `chr(i64)`), `expressions/chr_oob_error.astra`
+  (`chr value 256 out of bounds (0..255)`), `expressions/chr_int_arg_error.astra`
+  (`chr expects an int, got string`), `expressions/read_line_eof_error.astra`
+  (`end of input` con stdin=`/dev/null`, determinista en las 4 rutas),
+  `loops/for_string.astra` (itera `"hola"` imprime `h o l a`, concatena,
+  string vacío = 0 iteraciones, `continue`/`break`), `codegen/chr_oob.astra`
+  y `codegen/for_string.astra` (redondeo C), `seed/tests/selfhost/io_gate.sh`
+  (stage `read_line`: 4 rutas leen `stdin_lines.txt` y coinciden byte a byte
+  con `read_line.expected`). `ui/for_iter_type.astra` se actualizó al nuevo
+  texto del rechazo (`array, string or range`).
+  Gates del PR: `make test` **319/0**, `sweep_emit_c` total=**149** skip=3
+  fail=0, `make debug` (ASan/UBSan/LSan) **319/0**, `zig build test` en verde,
+  `ui_message_parity` first_fail=0 (total=129), `dump_parity` sin divergencia,
+  `llvm_parity` **205/205** skip=0 fail=0, `llvm_jit` **205/205**,
+  `llvm_fuzz -n 20 -s 1` fail=0, `lexer_gate.sh` **7/7 rutas** + paridad de
+  tokens, `io_gate.sh` **8/8** (4 read_file + 4 read_line), `--check-constructs`
+  OK.
+- **Spec**: `research/028` §1.2 (firmas M3: `chr`, `read_line`, `for c in s`)
+  — «pendiente de escribir en ARCHITECTURE».
 ### DEC-021 — Nombre del manifest y de la CLI futura: `astraea`
 - **Estado**: **Propuesta** — dirección decidida el 2026-10-28; la
   implementación (rename `astra.toml` → `astraea.toml` + bautizo del CLI)

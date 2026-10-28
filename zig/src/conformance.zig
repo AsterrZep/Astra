@@ -101,6 +101,14 @@ fn runProgram(arena: std.mem.Allocator, source: []const u8, name: []const u8, ou
 
     var w = std.Io.Writer.fixed(out_buf);
     var machine = vm.VM.init(arena, &w) catch return .{ .parsed = true, .type_ok = true, .emit_ok = true, .ran = false, .output = "", .runtime_error = null };
+    // stdin pinned to EOF — the in-process equivalent of run_tests.sh's
+    // `</dev/null` (DEC-020). With `in == null` the VM's read_line falls back
+    // to the RAW fd 0, and under `zig build test` fd 0 is the `--listen=-`
+    // protocol pipe to the build runner: the fixture would block in read(0)
+    // forever while the runner waits for the test's reply (deadlock, caught
+    // by CI run 40743305356). An EOF reader gives the deterministic `end of
+    // input` the seed runner produces with its redirected stdin.
+    machine.in = std.Io.Reader.ending;
     const res = machine.run(em.code.items, em.constants.items) catch
         return .{ .parsed = true, .type_ok = true, .emit_ok = true, .ran = false, .output = w.buffered(), .runtime_error = null };
     return .{

@@ -124,7 +124,10 @@ while IFS= read -r file; do
     if grep -qE '^// *EXPECT-RUNTIME-ERROR:' "$file"; then
         expected="$(grep -E '^// *EXPECT-RUNTIME-ERROR:' "$file" \
             | sed -E 's|^// *EXPECT-RUNTIME-ERROR: *||' | head -1)"
-        if actual="$("$ASTRA" "$file" 2>&1)"; then
+        # stdin is pinned to empty (/dev/null): a case that reads stdin
+        # (read_line at EOF, DEC-020) must fail deterministically instead of
+        # blocking on the caller's terminal. CI already runs without a TTY.
+        if actual="$("$ASTRA" "$file" </dev/null 2>&1)"; then
             echo "FAIL $rel: expected a runtime error containing '$expected'"
             echo "      but the program ran to completion"
             fail=$((fail + 1))
@@ -266,7 +269,7 @@ if [ -d "$CGDIR" ]; then
                 fail=$((fail + 1))
                 continue
             fi
-            actual="$("$ROOT/build/codegen_test" 2>&1)"
+            actual="$("$ROOT/build/codegen_test" </dev/null 2>&1)"
             rc=$?
             rm -f "$cfile" "$ROOT/build/codegen_test" "$CG_GCC_ERR"
 
