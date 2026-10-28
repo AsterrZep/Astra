@@ -305,6 +305,12 @@ These are easy to break and expensive to debug:
    expression and the block entry points are guarded, because nested blocks reach
    the parser by a different path. Without this, 20k of `(`, `{`, calls, arrays
    or `if` chains segfaulted the compiler.
+8. **Fiber-crossing features carry their own checks.** Any feature that moves
+   handles across fibers is a boundary and MUST ship its check (S2/RT1) in the
+   same PR; the enforcement rule lives in `ARCHITECTURE.md` §2.6 (DEC-012,
+   ratified) — a backend cannot implement its own crossing semantics. RT1 is
+   M4-only until a DEC adds rc to the zig VM (DEC-023); `transfer(x)` is a
+   builtin, not a keyword (DEC-022).
 
 ## C Codegen (`--emit-c`)
 
@@ -406,9 +412,9 @@ verified by `make test` on both backends.
    «Evidencia de verificación»).
 5. **Open decisions block backends.** While a `DEC-NNN` needed by a feature is
    in state `Propuesta`, no new backend work may be merged that would have to
-   encode it (today: DEC-006..DEC-008, `research/025` §2.8 — integer width,
-   `let`/alias semantics, enum-variant scoping; they reach 7 routes: VM seed,
-   C backend, VM Zig, LLVM ×`--opt-level`, JIT, wasm, aarch64).
+   encode it (today: DEC-021 — manifest/CLI name `astraea`, blocked until the
+   unified CLI exists; the four open decisions of `research/025` §2.8 closed
+   as DEC-006..008 + DEC-012, ratified 2026-10-27/28).
 
 ## Commit budget — decisions vs. backends
 

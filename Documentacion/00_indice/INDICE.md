@@ -132,9 +132,9 @@ HTML (mdBook o equivalente) es el siguiente paso — el contenido, no.
 | **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` → **74/74** · `dump_parity.sh` → **193 ficheros, 0 divergentes** |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
 | **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **205/205** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
-| **Decisiones de lenguaje** | ✅ 21 registradas (19 aceptadas) | `DECISIONES.md` — DEC-001..021 (DEC-012 y DEC-021 en `Propuesta`); las 4 decisiones abiertas de la crítica (025 §2.8) congeladas e implementadas |
+| **Decisiones de lenguaje** | ✅ 23 registradas (21 aceptadas) | `DECISIONES.md` — DEC-001..023 (única en `Propuesta`: DEC-021, la CLI `astraea`); DEC-012 ratificada 2026-10-28 con DEC-022/023 |
 | **Stdlib Astra-0 (M1/M2b/M3 — MVP cerrado)** | ✅ 10 builtins + `for c in s` + lexer | `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int`, `chr`, `read_line` en 4 rutas (DEC-013..020) · `selfhost/lexer_gate.sh` → **7/7** rutas + gate fuerte `lexer_tokens_parity.sh` vs `--dump-tokens` (lexer escrito en Astra-0) · `selfhost/io_gate.sh` → **8/8** |
-| **Enforcement entre fibras** | 🔵 Especificado, no implementado | `ARCHITECTURE.md` §2.6 (Opción F) · DEC-012 `Propuesta` → regla 5 de AGENTS bloquea backend work |
+| **Enforcement entre fibras** | 🔵 Especificado, no implementado | `ARCHITECTURE.md` §2.6 (Opción F) · DEC-012/022/023 `Aceptada (doc)` 2026-10-28 · implementación = PR «fase E» (estimación 15–25 d/h en DEC-012) · RT1 solo M4 hasta scheduler/send |
 | Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
 | **Fase 3** — Astra se compila a sí misma | ⏳ Pendiente | prerequisitos: stdlib M1/M2/M3 ✅ (MVP cerrado 2026-10-28) + árbol de compilador en Astra |
 

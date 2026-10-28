@@ -790,3 +790,21 @@ nunca se libera — preexistente; la suite no corre conformance con LSan).
 `zig build test` **73/73**, paridad **92/92**, `--check-constructs` OK;
 casos positivos (fn, método, lambda anotada) verificados en VM seed,
 C backend y zig.
+
+## 11. Enforcement entre fibras (fase E) — plan de gates (2026-10-28)
+
+DEC-012 está **ratificada** (`Aceptada (doc)`, 2026-10-28) con la sintaxis
+en DEC-022 (`transfer(x)`, builtin) y el alcance del walk RT1 en DEC-023
+(solo M4 hasta que una DEC añada rc al VM Zig). No hay código: `grep
+'"transfer"'` → 0 en ambos árboles. Cuando arranque el PR «fase E», el
+gate mínimo que debe llevar **en el mismo PR** (invariante 8 de AGENTS):
+
+- `ui/transfer_{aliased,used_after,captured}.astra` — S1/S2 en los dos
+  typecheckers, primera línea byte-idéntica seed↔zig (`ui_message_parity.sh`).
+- `ui/spawn_global_atomic.astra` — rechazo de cruce sin unicidad.
+- `conformance/transfer/transfer_{unique,copy}.astra` — camino feliz
+  (move + nil invalidation) y `.copy()`, ejecutándose en las 4 rutas.
+- `ui/builtin_shadow_transfer.astra` — nombre reservado (DEC-015/022).
+- RT1 (`rc==1` en el cruce): **no** en esta fase — es el gate del primer
+  scheduler/send, en M4 (DEC-023); su pin vive en la suite Phase 2.
+- `--check-constructs` debe seguir en 47/27 (DEC-022: sin keyword nueva).

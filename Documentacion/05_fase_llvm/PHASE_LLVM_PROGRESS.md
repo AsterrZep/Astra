@@ -1303,3 +1303,15 @@ Gates tras la investigación, **a esa fecha (2026-10-24)** y sin cambios
 de código (sólo docs): paridad **157/157** ×4 rutas (plano y `-O2`),
 filecheck **7/7**, seed **259/259**, dump parity **146/0**. Después
 cambió sólo por c.2 (§16.2): hoy 159/159, 8/8, 260/260 y 147/0.
+
+## 18. DEC-022/023 — `transfer` builtin y RT1 anclado en M4 (2026-10-28)
+
+DEC-012 (Opción F) se ratificó como `Aceptada (doc)` con dos decisiones
+hijas que importan al backend: **DEC-022** — `transfer(x)` es un builtin
+de forma de llamada, no keyword (sin registro de constructos; el nombre
+entra en las listas reservadas de DEC-015); **DEC-023** — el walk de
+unicidad RT1 vive **aquí (M4)** hasta que una decisión futura añada rc al
+VM Zig, y será el gate de entrada del primer scheduler/send. El backend
+no cambia hoy: `grep transfer` → 0; la fila de §17 sobre el ABI dual
+sigue pendiente de `TYPE_RESULT` en Fase 2. Referencias: `DECISIONES.md`
+DEC-012/022/023, `ARCHITECTURE.md` §2.6, `PHASE2_PROGRESS.md` §11.

@@ -150,7 +150,7 @@ Astra's design philosophy targets a specific niche: **Python-level ergonomics wi
 - Mutable parameters not supported in async procs
 - Standard library threadpool officially deprecated
 
-**Critical Issue:** Nim's concurrency story represents a cautionary tale — fundamental feature evolution can destabilize an entire language ecosystem.
+**Critical Issue:** Nim's concurrency story represents a cautionary tale — fundamental feature evolution can destabilize an entire language ecosystem. Astra's counter-position (DEC-012/§2.6): it only pays atomic/ownership machinery at the fiber boundary — intra-fiber sharing is free, and crossing requires proven uniqueness (static) or an `rc==1` walk (RT1, M4).
 
 #### FFI / Interoperability
 - **C/C++:** Direct FFI via `{.importc.}` pragma, compiles to C
