@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Ciclo post-M3 «camino óptimo» (2026-10-28, PRs #31–#34)**: remate de
+  docs, decisiones y dos componentes self-hosting:
+  - **Contadores verificados** en `INDICE`/`README`/`AGENTS`/`CHANGELOG`
+    (regla «los contadores se verifican, no se recuerdan»): seed **326/0**,
+    sweep **155/3skip/0fail**, zig **74/74**, dump_parity **200/0**,
+    llvm_parity **212/212** (plain y `-O2`), lexer/io/parser gates.
+  - **Backlog del libro absorbido en `ARCHITECTURE.md`** (PR #28): DEC-008
+    (§11, patrones calificados ejecutados), DEC-009 (§2.2), DEC-013..020
+    (§32.2 tabla de builtins), DEC-015 (§30.1), DEC-016/017 (§39.2),
+    DEC-014 (§29.3) + `result_match.astra` honestado (no tocaba match ni
+    Result) y sus 2 filas engañosas de `PHASE1_PROGRESS` corregidas.
+  - **DEC-012 ratificada** (`Aceptada (doc)`) con **DEC-022**
+    (`transfer(x)` = builtin, no keyword) y **DEC-023** (walk RT1 anclado en
+    M4 hasta scheduler/send) — cierra los 4 huecos de `research/031` §4;
+    invariant 8 en `AGENTS.md`, estimación 15–25 d/h del PR fase E, plan
+    de gates en `PHASE2_PROGRESS` §11. Única `Propuesta` restante: DEC-021.
+  - **Stdlib post-M3 en Astra puro (DEC-024, PR #33)**: helpers
+    `contains`/`index_of`/`split` con semántica fijada (aguja vacía,
+    campos preservados, `sep` vacío = bytes), 7 tests en
+    `conformance/stdlib/` + round-trip C, 0 líneas de compilador.
+  - **`parser.astra` — segundo componente self-hosting (DEC-025, PR #34)**:
+    parser de Astra-0 escrito en Astra-0 (Pratt sobre la precedencia del
+    seed), golden independiente de `--dump-ast | normalize_ast.awk` con
+    freshness check, gate de **7 rutas** cableado en CI.
+  - **Skills de agentes actualizadas** (`.agents/skills/astra-dev-loop`,
+    `astra-seed-workstreams`) con el entorno verificado (instalación de
+    Zig 0.16, workaround del `.sframe` de crt1 para `-Dllvm`), regla de
+    commits firmados con `-S`, y los gotchas de Astra-0 ejecutados en las
+    4 rutas.
+
 - **Respuesta a la crítica externa → decisión, implementación y libro
   (2026-10-27/28, 17 PRs)**: la crítica (`research/025`) señalaba cuatro
   decisiones de runtime abiertas, un modelo de seguridad sin enforcement, un
