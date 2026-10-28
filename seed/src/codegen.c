@@ -230,8 +230,10 @@ typedef struct {
 } BuiltinDef;
 
 static const BuiltinDef cg_builtins[] = {
-    { "print", "astra_builtin_print" },
-    { "len",   "astra_builtin_len"   },
+    { "print",     "astra_builtin_print"     },
+    { "len",       "astra_builtin_len"       },
+    { "to_string", "astra_builtin_to_string" },
+    { "read_file", "astra_builtin_read_file" },
 };
 
 static const BuiltinDef *find_builtin(const char *name) {

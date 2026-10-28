@@ -306,6 +306,8 @@ pub const VM = struct {
     // seed's vm.c — research/028 §1.3 B, no id field in FnObj).
     builtin_print_fn: *FnObj = undefined,
     builtin_len_fn: *FnObj = undefined,
+    builtin_to_string_fn: *FnObj = undefined,
+    builtin_read_file_fn: *FnObj = undefined,
 
     error_msg: []const u8 = "",
     error_line: u32 = 0,
@@ -345,6 +347,12 @@ pub const VM = struct {
         const g = try a.create(FnObj);
         g.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
         vm.builtin_len_fn = g;
+        const ts = try a.create(FnObj);
+        ts.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_to_string_fn = ts;
+        const rf = try a.create(FnObj);
+        rf.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_read_file_fn = rf;
         return vm;
     }
 
@@ -823,6 +831,10 @@ pub const VM = struct {
                         if (!self.push(bc.vFn(self.builtin_print_fn))) return .runtime_error;
                     } else if (std.mem.eql(u8, name, "len")) {
                         if (!self.push(bc.vFn(self.builtin_len_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "to_string")) {
+                        if (!self.push(bc.vFn(self.builtin_to_string_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "read_file")) {
+                        if (!self.push(bc.vFn(self.builtin_read_file_fn))) return .runtime_error;
                     } else {
                         var found = false;
                         var i: usize = 0;
@@ -1242,6 +1254,10 @@ pub const VM = struct {
                         const args = self.stack[fn_idx + 1 .. fn_idx + 1 + argc];
                         const result = if (fn_obj == self.builtin_len_fn)
                             (self.builtinLen(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_to_string_fn)
+                            (self.builtinToString(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_read_file_fn)
+                            (self.builtinReadFile(args, line) orelse return .runtime_error)
                         else
                             try self.builtinPrint(args);
                         self.sp = fn_idx;
@@ -1451,6 +1467,54 @@ pub const VM = struct {
             },
         };
         return bc.vInt(@intCast(n));
+    }
+
+    /// Builtin `to_string(x) -> string` (DEC-014, research/028 PR2): integers
+    /// only, formatted with the same `{d}` printValue uses for `.int`, so
+    /// `print(to_string(n))` is byte-identical to `print(n)` on every route.
+    /// Returns null with the VM error already set.
+    fn builtinToString(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 1) {
+            _ = self.rt(line, "expected 1 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const v = args[0];
+        if (tag(v) != .int) {
+            _ = self.rt(line, "to_string expects an int, got {s}", .{typeName(v)});
+            return null;
+        }
+        var buf: [32]u8 = undefined; // int64 min is 20 chars + sign
+        const s = std.fmt.bufPrint(&buf, "{d}", .{v.int}) catch {
+            _ = self.rt(line, "to_string conversion failed", .{});
+            return null;
+        };
+        const owned = self.a.dupe(u8, s) catch {
+            _ = self.rt(line, "to_string conversion failed", .{});
+            return null;
+        };
+        return bc.vString(owned);
+    }
+
+    /// Builtin `read_file(path) -> string` (DEC-014, research/028 PR2): every
+    /// failure mode collapses into `cannot open file '<path>'` so all four
+    /// routes report identical text (mirror of the seed's builtin_read_file).
+    /// Returns null with the VM error already set.
+    fn builtinReadFile(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 1) {
+            _ = self.rt(line, "expected 1 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const p = args[0];
+        if (tag(p) != .string) {
+            _ = self.rt(line, "expected string path, got {s}", .{typeName(p)});
+            return null;
+        }
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const data = std.Io.Dir.cwd().readFileAlloc(io, p.string, self.a, .unlimited) catch {
+            _ = self.rt(line, "cannot open file '{s}'", .{p.string});
+            return null;
+        };
+        return bc.vString(data);
     }
 };
 

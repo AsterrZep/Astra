@@ -1,0 +1,10 @@
+// Positive read_file gate program (research/028 PR2 §3, §4.3): reads the
+// sibling fixture by RELATIVE path — the gate script fixes the cwd, because
+// no conformance gate may assume one (§2.4: seed/, zig/, repo root, wasm).
+// print(len(src)) + print(src) pins both the byte count and the exact bytes,
+// including the embedded newline.
+fn main() {
+    let src = read_file("fixture_read.txt")
+    print(len(src))
+    print(src)
+}

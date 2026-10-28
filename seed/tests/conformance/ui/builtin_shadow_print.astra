@@ -1,0 +1,7 @@
+// DEC-015 (research/028 PR2): the same rule for a top-level FUNCTION. This
+// case used to be reported by the duplicate-function check (the builtin symbol
+// looked like a second `print`), which named the wrong rule; the builtin-name
+// check now runs first, in the first pass, and reports exactly this once.
+// EXPECT-ERROR: 'print' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 7:1: error: 'print' is a builtin and cannot be redeclared
+fn print() { }

@@ -503,6 +503,14 @@ pub const Emitter = struct {
     // `len(x)` sobre una caja/par (DEC-013): nombre dinámico ok/err/some/nil
     // para el mensaje `cannot take length of <tipo>` del VM.
     r_len_fail: c.LLVMValueRef,
+    // `to_string(x)` (DEC-014): entero → string fresco; el fallo dinámico
+    // nombra el valor como el VM (`to_string expects an int, got <tipo>`).
+    r_to_string: c.LLVMValueRef,
+    r_to_string_fail: c.LLVMValueRef,
+    // `read_file(path)` (DEC-014): abre y lee en un string fresco; el fallo
+    // dinámico nombra el valor (`expected string path, got <tipo>`).
+    r_read_file: c.LLVMValueRef,
+    r_read_file_fail: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
@@ -630,6 +638,10 @@ pub const Emitter = struct {
             .r_enum_eq = undefined,
             .r_array_eq = undefined,
             .r_len_fail = undefined,
+            .r_to_string = undefined,
+            .r_to_string_fail = undefined,
+            .r_read_file = undefined,
+            .r_read_file_fail = undefined,
         };
         self.declareRuntime();
         return self;
@@ -692,6 +704,14 @@ pub const Emitter = struct {
         self.r_array_eq = self.declRet(self.t_i32, "astra_llvm_array_eq", &.{ self.t_ptr, self.t_ptr });
         // `len` sobre caja/par (DEC-013): falla nombrando el tipo como el VM.
         self.r_len_fail = self.declVoid("astra_llvm_len_fail", &.{ self.t_i32, self.t_ptr });
+        // `to_string` (DEC-014): entero → bloque string fresco; el fallo
+        // dinámico nombra ok/err/some/nil como el VM.
+        self.r_to_string = self.declRet(self.t_ptr, "astra_llvm_to_string", &.{ self.t_i32, self.t_i64 });
+        self.r_to_string_fail = self.declVoid("astra_llvm_to_string_fail", &.{ self.t_i32, self.t_ptr });
+        // `read_file` (DEC-014): path → bloque string fresco (o error fatal
+        // `cannot open file '<path>'` dentro del helper).
+        self.r_read_file = self.declRet(self.t_ptr, "astra_llvm_read_file", &.{ self.t_i32, self.t_ptr });
+        self.r_read_file_fail = self.declVoid("astra_llvm_read_file_fail", &.{ self.t_i32, self.t_ptr });
 
         // Contador de profundidad de llamada (guard VM_CALL_DEPTH): global
         // interno, cero-inicializado; el backend C usa `astra_depth` igual.
@@ -717,11 +737,14 @@ pub const Emitter = struct {
             self.r_print_array,    self.r_index_fail,     self.r_index_nil_fail,
             self.r_print_struct,   self.r_struct_eq,      self.r_print_enum,
             self.r_enum_eq,        self.r_array_eq,       self.r_len_fail,
+            self.r_to_string,      self.r_to_string_fail,
+            self.r_read_file,      self.r_read_file_fail,
         };
         for (helpers) |h| self.addFnAttr(h, "nounwind");
         const noreturn_helpers = [_]c.LLVMValueRef{
             self.r_fail,           self.r_boxed_order_fail, self.r_index_fail, self.r_index_nil_fail,
             self.r_str_order_fail, self.r_len_fail,
+            self.r_to_string_fail, self.r_read_file_fail,
         };
         for (noreturn_helpers) |h| {
             self.addFnAttr(h, "noreturn");
@@ -3098,6 +3121,8 @@ pub const Emitter = struct {
                 const name = self.instanceCallee(call.callee, name0);
                 if (std.mem.eql(u8, name, "print")) return self.emitPrint(idx);
                 if (std.mem.eql(u8, name, "len")) return self.emitLen(idx);
+                if (std.mem.eql(u8, name, "to_string")) return self.emitToString(idx);
+                if (std.mem.eql(u8, name, "read_file")) return self.emitReadFile(idx);
                 const info = self.fns.get(name) orelse {
                     // Constructor pelón de variante de enum: `Circle(x)`
                     // (el seed resuelve la variante en cualquier enum).
@@ -3425,6 +3450,179 @@ pub const Emitter = struct {
         c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
         var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), box };
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_len_fail), self.r_len_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+    }
+
+    /// `to_string(x) -> string` (DEC-014, research/028 PR2): entero → decimal
+    /// con la conversión de astra_llvm_print_i64 (`%lld`), así
+    /// `print(to_string(n))` es byte-idéntico a `print(n)` en las cuatro
+    /// rutas. Un receptor no entero cae al guard con la redacción exacta del
+    /// VM (`to_string expects an int, got <tipo>`); un string/array/struct nil
+    /// se nombra `nil` antes que su tipo, como type_name del VM.
+    fn emitToString(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        if (args.len != 1) {
+            // El typechecker registra to_string con exactamente un parámetro:
+            // esto solo lo alcanza un programa que se saltó el chequeo.
+            self.unsupported(idx, "to_string takes exactly one argument");
+            return null;
+        }
+        const line = self.tree.loc(idx).line;
+        const v = self.emitExpr(args[0]) orelse return null;
+        // Tras el guard: inalcanzable — el dummy solo puebla el bloque muerto.
+        const dummy = Val{ .ref = c.LLVMConstPointerNull(self.t_ptr), .ty = .str_ };
+        switch (v.ty) {
+            .i64_ => {
+                var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), v.ref };
+                const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_to_string), self.r_to_string, &fargs, 2, "");
+                self.emitTmpPush(rp);
+                return .{ .ref = rp, .ty = .str_ };
+            },
+            .f64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "to_string expects an int, got float");
+                return dummy;
+            },
+            .bool_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "to_string expects an int, got bool");
+                return dummy;
+            },
+            .str_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "to_string expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "to_string expects an int, got string");
+                return dummy;
+            },
+            .arr_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "to_string expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "to_string expects an int, got array");
+                return dummy;
+            },
+            .struct_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "to_string expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "to_string expects an int, got struct");
+                return dummy;
+            },
+            .enum_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "to_string expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "to_string expects an int, got enum");
+                return dummy;
+            },
+            .fn_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "to_string expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "to_string expects an int, got function");
+                return dummy;
+            },
+            .boxed_ => {
+                self.emitToStringBoxFail(line, v.ref);
+                return dummy;
+            },
+            .pair_ => {
+                const bx = self.coerceToBox(v, idx) orelse return null;
+                self.emitToStringBoxFail(line, bx.ref);
+                return dummy;
+            },
+        }
+    }
+
+    /// Fallo dinámico de `to_string` sobre caja/par: `astra_llvm_to_string_fail`
+    /// nombra nil/ok/err/some como type_name del VM y aborta (marcado
+    /// noreturn), igual que emitLenBoxFail — una caja nunca contiene un entero
+    /// plano en este modelo.
+    fn emitToStringBoxFail(self: *Emitter, line: u32, box: c.LLVMValueRef) void {
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "to_string_fail");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "to_string_cont");
+        const br = c.LLVMBuildCondBr(self.builder, c.LLVMConstInt(self.t_i1, 1, 0), fail_bb, cont_bb);
+        self.coldBranch(br, true);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), box };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_to_string_fail), self.r_to_string_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+    }
+
+    /// `read_file(path) -> string` (DEC-014, research/028 PR2): el helper abre
+    /// y lee el fichero entero en un string fresco; cualquier fallo de
+    /// apertura/lectura es el mismo error `cannot open file '<path>'` de las
+    /// otras rutas. Un `let s: string` sin inicializador llega como puntero
+    /// NULL y se rechaza en runtime (`expected string path, got nil`), como en
+    /// el VM — el typechecker acepta la anotación string.
+    fn emitReadFile(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        if (args.len != 1) {
+            self.unsupported(idx, "read_file takes exactly one argument");
+            return null;
+        }
+        const line = self.tree.loc(idx).line;
+        const v = self.emitExpr(args[0]) orelse return null;
+        const dummy = Val{ .ref = c.LLVMConstPointerNull(self.t_ptr), .ty = .str_ };
+        switch (v.ty) {
+            .str_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "expected string path, got nil");
+                var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), v.ref };
+                const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_read_file), self.r_read_file, &fargs, 2, "");
+                self.emitTmpPush(rp);
+                return .{ .ref = rp, .ty = .str_ };
+            },
+            // Los casos siguientes son inalcanzables por el typechecker (el
+            // parámetro está anotado string); se emiten como guard defensivo
+            // con la redacción del VM para que ni una ruta se salte el chequeo.
+            .i64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "expected string path, got int");
+                return dummy;
+            },
+            .f64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "expected string path, got float");
+                return dummy;
+            },
+            .bool_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "expected string path, got bool");
+                return dummy;
+            },
+            .arr_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "expected string path, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "expected string path, got array");
+                return dummy;
+            },
+            .struct_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "expected string path, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "expected string path, got struct");
+                return dummy;
+            },
+            .enum_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "expected string path, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "expected string path, got enum");
+                return dummy;
+            },
+            .fn_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "expected string path, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "expected string path, got function");
+                return dummy;
+            },
+            .boxed_ => {
+                self.emitReadFileBoxFail(line, v.ref);
+                return dummy;
+            },
+            .pair_ => {
+                const bx = self.coerceToBox(v, idx) orelse return null;
+                self.emitReadFileBoxFail(line, bx.ref);
+                return dummy;
+            },
+        }
+    }
+
+    /// Fallo dinámico de `read_file` sobre caja/par (espejo de emitLenBoxFail):
+    /// `astra_llvm_read_file_fail` nombra el valor como type_name del VM y
+    /// aborta (noreturn).
+    fn emitReadFileBoxFail(self: *Emitter, line: u32, box: c.LLVMValueRef) void {
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "read_file_fail");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "read_file_cont");
+        const br = c.LLVMBuildCondBr(self.builder, c.LLVMConstInt(self.t_i1, 1, 0), fail_bb, cont_bb);
+        self.coldBranch(br, true);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), box };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_read_file_fail), self.r_read_file_fail, &fargs, 2, "");
         _ = c.LLVMBuildUnreachable(self.builder);
         c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
     }
@@ -4273,6 +4471,9 @@ pub const Emitter = struct {
                     // len(x) -> i64 (DEC-013): el inicializador global de un
                     // `let n = len(…)` necesita el tipo sin emitir el valor.
                     if (std.mem.eql(u8, nm, "len")) return .i64_;
+                    // to_string/read_file -> string (DEC-014), idéntica razón.
+                    if (std.mem.eql(u8, nm, "to_string")) return .str_;
+                    if (std.mem.eql(u8, nm, "read_file")) return .str_;
                     if (self.fns.get(nm)) |fi| return fi.ret_ty;
                     if (self.variant_map.contains(nm)) return .enum_;
                     return null;

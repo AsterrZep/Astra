@@ -511,6 +511,108 @@ void *astra_llvm_str_index(unsigned line, const void *ps, int64_t i) {
     return out;
 }
 
+/* ---- to_string / read_file (DEC-014, research/028 PR2) ------------------- */
+
+/* `to_string(i64) -> string`: %lld + long long, la MISMA conversión que
+ * astra_llvm_print_i64, así `print(to_string(n))` es byte-idéntico a
+ * `print(n)` en LP64, ILP32 (wasm32-wasi) y LLP64 — el `snprintf("%ld")` del
+ * seed se truncaría a 32 bits en wasm. El bloque sale por astra_llvm_alloc
+ * (rc/kind) como str_concat/str_index, y el emisor lo registra como temporal
+ * igual que a esos. */
+void *astra_llvm_to_string(unsigned line, int64_t v) {
+    char buf[32]; /* int64 min: 20 chars + signo */
+    int n = snprintf(buf, sizeof buf, "%lld", (long long)v);
+    if (n < 0) astra_llvm_fail(line, "to_string conversion failed");
+    AstraLLVMStr *s = (AstraLLVMStr *)astra_llvm_alloc(
+        line, (int64_t)sizeof(int64_t) + n + 1, ASTRA_LLVM_KIND_STR);
+    s->len = n;
+    memcpy(s->data, buf, (size_t)n + 1);
+    return s;
+}
+
+/* `to_string` sobre caja/par (espejo de astra_llvm_len_fail): en este modelo
+ * una caja es nil/ok/err/some — nunca un entero plano, igual que el VM nunca
+ * ve un VAL_INT envuelto — así que el intento SIEMPRE falla y nombra el valor
+ * con type_name, el mismo texto de las otras tres rutas. El emisor marca la
+ * llamada noreturn y pone `unreachable` detrás. */
+void astra_llvm_to_string_fail(unsigned line, const void *p) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "to_string expects an int, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
+/* `read_file(path) -> string`: abre en binario y lee por bloques (sin
+ * fseek/ftell: el tamaño no es fiable en todos los destinos, y el VM lee igual).
+ * TODOS los fallos caen en `cannot open file '<path>'` — la redacción
+ * unificada de las cuatro rutas (DEC-014), la misma que la del driver del
+ * seed para un fichero que no se puede abrir. El path se copia
+ * NUL-terminado a mano: el bloque del string es length-bounded, como el par
+ * (str, len) del VM. El resultado sale por astra_llvm_alloc con el rc del
+ * resto de strings. */
+void *astra_llvm_read_file(unsigned line, const void *ppath) {
+    if (!ppath) {
+        astra_llvm_fail(line, "expected string path, got nil");
+        return NULL; /* noreturn en el IR; en C, para el compilador */
+    }
+    const AstraLLVMStr *ps = (const AstraLLVMStr *)ppath;
+    char *path = (char *)malloc((size_t)ps->len + 1);
+    if (!path) astra_llvm_fail(line, "out of memory");
+    memcpy(path, ps->data, (size_t)ps->len);
+    path[ps->len] = '\0';
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        /* 192 bytes: el mismo recorte que astra_errorf del backend C. */
+        char msg[192];
+        snprintf(msg, sizeof msg, "cannot open file '%s'", path);
+        free(path);
+        astra_llvm_fail(line, msg);
+        return NULL;
+    }
+    /* Buffer temporal con malloc (no astra_llvm_alloc): el objeto con
+     * rc/kind sólo existe cuando ya se conoce el tamaño final. */
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { fclose(f); free(path); astra_llvm_fail(line, "out of memory"); return NULL; }
+    for (;;) {
+        if (len == cap) {
+            char *bigger = (char *)realloc(buf, cap * 2);
+            if (!bigger) { free(buf); free(path); fclose(f); astra_llvm_fail(line, "out of memory"); return NULL; }
+            buf = bigger;
+            cap *= 2;
+        }
+        size_t got = fread(buf + len, 1, cap - len, f);
+        len += got;
+        if (got == 0) break; /* EOF o error de lectura */
+    }
+    int io_err = ferror(f) != 0;
+    fclose(f);
+    if (io_err) {
+        char msg[192];
+        snprintf(msg, sizeof msg, "cannot open file '%s'", path);
+        free(buf);
+        free(path);
+        astra_llvm_fail(line, msg);
+        return NULL;
+    }
+    free(path);
+    AstraLLVMStr *out = (AstraLLVMStr *)astra_llvm_alloc(
+        line, (int64_t)sizeof(int64_t) + (int64_t)len + 1, ASTRA_LLVM_KIND_STR);
+    out->len = (int64_t)len;
+    memcpy(out->data, buf, len);
+    out->data[len] = '\0';
+    free(buf);
+    return out;
+}
+
+/* `read_file` sobre caja/par (espejo de astra_llvm_to_string_fail): la caja
+ * es nil/ok/err/some, nunca un string plano, y type_name del VM lo dice. */
+void astra_llvm_read_file_fail(unsigned line, const void *p) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "expected string path, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
 /* ---- structs (M2.b) ----------------------------------------------------- */
 
 /* Structs are heap handles like arrays (aliasing, Hallazgo G) but printed and

@@ -15,6 +15,10 @@ const wasi = new WASI({
   args: argv.slice(2),
   env: {},
   returnOnExit: true,
+  // research/028 §2.4: `read_file` (PR2) necesita que el sandbox WASI vea el
+  // directorio de trabajo; sin preopens todo fopen falla con ENOENT y la ruta
+  // wasm divergiría de la VM por el camino de ejecución, no por el lenguaje.
+  preopens: { "/": process.cwd() },
 });
 
 const bytes = await readFile(wasmPath);

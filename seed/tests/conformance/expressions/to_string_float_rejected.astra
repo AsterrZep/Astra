@@ -1,0 +1,7 @@
+// to_string is int→string (DEC-014): a float receiver is rejected at RUNTIME
+// with the same defensive wording on all four routes, the way `len` already
+// rejects an int (expressions/len_int_runtime_error.astra).
+// EXPECT-RUNTIME-ERROR: to_string expects an int, got float
+fn main() {
+    print(to_string(1.5))
+}

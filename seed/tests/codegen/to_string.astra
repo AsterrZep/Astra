@@ -1,0 +1,14 @@
+// C round-trip for to_string (DEC-014): the generic builtin dispatch
+// (fun(args, argc)) must reach astra_builtin_to_string, and its %ld
+// conversion must print what the VM prints — `print(to_string(n))` byte-equal
+// to `print(n)` on both backends.
+// EXPECT: 42
+// EXPECT: -7
+// EXPECT: 0
+// EXPECT: 42x
+fn main() {
+    print(to_string(42))
+    print(to_string(-7))
+    print(to_string(0))
+    print(to_string(42) + "x")
+}
