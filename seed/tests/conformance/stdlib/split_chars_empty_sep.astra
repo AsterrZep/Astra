@@ -1,0 +1,48 @@
+// split(s, "") — caso especial: array de bytes de s (DEC-024, tipo JS);
+// el codigo de usuario no puede lanzar errores de runtime, asi que el sep
+// vacio tiene semantica definida en vez de "error".
+// EXPECT: [a, b, c]
+// EXPECT: []
+// EXPECT: [x]
+fn split(s: string, sep: string) -> [string] {
+    let m = len(sep);
+    let n = len(s);
+    if m == 0 {
+        if n == 0 { return [""]; }
+        let mut chars = [s[0]];
+        let mut k: i64 = 1;
+        while k < n {
+            chars = push(chars, s[k]);
+            k = k + 1;
+        }
+        return chars;
+    }
+    let mut parts = [""];
+    let mut count: i64 = 0;
+    let mut start: i64 = 0;
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sep[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit {
+            if count == 0 { parts[0] = substr(s, start, i - start); } else { parts = push(parts, substr(s, start, i - start)); }
+            count = count + 1;
+            start = i + m;
+            i = i + m;
+        } else {
+            i = i + 1;
+        }
+    }
+    if count == 0 { parts[0] = substr(s, start, n - start); } else { parts = push(parts, substr(s, start, n - start)); }
+    parts
+}
+
+fn main() {
+    print(split("abc", ""));   // bytes
+    print(split("", ""));      // entrada vacia -> [""]
+    print(split("x", ""));     // un byte
+}

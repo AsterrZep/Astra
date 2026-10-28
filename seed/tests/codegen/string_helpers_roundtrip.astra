@@ -1,0 +1,75 @@
+// C round-trip for the post-M3 string helpers (DEC-024): the three helpers
+// compose the way a small scanner does — probe with contains, locate with
+// index_of, consume with split+substr.
+// EXPECT: true
+// EXPECT: some(8)
+// EXPECT: [let x, 42]
+// EXPECT: 2
+fn contains(s: string, sub: string) -> bool {
+    let n = len(s);
+    let m = len(sub);
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sub[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit { return true; }
+        i = i + 1;
+    }
+    false
+}
+
+fn index_of(s: string, sub: string) -> i64? {
+    let n = len(s);
+    let m = len(sub);
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sub[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit { return some(i); }
+        i = i + 1;
+    }
+    none
+}
+
+fn split(s: string, sep: string) -> [string] {
+    let m = len(sep);
+    let n = len(s);
+    let mut parts = [""];
+    let mut count: i64 = 0;
+    let mut start: i64 = 0;
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sep[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit {
+            if count == 0 { parts[0] = substr(s, start, i - start); } else { parts = push(parts, substr(s, start, i - start)); }
+            count = count + 1;
+            start = i + m;
+            i = i + m;
+        } else {
+            i = i + 1;
+        }
+    }
+    if count == 0 { parts[0] = substr(s, start, n - start); } else { parts = push(parts, substr(s, start, n - start)); }
+    parts
+}
+
+fn main() {
+    let line = "let x = 42";
+    print(contains(line, " = "));
+    print(index_of(line, "42"));
+    print(split(line, " = "));
+    print(len(split(line, " = ")));
+}

@@ -1,0 +1,28 @@
+// index_of(s, sub) -> i64? — primera ocurrencia, DEC-024
+// EXPECT: some(2)
+// EXPECT: some(0)
+// EXPECT: nil
+// EXPECT: some(0)
+fn index_of(s: string, sub: string) -> i64? {
+    let n = len(s);
+    let m = len(sub);
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sub[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit { return some(i); }
+        i = i + 1;
+    }
+    none
+}
+
+fn main() {
+    print(index_of("banana", "na"));     // some(2) — la izquierda, no some(4)
+    print(index_of("abc", "a"));         // some(0)
+    print(index_of("hello", "xyz"));     // nil (none imprime nil)
+    print(index_of("hello", ""));        // some(0) — vacío en toda posición
+}

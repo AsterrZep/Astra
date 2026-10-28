@@ -31,6 +31,7 @@
 | DEC-021 | El manifest del proyecto y la CLI unificada se llaman **`astraea`** — `astraea.toml` + `astraea.lock` + comando `astraea` (estilo Cargo: nombre propio del *tool*, no del lenguaje); el `astra.toml` actual se queda como marcador de raíz **hasta** que la CLI exista, y el rename llega de una vez en ese PR (nota: la DEC-020 la crea el PR de M3) | **Propuesta** (dirección decidida 2026-10-28; implementación bloqueada hasta la CLI unificada) | 2026-10-28 | Mediciones de registros 2026-10-28 (sección abajo) · Spec: `ARCHITECTURE.md` §33.2 |
 | DEC-022 | `transfer(x)` es un **builtin** con sintaxis de llamada `transfer(x)` — no keyword: sin `constructs/transfer.c` ni fila de registro (`--check-constructs` sigue 47/27); el nombre se suma a las listas reservadas de DEC-015 en los dos typecheckers; la semántica (S1/S2 + invalidación R4) entra en el mismo PR que el constructo (fase E de DEC-012) | **Aceptada (doc)** — comportamiento pinneado por el PR fase E (`ui/builtin_shadow_transfer.astra`, `ui/transfer_*`, `conformance/transfer/*`) | 2026-10-28 | `research/026` §3.2/§3.5 (superficie `transfer(e)`); `research/031` §1-P2 y §3-E; AGENTS invariant 6; patrón DEC-013..020 |
 | DEC-023 | RT1 (walk `rc==1` en el cruce) vive en **M4** (ruta LLVM, que ya tiene rc desde M4.e) hasta que una decisión futura añada rc al VM Zig; M3 queda sin RT1 mientras DEC-009 mantenga la divergencia arena — el walk es gate de la primera feature con cruce real (scheduler/send), no antes | **Aceptada (doc)** — sin código hoy; el pin (`EXPECT-RUNTIME-ERROR: cannot transfer: value graph is shared`) llega con el scheduler, suite Phase 2 | 2026-10-28 | `research/031` §1-P1 («RT1 vive en M4…») y §3-F; `research/027` §3.2 op. 3A; `research/026` §3.2 fila RT1 (enmendada por cita) |
+| DEC-024 | Stdlib post-M3 en **Astra puro** (no builtins, plan de `research/028` §1.2): funciones `contains(s, sub) -> bool` (aguja vacía = `true`), `index_of(s, sub) -> i64?` (ocurrencia más a la izquierda; ausente = `none`; aguja vacía = `some(0)`), y `split(s, sep) -> [string]` (campos se preservan, sep al inicio/final da campo vacío, sin sep = `[s]`, **`sep` vacío = array de bytes de `s`** — caso especial tipo JS; nunca error, porque el código de usuario no puede lanzar errores de runtime) — cada test define sus helpers en línea (no existe stdlib compartida: el seed compila un fichero y `std/…` está rechazado) y los nombres **no** se reservan (libres para el usuario y para un futuro `Array.contains` de `research/015`) | Aceptada (test-pinned) | 2026-10-28 | `conformance/stdlib/{contains_basic,index_of_basic,split_basic,split_fields,split_chars_empty_sep}.astra`, `codegen/{contains,split}_roundtrip.astra`, `codegen/split_fields.astra` (4 rutas verificadas) (PR stdlib-postM3) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -848,3 +849,44 @@
   DEC-009 (hermana de esta decisión).
 - **Spec**: `ARCHITECTURE.md` §2.6 (párrafo 5, «el walk llega con el
   primer cruce real»).
+
+### DEC-024 — Stdlib post-M3: `contains`, `index_of`, `split` en Astra puro
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR stdlib-postM3
+  (2026-10-28).
+- **Fecha**: 2026-10-28.
+- **Decisión**: las tres funciones que `research/028` §1.2 dejó para M3
+  «en Astra puro sobre M1+M2» se implementan como **helpers de usuario, no
+  builtins** (0 bytes de compilador): cada programa/test define sus
+  funciones inline — hoy no existe vehículo para código Astra compartido
+  (el seed compila exactamente un fichero; `std/…` está rechazado por la
+  regla 4 de `modules.zig`; los gates son single-file por construcción).
+  Semántica fijada:
+  - `contains(s, sub) -> bool`: búsqueda byte a la izquierda; **sub vacío =
+    `true`** (está en toda posición, como en las bibliotecas maduras).
+  - `index_of(s, sub) -> i64?`: primera (más a la izquierda) ocurrencia;
+    ausente = `none`; **sub vacío = `some(0)`** (imprime `nil`/`some(N)`).
+  - `split(s, sep) -> [string]`: campos se **preservan** (`"a,,b"` →
+    `a`,``,`b`), sep al inicio/final produce campo vacío, sin sep = `[s]`,
+    `s` vacío = `[""]`, byte a byte; **`sep` vacío = array de bytes de `s`**
+    (caso especial tipo JS: `split("ab", "")` → `a`,`b`) — elegido en lugar
+    de un «error» porque el código de usuario **no puede** lanzar errores de
+    runtime (solo los builtins), y devolver `[s]` silenciaría bugs de sep
+    variable. Nunca recorta ni inventa campos.
+  - Contadores de índice tipados `i64` (`let mut i: i64 = 0`) porque `len`
+    devuelve `i64` (DEC-013/DEC-006).
+- **Alternativas consideradas**: builtins en los 4 motores (~8–9 ficheros,
+  4–6 d cada uno + nombres reservados DEC-015) — descartados: no hay
+  consumidor con necesidad de rendimiento aún (el lexer usa sondeos) y
+  reservar `contains`/`split` chocaría con el futuro `Array.contains` de
+  `research/015`; módulo `std/` compartido — imposible hoy (regla 4 +
+  single-file); `split` con `[]` literal como seed — descartado: el
+  emisor LLVM rechaza literales de array vacío (`emitter.zig:1415`) y
+  `llvm_parity` cuenta cualquier skip como fallo.
+- **Coste aceptado**: 0 líneas de compilador; duplicación de helpers en
+  cada programa (se elimina sola cuando exista resolución de módulos en el
+  seed — flip de la regla 4, PR futuro).
+- **Evidencia**: `conformance/stdlib/` (5 ficheros), `codegen/` (3
+  round-trips); verificados en VM seed, `--emit-c`+gcc, VM zig y
+  `--jit` LLVM con salida byte-idéntica.
+- **Spec**: `ARCHITECTURE.md` §32.2 (la tabla de builtins no crece; estas
+  funciones viven en el libro `09_libro/08_strings_texto.md`).

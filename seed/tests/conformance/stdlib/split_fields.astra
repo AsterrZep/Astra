@@ -1,0 +1,36 @@
+// split(s, sep) — bordes: sep al inicio/final, multi-byte y sep más largo, DEC-024
+// EXPECT: [, ab, ]
+// EXPECT: [x, y, z]
+// EXPECT: [abc]
+fn split(s: string, sep: string) -> [string] {
+    let m = len(sep);
+    let n = len(s);
+    let mut parts = [""];
+    let mut count: i64 = 0;
+    let mut start: i64 = 0;
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sep[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit {
+            if count == 0 { parts[0] = substr(s, start, i - start); } else { parts = push(parts, substr(s, start, i - start)); }
+            count = count + 1;
+            start = i + m;
+            i = i + m;
+        } else {
+            i = i + 1;
+        }
+    }
+    if count == 0 { parts[0] = substr(s, start, n - start); } else { parts = push(parts, substr(s, start, n - start)); }
+    parts
+}
+
+fn main() {
+    print(split(",ab,", ","));           // sep en ambos bordes: campos vacios
+    print(split("x--y--z", "--"));       // sep multi-byte
+    print(split("abc", "abcdef"));       // sep mas largo que s -> [s]
+}
