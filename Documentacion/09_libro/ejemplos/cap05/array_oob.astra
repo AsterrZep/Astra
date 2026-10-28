@@ -1,0 +1,5 @@
+// Reading past the end is a run-time error, never a silent junk value.
+fn main() {
+    let a = [1, 2, 3];
+    print(a[5]);
+}

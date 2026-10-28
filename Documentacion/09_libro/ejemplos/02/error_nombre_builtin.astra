@@ -1,0 +1,5 @@
+// DEC-015: los nombres de builtin están reservados en cualquier ámbito.
+fn main() {
+    let len = 5
+    print(len)
+}

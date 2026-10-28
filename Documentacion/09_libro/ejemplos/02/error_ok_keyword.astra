@@ -1,0 +1,5 @@
+// `ok` es keyword (las variantes de Result): no sirve como nombre de variable.
+fn main() {
+    let ok = 1
+    print(ok)
+}

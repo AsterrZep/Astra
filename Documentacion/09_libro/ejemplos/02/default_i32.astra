@@ -1,0 +1,7 @@
+// DEC-006: por defecto un literal entero es i32; si no cabe, cae a i64.
+fn main() {
+    let a = 42;            // sin anotación: i32
+    let b = 9999999999;    // no cabe en i32: el default cae a i64
+    print(a);
+    print(b);
+}

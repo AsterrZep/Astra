@@ -1,0 +1,6 @@
+// Entrada de dos módulos: `--dump-modules` pinta este grafo.
+import util
+
+fn main() {
+    print(util.doble(21))
+}

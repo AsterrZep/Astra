@@ -1,0 +1,21 @@
+// Los builtins de Astra-0 en acción: len, s[i], to_string, read_file.
+// (print, por supuesto, es el quinto.)
+fn main() {
+    // len: elementos de un array, bytes de un string
+    let nums = [10, 20, 30]
+    print(len(nums))
+    print(len("hola"))
+
+    // s[i]: un string de 1 byte (índices desde 0)
+    let s = "hola"
+    print(s[0])
+    print(s[1] + s[3])
+
+    // to_string: entero -> string
+    let n = 42
+    print("n=" + to_string(n))
+
+    // read_file: todo el contenido como string (ejecuta este ejemplo
+    // desde ejemplos/cap14/, que la ruta es relativa al directorio de trabajo)
+    print(read_file("saludo.txt"))
+}

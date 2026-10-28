@@ -1,0 +1,15 @@
+// if/else como sentencia, `else if` en cadena y `if` como expresión.
+fn main() {
+    let x = 7;
+
+    if x > 10 {
+        print("grande");
+    } else if x > 5 {
+        print("medio");
+    } else {
+        print("pequeño");
+    }
+
+    let categoria = if x > 5 { "mayor" } else { "menor" };
+    print(categoria);
+}

@@ -1,0 +1,4 @@
+// `for` solo itera arrays y rangos: un entero suelto no es una secuencia.
+fn main() {
+    for i in 5 { print(i) }
+}

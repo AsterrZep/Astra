@@ -1,0 +1,46 @@
+// Capítulo 09 — traits: `impl T for X` exige todos los métodos con su
+// firma; un método inherent sombrea al del trait en cada call site.
+// Patrón fijado por seed/tests/conformance/traits/trait_conformance.astra.
+trait Math {
+    fn add(self, n: i32) -> i32
+    fn label(self) -> string
+}
+
+trait Marker {
+}
+
+struct Point {
+    x: i32
+}
+
+struct Other {
+    y: i32
+}
+
+impl Math for Point {
+    fn add(self, n: i32) -> i32 {
+        self.x + n
+    }
+    fn label(self) -> string {
+        return "point"
+    }
+}
+
+impl Marker for Other {
+}
+
+impl Point {
+    // También declarada en el trait: la versión inherent gana en TODOS los
+    // call sites (7, no 3) — el trait conserva la suya para quien la pida
+    // por su ruta.
+    fn add(self, n: i32) -> i32 {
+        self.x + n + 4
+    }
+}
+
+let p = Point { x: 1 }
+let o = Other { y: 5 }
+print(p.add(2))
+print(p.label())
+print(o.y)
+print("marker")

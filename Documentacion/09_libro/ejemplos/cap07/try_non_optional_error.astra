@@ -1,0 +1,5 @@
+// A `?` needs a tagged value: a bare i32 has no payload to unwrap.
+fn main() {
+    let x: i32 = 42;
+    print(x?);
+}

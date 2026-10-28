@@ -1,0 +1,7 @@
+// Los nombres de builtin no se pueden redeclarar en ningún ámbito (DEC-015).
+// Salida (stderr), error de COMPILACIÓN en ambos typecheckers:
+//   error_shadow_len.astra:5:5: error: 'len' is a builtin and cannot be redeclared
+fn main() {
+    let len = 5
+    print(len)
+}

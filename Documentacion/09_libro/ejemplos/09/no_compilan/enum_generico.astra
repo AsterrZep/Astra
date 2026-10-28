@@ -1,0 +1,9 @@
+// NO COMPILA HOY — límite documentado (PHASE2_PROGRESS §9.6): los enums
+// genéricos parsean y se declaran inertes; la construcción con argumentos
+// de tipo (`Wrap<i32>.Some(1)`) no parsea. Ver capítulo 09 «Aún no existe».
+// SALIDA ESPERADA (error): enum_generico.astra:8:20: error: unexpected token in expression
+enum Wrap<T> { Some(T) None }
+
+fn main() {
+    print(Wrap<i32>.Some(1))
+}

@@ -1,0 +1,24 @@
+// Lo que Astra-0 hace hoy: funciones, closures, arrays, strings y control de flujo.
+fn saludar(nombre: string) -> string {
+    "Hola, " + nombre
+}
+
+fn main() {
+    print(saludar("Astra"));
+
+    let nums = [3, 1, 4, 1, 5];
+    let mut total = 0;
+    for n in nums {
+        total = total + n;
+    }
+    print(total);
+
+    let mut i: i64 = 0;
+    while i < len(nums) {
+        print(nums[i]);
+        i = i + 1;
+    }
+
+    let doble = |x: i32| -> i32 { x * 2 };
+    print(doble(21));
+}

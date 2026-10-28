@@ -1,0 +1,9 @@
+// `let` es inmutable; `let mut` permite reasignar (ARCHITECTURE §8.1 / §30.2).
+fn main() {
+    let mut contador = 0;
+    contador = contador + 1;
+    contador = contador + 1;
+    let nombre = "Astra";
+    print(contador);
+    print(nombre);
+}

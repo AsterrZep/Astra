@@ -1,0 +1,25 @@
+// Capítulo 09 — funciones genéricas: el tipo se infiere en el punto de
+// llamada y cada combinación concreta se materializa una sola vez
+// (monomorfización). Patrones fijados por
+// seed/tests/conformance/generics/instantiate.astra.
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn choose<T>(cond: bool, a: T, b: T) -> T {
+    if cond { return a }
+    b
+}
+
+// Una fn genérica puede llamar a otra: la instancia de `fwd` resuelve la
+// de `identity` cuando su binding es concreto.
+fn fwd<T>(x: T) -> T {
+    identity(x)
+}
+
+print(identity(7))
+print(identity("hola"))
+print(choose(true, 1, 2))
+print(choose(false, "a", "b"))
+print(choose(true, true, false))
+print(fwd(42))

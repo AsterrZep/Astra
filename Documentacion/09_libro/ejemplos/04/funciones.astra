@@ -1,0 +1,19 @@
+// Funciones: parámetros anotados, return explícito e implícito (el valor de la
+// última expresión del cuerpo) y funciones sin valor de retorno.
+fn suma(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn restar(a: i32, b: i32) -> i32 {
+    return a - b;
+}
+
+fn saludar(nombre: string) {
+    print("Hola, " + nombre)
+}
+
+fn main() {
+    print(suma(2, 3));
+    print(restar(10, 4));
+    saludar("Astra");
+}

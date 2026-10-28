@@ -1,0 +1,6 @@
+// Asignar a una variable capturada es error de compilación (DEC-004).
+fn main() {
+    let mut n = 1
+    let f = |x: i32| -> i32 { n = n + x; n }
+    print(f(1))
+}

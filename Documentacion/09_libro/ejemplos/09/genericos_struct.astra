@@ -1,0 +1,23 @@
+// Capítulo 09 — structs genéricos: `Name<args>` en anotación de tipo y
+// literal inferido desde los valores de los campos. Patrón fijado por
+// seed/tests/conformance/generics/generic_struct.astra y generic_print.astra.
+struct Box<T> {
+    value: T
+}
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+fn unbox(b: Box<i32>) -> i32 {
+    b.value
+}
+
+let annotated: Box<i32> = Box { value: 42 }
+print(annotated.value)
+print(unbox(Box { value: 7 }))
+print(Pair { first: 1, second: "hola" }.second)
+print(Box { value: "deep" })
+print(Box { value: "hola" })
+print(Pair { first: 1, second: "x" })

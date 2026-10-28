@@ -1,0 +1,15 @@
+// Recursión: factorial y Fibonacci.
+fn fact(n: i32) -> i32 {
+    if n <= 1 { return 1; }
+    return n * fact(n - 1)
+}
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 { return n; }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    print(fact(5));
+    print(fib(10));
+}

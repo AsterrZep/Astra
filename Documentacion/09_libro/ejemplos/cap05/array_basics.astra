@@ -1,0 +1,11 @@
+// Array literal, indexing and element assignment.
+fn main() {
+    let xs = [10, 20, 30];
+    print(xs[0]);
+    print(xs[2]);
+
+    let mut ys = [1, 2];
+    ys[0] = 99;
+    print(ys[0]);
+    print(ys);
+}

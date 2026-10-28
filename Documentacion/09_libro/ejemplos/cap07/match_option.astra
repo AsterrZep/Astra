@@ -1,0 +1,8 @@
+// Match over an Option with a payload binding.
+fn main() {
+    let x = some(10)
+    match x {
+        some(v) => print(v),
+        none => print("nothing"),
+    }
+}

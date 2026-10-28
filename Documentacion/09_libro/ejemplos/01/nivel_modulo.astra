@@ -1,0 +1,5 @@
+print("module level")
+
+fn main() {
+    print("main")
+}

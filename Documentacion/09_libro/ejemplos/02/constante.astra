@@ -1,0 +1,8 @@
+// `const` también existe: constante de nivel de módulo o local.
+const VERSION = 1
+
+fn main() {
+    const local = 3
+    print(VERSION)
+    print(local)
+}

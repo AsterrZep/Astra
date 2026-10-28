@@ -1,0 +1,6 @@
+# Marcador de raíz de proyecto: `@/` se ancla en el directorio que contiene
+# este fichero (ARCHITECTURE §10.4 regla 3). El compilador sólo comprueba
+# HOY su existencia; leer [package] es trabajo del package manager futuro.
+[package]
+name = "ejemplo-cap10"
+version = "0.1.0"

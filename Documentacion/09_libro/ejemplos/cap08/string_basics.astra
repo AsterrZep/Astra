@@ -1,0 +1,14 @@
+// String literals, escapes, concatenation and content equality.
+fn main() {
+    let a = "hello ";
+    let b = "world";
+    print(a + b);
+    print("quote: \"  backslash: \\");
+    print("tab:\tend");
+    print("line1\nline2");
+
+    let e = "";
+    print(len(e));
+    print(e == (e + e));
+    print("abc" == "abc");
+}

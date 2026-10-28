@@ -1,0 +1,9 @@
+// Dependencia de nivel raíz, alcanzable desde cualquier directorio con @/.
+pub fn twice(x: i32) -> i32 {
+    x * 2
+}
+
+// Sin `pub`: no puede importarse desde otro módulo.
+fn helper() -> i32 {
+    99
+}

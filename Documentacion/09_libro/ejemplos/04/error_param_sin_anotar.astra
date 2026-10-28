@@ -1,0 +1,5 @@
+// Los parámetros de un lambda se anotan: sin anotación su tipo es `unknown`.
+fn main() {
+    let f = |x| { x + 1 }
+    print(f(2))
+}

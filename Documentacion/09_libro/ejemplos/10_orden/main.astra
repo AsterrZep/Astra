@@ -1,0 +1,5 @@
+// Orden de ejecución: las dependencias corren primero, la raíz la última.
+from deps import value
+
+print("2. raiz main corriendo")
+print(value())

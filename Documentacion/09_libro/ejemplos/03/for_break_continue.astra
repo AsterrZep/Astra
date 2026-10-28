@@ -1,0 +1,9 @@
+// break y continue dentro de for..in.
+fn main() {
+    let xs = [1, 2, 3, 4, 5, 6];
+    for x in xs {
+        if x == 2 { continue; }
+        if x == 5 { break; }
+        print(x);
+    }
+}

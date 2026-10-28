@@ -1,0 +1,17 @@
+// DEC-004: los closures capturan por valor — copian el handle en el momento
+// de construir el closure; reasignar la variable después no les llega.
+fn aplicar(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn main() {
+    let mut n = 5;
+    let f = |x: i32| -> i32 { x + n };
+    n = 10;
+    print(f(1));
+
+    let factor = 3;
+    let escalar = |x: i32| -> i32 { x * factor };
+    print(escalar(4));
+    print(aplicar(escalar, 5));
+}

@@ -1,0 +1,7 @@
+// DEC-007: el overflow de enteros en runtime es wrap definido (two's complement).
+fn main() {
+    let s: i64 = 4611686018427387904;
+    print(s + s);
+    let a: i32 = 2147483647;
+    print(a + 1);
+}
