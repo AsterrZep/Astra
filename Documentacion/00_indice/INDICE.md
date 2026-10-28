@@ -112,14 +112,16 @@ Los dos PDFs de los que arrancó todo: *Arquitectura Lenguaje Astra* y
 
 | Área | Estado | Gate / cifra |
 |:-----|:-------|:-------------|
-| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **260 passed, 0 failed** (ASan/UBSan/LSan): 113 no-UI + 116 `ui/` + 28 `codegen/` + 3 auxiliares |
-| Registro de constructos | ✅ | `--check-constructs` → **47 constructos, 27 operadores** |
-| Backend C (`--emit-c`) | ✅ | `sweep_emit_c.sh` → **113 total, 3 skip, 0 fail** |
-| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **147 ficheros, 0 divergentes** |
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **286 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **126 total, 3 skip, 0 fail** |
+| Registro de constructos | ✅ (índice documental — DEC-002) | `--check-constructs` → **47 constructos, 27 operadores**; hooks = aspiración, no plan de migración |
+| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **164 ficheros, 0 divergentes** |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
-| **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c (etapas c.1 y c.2) | `llvm_parity.sh` → **159/159** (y con `ASTRA_LLVM_OPT=2`) |
+| **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **176/176** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
+| **Decisiones de lenguaje** | ✅ 16 registradas | `DECISIONES.md` — DEC-001..016; las 4 decisiones abiertas de la crítica (025 §2.8) congeladas e implementadas |
+| **Stdlib Astra-0 (M1/M2)** | ✅ 4 builtins + lexer | `len`, `s[i]`, `to_string`, `read_file` en 4 rutas · `selfhost/lexer_gate.sh` → **4/4** (lexer escrito en Astra-0) |
+| **Enforcement entre fibras** | 🔵 Especificado, no implementado | `ARCHITECTURE.md` §2.6 (Opción F) · DEC-012 `Propuesta` → regla 5 de AGENTS bloquea backend work |
 | Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
-| **Fase 3** — Astra se compila a sí misma | ⏳ Pendiente | la prueba final |
+| **Fase 3** — Astra se compila a sí misma | ⏳ Pendiente | prerequisitos: stdlib M1/M2 ✅ + árbol de compilador en Astra |
 
 ---
 

@@ -173,4 +173,15 @@ done < <(
 
 echo "----"
 echo "llvm_parity: total=$total ok=$((total - skip - excl - fail)) skip=$skip excl=$excl fail=$fail opt=$OPT san=${SAN:-none}"
+# No silent coverage loss (lección de research/031/PR#15): a regression can
+# turn an `ok` into a `skip` (emit rejects the file) while `fail` stays 0 —
+# that is exactly how the DEC-008 top-level regression hid for one merge. A
+# case genuinely outside the backend's subset belongs in EXCLUDE, with a
+# comment; anything else skipping is a failure.
+if [ "$skip" -gt 0 ]; then
+    echo "llvm_parity: FAIL — $skip case(s) skipped: coverage shrank vs the last run." >&2
+    echo "  Fix the emitter, or (only for a case deliberately outside the LLVM" >&2
+    echo "  subset) add it to EXCLUDE at the top of this script with a comment." >&2
+    exit 1
+fi
 [ "$fail" -eq 0 ]
