@@ -1,4 +1,4 @@
-// DEC-001/DEC-002 (research/027 §2): the other half of the contract — a
+// DEC-001 (research/027 §2): the other half of the contract — a
 // `let` binding never accepts a write, not even to a field.
 // EXPECT-ERROR: cannot assign through immutable variable 'p'
 struct P { x: i32 }

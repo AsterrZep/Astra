@@ -2,6 +2,14 @@
 
 Lenguaje de programación multi-paradigma, de propósito general y científico, diseñado para unir la ergonomía de Python/TypeScript con la velocidad nativa de C/Rust, sin la complejidad del Borrow Checker ni las pausas de GC tradicionales.
 
+> **Decisiones de runtime (2026-10-28)**: las decisiones `DEC-006`–`DEC-019`
+> de [`DECISIONES.md`](DECISIONES.md) — anchuras de enteros, wrap, scopes de
+> variantes de enums, divergencia de memoria, semántica de agregados, los
+> 8 builtins del stdlib, reserva de nombres y los gates de selfhosting —
+> **forman parte de esta especificación**, cada una con su test de
+> conformidad como evidencia. Cuando este documento y `DECISIONES.md`
+> difieran en runtime, manda `DECISIONES.md`.
+
 ---
 
 ## 1. Pilares Fundamentales
@@ -57,6 +65,11 @@ Modelo de Memoria: Secuencialmente Consistente para Programas Libres de Carreras
 | **Move Semantics** | `var` = mutable. Para transferir a otra fibra: `transfer(var)`. Invalida la variable emisora. |
 | **Barreras de Memoria** | Para modificación concurrente: `Atomic[T]` con semántica Acquire-Release. |
 
+> **Nomenclatura [verificado 2026-10-28]**: la superficie real es `let` /
+> `let mut` (§8.1 — `val` y `var` como introductores quedaron descartados el
+> 2026-09-16 y **`val` ni siquiera lexea hoy**; `var` es token sin uso).
+> Esta tabla describe la *intención*: traduce `val`→`let`, `var`→`let mut`.
+
 *El enforcement de «Move Semantics» (quién verifica que `transfer` es legal) está especificado en **§2.6** — no implementado; `transfer` es un builtin futuro (DEC-012).*
 
 ### 2.5 Semántica de agregados en Astra-0 (decisión del 2026-09-21)
@@ -74,7 +87,8 @@ print(a[0])        # 99
 Fijado por `seed/tests/conformance/arrays/alias_write.astra` (`let mut`↔`let mut`),
 `seed/tests/conformance/arrays/alias_let_visibility.astra` (`let`↔`let mut`) y
 `seed/tests/conformance/ui/immutable_field_assign.astra` (ninguna escritura a
-través de un binding `let`) — contrato DEC-001/DEC-002.
+través de un binding `let`) — contrato **DEC-001** (y su ratificación D2;
+DEC-002 es la decisión del registro de constructs, no de aliasing).
 
 **Por qué compartir y no copiar:**
 
@@ -210,13 +224,17 @@ let resultado = a.map_native(fn(x) => x * 2.0)  // Operación SIMD sobre memoria
   4294967295` y `let zeros: [u32] = [0, 0]` compilan los cuatro. Sin contexto, un
   binding toma el tipo por defecto (`i32`), de modo que una variable nunca queda
   polimórfica.
-- **Las anchuras no se verifican en runtime (limitación del seed).** Los dos
-  backends llevan los enteros como un `int64_t`, así que `i64`/`u32`/`u64`
-  afectan al *chequeo de tipos*, no al valor: `let a: u32 = -1` compila y `a`
-  vale `-1`, y un `u64` mayor que `INT64_MAX` no es representable (el lexer
-  rechaza el literal). La semántica real de anchuras pertenece a la Fase 2, que
-  es donde `research/002` §9.2 la necesita. Registrado en
-  `Documentacion/03_fase1_seed/PHASE1_PROGRESS.md` §6.3.
+- **Los literales se chequean contra el ancho en compile-time; la aritmética
+  corre en `i64` en runtime (DEC-006/DEC-007).** Un literal fuera de rango del
+  tipo anotado es error de compilación — `let a: u32 = -1` →
+  *integer literal -1 out of range for u32* (y `let big: i32 = 9999999999`
+  → *integer literal 9999999999 out of range for i32*); sin anotación el
+  default es `i32` con caída a `i64` si el literal no cabe. Una vez
+  compilado, los backends llevan los enteros como `int64_t`: `i64`/`u32`/`u64`
+  afectan al *chequeo de tipos*, no al valor (`i32 + i32` no envuelve a 32
+  bits), y el overflow de 64 bits es **wrap definido** (DEC-007). Un `u64`
+  mayor que `INT64_MAX` no es representable (el lexer rechaza el literal).
+  Tests: `ui/int_literal_range*.astra`, `types/int_width_semantics.astra`.
 
 ### 5.2 Unidades de Medida (Dimensional Types)
 
@@ -370,9 +388,13 @@ fn sumar(a: Int, b: Int) -> Int {
     return a + b
 }
 
-# Concisión
-fn cuadrado(x: Int) -> Int = x * x
+# Concisión — el cuerpo puede ser la última expresión (return implícito)
+fn cuadrado(x: i32) -> i32 { x * x }
 ```
+
+> **[verificado 2026-10-28]**: la forma `fn f(x: Int) -> Int = expr` con `=`
+> y tipo `Int` **no existe** (`expected '{' for function body, got =`; los
+> tipos enteros son `i32`/`i64`). La concisión real es el return implícito.
 
 ### 8.3 Estructuras y Traits
 
@@ -394,9 +416,13 @@ impl Movible for Particula {
 
 # UFCS: saludar(usuario) == usuario.saludar()
 fn saludar(u: Usuario) {
-    println("Hola, {u.nombre}")
+    print("Hola, " + u.nombre)
 }
 ```
+
+> **[verificado 2026-10-28]**: no existe `println` ni interpolación
+> `"{expresión}"` — la salida es `print` con concatenación `+` (verificado:
+> `print("Hola, " + u.nombre)` imprime `Hola, Ana`).
 
 ### 8.4 Concurrencia
 
@@ -444,9 +470,9 @@ Cada archivo `.astra` es un módulo. Sin declaraciones `mod` adicionales.
 
 ```
 // geometry/vector.astra
-pub struct Vec2 {
-    pub x: f64
-    pub y: f64
+pub struct Vec2 {       // pub en el STRUCT exporta el tipo entero
+    x: f64              // los CAMPOS no admiten pub aún [verificado 2026-10-28]
+    y: f64
 }
 
 pub fn add(a: Vec2, b: Vec2) -> Vec2 {
@@ -466,8 +492,8 @@ fn internal_helper() -> void {  // privado por defecto
 
 ```
 pub struct Vec2 {
-    pub x: f64    // visible externamente
-    y: f64        // privado
+    x: f64    // visible cuando el struct es pub (los campos no admiten pub: error: expected field name, got pub — verificado 2026-10-28)
+    y: f64
 }
 ```
 
@@ -1801,15 +1827,20 @@ match person {
 ### 30.5 Closure Captures
 
 ```astra
-// Capture por valor (ARC increment)
-let closure = || use(x);
+// Captura por valor — la única forma hoy (DEC-004)
+let x = 10;
+let f = | | { x + 1 };        // lambda con cuerpo `{ ... }`
+print(f());                   // 11
 
-// Capture por referencia (requiere &)
-let closure = || use(&x);
-
-// Weak capture para evitar ciclos
-let closure = weak(x) || use(x);
+// Asignar a una capturada es error de compilación:
+//   error: cannot assign to captured variable 'x' (closures capture by value)
 ```
+
+> **[verificado 2026-10-28]**: la sintaxis de la versión anterior de esta
+> sección (`||` pegado al `=`, `use(&x)` con captura por referencia,
+> `weak(x)`) **no existe**: `||` sin espacio lexea como `or`, `&` no es
+> operador de captura y no hay `weak`. Captura por referencia y weak captures
+> quedan para Fase 2 junto al ARC/ORC (§2.2).
 
 ### 30.6 Interacción con ARC/ORC
 
