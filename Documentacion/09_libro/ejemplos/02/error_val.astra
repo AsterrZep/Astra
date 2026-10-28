@@ -1,0 +1,3 @@
+// `val` no existe en Astra-0: es un identificador normal (decisión del
+// 2026-09-16, ARCHITECTURE §8.1 — la forma canónica es `let` / `let mut`).
+val x = 1

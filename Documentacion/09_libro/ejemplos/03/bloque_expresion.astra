@@ -1,0 +1,10 @@
+// Un bloque es una expresión: su valor es la última expresión sin `;`.
+fn main() {
+    let a = { 1 + 2 }
+    let b = {
+        let t = 3
+        t * 4
+    }
+    print(a)
+    print(b)
+}

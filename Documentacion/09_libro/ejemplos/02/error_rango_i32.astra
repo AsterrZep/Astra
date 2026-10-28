@@ -1,0 +1,5 @@
+// DEC-006: un literal fuera del rango del tipo anotado es error de compilación.
+fn main() {
+    let big: i32 = 9999999999;
+    print(big);
+}

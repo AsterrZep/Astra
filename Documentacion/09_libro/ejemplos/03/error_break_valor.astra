@@ -1,0 +1,6 @@
+// `break` con valor: la gramática lo contempla, Astra-0 no lo soporta.
+fn main() {
+    while true {
+        break 5
+    }
+}

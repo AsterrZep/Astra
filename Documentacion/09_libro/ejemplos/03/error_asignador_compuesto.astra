@@ -1,0 +1,6 @@
+// No existen los asignadores compuestos (`+=`, `-=`…): no están en la gramática.
+fn main() {
+    let mut x = 5
+    x += 1
+    print(x)
+}

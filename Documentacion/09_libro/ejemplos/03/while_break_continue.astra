@@ -1,0 +1,13 @@
+// while con break y continue.
+fn main() {
+    let mut i = 0;
+    let mut suma = 0;
+    while i < 6 {
+        i = i + 1;
+        if i == 3 { continue; }
+        if i == 5 { break; }
+        suma = suma + i;
+    }
+    print(i);
+    print(suma);
+}

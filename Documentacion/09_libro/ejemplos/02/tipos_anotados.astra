@@ -1,0 +1,18 @@
+// Anotaciones de tipo: i32, i64, u32, u64, f64, bool y string.
+fn main() {
+    let a: i32 = 42;
+    let b: i64 = 9007199254740993;
+    let c: u32 = 4294967295;
+    let d: u64 = 9223372036854775807;
+    let e: f64 = 3.5;
+    let f: bool = true;
+    let g: string = "texto";
+
+    print(a);
+    print(b);
+    print(c);
+    print(d);
+    print(e);
+    print(f);
+    print(g);
+}

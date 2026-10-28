@@ -1,0 +1,5 @@
+// Los dos brazos de un if-expresión deben tener el mismo tipo.
+fn main() {
+    let y = if true { 1 } else { "s" }
+    print(y)
+}

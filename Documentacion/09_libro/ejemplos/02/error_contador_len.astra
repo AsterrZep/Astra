@@ -1,0 +1,10 @@
+// Trampa clásica: `len` devuelve i64 (DEC-013) y el contador sin anotar es
+// i32 (DEC-006), así que la comparación no compila.
+fn main() {
+    let xs = [1, 2, 3]
+    let mut i = 0
+    while i < len(xs) {
+        i = i + 1
+    }
+    print(i)
+}
