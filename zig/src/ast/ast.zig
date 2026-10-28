@@ -3,6 +3,9 @@
 //! Design follows `PHASE2_RESEARCH.md` §1.3/§1.5: nodes are **flat** and referred
 //! to by `u32` index, never by pointer. Variable-length child lists live in a
 //! single shared `extra` buffer and are described by `List { start, len }`.
+//! The buffer grows by *retiring* the old generation instead of `realloc`ating
+//! it (`Tree.addExtra`), so a slice that `extraSlice` has already handed out
+//! never dangles.
 //!
 //! This replaces the previous stub, which stored `start = 0` for every list, so
 //! all child lists aliased node 0 and the tree could not represent a program.
@@ -232,6 +235,11 @@ pub const Tree = struct {
     nodes: std.ArrayListUnmanaged(Node) = .empty,
     locs: std.ArrayListUnmanaged(lexer.Loc) = .empty,
     extra: std.ArrayListUnmanaged(u32) = .empty,
+    /// Buffers `extra` outgrew instead of freeing (see `addExtra`), held
+    /// until `deinit`: the shared buffer is what every `List` offset points
+    /// into, so a slice `extraSlice` already handed out must not dangle when
+    /// the buffer grows.
+    extra_retired: std.ArrayListUnmanaged([]u32) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Tree {
         return .{ .allocator = allocator, .source = source };
@@ -240,6 +248,8 @@ pub const Tree = struct {
     pub fn deinit(self: *Tree) void {
         self.nodes.deinit(self.allocator);
         self.locs.deinit(self.allocator);
+        for (self.extra_retired.items) |buf| self.allocator.free(buf);
+        self.extra_retired.deinit(self.allocator);
         self.extra.deinit(self.allocator);
     }
 
@@ -251,8 +261,35 @@ pub const Tree = struct {
     }
 
     /// Copy `items` into the shared extra buffer and return a handle to them.
+    ///
+    /// Growing **retires** the old buffer instead of `realloc`ating it in
+    /// place. The buffer is shared by every `List` in the tree, and phases
+    /// legitimately hold a slice of it across further work: `checkModule`
+    /// (typechecker) iterates the module item list while generic
+    /// instantiation appends to this very buffer, so a realloc left that
+    /// iteration reading freed memory — and the stale values were then
+    /// *written back* as the rebuilt module list, which is what the emitter
+    /// finally crashed on (`index 0xAAAAAAAA`). Retired buffers stay
+    /// allocated until `deinit`, so an already-handed-out slice keeps
+    /// reading the list exactly as it was when it was taken (which is also
+    /// what a non-reallocating `appendSlice` delivered — the slice length is
+    /// fixed at capture, so appended items were never part of it anyway).
+    /// The buffer is append-only, so every generation is a prefix-identical
+    /// copy of the next one and any `List` offset stays valid in all of
+    /// them.
     pub fn addExtra(self: *Tree, items: []const u32) !List {
         const start: u32 = @intCast(self.extra.items.len);
+        if (items.len > self.extra.capacity - self.extra.items.len) {
+            const new_cap = @max(self.extra.capacity * 2, self.extra.items.len + items.len);
+            const buf = try self.allocator.alloc(u32, new_cap);
+            @memcpy(buf[0..self.extra.items.len], self.extra.items);
+            if (self.extra.capacity > 0)
+                try self.extra_retired.append(self.allocator, self.extra.allocatedSlice());
+            self.extra = .{ .items = buf[0..self.extra.items.len], .capacity = new_cap };
+        }
+        // Capacity was ensured above (and `items`, if it aliased the buffer
+        // we just retired, still points at readable memory), so this cannot
+        // reallocate.
         try self.extra.appendSlice(self.allocator, items);
         return .{ .start = start, .len = @intCast(items.len) };
     }
@@ -623,6 +660,46 @@ test "flat ast stores real child lists" {
     const list = tree.nodes.items[2].source_file;
     try testing.expectEqual(@as(u32, 1), list.len);
     try testing.expectEqual(@as(u32, 1), tree.extraSlice(list)[0]);
+}
+
+// Regression (generic-dispatch crash, `emitter.collectModuleGlobals`
+// reading `0xAAAAAAAA`): `extra` is shared by every `List` in the tree, and
+// phases hold a slice of it across further work — `checkModule` iterates the
+// module items while generic instantiation appends to this very buffer. The
+// old `appendSlice` realloc freed the buffer under those readers, and the
+// stale values were written back as the rebuilt module list. Growth now
+// retires the old generation instead of freeing it, so a slice taken before
+// the growth still reads the list as it was when it was taken.
+// `testing.allocator` also fails this test if a retired buffer leaks.
+test "extra growth keeps already-handed-out slices valid" {
+    var tree = Tree.init(testing.allocator, "");
+    defer tree.deinit();
+
+    const first = try tree.addExtra(&.{ 1, 2, 3 });
+    const held = tree.extraSlice(first); // captured BEFORE the growth
+
+    var filler: [64]u32 = undefined;
+    for (&filler, 0..) |*f, i| f.* = @intCast(i + 100);
+    const second = try tree.addExtra(&filler); // forces a retirement
+    const tail = try tree.addExtra(&.{ 4, 5 }); // and a second one
+
+    try testing.expectEqual(@as(usize, 3), held.len);
+    try testing.expectEqual(@as(u32, 1), held[0]);
+    try testing.expectEqual(@as(u32, 3), held[2]);
+
+    // Offsets are generation-independent (the buffer is append-only), so the
+    // same `List` read through the current generation still resolves, and the
+    // lists added after the growth are intact end to end.
+    const now = tree.extraSlice(first);
+    try testing.expectEqual(@as(usize, 3), now.len);
+    try testing.expectEqual(@as(u32, 1), now[0]);
+    const now_second = tree.extraSlice(second);
+    try testing.expectEqual(@as(usize, 64), now_second.len);
+    try testing.expectEqual(@as(u32, 100), now_second[0]);
+    try testing.expectEqual(@as(u32, 163), now_second[63]);
+    const now_tail = tree.extraSlice(tail);
+    try testing.expectEqual(@as(usize, 2), now_tail.len);
+    try testing.expectEqual(@as(u32, 5), now_tail[1]);
 }
 
 test "ast dump runs" {
