@@ -2009,8 +2009,15 @@ YAML, protobuf, linear algebra completa, statistics, image processing, database 
 
 ### 33.2 Formato de Configuración
 
+> **Nombre del manifest (DEC-021, 2026-10-28)**: el nombre decidido de
+> destino es **`astraea.toml`** (+ `astraea.lock`, CLI `astraea`) — patrón
+> «nombre propio de la herramienta» (`Cargo.toml`). Hoy se sigue usando
+> `astra.toml` como marcador de raíz de proyecto (§10 / `modules.zig`); el
+> rename llega de una vez cuando exista la CLI unificada. Investigación y
+> mediciones de colisión en `DECISIONES.md` DEC-021.
+
 ```toml
-# astra.toml
+# astra.toml   (→ astraea.toml con la CLI, ver DEC-021)
 [package]
 name = "myproject"
 version = "0.1.0"
