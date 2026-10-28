@@ -1,0 +1,24 @@
+// contains(s, sub) con aguja vacía — DEC-024: "" está en toda posición = true
+// EXPECT: true
+// EXPECT: true
+fn contains(s: string, sub: string) -> bool {
+    let n = len(s);
+    let m = len(sub);
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sub[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit { return true; }
+        i = i + 1;
+    }
+    false
+}
+
+fn main() {
+    print(contains("hello", ""));   // true (m=0: i+0<=n la cumple en 0)
+    print(contains("", ""));        // true
+}

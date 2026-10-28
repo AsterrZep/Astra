@@ -250,11 +250,37 @@ programas (el libro tampoco la usa en ejemplos):
 | `substr(s, start, len)` | `string` → `string` | **Disponible** (DEC-018) |
 | `push(arr, v)` | array → array nuevo con `v` al final | **Disponible** (DEC-019 — el original no cambia) |
 | `str_to_int(s)` | `string` → `i64` | **Disponible** (DEC-019 — inválidos = error de runtime) |
+| `chr(i)` | `i64` `[0,255]` → string de 1 byte | **Disponible** (DEC-020) |
+| `read_line()` | stdin → línea sin `\n` | **Disponible** (DEC-020) |
 
-Los cuatro últimos aterrizaron con la stdlib M2 (2026-10-28): firmas,
-textos de error y ejemplos de uso están en el
+Los cuatro de M2 y los dos de M3 (2026-10-28): firmas, textos de error y
+ejemplos de uso están en el
 [capítulo 14 (referencia)](14_referencia_builtins.md). Truco que sigue
 siendo útil: para un byte concreto, `s[i]` ya te lo da directamente.
+
+## Funciones de texto en Astra puro (DEC-024)
+
+`contains`, `index_of` y `split` **no son builtins**: son funciones que
+escribes tú (o copias de la suite) sobre los builtins de M1+M2 — así lo
+decidió `DEC-024` mientras no exista stdlib compartida (el seed compila un
+fichero). Semántica fijada:
+
+- `contains(s, sub) -> bool` — `sub` vacío = `true`.
+- `index_of(s, sub) -> i64?` — primera ocurrencia a la izquierda;
+  ausente = `none` (imprime `nil`); `sub` vacío = `some(0)`.
+- `split(s, sep) -> [string]` — campos preservados (`"a,,b"` → tres
+  campos, el intermedio vacío); sin sep = `[s]`; **`sep` vacío = array de
+  bytes de `s`** (caso especial tipo JS — el código de usuario no puede
+  lanzar errores de runtime, por eso el sep vacío tiene semántica definida
+  y no «error»).
+
+El código canónico vive en `seed/tests/conformance/stdlib/`
+(`contains_basic`, `index_of_basic`, `split_basic`, `split_fields`,
+`split_chars_empty_sep`), verificado en las cuatro rutas. Nota de estilo:
+el `else` debe quedar en la **misma línea** del `}` que cierra el `if`
+(`} else {`) — hoy los dos compiladores rechazan el fichero si el `else`
+empieza en una línea aparte (limitación conocida del parser, sin decisión
+que la fije aún).
 
 ## Resumen
 
@@ -270,8 +296,9 @@ siendo útil: para un byte concreto, `s[i]` ya te lo da directamente.
 - `to_string` sólo convierte enteros; `read_file` colapsa todo fallo en
   `cannot open file '<path>'`; los nombres de builtins están reservados
   (DEC-015).
-- `ord`, `substr`, `push` y `str_to_int` están llegando: míralos en la
-  tabla de estado, no en tu código todavía.
+- `ord`, `substr`, `push`, `str_to_int`, `chr` y `read_line` están
+  disponibles (DEC-018..020); `contains`/`index_of`/`split` son helpers en
+  Astra puro (DEC-024), no builtins.
 
 ## Ejercicios
 

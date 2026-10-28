@@ -1,0 +1,28 @@
+// contains(s, sub) — substring search, DEC-024 (helpers post-M3 en Astra puro)
+// EXPECT: true
+// EXPECT: true
+// EXPECT: false
+// EXPECT: false
+fn contains(s: string, sub: string) -> bool {
+    let n = len(s);
+    let m = len(sub);
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sub[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit { return true; }
+        i = i + 1;
+    }
+    false
+}
+
+fn main() {
+    print(contains("hello world", "wor"));  // true
+    print(contains("aaaa", "aa"));          // true (solapada, primera en 0)
+    print(contains("hello", "xyz"));        // false
+    print(contains("hello", "hello!"));     // false (más larga que s)
+}

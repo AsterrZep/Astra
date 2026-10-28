@@ -1,0 +1,38 @@
+// split(s, sep) — campos preservados, sin recortes, DEC-024
+// EXPECT: [a, b, c]
+// EXPECT: [abc]
+// EXPECT: []
+// EXPECT: [a, , b]
+fn split(s: string, sep: string) -> [string] {
+    let m = len(sep);
+    let n = len(s);
+    let mut parts = [""];
+    let mut count: i64 = 0;
+    let mut start: i64 = 0;
+    let mut i: i64 = 0;
+    while i + m <= n {
+        let mut j: i64 = 0;
+        let mut hit = true;
+        while j < m {
+            if s[i + j] != sep[j] { hit = false; break; }
+            j = j + 1;
+        }
+        if hit {
+            if count == 0 { parts[0] = substr(s, start, i - start); } else { parts = push(parts, substr(s, start, i - start)); }
+            count = count + 1;
+            start = i + m;
+            i = i + m;
+        } else {
+            i = i + 1;
+        }
+    }
+    if count == 0 { parts[0] = substr(s, start, n - start); } else { parts = push(parts, substr(s, start, n - start)); }
+    parts
+}
+
+fn main() {
+    print(split("a,b,c", ","));     // campos simples
+    print(split("abc", ","));       // sin sep -> [s]
+    print(split("", ","));          // entrada vacia -> [""]
+    print(split("a,,b", ","));      // campo interno vacio se conserva
+}
