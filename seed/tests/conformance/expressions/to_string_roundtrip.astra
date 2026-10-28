@@ -1,0 +1,20 @@
+// to_string(x) -> string (DEC-014, research/028 PR2): int → decimal with the
+// very conversion print uses, so `print(to_string(n))` writes exactly what
+// `print(n)` writes — and `+` still does not convert, so this is the only way
+// to put a number inside a string (`"n=" + n` remains a compile error).
+// EXPECT: 42
+// EXPECT: -7
+// EXPECT: 0
+// EXPECT: true
+// EXPECT: 9007199254740993
+// EXPECT: n=42
+fn main() {
+    print(to_string(42))
+    print(to_string(-7))
+    print(to_string(0))
+    let n = 42
+    print(to_string(n) == "42")
+    let big = 9007199254740993
+    print(to_string(big))
+    print("n=" + to_string(n))
+}

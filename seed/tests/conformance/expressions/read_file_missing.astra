@@ -1,0 +1,10 @@
+// read_file (DEC-014): every open/read failure is ONE runtime error, worded
+// identically by the seed VM, the C backend, the zig VM and LLVM
+// (research/028 PR2). The path is a made-up name that cannot exist in ANY of
+// the working directories the gates run from (seed/, zig/, repo root —
+// research/028 §2.4), so this negative case is cwd-independent; the positive
+// read lives in tests/selfhost/io_gate.sh, where the script fixes the cwd.
+// EXPECT-RUNTIME-ERROR: cannot open file 'astra_pr2_missing_file.txt'
+fn main() {
+    print(read_file("astra_pr2_missing_file.txt"))
+}

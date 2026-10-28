@@ -258,6 +258,8 @@ struct VM {
      * astra.h stays untouched). */
     FnObj      *builtin_print_fn;
     FnObj      *builtin_len_fn;
+    FnObj      *builtin_to_string_fn;
+    FnObj      *builtin_read_file_fn;
 
     const char *error_msg;
     uint32_t    error_line;

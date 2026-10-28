@@ -1,0 +1,9 @@
+// DEC-015 (research/028 PR2): the reservation is ANY scope, not just module
+// level — a local `let read_file` would shadow the builtin for the routes that
+// resolve locals by slot while the LLVM emitter still dispatches `read_file(…)`
+// by name, so the rejection has to reach nested declarations too.
+// EXPECT-ERROR: 'read_file' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 8:5: error: 'read_file' is a builtin and cannot be redeclared
+fn main() {
+    let read_file = 1
+}

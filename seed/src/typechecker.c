@@ -650,6 +650,43 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         symbol_table_insert(tc->symbols, sym);
     }
 
+    /* to_string(value) -> string — int -> string, el conversor mínimo que
+     * desbloquea salida con números (research/028 PR2, DEC-014). El
+     * parámetro es unknown como el de print: el checker no puede expresar
+     * "cualquier entero" sin romper la regla de literal i32 por defecto
+     * (DEC-006), así que cada runtime rechaza valores no enteros con el
+     * mismo texto defensivo (`to_string expects an int, got <tipo>`). */
+    {
+        Type **params = arena_new_array(arena, Type *, 1);
+        params[0] = type_new(arena, TYPE_UNKNOWN);
+        Type *ts_type = type_new_fn(arena, params, 1, type_new(arena, TYPE_STRING));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "to_string"),
+            .type = ts_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
+    /* read_file(path: string) -> string — la semilla de I/O que desbloquea
+     * `demo/lexer.astra` (research/028 PR2, DEC-014). El parámetro está
+     * anotado string, así que `read_file(42)` es error de compilación; los
+     * fallos de apertura/lectura son runtime error unificado
+     * `cannot open file '<path>'` en las cuatro rutas. */
+    {
+        Type **params = arena_new_array(arena, Type *, 1);
+        params[0] = type_new(arena, TYPE_STRING);
+        Type *rf_type = type_new_fn(arena, params, 1, type_new(arena, TYPE_STRING));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "read_file"),
+            .type = rf_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
     /* Register built-in Option enum: some(T) -> Option[T], none -> Option[T] */
     {
         Type *opt_type = type_new(arena, TYPE_ENUM);
@@ -2614,9 +2651,31 @@ static Type *default_int_type(Arena *a, Node *init) {
     return type_new(a, TYPE_INT);
 }
 
+/* DEC-015 (research/028 PR2): a builtin name is a reserved global. The VM
+ * resolves builtins by *name* in GET_GLOBAL and the LLVM emitter by name in
+ * emitCall (before consulting the fn/local tables), so a user binding called
+ * `len`/`print`/... would run the builtin on one route and the binding on
+ * another. Reject the redeclaration instead of letting the routes diverge.
+ * Reports and returns true when `name` is builtin. */
+static bool builtin_redeclare_error(TypeChecker *tc, SrcLoc loc,
+                                    InternedString name) {
+    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file" };
+    for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
+        const char *b = kBuiltins[i];
+        if (name.len == strlen(b) && memcmp(name.str, b, name.len) == 0) {
+            tc_error(tc, loc, "'%.*s' is a builtin and cannot be redeclared",
+                     (int)name.len, name.str);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void typecheck_var_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.var_decl.name;
     Type *decl_type = NULL;
+
+    if (builtin_redeclare_error(tc, node->loc, name)) return;
 
     if (node->as.var_decl.type) {
         decl_type = resolve_type_node(tc, node->as.var_decl.type);
@@ -2695,6 +2754,8 @@ static void typecheck_const_decl(TypeChecker *tc, Node *node) {
     InternedString name = node->as.const_decl.name;
     Type *decl_type = NULL;
 
+    if (builtin_redeclare_error(tc, node->loc, name)) return;
+
     if (node->as.const_decl.type) {
         decl_type = resolve_type_node(tc, node->as.const_decl.type);
         if (type_is_error(decl_type)) return;
@@ -2752,6 +2813,14 @@ static void typecheck_const_decl(TypeChecker *tc, Node *node) {
 
 static void typecheck_fn_decl(TypeChecker *tc, Node *fn_node) {
     InternedString name = fn_node->as.fn_decl.name;
+
+    /* DEC-015 for nested fns: a top-level `fn len()` is reported once, in
+     * typecheck_module_pass, because the duplicate-function check lives there
+     * and must not overwrite the diagnostic (a nested fn has no pass-1 arm,
+     * so its only entry point is here). */
+    if (tc->fn_depth > 0 && builtin_redeclare_error(tc, fn_node->loc, name)) {
+        return;
+    }
 
     /* Phase 2.4 step 2a: `<T>` binds as TYPE_PARAM for the signature and
      * the body check — a symbolic check over every instantiation. The
@@ -3193,6 +3262,13 @@ static void typecheck_module_pass(TypeChecker *tc, Node *module) {
              * `is_generic` (Phase 2.4 step 2a); the body is checked in pass 2
              * with the same placeholders in scope. */
             {
+                /* DEC-015: a top-level `fn print()` reports here, before the
+                 * duplicate-function check — that check would otherwise name
+                 * the builtin symbol a duplicate and lose the rule. The body
+                 * is still checked in pass 2 (with no registration), so only
+                 * the name error fires for a trivial body. */
+                if (builtin_redeclare_error(tc, item->loc, item->as.fn_decl.name))
+                    break;
                 bool generic = item->as.fn_decl.generics.len > 0;
                 Node *saved_gfn = tc->current_generic_fn;
                 size_t gmark = push_generic_scope(tc, item);

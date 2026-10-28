@@ -794,6 +794,88 @@ static inline AstraValue astra_builtin_len(AstraValue *args, uint8_t argc) {
     return astra_nil(); /* astra_errorf exits; not reached */
 }
 
+/* ---------- Built-in: to_string (DEC-014, research/028 PR2) ----------
+ *
+ * to_string(int) -> string, rendered with the same `%ld` conversion
+ * astra_print_value uses for AST_INT, so `print(to_string(n))` is
+ * byte-identical to `print(n)`. Arity and type wording mirror vm.c's
+ * builtin_to_string so all four routes stay byte-comparable. */
+static inline AstraValue astra_builtin_to_string(AstraValue *args, uint8_t argc) {
+    if (argc != 1)
+        astra_errorf("expected 1 arguments but got %u", (unsigned)argc);
+    AstraValue v = args[0];
+    if (v.tag != AST_INT) {
+        astra_errorf("to_string expects an int, got %s", astra_tag_name(v.tag));
+        return astra_nil(); /* astra_errorf exits; not reached */
+    }
+    char buf[32]; /* int64 min is 20 chars + sign */
+    int n = snprintf(buf, sizeof(buf), "%ld", (long)v.as.int_val);
+    if (n < 0) {
+        astra_errorf("to_string conversion failed");
+        return astra_nil(); /* astra_errorf exits; not reached */
+    }
+    return astra_string_new(buf, n);
+}
+
+/* ---------- Built-in: read_file (DEC-014, research/028 PR2) ----------
+ *
+ * read_file(path: string) -> string. Every failure mode collapses into one
+ * message (`cannot open file '<path>'`) so the VM, this backend and LLVM
+ * report identical text (sweep_emit_c.sh compares VM vs C output). */
+static inline AstraValue astra_builtin_read_file(AstraValue *args, uint8_t argc) {
+    if (argc != 1)
+        astra_errorf("expected 1 arguments but got %u", (unsigned)argc);
+    AstraValue p = args[0];
+    if (p.tag != AST_STRING) {
+        astra_errorf("expected string path, got %s", astra_tag_name(p.tag));
+        return astra_nil(); /* astra_errorf exits; not reached */
+    }
+    /* astra_string_new NUL-terminates every string, but an empty path may be
+     * a NULL payload — the VM's {NULL, 0} empty string lands here as such. */
+    const char *path = p.as.string_val ? p.as.string_val->data : "";
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        astra_errorf("cannot open file '%s'", path);
+        return astra_nil(); /* astra_errorf exits; not reached */
+    }
+    /* Chunked read (no fseek/ftell: size reporting is not reliable on every
+     * target — wasm/procfs — and the VM reads the same way). */
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) {
+        fclose(f);
+        astra_errorf("out of memory reading '%s'", path);
+        return astra_nil(); /* not reached */
+    }
+    for (;;) {
+        if (len == cap) {
+            char *bigger = (char *)realloc(buf, cap * 2);
+            if (!bigger) {
+                free(buf);
+                fclose(f);
+                astra_errorf("out of memory reading '%s'", path);
+                return astra_nil(); /* not reached */
+            }
+            buf = bigger;
+            cap *= 2;
+        }
+        size_t got = fread(buf + len, 1, cap - len, f);
+        len += got;
+        if (got == 0) break; /* EOF or read error */
+    }
+    int io_err = ferror(f) != 0;
+    fclose(f);
+    if (io_err) {
+        free(buf);
+        astra_errorf("cannot open file '%s'", path);
+        return astra_nil(); /* not reached */
+    }
+    AstraValue r = astra_string_new(buf, (int64_t)len);
+    free(buf);
+    return r;
+}
+
 /* ---------- Runtime error ---------- */
 /* A *hard* runtime error (div-by-zero, bounds, nil receiver, …) is fatal, full
  * stop: print `file:line: runtime error: msg` exactly like the VM's driver

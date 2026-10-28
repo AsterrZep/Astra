@@ -413,6 +413,22 @@ pub const TypeChecker = struct {
         len_params[0] = self.newType(.unknown);
         self.insert(.{ .name = "len", .type_ = self.newFn(len_params, self.newType(.int64)), .is_mut = false, .is_fn = true });
 
+        // to_string(value) -> string: int -> string (DEC-014, research/028
+        // PR2). Unknown parameter like print's — the checker cannot say "any
+        // integer" without breaking the i32-default literal rule (DEC-006);
+        // each runtime rejects other values with the same defensive text.
+        const ts_params = try self.a.alloc(*Type, 1);
+        ts_params[0] = self.newType(.unknown);
+        self.insert(.{ .name = "to_string", .type_ = self.newFn(ts_params, self.newType(.string)), .is_mut = false, .is_fn = true });
+
+        // read_file(path: string) -> string (DEC-014, research/028 PR2): the
+        // annotated path rejects `read_file(42)` at compile time; an
+        // unopenable path is one runtime error, worded identically on all
+        // routes (`cannot open file '<path>'`).
+        const rf_params = try self.a.alloc(*Type, 1);
+        rf_params[0] = self.newType(.string);
+        self.insert(.{ .name = "read_file", .type_ = self.newFn(rf_params, self.newType(.string)), .is_mut = false, .is_fn = true });
+
         // Option: some(T) -> Option, none -> Option
         {
             const opt = self.pool.enumType("Option") catch @panic("OOM");
@@ -1779,7 +1795,25 @@ pub const TypeChecker = struct {
         return k == .int or k == .int64 or k == .uint32 or k == .uint64;
     }
 
+    // DEC-015 (research/028 PR2): a builtin name is a reserved global. The VM
+    // resolves builtins by *name* in GET_GLOBAL and the LLVM emitter by name
+    // in emitCall (before consulting the fn/local tables), so a user binding
+    // named `len`/`print`/… would run the builtin on one route and the
+    // binding on another. Reports and returns true when `name` is builtin —
+    // byte-identical to seed's builtin_redeclare_error.
+    fn builtinRedeclareError(self: *TypeChecker, loc: lexer.Loc, name: []const u8) bool {
+        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file" };
+        for (k_builtins) |b| {
+            if (std.mem.eql(u8, name, b)) {
+                self.errFmt(loc, "'{s}' is a builtin and cannot be redeclared", .{name});
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn checkVarDecl(self: *TypeChecker, v: ast.VarDecl, loc: lexer.Loc, is_const: bool) void {
+        if (self.builtinRedeclareError(loc, v.name)) return;
         var decl_type: ?*Type = null;
         if (v.type_node) |t| {
             decl_type = self.resolveTypeNode(t);
@@ -1833,6 +1867,12 @@ pub const TypeChecker = struct {
 
     fn checkFnDecl(self: *TypeChecker, fn_idx: u32) void {
         const f = self.tree.node(fn_idx).fn_decl;
+
+        // DEC-015 for nested fns: a top-level `fn len()` is reported once, in
+        // checkModule's first pass, before the duplicate-function check (a
+        // nested fn has no pass-1 arm, so its only entry point is here).
+        if (self.fn_depth > 0 and self.builtinRedeclareError(self.tree.loc(fn_idx), f.name)) return;
+
         const params = self.tree.extraSlice(f.params);
 
         // Phase 2.4 step 2a: `<T>` binds as `.param` for the signature and
@@ -2409,6 +2449,14 @@ pub const TypeChecker = struct {
         for (items) |it| {
             switch (self.tree.node(it)) {
                 .fn_decl => |f| {
+                    // DEC-015: a top-level `fn print()` reports here, before
+                    // parameter resolution and the duplicate-function check —
+                    // either would otherwise name the wrong rule. Nothing is
+                    // registered on the way out; the body pass below still
+                    // runs (with the builtin symbol still in place), so a
+                    // trivial body reports exactly this one error, like the
+                    // seed.
+                    if (self.builtinRedeclareError(self.tree.loc(it), f.name)) continue;
                     // A generic signature registers with `.param` placeholders
                     // and is marked `is_generic` (Phase 2.4 step 2a); the body
                     // is checked in pass 2 with the same placeholders in scope.

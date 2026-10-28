@@ -1,0 +1,8 @@
+// read_file is annotated `path: string`, but an uninitialized `let s: string`
+// carries a nil VALUE under a string type (it prints as `nil`): the rejection
+// is runtime, and all four routes name it the same way (DEC-014).
+// EXPECT-RUNTIME-ERROR: expected string path, got nil
+fn main() {
+    let s: string
+    print(read_file(s))
+}

@@ -490,6 +490,88 @@ static bool builtin_len(VM *vm, Value *args, uint8_t argc, uint32_t line, Value 
     return true;
 }
 
+/* Builtin `to_string(x) -> string` (DEC-014, research/028 PR2): integers
+ * only, rendered with the conversion `print` already uses (`%ld`), so
+ * `print(to_string(n))` is byte-identical to `print(n)` on every route. A
+ * non-int value reports the same defensive text everywhere. */
+static bool builtin_to_string(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 1) {
+        vm_runtime_error(vm, line, "expected 1 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value v = args[0];
+    if (v.kind != VAL_INT) {
+        vm_runtime_error(vm, line, "to_string expects an int, got %s", type_name(v));
+        return false;
+    }
+    char buf[32]; /* int64 min is 20 chars + sign */
+    int n = snprintf(buf, sizeof(buf), "%ld", (long)v.as.int_val);
+    if (n < 0) {
+        vm_runtime_error(vm, line, "to_string conversion failed");
+        return false;
+    }
+    *out = value_string(arena_strdup(vm->arena, buf, (size_t)n), (size_t)n);
+    return true;
+}
+
+/* Builtin `read_file(path) -> string` (DEC-014, research/028 PR2). Every
+ * failure mode collapses into one runtime error so the four routes report
+ * byte-identical text; the path is copied NUL-terminated into the arena first
+ * because an interned string may be {NULL, 0} and a slice is not
+ * NUL-terminated. The buffer is arena-allocated: compiler phases never free
+ * (invariant 5). */
+static bool builtin_read_file(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 1) {
+        vm_runtime_error(vm, line, "expected 1 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value p = args[0];
+    if (p.kind != VAL_STRING) {
+        vm_runtime_error(vm, line, "expected string path, got %s", type_name(p));
+        return false;
+    }
+    size_t plen = p.as.string_val.len;
+    char *path = arena_alloc(vm->arena, plen + 1, _Alignof(char));
+    if (!path) {
+        vm_runtime_error(vm, line, "out of memory reading '%s'", p.as.string_val.str ? p.as.string_val.str : "");
+        return false;
+    }
+    if (plen > 0 && p.as.string_val.str) memcpy(path, p.as.string_val.str, plen);
+    path[plen] = '\0';
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        vm_runtime_error(vm, line, "cannot open file '%s'", path);
+        return false;
+    }
+    /* Chunked read (no fseek/ftell: a length-prefix route may not be seekable
+     * and /proc-style files report size 0). Grows by doubling in the arena. */
+    size_t cap = 4096, len = 0;
+    char *buf = arena_alloc(vm->arena, cap, _Alignof(char));
+    if (!buf) { fclose(f); vm_runtime_error(vm, line, "out of memory reading '%s'", path); return false; }
+    for (;;) {
+        if (len == cap) {
+            char *bigger = arena_alloc(vm->arena, cap * 2, _Alignof(char));
+            if (!bigger) { fclose(f); vm_runtime_error(vm, line, "out of memory reading '%s'", path); return false; }
+            memcpy(bigger, buf, len);
+            buf = bigger;
+            cap *= 2;
+        }
+        size_t got = fread(buf + len, 1, cap - len, f);
+        len += got;
+        if (got == 0) break; /* EOF or read error */
+    }
+    bool io_err = ferror(f) != 0;
+    fclose(f);
+    if (io_err) {
+        vm_runtime_error(vm, line, "cannot open file '%s'", path);
+        return false;
+    }
+    buf[len] = '\0';
+    *out = value_string(buf, len);
+    return true;
+}
+
 /* -----------------------------------------------------------
  * VM execution
  * ----------------------------------------------------------- */
@@ -717,6 +799,10 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 if (!vm_push(vm, value_fn(vm->builtin_print_fn))) return VM_RUNTIME_ERROR;
             } else if (name && strcmp(name, "len") == 0) {
                 if (!vm_push(vm, value_fn(vm->builtin_len_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "to_string") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_to_string_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "read_file") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_read_file_fn))) return VM_RUNTIME_ERROR;
             } else {
                 /* Look up in globals table */
                 bool found = false;
@@ -1459,6 +1545,12 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 if (fn == vm->builtin_len_fn) {
                     if (!builtin_len(vm, &vm->stack[fn_idx + 1], argc, line, &result))
                         return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_to_string_fn) {
+                    if (!builtin_to_string(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_read_file_fn) {
+                    if (!builtin_read_file(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
                 } else {
                     result = builtin_print(&vm->stack[fn_idx + 1], argc);
                 }
@@ -1792,6 +1884,22 @@ VM *vm_create(Arena *arena) {
     len_fn->param_count = 255;
     len_fn->local_count = 0;
     vm->builtin_len_fn = len_fn;
+    FnObj *ts_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    ts_fn->code = NULL;
+    ts_fn->code_len = 0;
+    ts_fn->constants = NULL;
+    ts_fn->const_len = 0;
+    ts_fn->param_count = 255;
+    ts_fn->local_count = 0;
+    vm->builtin_to_string_fn = ts_fn;
+    FnObj *rf_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    rf_fn->code = NULL;
+    rf_fn->code_len = 0;
+    rf_fn->constants = NULL;
+    rf_fn->const_len = 0;
+    rf_fn->param_count = 255;
+    rf_fn->local_count = 0;
+    vm->builtin_read_file_fn = rf_fn;
     return vm;
 }
 

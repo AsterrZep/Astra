@@ -1,0 +1,8 @@
+// DEC-015 (research/028 PR2): a builtin name is a reserved global. GET_GLOBAL
+// resolves builtins by *name* and the LLVM emitter dispatches emitCall by name
+// before consulting the fn/local tables, so a user binding called `len` would
+// run the builtin on one route and the binding on another — reject instead of
+// letting the four routes diverge.
+// EXPECT-ERROR: 'len' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 8:1: error: 'len' is a builtin and cannot be redeclared
+let len = 5

@@ -21,6 +21,8 @@
 | DEC-011 | Las sentencias se terminan con `;` o con newline | Aceptada (test-pinned) | 2026-09 | suite de conformidad (estilo mixto) |
 | DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: regla de cruce con unicidad comprobada; `transfer(x)` será builtin, sin keyword; el walk de rc se difiere al primer cruce real — scheduler/send) | **Propuesta** (D7 pospuesto; Fase 0 completada: `ARCHITECTURE.md` §2.6 escrita) | 2026-10-27 | `research/026` §3–§4; `ARCHITECTURE.md` §2.6; `research/031` §0 |
 | DEC-013 | Stdlib M1: `len(x) -> i64` para arrays y strings; `s[i]` → **string de 1 byte** (OOB = error de runtime con el texto de los arrays); los strings son inmutables (`s[i] = …` es error de compilación) | Aceptada (test-pinned) | 2026-10-27 | `arrays/len_array.astra`, `expressions/len_string.astra`, `expressions/str_index.astra`, `expressions/str_index_oob.astra`, `expressions/len_int_runtime_error.astra`, `ui/str_index_assign_rejected.astra`, `codegen/str_index.astra`, `codegen/len_builtin.astra` (PR D-PR1) |
+| DEC-014 | Stdlib M1: `to_string(x) -> string` **solo enteros** (otros tipos = error de runtime con el texto de las 4 rutas) y `read_file(path: string) -> string` (todo fallo de apertura/lectura colapsa en `cannot open file '<path>'`); la lectura positiva vive fuera de `conformance/` | Aceptada (test-pinned) | 2026-10-27 | `expressions/to_string_roundtrip.astra`, `expressions/to_string_float_rejected.astra`, `expressions/read_file_missing.astra`, `expressions/read_file_nil_path.astra`, `codegen/to_string.astra`, `codegen/read_file_missing.astra`, `seed/tests/selfhost/io_gate.sh` (4 rutas) (PR D-PR2) |
+| DEC-015 | Los nombres de builtin (`print`, `len`, `to_string`, `read_file`) están **reservados**: redeclararlos con `let`/`const`/`fn` en cualquier ámbito es error de compilación, idéntico en los dos typecheckers | Aceptada (test-pinned) | 2026-10-27 | `ui/builtin_shadow_print.astra`, `ui/builtin_shadow_len.astra`, `ui/builtin_shadow_to_string.astra`, `ui/builtin_shadow_read_file.astra` (primera línea byte-idéntica seed↔zig) (PR D-PR2) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -132,3 +134,110 @@
   `llvm_fuzz -n 20 -s 1` fail=0, `--check-constructs` OK.
 - **Spec**: `research/028` §1.2 (firmas M1) y §3 (PR1) — «pendiente de
   escribir en ARCHITECTURE».
+
+### DEC-014 — Stdlib M1: `to_string(x)` y `read_file(path)`
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR2 (2026-10-27)
+- **Fecha**: 2026-10-27
+- **Decisión**:
+  - `to_string(x) -> string` convierte **solo enteros**. El parámetro se
+    registra como `unknown` — igual que `print`/`len` — porque el checker no
+    puede expresar «cualquier entero» sin romper el default `i32` de DEC-006;
+    el rechazo es de **runtime** y con texto idéntico en las 4 rutas
+    (`to_string expects an int, got <tipo>`, con el `type_name` del VM). Los
+    floats quedan **fuera del MVP** a propósito: el formato decimal de float
+    es otra decisión (DEC-010 solo fija cómo imprime `print`), y lo que el
+    lexer necesita es numerar líneas/columnas (`research/028` §1 MVP #4).
+  - La conversión usa **la misma conversión que `print`** en cada ruta —
+    `%ld`/`(long)` en seed y backend C, `{d}` en zig, `%lld`/`(long long)` en
+    LLVM (ésta además es correcta en wasm32/ILP32, donde `long` mide 32
+    bits), de modo que `print(to_string(n))` es byte-idéntico a `print(n)`.
+  - `read_file(path: string) -> string`: parámetro **anotado string**, así
+    que `read_file(42)` es error de compilación en ambos checkers; un valor
+    nil bajo anotación string (`let s: string` sin inicializar) se rechaza en
+    runtime con `expected string path, got nil`.
+  - **Todo fallo de apertura/lectura colapsa en un único runtime error**
+    `cannot open file '<path>'` (la frase del driver del seed sin el prefijo
+    `error:`, porque los errores de runtime ya llevan `file:line: runtime
+    error:`), para que las 4 rutas sean byte-idénticas — incluye leer un
+    directorio en Linux (`fopen` abre y `fread` falla) y los errores de WASI.
+  - **Colocación de la lectura positiva**: no vive en `conformance/`
+    (`research/028` §2.4: los gates corren con cwd distinto — `seed/`,
+    `zig/`, raíz del repo — y la ruta wasm no tiene `preopens`); vive en
+    `seed/tests/selfhost/` (fixture `fixture_read.txt` + golden
+    `read.expected` + `io_gate.sh` con `cd` fijo, §4.3). `conformance/` solo
+    lleva los casos negativos, con un path inventado que no existe en
+    ningún cwd.
+- **Alternativas consideradas**: `to_string` polimórfico (i64|f64|str|bool)
+  — pospuesto junto al formato de float; parámetro `i64` anotado para
+  rechazar floats en compile-time — rompe DEC-006 (un literal sin anotar es
+  i32 y ya no calzaría con el parámetro); `read_file` con `Option`/`Result`
+  (`ARCHITECTURE.md:1617` especula `read_file(path)?`) — Astra-0 no tiene
+  `FileError` y el `?` puede añadirse después sin tocar este texto; errores
+  distintos por causa (not-found/permission/is-a-directory) — añade
+  divergencia entre runtimes (WASI no distingue igual) sin aportarle al
+  lexer; leer el tamaño con `fseek`/`ftell` — descartado: el tamaño no es
+  fiable en todos los destinos (procfs, wasm), se lee por bloques en las 4
+  rutas.
+- **Coste aceptado**: 4 implementaciones (seed VM, backend C, zig VM,
+  LLVM+runtime) en 8 ficheros de código; 6 tests + un gate propio de cwd
+  fijo; JIT/wasm/aarch64 heredan el runtime LLVM (la ruta wasm necesita
+  `preopens` en `demo/wasi_run.mjs`, añadido en este PR).
+- **Evidencia**: fijado por `expressions/to_string_roundtrip.astra`
+  (42/-7/0/`true`/9007199254740993/`n=42`),
+  `expressions/to_string_float_rejected.astra`
+  (`to_string expects an int, got float`),
+  `expressions/read_file_missing.astra` (`cannot open file '…'`),
+  `expressions/read_file_nil_path.astra` (`expected string path, got nil`),
+  `codegen/to_string.astra` y `codegen/read_file_missing.astra` (redondeo C),
+  y `seed/tests/selfhost/io_gate.sh` → 4 rutas ok (seed VM, `--emit-c`+gcc,
+  zig VM, LLVM `--jit`) contra `read.expected`. Gates del PR: `make test`
+  286/0, `sweep_emit_c` total=126 skip=3 fail=0, `make debug`
+  (ASan/UBSan/LSan) 286/0, `make release` 286/0, `zig build test` verde,
+  `ui_message_parity` first_fail=0 (total=125), `dump_parity` 0 divergent
+  (164 files), `llvm_parity` 176/176 (opt=0 y opt=2), `llvm_jit` 176/176,
+  `llvm_sanitize` 176/176 + LSan limpio, `llvm_cross` 176/176 (aarch64),
+  `llvm_filecheck` 8/8, `llvm_fuzz -n 20 -s 1` fail=0, `--check-constructs`
+  OK, `io_gate` 4/4; la ruta wasm no corrió localmente (sin `wasm-ld`: la
+  hace CI, `preopens` ya en `demo/wasi_run.mjs`).
+- **Spec**: `research/028` §1 (firmas M1) y §3 (PR2) — «pendiente de
+  escribir en ARCHITECTURE».
+
+### DEC-015 — Nombres de builtin reservados (anti-shadowing)
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR2 (2026-10-27)
+- **Fecha**: 2026-10-27
+- **Decisión**: `print`, `len`, `to_string` y `read_file` **no pueden
+  redeclararse** — ni como `let`, ni como `const`, ni como `fn` — **en
+  ningún ámbito** (módulo incluido). El error es
+  `'<nombre>' is a builtin and cannot be redeclared`, byte-idéntico en los
+  dos typecheckers.
+  - Motivo: el VM resuelve los builtins por **nombre** en `GET_GLOBAL` y el
+    emisor LLVM decide la llamada por **nombre** en `emitCall` *antes* de
+    mirar tablas de fns/locales; un binding llamado `len` se ejecutaría como
+    slot en unas rutas y como builtin en otras. El bug observable ya
+    existía a nivel de módulo: `let len = 5` imprimía `<fn>` en el VM semilla
+    y `5` en el backend C.
+  - Un `fn print()` de nivel superior se reporta en la **primera pasada y
+    antes** del chequeo de `duplicate function` (que habría nombrado la
+    regla equivocada: el símbolo builtin parecía un segundo `print`), y
+    exactamente una vez — el cuerpo se sigue comprobando en la pasada 2 sin
+    registrar el símbolo.
+- **Alternativas consideradas**: rechazar solo en nivel de módulo — dejaba
+  el hueco local abierto para LLVM; permitir el shadowing y resolver
+  identidades en el emisor LLVM — coste alto (tablas de bindings en
+  `emitCall`) y rompe «los builtins son globales»; reutilizar el mensaje
+  «duplicate function» — menciona la regla equivocada.
+- **Coste aceptado**: 2 typecheckers × 3 puntos de anclaje (var, const, fn),
+  ningún runtime. **Fuera de alcance y conocido**: los *enlaces* de `for` y
+  los patrones de `match` no se chequean (`for len in … { print(len) }` hoy
+  funciona y es inocuo en las 4 rutas); sombrear un binder **invocable**
+  divergiría entre slot (VM/C/zig) y nombre (LLVM) — se cubrirá si algún
+  binder futuro lo permite declarar.
+- **Evidencia**: `ui/builtin_shadow_print.astra` (fn, pasada 1),
+  `ui/builtin_shadow_len.astra` (let de módulo),
+  `ui/builtin_shadow_to_string.astra` (const) y
+  `ui/builtin_shadow_read_file.astra` (let local: el ámbito cualquiera) —
+  los 4 con **una sola** diagnóstica y la primera línea byte-idéntica
+  seed↔zig.
+- **Spec**: «pendiente de escribir en ARCHITECTURE».

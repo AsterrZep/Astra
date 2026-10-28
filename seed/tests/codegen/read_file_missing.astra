@@ -1,0 +1,7 @@
+// C round-trip for read_file (DEC-014): astra_builtin_read_file must word a
+// failed open exactly like the VM (same cwd-independent made-up path as
+// conformance/expressions/read_file_missing.astra).
+// EXPECT-RUNTIME-ERROR: cannot open file 'astra_pr2_missing_file.txt'
+fn main() {
+    print(read_file("astra_pr2_missing_file.txt"))
+}

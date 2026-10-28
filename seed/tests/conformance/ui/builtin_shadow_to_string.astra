@@ -1,0 +1,5 @@
+// DEC-015 (research/028 PR2): a `const` redeclaration of a builtin name is
+// rejected like a `let` — module-level or nested, the name is reserved.
+// EXPECT-ERROR: 'to_string' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 5:1: error: 'to_string' is a builtin and cannot be redeclared
+const to_string = "x"
