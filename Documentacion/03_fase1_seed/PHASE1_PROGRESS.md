@@ -121,7 +121,7 @@ memoria** bajo LSan.
 | structs | `literal_fields`, `field_order`, `struct_in_function`, `field_assign` (cadenas anidadas) |
 | blocks | `tail_expression`, `if_value` |
 | types | `optional_syntax` (`T?` parseado correctamente), `integer_widths` (`i64`/`u32`/`u64` con valores reales, Hallazgo E) |
-| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding`, `option_basic`, `option_equality`, `result_basic`, `result_match`, `nested_option_result`, `try_operator` |
+| enums | `match_variants`, `or_patterns`, `enum_print`, `match_statement`, `match_block_arm`, `pattern_bind`, `nested_pattern_bind`, `mixed_patterns`, `match_guard`, `guard_with_binding`, `option_basic`, `option_equality`, `result_basic`, `nested_option_result`, `try_operator` |
 | module | `toplevel_stmts` (sentencias de nivel de módulo: la clase de código que ningún otro test cubría, y por eso el break de §6 pasó inadvertido), `toplevel_aggregates` (structs, enums y variantes con datos declarados en el nivel superior), `use_paths` (`use` con rutas punteadas: el constructo `use` no tenía **ningún** test, y por eso no se notó que era código muerto (S18) ni que el parser separaba con `::` (S19)), `import_from` (`import ... as`, `from ... import ... as`, las tres formas de §6.7) |
 | functions | `recursion` (factorial + parámetros), `implicit_return` |
 | lambda | `lambda_basic`, `lambda_multi` |
@@ -292,7 +292,7 @@ los 3 de módulos):
 |:--------|:---------------------|
 | **Lambdas** | ✅ `lambda_basic`, `lambda_multi` reproducen la VM |
 | **Match** | ✅ `match_variants`, `or_patterns`, `match_guard`, `match_statement`, `nested_pattern_bind`… idénticos |
-| **Option/Result** | ✅ `option_basic`, `option_equality`, `result_basic`, `result_match`, `nested_option_result`, `try_operator` |
+| **Option/Result** | ✅ `option_basic`, `option_equality`, `result_basic`, `nested_option_result`, `try_operator` |
 | **Enums con datos** | ✅ `pattern_bind`, `nested_pattern_bind`, `mixed_patterns` |
 | **`?` operator** | ✅ `try_operator` (era el único feature documentado **sin ningún test**) |
 
