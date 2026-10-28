@@ -1,0 +1,9 @@
+// A nil array (`let a: [i32]` without initializer) has nothing to append to:
+// push reports it as a non-array receiver, like every other aggregate guard
+// (audit §5.3) — never a NULL dereference.
+// EXPECT-RUNTIME-ERROR: push expects an array, got nil
+fn main() {
+    let mut a: [i32]
+    a = push(a, 1)
+    print(a)
+}

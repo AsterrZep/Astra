@@ -1,0 +1,8 @@
+// DEC-015 extends to the M2b builtins (DEC-019): GET_GLOBAL resolves builtins
+// by *name* and the LLVM emitter dispatches emitCall by *name* before it
+// consults the fn/local tables, so a user binding called `push` would run the
+// builtin on one route and the binding on another — reject it instead of
+// letting the four routes diverge.
+// EXPECT-ERROR: 'push' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 8:1: error: 'push' is a builtin and cannot be redeclared
+let push = 5

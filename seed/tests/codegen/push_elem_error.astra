@@ -1,0 +1,10 @@
+// C round-trip for the push element guard (DEC-019): astra_builtin_push must
+// word a mismatched element exactly like the seed VM — the receiver and
+// str_to_int's parse errors live in conformance/expressions/, which
+// sweep_emit_c.sh runs through both backends.
+// EXPECT-RUNTIME-ERROR: push element has type string, expected int
+fn main() {
+    let mut a = [1, 2]
+    a = push(a, "x")
+    print(a)
+}

@@ -262,6 +262,8 @@ struct VM {
     FnObj      *builtin_read_file_fn;
     FnObj      *builtin_ord_fn;
     FnObj      *builtin_substr_fn;
+    FnObj      *builtin_push_fn;
+    FnObj      *builtin_str_to_int_fn;
 
     const char *error_msg;
     uint32_t    error_line;

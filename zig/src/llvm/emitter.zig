@@ -519,6 +519,15 @@ pub const Emitter = struct {
     r_substr: c.LLVMValueRef,
     r_substr_str_fail: c.LLVMValueRef,
     r_substr_int_fail: c.LLVMValueRef,
+    // `push(arr, v)` / `str_to_int(s)` (DEC-019): array nuevo con el elemento
+    // retenido y decimal → i64; los fallos nombran el valor como el VM
+    // (`push expects an array, got <tipo>`, `push element has type <X>,
+    // expected <Y>`, `str_to_int: invalid integer literal '<s>'`).
+    r_push: c.LLVMValueRef,
+    r_push_fail: c.LLVMValueRef,
+    r_push_elem_fail: c.LLVMValueRef,
+    r_str_to_int: c.LLVMValueRef,
+    r_str_to_int_fail: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
@@ -655,6 +664,11 @@ pub const Emitter = struct {
             .r_substr = undefined,
             .r_substr_str_fail = undefined,
             .r_substr_int_fail = undefined,
+            .r_push = undefined,
+            .r_push_fail = undefined,
+            .r_push_elem_fail = undefined,
+            .r_str_to_int = undefined,
+            .r_str_to_int_fail = undefined,
         };
         self.declareRuntime();
         return self;
@@ -732,6 +746,14 @@ pub const Emitter = struct {
         self.r_substr = self.declRet(self.t_ptr, "astra_llvm_substr", &.{ self.t_i32, self.t_ptr, self.t_i64, self.t_i64 });
         self.r_substr_str_fail = self.declVoid("astra_llvm_substr_str_fail", &.{ self.t_i32, self.t_ptr });
         self.r_substr_int_fail = self.declVoid("astra_llvm_substr_int_fail", &.{ self.t_i32, self.t_ptr });
+        // `push` / `str_to_int` (DEC-019): array nuevo con el elemento (slot
+        // de 8 bytes) y decimal → i64; los tres fallos nombran el valor como
+        // type_name del VM.
+        self.r_push = self.declRet(self.t_ptr, "astra_llvm_array_push", &.{ self.t_i32, self.t_ptr, self.t_ptr });
+        self.r_push_fail = self.declVoid("astra_llvm_push_fail", &.{ self.t_i32, self.t_ptr });
+        self.r_push_elem_fail = self.declVoid("astra_llvm_push_elem_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr, self.t_i32 });
+        self.r_str_to_int = self.declRet(self.t_i64, "astra_llvm_str_to_int", &.{ self.t_i32, self.t_ptr });
+        self.r_str_to_int_fail = self.declVoid("astra_llvm_str_to_int_fail", &.{ self.t_i32, self.t_ptr });
 
         // Contador de profundidad de llamada (guard VM_CALL_DEPTH): global
         // interno, cero-inicializado; el backend C usa `astra_depth` igual.
@@ -760,6 +782,7 @@ pub const Emitter = struct {
             self.r_to_string,      self.r_to_string_fail,
             self.r_read_file,      self.r_read_file_fail,
             self.r_ord,            self.r_substr,
+            self.r_push,          self.r_str_to_int,
         };
         for (helpers) |h| self.addFnAttr(h, "nounwind");
         const noreturn_helpers = [_]c.LLVMValueRef{
@@ -767,6 +790,7 @@ pub const Emitter = struct {
             self.r_str_order_fail, self.r_len_fail,
             self.r_to_string_fail, self.r_read_file_fail,
             self.r_ord_fail,       self.r_substr_str_fail, self.r_substr_int_fail,
+            self.r_push_fail,      self.r_push_elem_fail,  self.r_str_to_int_fail,
         };
         for (noreturn_helpers) |h| {
             self.addFnAttr(h, "noreturn");
@@ -3147,6 +3171,8 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, name, "read_file")) return self.emitReadFile(idx);
                 if (std.mem.eql(u8, name, "ord")) return self.emitOrd(idx);
                 if (std.mem.eql(u8, name, "substr")) return self.emitSubstr(idx);
+                if (std.mem.eql(u8, name, "push")) return self.emitPush(idx);
+                if (std.mem.eql(u8, name, "str_to_int")) return self.emitStrToInt(idx);
                 const info = self.fns.get(name) orelse {
                     // Constructor pelón de variante de enum: `Circle(x)`
                     // (el seed resuelve la variante en cualquier enum).
@@ -3886,6 +3912,260 @@ pub const Emitter = struct {
         c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
         var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), box };
         _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(fail), fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+    }
+
+    /// Nombre estático de un tipo para el guard de elemento de `push`
+    /// (espejo de type_name del VM). Los tipos dinámicos (caja/par) no
+    /// aparecen: esos emparejamientos van al helper astra_llvm_push_elem_fail,
+    /// que nombra some/ok/err leyendo el tag real.
+    fn staticTyName(ty: Ty) []const u8 {
+        return switch (ty) {
+            .bool_ => "bool",
+            .i64_ => "int",
+            .f64_ => "float",
+            .str_ => "string",
+            .arr_ => "array",
+            .struct_ => "struct",
+            .enum_ => "enum",
+            .fn_ => "function",
+            .boxed_, .pair_ => "some", // inalcanzable: helper dinámico
+        };
+    }
+
+    /// `push(arr, v) -> array` (DEC-019, research/028 M2b): un array NUEVO con
+    /// `v` añadido — el llamante re-bindea (`a = push(a, x)`), así que el
+    /// array viejo queda intacto para cada binding que aún lo retenga. El
+    /// objeto array guarda los elementos en línea (M2.a), así que crecer
+    /// in-place lo reubicaría y dejaría a cada alias apuntando al viejo: la
+    /// copia es el único modelo correcto en las cuatro rutas. El receiver es
+    /// unknown en el checker (patrón print/ord), así que cada tipo trae su
+    /// guard con la redacción del VM; el elemento se guarda en un slot de 8
+    /// bytes y el helper copia + retiene. El checker no puede comparar el
+    /// elemento contra el tipo del array (rompería la adopción de literales,
+    /// DEC-006), así que un desajuste es guard — estático cuando los dos
+    /// ptypes son estáticos, dinámico cuando hay una caja de por medio.
+    fn emitPush(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        if (args.len != 2) {
+            // El typechecker registra push con exactamente dos parámetros:
+            // esto solo lo alcanza un programa que se saltó el chequeo.
+            self.unsupported(idx, "push takes exactly two arguments");
+            return null;
+        }
+        const line = self.tree.loc(idx).line;
+        const v0 = self.emitExpr(args[0]) orelse return null;
+        const v1raw = self.emitExpr(args[1]) orelse return null;
+        // Tras el guard: inalcanzable — el dummy solo puebla el bloque muerto.
+        const dummy = Val{ .ref = c.LLVMConstPointerNull(self.t_ptr), .ty = .arr_ };
+
+        // Parámetro 0: el receptor debe ser array.
+        switch (v0.ty) {
+            .arr_ => {
+                // Receptor nil (`let a: [i32]` sin inicializador): el VM dice
+                // `push expects an array, got nil` — mismo guard que len/index.
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v0.ref, ""), line, "push expects an array, got nil");
+            },
+            .str_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v0.ref, ""), line, "push expects an array, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "push expects an array, got string");
+                return dummy;
+            },
+            .i64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "push expects an array, got int");
+                return dummy;
+            },
+            .f64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "push expects an array, got float");
+                return dummy;
+            },
+            .bool_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "push expects an array, got bool");
+                return dummy;
+            },
+            .struct_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v0.ref, ""), line, "push expects an array, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "push expects an array, got struct");
+                return dummy;
+            },
+            .enum_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v0.ref, ""), line, "push expects an array, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "push expects an array, got enum");
+                return dummy;
+            },
+            .fn_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v0.ref, ""), line, "push expects an array, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "push expects an array, got function");
+                return dummy;
+            },
+            .boxed_ => {
+                self.emitPushBoxFail(line, v0.ref);
+                return dummy;
+            },
+            .pair_ => {
+                const bx = self.coerceToBox(v0, idx) orelse return null;
+                self.emitPushBoxFail(line, bx.ref);
+                return dummy;
+            },
+        }
+
+        // El tipo del elemento es el del array (payload_ty): el checker lo
+        // garantiza en el literal y este guard lo garantiza en push.
+        const pty = v0.payload_ty orelse {
+            self.unsupported(idx, "push of array without element type");
+            return null;
+        };
+        var v1 = v1raw;
+        if (v1.ty == .pair_) v1 = self.coerceToBox(v1, idx) orelse return null; // slots de 8 bytes
+        const ev_pty = boxPTy(v1.ty).?;
+
+        // Slot de 8 bytes para el elemento (el helper lee `slot` bytes según
+        // el ptype del array — 1 para bool).
+        const slot_ty = c.LLVMArrayType(self.t_i8, 8);
+        const slot = self.buildAlloca(slot_ty);
+        var zidxs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, 0, 0), c.LLVMConstInt(self.t_i32, 0, 0) };
+        const slot_ptr = c.LLVMBuildGEP2(self.builder, slot_ty, slot, &zidxs, 2, "");
+        const tv = c.LLVMBuildBitCast(self.builder, slot_ptr, c.LLVMPointerType(self.llvmTy(v1.ty), 0), "");
+        _ = c.LLVMBuildStore(self.builder, v1.ref, tv);
+
+        // Desajuste de elemento: el VM compara el tipo dinámico del valor
+        // contra el del primer elemento; aquí el ptype estático ya lo sabe.
+        if (ev_pty != boxPTy(pty).?) {
+            if (ev_pty == PTY_BOXED or boxPTy(pty).? == PTY_BOXED) {
+                // Hay una caja de por medio: some/ok/err solo se nombra con
+                // el tag real, así que el helper decide (espejo de emitLenBoxFail).
+                self.emitPushElemFail(line, v0.ref, slot_ptr, ev_pty);
+            } else {
+                var msgbuf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrintZ(&msgbuf, "push element has type {s}, expected {s}", .{
+                    staticTyName(v1.ty), staticTyName(pty),
+                }) catch unreachable;
+                self.emitFailMsg(line, msg);
+            }
+            return dummy;
+        }
+
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), v0.ref, slot_ptr };
+        const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_push), self.r_push, &fargs, 3, "");
+        self.emitTmpPush(rp);
+        return .{ .ref = rp, .ty = .arr_, .payload_ty = pty };
+    }
+
+    /// Fallo dinámico del receptor de `push` sobre caja/par (espejo de
+    /// emitSubstrBoxFail): la caja es nil/ok/err/some, nunca un array plano.
+    fn emitPushBoxFail(self: *Emitter, line: u32, box: c.LLVMValueRef) void {
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "push_fail");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "push_cont");
+        const br = c.LLVMBuildCondBr(self.builder, c.LLVMConstInt(self.t_i1, 1, 0), fail_bb, cont_bb);
+        self.coldBranch(br, true);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), box };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_push_fail), self.r_push_fail, &fargs, 2, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+    }
+
+    /// Fallo dinámico del elemento de `push` cuando hay una caja de por medio
+    /// (espejo de emitLenBoxFail): `astra_llvm_push_elem_fail` nombra el lado
+    /// caja con some/ok/err y el otro con su ptype, y aborta (noreturn).
+    fn emitPushElemFail(self: *Emitter, line: u32, arr: c.LLVMValueRef, ev_slot: c.LLVMValueRef, ev_pty: u32) void {
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "push_elem_fail");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "push_elem_cont");
+        const br = c.LLVMBuildCondBr(self.builder, c.LLVMConstInt(self.t_i1, 1, 0), fail_bb, cont_bb);
+        self.coldBranch(br, true);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        var fargs = [_]c.LLVMValueRef{
+            c.LLVMConstInt(self.t_i32, line, 0), arr, ev_slot, c.LLVMConstInt(self.t_i32, ev_pty, 0),
+        };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_push_elem_fail), self.r_push_elem_fail, &fargs, 4, "");
+        _ = c.LLVMBuildUnreachable(self.builder);
+        c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
+    }
+
+    /// `str_to_int(s) -> i64` (DEC-019, research/028 M2b): el decimal que
+    /// `to_string` produce, con redondeo `str_to_int(to_string(n))`. El
+    /// checker registra el parámetro como unknown (patrón ord, DEC-018), así
+    /// que cada tipo trae su guard con la redacción del VM; los límites y la
+    /// validez viven dentro de `astra_llvm_str_to_int`, que ve los bytes. El
+    /// resultado es i64 plano: sin refcount, sin temporal (igual que emitOrd).
+    fn emitStrToInt(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        if (args.len != 1) {
+            // El typechecker registra str_to_int con exactamente un parámetro:
+            // esto solo lo alcanza un programa que se saltó el chequeo.
+            self.unsupported(idx, "str_to_int takes exactly one argument");
+            return null;
+        }
+        const line = self.tree.loc(idx).line;
+        const v = self.emitExpr(args[0]) orelse return null;
+        // Tras el guard: inalcanzable — el dummy solo puebla el bloque muerto.
+        const dummy = Val{ .ref = c.LLVMConstInt(self.t_i64, 0, 0), .ty = .i64_ };
+        switch (v.ty) {
+            .str_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "str_to_int expects a string, got nil");
+                var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), v.ref };
+                const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_to_int), self.r_str_to_int, &fargs, 2, "");
+                return .{ .ref = rp, .ty = .i64_ };
+            },
+            // Los tipos siguientes son inalcanzables si el checker hizo su
+            // trabajo — pero el parámetro es unknown, así que llegan de
+            // verdad y el guard defensivo reproduce el texto del VM.
+            .i64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "str_to_int expects a string, got int");
+                return dummy;
+            },
+            .f64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "str_to_int expects a string, got float");
+                return dummy;
+            },
+            .bool_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "str_to_int expects a string, got bool");
+                return dummy;
+            },
+            .arr_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "str_to_int expects a string, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "str_to_int expects a string, got array");
+                return dummy;
+            },
+            .struct_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "str_to_int expects a string, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "str_to_int expects a string, got struct");
+                return dummy;
+            },
+            .enum_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "str_to_int expects a string, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "str_to_int expects a string, got enum");
+                return dummy;
+            },
+            .fn_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "str_to_int expects a string, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "str_to_int expects a string, got function");
+                return dummy;
+            },
+            .boxed_ => {
+                self.emitStrToIntBoxFail(line, v.ref);
+                return dummy;
+            },
+            .pair_ => {
+                const bx = self.coerceToBox(v, idx) orelse return null;
+                self.emitStrToIntBoxFail(line, bx.ref);
+                return dummy;
+            },
+        }
+    }
+
+    /// Fallo dinámico de `str_to_int` sobre caja/par (espejo de emitOrdBoxFail).
+    fn emitStrToIntBoxFail(self: *Emitter, line: u32, box: c.LLVMValueRef) void {
+        const fail_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "str_to_int_fail");
+        const cont_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "str_to_int_cont");
+        const br = c.LLVMBuildCondBr(self.builder, c.LLVMConstInt(self.t_i1, 1, 0), fail_bb, cont_bb);
+        self.coldBranch(br, true);
+        c.LLVMPositionBuilderAtEnd(self.builder, fail_bb);
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), box };
+        _ = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_to_int_fail), self.r_str_to_int_fail, &fargs, 2, "");
         _ = c.LLVMBuildUnreachable(self.builder);
         c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
     }

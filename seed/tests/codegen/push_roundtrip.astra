@@ -1,0 +1,21 @@
+// C round-trip for push and str_to_int (DEC-019): the generic builtin
+// dispatch (fun(args, argc)) must reach astra_builtin_push /
+// astra_builtin_str_to_int, a pushed element must survive the copy, and the
+// two must compose the way a lexer does — read a lexeme with substr, parse
+// it, grow a buffer with push.
+// EXPECT: [1, 2, 3]
+// EXPECT: 3
+// EXPECT: 41
+// EXPECT: [1, 2, 3, 41]
+// EXPECT: -42
+fn main() {
+    let mut a = [1, 2]
+    a = push(a, 3)
+    print(a)
+    print(len(a))
+    let n = str_to_int(substr("x41y", 1, 2))
+    a = push(a, n)
+    print(a[3])
+    print(a)
+    print(str_to_int(to_string(-42)))
+}

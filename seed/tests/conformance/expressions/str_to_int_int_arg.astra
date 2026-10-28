@@ -1,0 +1,7 @@
+// str_to_int takes any receiver at compile time (unknown parameter, like ord,
+// DEC-019) and rejects a non-string at RUNTIME with the VM's type_name —
+// worded identically by the seed VM, the C backend, the zig VM and LLVM.
+// EXPECT-RUNTIME-ERROR: str_to_int expects a string, got int
+fn main() {
+    print(str_to_int(42))
+}

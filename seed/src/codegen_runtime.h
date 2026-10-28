@@ -926,6 +926,79 @@ static inline AstraValue astra_builtin_substr(AstraValue *args, uint8_t argc) {
     return astra_string_new(sv.as.string_val->data + start, n);
 }
 
+/* ---------- Built-in: push (DEC-019, research/028 M2b) ----------
+ *
+ * push(array, value) -> array: a NEW array with `value` appended — the
+ * caller rebinds (`a = push(a, x)`), so the array it came from is untouched
+ * for everyone who still holds it (in-place growth would work through this
+ * backend's `{elems, len}` handle, but the LLVM object stores its elements
+ * inline and is shared, so only the copy is correct on all four routes).
+ * The copy is O(n) here (malloc + memcpy), like the VM's arena bump.
+ * Receiver, arity and element-kind wording mirrors vm.c's builtin_push
+ * (`push expects an array, got <tipo>` / `push element has type <X>,
+ * expected <Y>`) so sweep_emit_c.sh stays byte-equal. */
+static inline AstraValue astra_builtin_push(AstraValue *args, uint8_t argc) {
+    if (argc != 2)
+        astra_errorf("expected 2 arguments but got %u", (unsigned)argc);
+    AstraValue av = args[0], v = args[1];
+    if (av.tag != AST_ARRAY || !av.as.array_val)
+        astra_errorf("push expects an array, got %s", astra_tag_name(av.tag));
+    AstraArray *a = av.as.array_val;
+    if (a->len > 0 && a->elems[0].tag != v.tag)
+        astra_errorf("push element has type %s, expected %s",
+                     astra_tag_name(v.tag), astra_tag_name(a->elems[0].tag));
+    AstraValue *buf = (AstraValue *)malloc(((size_t)a->len + 1) * sizeof(AstraValue));
+    if (!buf)
+        astra_errorf("out of memory pushing to array");
+    for (int64_t i = 0; i < a->len; i++) buf[i] = a->elems[i];
+    buf[a->len] = v;
+    return astra_array_take(buf, a->len + 1);
+}
+
+/* ---------- Built-in: str_to_int (DEC-019, research/028 M2b) ----------
+ *
+ * str_to_int(string) -> i64: the decimal rendering to_string produces —
+ * `str_to_int(to_string(n))` round-trips for every int the language can
+ * name. A leading `-` is part of that rendering and is accepted; `+`,
+ * whitespace, `_` and the `0x`/`0b`/`0o` spellings are not (the lexer owns
+ * them). Anything else — including the empty string — is one runtime error
+ * naming the input, and the magnitude is capped at INT64_MAX exactly like
+ * the lexer's accumulate_digit, so "-9223372036854775808" fails just as the
+ * source literal does. Wording mirrors vm.c's builtin_str_to_int. */
+static inline AstraValue astra_builtin_str_to_int(AstraValue *args, uint8_t argc) {
+    if (argc != 1)
+        astra_errorf("expected 1 arguments but got %u", (unsigned)argc);
+    AstraValue s = args[0];
+    if (s.tag != AST_STRING)
+        astra_errorf("str_to_int expects a string, got %s", astra_tag_name(s.tag));
+    const char *p = s.as.string_val ? s.as.string_val->data : "";
+    int64_t len = s.as.string_val ? s.as.string_val->len : 0;
+    int64_t i = 0;
+    int neg = 0;
+    if (i < len && p[i] == '-') { neg = 1; i++; }
+    uint64_t acc = 0;
+    int any = 0;
+    for (; i < len; i++) {
+        char c = p[i];
+        if (c < '0' || c > '9')
+            /* Displayed literal truncated to 64 bytes (and up to the first
+             * NUL, as every %s here does): identical wording on all four
+             * routes — the seed, this backend and LLVM cap their error
+             * buffers at different sizes otherwise. */
+            astra_errorf("str_to_int: invalid integer literal '%.*s'",
+                         (int)(len < 64 ? len : 64), p);
+        any = 1;
+        uint64_t d = (uint64_t)(c - '0');
+        if (acc > ((uint64_t)INT64_MAX - d) / 10)
+            astra_errorf("str_to_int: integer literal is out of range for i64");
+        acc = acc * 10 + d;
+    }
+    if (!any)
+        astra_errorf("str_to_int: invalid integer literal '%.*s'",
+                     (int)(len < 64 ? len : 64), p);
+    return astra_int(neg ? -(int64_t)acc : (int64_t)acc);
+}
+
 /* ---------- Runtime error ---------- */
 /* A *hard* runtime error (div-by-zero, bounds, nil receiver, …) is fatal, full
  * stop: print `file:line: runtime error: msg` exactly like the VM's driver

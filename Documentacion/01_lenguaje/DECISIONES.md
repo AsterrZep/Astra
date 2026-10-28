@@ -26,6 +26,7 @@
 | DEC-016 | El lexer de Astra-0 (`seed/tests/selfhost/lexer.astra`) es el primer componente self-hosting: lexea `lexer_input.astra` con solo los builtins M1 y emite un token por línea `<KIND>:<lexeme>@<line>`; el stream se gatea byte a byte contra `lexer.expected` en las 4 rutas, fuera de `conformance/` (cwd) | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → 4/4 rutas (seed VM, `--emit-c`+gcc, zig VM, LLVM `--jit`) contra `lexer.expected` (PR D-PR3a; rutas y gate fuerte cerrados en DEC-017) |
 | DEC-017 | Cierre del gate del lexer self-hosting (PR3b): `lexer_gate.sh` crece a **7 rutas** ( + `--emit-obj`+link nativo, cross aarch64 bajo qemu, wasm32-wasi bajo Node WASI con preopens — cada una con skip limpio sin su toolchain) y añade el **gate fuerte** `lexer_tokens_parity.sh` (el stream de `lexer.astra` normalizado contra `astra-seed --dump-tokens`: 1:1 en KEYWORD/IDENT(`_`)/INT(hex→valor)/PUNCT/ERROR/EOF; fuera NEWLINE, columnas, contenido de STRING, FLOAT_LIT y la cola tras el primer ERROR); CI lo cablea en los jobs `seed` y `llvm` con los mismos guards, sin renombrar checks | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → **7/7 rutas** + `lexer_tokens_parity.sh` → **176 tokens** (PR D-PR3b) |
 | DEC-018 | Stdlib M2a: `ord(s) -> i64` = **primer byte** de `s` (`""` = error de runtime) y `substr(s, start, len) -> string` = `len` bytes desde `start` (**error, nunca recorte**, fuera de `[0, len(s)]`); los tres parámetros de `substr` y el de `ord` son `unknown` con guards de runtime (sin coerción en la llamada), y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/ord_basic.astra`, `expressions/ord_empty_error.astra`, `expressions/ord_int_arg.astra`, `expressions/substr_basic.astra`, `expressions/substr_bounds_error.astra`, `expressions/substr_start_error.astra`, `codegen/ord_substr.astra`, `codegen/substr_oob.astra`, `ui/builtin_shadow_ord.astra`, `ui/builtin_shadow_substr.astra` (PR D-PR4a) |
+| DEC-019 | Stdlib M2b: `push(arr, v) -> array` devuelve un array **NUEVO** (copia manual; el llamante re-bindea `a = push(a, v)` y el viejo queda intacto — crecer in-place es imposible en la ruta LLVM, cuyo objeto guarda los elementos **en línea** y es compartido por todos los bindings) con **guard de homogeneidad en runtime** (`push element has type X, expected Y`), y `str_to_int(s) -> i64` = el decimal de `to_string` con **error de runtime** para entradas inválidas, vacías o fuera de rango (acepta `-`, no `+` ni espacios ni `0x`); ambos parámetros `unknown` con guards (patrón `ord`, DEC-018), retorno de `push` `array<unknown>`, y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/push_basic.astra`, `expressions/push_alias.astra`, `expressions/push_int_arg.astra`, `expressions/push_elem_error.astra`, `expressions/push_nil.astra`, `expressions/str_to_int_basic.astra`, `expressions/str_to_int_invalid.astra`, `expressions/str_to_int_empty.astra`, `expressions/str_to_int_range.astra`, `expressions/str_to_int_int_arg.astra`, `expressions/str_to_int_nul.astra`, `codegen/push_roundtrip.astra`, `codegen/push_elem_error.astra`, `ui/builtin_shadow_push.astra`, `ui/builtin_shadow_str_to_int.astra` (PR D-PR4b) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -465,5 +466,152 @@
   (172 files), `llvm_parity` **184/184** skip=0 fail=0 (opt=0 y opt=2),
   `llvm_fuzz -n 20 -s 1` fail=0, `lexer_gate.sh` **7/7 rutas** + paridad de
   tokens (176), `--check-constructs` OK.
+- **Spec**: `research/028` §1.2 (firmas M2) — «pendiente de escribir en
+  ARCHITECTURE».
+
+### DEC-019 — Stdlib M2b: `push(arr, v)` (array nuevo) y `str_to_int(s)` (error de runtime)
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR4b (2026-10-28)
+- **Fecha**: 2026-10-28
+- **Decisión**:
+  - `push(arr, value) -> array` devuelve un **array NUEVO** con `value`
+    añadido al final — **copia manual, no crecimiento in-place**: el llamante
+    re-bindea (`a = push(a, x)`) y el array del que venía queda **intacto**
+    para cada binding que aún lo retenga. La razón técnica no es de estilo,
+    es de layout: en la ruta LLVM el objeto array es
+    `{rc, kind, i64 len, i32 elem_pty, <elementos en línea>}` y **todos los
+    bindings comparten el puntero** (la semántica de `arrays/alias_write`,
+    DEC-001) — hacer crecer el objeto exige reubicarlo y dejaría a cada alias
+    apuntando al objeto viejo con la `len` vieja. Sólo el copy es correcto
+    en las cuatro rutas sin rehacer el layout LLVM (que print, eq y el rc
+    de M2.a dan por supuesto). Nota deliberada: `a[i] = v` sí escribe
+    **a través del handle** (la sobrescritura no mueve la memoria); el
+    **crecimiento** sí la mueve, y ahí el handle LLVM no puede seguirla.
+  - **Coste**: la copia es O(n) por llamada (arena sin realloc en el seed y
+    zig, `malloc`+`memcpy` en C y LLVM), así que `n` pushes son **O(n²)**.
+    Aceptado: el uso previsto es el buffer de tokens de un lexer (miles de
+    elementos, no millones) y la alternativa (capacidad amortizada) añade un
+    campo `capacity` a tres rutas y una política de reserva que la cuarta no
+    puede compartir. **Sin `realloc` in-place**: la arena del seed no
+    redimensiona y el objeto LLVM no puede moverse (arriba).
+  - **Homogeneidad del elemento en runtime**: `push element has type <X>,
+    expected <Y>` cuando el tipo de `value` no es el del elemento del array
+    — la frase abreviada del checker (`array element N has type X, expected
+    Y`, sin `N` porque el runtime no conoce el índice). Hace falta porque el
+    checker **no puede** comparar el elemento contra el tipo del array: los
+    parámetros de `push` son `unknown` (arriba) y `type_eq` sobre
+    `array<int_literal>` vs `array<f64>` pasaría por el unknown. Los VMs y el
+    backend C comparan el tipo dinámico del valor contra el del **primer
+    elemento** (todo array de Astra-0 tiene ≥1: el literal exige elementos y
+    `push` sólo añade); LLVM compara el ptype estático en el emisor y sólo
+    recurre al helper dinámico cuando hay una caja de por medio (un lado
+    `some/ok/err` sólo se nombra con su tag real). Mismo texto en los 4.
+  - `push` con receptor que no es array (incluido `nil`) →
+    `push expects an array, got <tipo>` con el `type_name` del VM; parámetros
+    `unknown` con guards de runtime, patrón `ord` (DEC-018), y el retorno es
+    **`array<unknown>`**: `let b = push(a, 1)` hereda un array cuyo elemento
+    se sigue chequeando por uso, y `type_eq(array<T>, array<unknown>)` acepta
+    la reasignación `a = push(a, …)` sin reglas nuevas.
+  - `str_to_int(s) -> i64` parsea **el decimal que `to_string` produce**:
+    opcional `-` inicial + uno o más dígitos `0-9`, nada más. Redondea
+    `str_to_int(to_string(n))` para todo entero que el lenguaje pueda nombrar.
+    **Error de runtime** (nunca un optional) para tres casos con textos
+    fijos: entrada inválida (incluido `""`, `+`, espacios, `_`, `0x`, letras)
+    → `str_to_int: invalid integer literal '<s>'`; magnitud pasada de i64 →
+    `str_to_int: integer literal is out of range for i64` (la frase del
+    lexer del seed con el prefijo del builtin); receptor no-string →
+    `str_to_int expects a string, got <tipo>`. El desbordamiento se capa en
+    **magnitud ≤ INT64_MAX** con el mismo criterio que `accumulate_digit` del
+    lexer, así `-9223372036854775808` falla **igual que el literal en origen**
+    (el lexer también lo rechaza: el signo no forma parte de la magnitud que
+    acumula) — sin wrap silencioso. La literal que el mensaje **muestra** se
+    recorta a **64 bytes** (y, como todo `%.*s`, al primer NUL): los tres
+    runtimes C capan su buffer de error a tamaños distintos (seed 512, backend
+    C 192, LLVM 128) y el zig no capa, así que sin un tope común un input
+    largo o con `\0` escribiría cuatro mensajes distintos. Los prefijos
+    `+`/`0x`/`0b`/`0o` y `_` no
+    se aceptan: son ortografías del lexer (`str_to_int` es el par decimal de
+    `to_string`, y `+5` ni siquiera lexea como literal en origen).
+  - **Los 4 sitios a la vez** (`research/028` §2.2): seed (`typechecker.c`
+    símbolos + `kBuiltins`, `vm.c` cuerpo + `GET_GLOBAL` + dispatch +
+    marcadores `FnObj`, `priv.h`, `codegen.c` `cg_builtins[]`,
+    `codegen_runtime.h`), zig (`typechecker.zig` + `k_builtins`, `vm.zig`) y
+    LLVM (`emitter.zig` `emitPush`/`emitStrToInt`/guards + `astra_runtime_llvm.c`
+    `astra_llvm_array_push`/`astra_llvm_str_to_int` + fallos); JIT, wasm y
+    aarch64 heredan el runtime LLVM sin código propio. Los dos nombres se
+    suman a la lista reservada de DEC-015 en los dos typecheckers.
+- **Alternativas consideradas**:
+  (1) **`push` in-place a través del handle** (`arr->elems`/`arr->len`
+  reescritos, visible para todas las copias como `a[i] = v`) — era trivial en
+  **3 de las 4** rutas (seed y zig: la arena bump; C: `{elems, len}` con
+  `malloc`), pero **imposible en LLVM**: los elementos viven en línea dentro
+  del objeto compartido, así que crecer obliga a reubicarlo y los alias
+  quedan con el puntero viejo (arriba). Mantenerla habría exigido rediseñar
+  el layout LLVM (buffer separado con rc propio: print, eq, array_eq y el
+  retain/release de M2.a dan el inline por supuesto) o divergir el VM/seed/C
+  de LLVM; (2) **in-place condicional** (sólo si nadie más retiene, p. ej.
+  `rc == 1`) — descartado: el comportamiento observable pasaría a depender de
+  si hay alias, y una misma sentencia `push(a, x)` daría o no resultados
+  distintos en `b = a` según el momento; (3) **`i64?` (some/none)** —
+  descartado: el estilo del repo es el error de runtime consistente (mismo
+  contrato que `substr` bounds, DEC-018), un optional exige construir
+  `some`/`none` desde un builtin en las cuatro rutas (el par M6.c sólo se
+  desempaqueta en la ABI de funciones nombradas) y obliga a `match`/`?` en
+  **cada** llamante para usar el valor — `print(str_to_int(s))` dejaría de
+  existir; (4) `Result[i64, string]` (la firma de `research/028` §1.2) —
+  misma objeción más construir strings de error en 4 rutas; (5) **anotar el
+  receptor** (`str_to_int(s: string)` como `read_file`, o
+  `push(arr: [T], v: T)`) — para `push` imposible sin coerción (DEC-006: un
+  `[i32]` anotado rechazaría `push(a, len(s))` y un `v: i32`
+  `push(a, 3.5)` sólo en compile-time mientras `b[0] = 3.5` seguiría
+  cayendo en runtime vía otro camino); para `str_to_int` técnicamente
+  viable pero descartado para no partir la pareja de lectores de string en
+  dos reglas (`ord` es `unknown`+guard desde DEC-018); (6) **que el checker
+  rechace el desajuste de elemento en compile-time** (comparar arg2 contra
+  el elem de arg1 en la llamada a `push`) — descartado: introduce una regla
+  de chequeo especial para un solo builtin en dos checkers (otro mensaje que
+  mantener byte-idéntico) y no sustituye al guard de runtime, que las rutas
+  dinámicas (cajas) necesitan de todas formas; (7) `+` explícito y
+  hex/bin/oct con `_` dentro de `str_to_int` — descartado: `to_string` no
+  los emite (rompería el redondeo como definición) y esas ortografías son
+  del lexer; añadirlas aquí duplicaría la lógica de `lexer.astra` en 4
+  runtimes.
+- **Coste aceptado**: 4 implementaciones en 9 ficheros de código (seed:
+  `typechecker.c`, `vm.c`, `priv.h`, `codegen.c`, `codegen_runtime.h`; zig:
+  `typechecker.zig`, `vm.zig`, `llvm/emitter.zig`,
+  `llvm/runtime/astra_runtime_llvm.c`); 15 tests (11 conformance, 2 codegen,
+  2 ui); 0 cambios de bytecode ni de AST, así que los dumps siguen
+  byte-idénticos (185 ficheros = los 172 previos + los 13 nuevos que ya
+  gatean); O(n²) de `push` documentado arriba.
+- **Evidencia**: fijado por `expressions/push_basic.astra` (crece, lee por
+  índice, `len`, imprime `[1, 2, 3]` y añade un elemento calculado),
+  `expressions/push_alias.astra` (**el array viejo no crece**: `len(a)==2`,
+  `len(b)==3` — el pin de la semántica de array nuevo),
+  `expressions/push_int_arg.astra` (`push expects an array, got int`),
+  `expressions/push_elem_error.astra`
+  (`push element has type float, expected int`),
+  `expressions/push_nil.astra` (`push expects an array, got nil`),
+  `expressions/str_to_int_basic.astra` (`42`, `-7`, `0`, `123`, i64 min via
+  `to_string`), `expressions/str_to_int_invalid.astra`
+  (`str_to_int: invalid integer literal '12a'`),
+  `expressions/str_to_int_empty.astra`
+  (`str_to_int: invalid integer literal ''`),
+  `expressions/str_to_int_range.astra`
+  (`str_to_int: integer literal is out of range for i64`),
+  `expressions/str_to_int_int_arg.astra`
+  (`str_to_int expects a string, got int`), `expressions/str_to_int_nul.astra`
+  (literal con `\0` mostrado truncado en el NUL — `invalid integer literal
+  '1'` —, idéntico en las 4 rutas), `codegen/push_roundtrip.astra`
+  y `codegen/push_elem_error.astra` (redondeo C, incluida la composición
+  `push`+`substr`+`str_to_int`), `ui/builtin_shadow_push.astra` y
+  `ui/builtin_shadow_str_to_int.astra` (primera línea byte-idéntica seed↔zig).
+  Gates del PR: `make test` **311/0**, `sweep_emit_c` total=**143** skip=3
+  fail=0, `make debug` (ASan/UBSan/LSan) **311/0**, `zig build test`
+  **73/73**, `ui_message_parity` first_fail=0 (total=129), `dump_parity` 0
+  divergent (185 files), `llvm_parity` **197/197** skip=0 fail=0 (opt=0 y
+  opt=2), `llvm_jit` **197/197** (opt=0 y opt=2), `llvm_sanitize`
+  **197/197** bajo ASan + LSan limpio, `llvm_cross` **197/197** (aarch64),
+  `llvm_wasm` **197/197**, `llvm_fuzz -n 20 -s 1` fail=0, `lexer_gate.sh`
+  **7/7 rutas** + paridad de tokens (176), `--check-constructs` OK.
 - **Spec**: `research/028` §1.2 (firmas M2) — «pendiente de escribir en
   ARCHITECTURE».

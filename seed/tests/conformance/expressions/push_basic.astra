@@ -1,0 +1,19 @@
+// push(arr, value) -> array (DEC-019, research/028 M2b): a NEW array with the
+// value appended — the caller rebinds (`a = push(a, x)`), grows one element
+// per call and keeps the array indexable and comparable, so a lexer can build
+// a token buffer incrementally. `len` and `a[i]` see the new array.
+// EXPECT: 3
+// EXPECT: 3
+// EXPECT: [1, 2, 3]
+// EXPECT: true
+// EXPECT: 4
+fn main() {
+    let mut a = [1, 2]
+    a = push(a, 3)
+    print(len(a))
+    print(a[2])
+    print(a)
+    print(len(a) == 3)
+    a = push(a, len(a) + 1)
+    print(a[3])
+}

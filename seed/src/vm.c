@@ -641,6 +641,102 @@ static bool builtin_substr(VM *vm, Value *args, uint8_t argc, uint32_t line, Val
     return true;
 }
 
+/* Builtin `push(arr, value) -> array` (DEC-019, research/028 M2b): a NEW
+ * array with `value` appended — the caller rebinds (`a = push(a, x)`), so
+ * the old array is untouched for everyone who still holds it. In-place
+ * growth is possible here (the arena just bumps), but not in the LLVM
+ * backend, whose array object stores its elements inline and is shared by
+ * every binding (DEC-019: growing would relocate the object and leave every
+ * alias pointing at the old one). The copy is O(n) — the arena has no
+ * realloc — so n pushes are O(n²); honest for the token-buffer scale this
+ * stdlib targets.
+ *
+ * The element must match the array's element kind (Astra-0 arrays are
+ * homogeneous and the checker enforces it everywhere except an `unknown`
+ * builtin parameter): `push` compares against the first element, the same
+ * representative the print/eq paths use, and reports with the checker's
+ * phrasing (`array element N has type X, expected Y`). */
+static bool builtin_push(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 2) {
+        vm_runtime_error(vm, line, "expected 2 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value av = args[0], v = args[1];
+    if (av.kind != VAL_ARRAY || !av.as.array_val) {
+        vm_runtime_error(vm, line, "push expects an array, got %s", type_name(av));
+        return false;
+    }
+    ArrayObj *a = av.as.array_val;
+    if (a->len > 0 && a->elems[0].kind != v.kind) {
+        vm_runtime_error(vm, line, "push element has type %s, expected %s",
+                         type_name(v), type_name(a->elems[0]));
+        return false;
+    }
+    ArrayObj *na = array_obj_new(vm->arena, a->len + 1);
+    if (!na) {
+        vm_runtime_error(vm, line, "out of memory pushing to array");
+        return false;
+    }
+    for (size_t i = 0; i < a->len; i++) na->elems[i] = a->elems[i];
+    na->elems[a->len] = v;
+    *out = value_array(na);
+    return true;
+}
+
+/* Builtin `str_to_int(s) -> i64` (DEC-019, research/028 M2b): the decimal
+ * rendering `to_string` produces, round-tripping `str_to_int(to_string(n))`
+ * for every int the language can name. A leading `-` is part of that
+ * rendering, so it is accepted; `+`, whitespace, `_` and `0x`/`0b`/`0o` are
+ * not (the lexer owns those spellings and its literal would fail the same
+ * way for a space or a `+`). Anything else — including the empty string — is
+ * a runtime error naming the offending input, and the magnitude is capped at
+ * INT64_MAX exactly like the lexer's `accumulate_digit`, so
+ * `-9223372036854775808` fails just as the source literal does. */
+static bool builtin_str_to_int(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 1) {
+        vm_runtime_error(vm, line, "expected 1 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value s = args[0];
+    if (s.kind != VAL_STRING) {
+        vm_runtime_error(vm, line, "str_to_int expects a string, got %s", type_name(s));
+        return false;
+    }
+    const char *p = s.as.string_val.str;
+    size_t len = s.as.string_val.len, i = 0;
+    bool neg = false;
+    if (i < len && p[i] == '-') { neg = true; i++; }
+    uint64_t acc = 0;
+    bool any = false;
+    /* The offending literal is DISPLAYED truncated to 64 bytes (and, like
+     * every %s in these runtimes, up to the first NUL): the four routes must
+     * word an arbitrary input identically — the seed's vsnprintf, the C
+     * backend's astra_errorf and the LLVM snprintf each cap their own buffer
+     * at a different size otherwise. */
+    for (; i < len; i++) {
+        char c = p[i];
+        if (c < '0' || c > '9') {
+            vm_runtime_error(vm, line, "str_to_int: invalid integer literal '%.*s'",
+                             (int)(len < 64 ? len : 64), p ? p : "");
+            return false;
+        }
+        any = true;
+        uint64_t d = (uint64_t)(c - '0');
+        if (acc > ((uint64_t)INT64_MAX - d) / 10) {
+            vm_runtime_error(vm, line, "str_to_int: integer literal is out of range for i64");
+            return false;
+        }
+        acc = acc * 10 + d;
+    }
+    if (!any) {
+        vm_runtime_error(vm, line, "str_to_int: invalid integer literal '%.*s'",
+                         (int)(len < 64 ? len : 64), p ? p : "");
+        return false;
+    }
+    *out = value_int(neg ? -(int64_t)acc : (int64_t)acc);
+    return true;
+}
+
 /* -----------------------------------------------------------
  * VM execution
  * ----------------------------------------------------------- */
@@ -876,6 +972,10 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 if (!vm_push(vm, value_fn(vm->builtin_ord_fn))) return VM_RUNTIME_ERROR;
             } else if (name && strcmp(name, "substr") == 0) {
                 if (!vm_push(vm, value_fn(vm->builtin_substr_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "push") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_push_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "str_to_int") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_str_to_int_fn))) return VM_RUNTIME_ERROR;
             } else {
                 /* Look up in globals table */
                 bool found = false;
@@ -1630,6 +1730,12 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 } else if (fn == vm->builtin_substr_fn) {
                     if (!builtin_substr(vm, &vm->stack[fn_idx + 1], argc, line, &result))
                         return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_push_fn) {
+                    if (!builtin_push(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_str_to_int_fn) {
+                    if (!builtin_str_to_int(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
                 } else {
                     result = builtin_print(&vm->stack[fn_idx + 1], argc);
                 }
@@ -1995,6 +2101,22 @@ VM *vm_create(Arena *arena) {
     sub_fn->param_count = 255;
     sub_fn->local_count = 0;
     vm->builtin_substr_fn = sub_fn;
+    FnObj *push_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    push_fn->code = NULL;
+    push_fn->code_len = 0;
+    push_fn->constants = NULL;
+    push_fn->const_len = 0;
+    push_fn->param_count = 255;
+    push_fn->local_count = 0;
+    vm->builtin_push_fn = push_fn;
+    FnObj *sti_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    sti_fn->code = NULL;
+    sti_fn->code_len = 0;
+    sti_fn->constants = NULL;
+    sti_fn->const_len = 0;
+    sti_fn->param_count = 255;
+    sti_fn->local_count = 0;
+    vm->builtin_str_to_int_fn = sti_fn;
     return vm;
 }
 

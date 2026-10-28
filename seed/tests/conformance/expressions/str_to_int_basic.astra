@@ -1,0 +1,17 @@
+// str_to_int(s) -> i64 (DEC-019, research/028 M2b): parses the decimal
+// rendering to_string produces, so `str_to_int(to_string(n))` round-trips
+// for every int the language can name — the pair a lexer uses to read an
+// integer literal out of source text. A leading `-` is part of that
+// rendering and is accepted.
+// EXPECT: 42
+// EXPECT: -7
+// EXPECT: 0
+// EXPECT: 123
+// EXPECT: -9223372036854775807
+fn main() {
+    print(str_to_int("42"))
+    print(str_to_int("-7"))
+    print(str_to_int("0"))
+    print(str_to_int(to_string(123)))
+    print(str_to_int(to_string(-9223372036854775807)))
+}

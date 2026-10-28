@@ -725,6 +725,51 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         symbol_table_insert(tc->symbols, sym);
     }
 
+    /* push(arr, value) -> array — un array NUEVO con value añadido al final
+     * (DEC-019, research/028 M2b): el llamante re-bindea (`a = push(a, x)`),
+     * así el array viejo queda intacto para quien lo retenga. Los dos
+     * parámetros son unknown (patrón print/len, DEC-018): el receptor se
+     * rechaza en runtime con `push expects an array, got <tipo>` y el
+     * elemento con `push element has type X, expected Y` — el checker no
+     * puede comparar el elemento contra el tipo del array sin romper la
+     * adopción de literales (DEC-006). El retorno es array<unknown>: `let b
+     * = push(a, 1)` hereda un array cuyo elemento se sigue chequeando por
+     * uso. */
+    {
+        Type **params = arena_new_array(arena, Type *, 2);
+        params[0] = type_new(arena, TYPE_UNKNOWN);
+        params[1] = type_new(arena, TYPE_UNKNOWN);
+        Type *elem = type_new(arena, TYPE_UNKNOWN);
+        Type *push_type = type_new_fn(arena, params, 2, type_new_array(arena, elem, NULL));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "push"),
+            .type = push_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
+    /* str_to_int(s) -> i64 — el decimal que to_string produce, redondeando
+     * `str_to_int(to_string(n))` (DEC-019, research/028 M2b). Parámetro
+     * unknown como ord: receptor no-string → `str_to_int expects a string,
+     * got <tipo>` en runtime; entrada inválida (incluido "") o fuera de
+     * rango i64 → error de runtime, no un optional — el estilo del repo es
+     * el error consistente de substr bounds, y un `i64?` obligaría a
+     * construir some/none desde un builtin en las cuatro rutas. */
+    {
+        Type **params = arena_new_array(arena, Type *, 1);
+        params[0] = type_new(arena, TYPE_UNKNOWN);
+        Type *sti_type = type_new_fn(arena, params, 1, type_new(arena, TYPE_INT64));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "str_to_int"),
+            .type = sti_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
     /* Register built-in Option enum: some(T) -> Option[T], none -> Option[T] */
     {
         Type *opt_type = type_new(arena, TYPE_ENUM);
@@ -2697,7 +2742,7 @@ static Type *default_int_type(Arena *a, Node *init) {
  * Reports and returns true when `name` is builtin. */
 static bool builtin_redeclare_error(TypeChecker *tc, SrcLoc loc,
                                     InternedString name) {
-    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file", "ord", "substr" };
+    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int" };
     for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
         const char *b = kBuiltins[i];
         if (name.len == strlen(b) && memcmp(name.str, b, name.len) == 0) {

@@ -112,13 +112,13 @@ Los dos PDFs de los que arrancó todo: *Arquitectura Lenguaje Astra* y
 
 | Área | Estado | Gate / cifra |
 |:-----|:-------|:-------------|
-| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **296 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **132 total, 3 skip, 0 fail** |
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **311 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **143 total, 3 skip, 0 fail** |
 | Registro de constructos | ✅ (índice documental — DEC-002) | `--check-constructs` → **47 constructos, 27 operadores**; hooks = aspiración, no plan de migración |
-| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **172 ficheros, 0 divergentes** |
+| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **185 ficheros, 0 divergentes** |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
-| **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **184/184** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
-| **Decisiones de lenguaje** | ✅ 18 registradas (17 aceptadas) | `DECISIONES.md` — DEC-001..018 (DEC-012 sigue `Propuesta`); las 4 decisiones abiertas de la crítica (025 §2.8) congeladas e implementadas |
-| **Stdlib Astra-0 (M1/M2a)** | ✅ 6 builtins + lexer | `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr` en 4 rutas · `selfhost/lexer_gate.sh` → **7/7** rutas + gate fuerte `lexer_tokens_parity.sh` vs `--dump-tokens` (lexer escrito en Astra-0) |
+| **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **197/197** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
+| **Decisiones de lenguaje** | ✅ 19 registradas (18 aceptadas) | `DECISIONES.md` — DEC-001..019 (DEC-012 sigue `Propuesta`); las 4 decisiones abiertas de la crítica (025 §2.8) congeladas e implementadas |
+| **Stdlib Astra-0 (M1/M2b)** | ✅ 8 builtins + lexer | `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int` en 4 rutas · `selfhost/lexer_gate.sh` → **7/7** rutas + gate fuerte `lexer_tokens_parity.sh` vs `--dump-tokens` (lexer escrito en Astra-0) |
 | **Enforcement entre fibras** | 🔵 Especificado, no implementado | `ARCHITECTURE.md` §2.6 (Opción F) · DEC-012 `Propuesta` → regla 5 de AGENTS bloquea backend work |
 | Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
 | **Fase 3** — Astra se compila a sí misma | ⏳ Pendiente | prerequisitos: stdlib M1/M2 ✅ + árbol de compilador en Astra |

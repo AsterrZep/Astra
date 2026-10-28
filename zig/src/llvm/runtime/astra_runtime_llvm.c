@@ -691,6 +691,161 @@ void astra_llvm_substr_int_fail(unsigned line, const void *p) {
     astra_llvm_fail(line, buf);
 }
 
+/* ---- push / str_to_int (DEC-019, research/028 M2b) ---------------------- */
+
+/* Espejo de astra_llvm_release_slot (definido abajo, con los destructores):
+ * el puntero dentro de un slot según el ptype del runtime (4=str 5=boxed
+ * 6=array 7=struct 8=enum 9=fn) retiene una referencia. Los escalares (1/2/3)
+ * no poseen nada. */
+static void astra_llvm_retain_slot(int32_t pty, const char *slot) {
+    if (pty < 4 || pty > 9) return;
+    void *child;
+    memcpy(&child, slot, sizeof child);
+    astra_llvm_retain(child);
+}
+
+/* Nombre de type_name del VM para un ptype del runtime; los escalares y
+ * agregados estáticos son su nombre y la caja (5) se nombra por su tag real
+ * leyendo el puntero del slot (some/ok/err), como el VM nombra sus valores. */
+static const char *astra_llvm_pty_name(int32_t pty, const char *slot) {
+    switch (pty) {
+        case 1: return "bool";
+        case 2: return "int";
+        case 3: return "float";
+        case 4: return "string";
+        case 5: { void *b = NULL; if (slot) memcpy(&b, slot, sizeof b); return astra_llvm_boxed_name(b); }
+        case 6: return "array";
+        case 7: return "struct";
+        case 8: return "enum";
+        case 9: return "function";
+        default: return "unknown";
+    }
+}
+
+/* `push(array, value) -> array` (DEC-019, research/028 M2b): a NEW array with
+ * the value appended — the caller rebinds (`a = push(a, x)`), so the array it
+ * came from stays untouched for every binding that still holds it. The object
+ * keeps its elements INLINE (M2.a), so growing in place would relocate the
+ * object and leave every alias pointing at the old one: the copy is the only
+ * model that matches the seed's handle on all four routes. The copy is O(n)
+ * (O(n²) for n pushes), like the VM's arena bump — documented in DEC-019.
+ *
+ * The emitter already rejected a statically mismatched element (its pty is
+ * the object's pty), so here the slot holds the value in the element's own
+ * width (1 byte for bool, 8 otherwise). Every element of the new object is
+ * retained — it owns one reference each; the old object keeps its own and
+ * dies with its last binding. */
+void *astra_llvm_array_push(unsigned line, const void *p, const void *ev) {
+    if (!p) {
+        astra_llvm_fail(line, "push expects an array, got nil");
+        return NULL; /* noreturn en el IR; en C, para el compilador */
+    }
+    int64_t len;
+    int32_t pty;
+    memcpy(&len, p, sizeof len);
+    memcpy(&pty, (const char *)p + 8, sizeof pty);
+    const int slot = astra_llvm_arr_slot(pty);
+    const int64_t nlen = len + 1;
+    void *np = astra_llvm_alloc(line, ASTRA_LLVM_ARR_HDR + (int64_t)slot * nlen, ASTRA_LLVM_KIND_ARR);
+    memcpy(np, &nlen, sizeof nlen);
+    memcpy((char *)np + 8, &pty, sizeof pty);
+    memcpy((char *)np + ASTRA_LLVM_ARR_HDR,
+           (const char *)p + ASTRA_LLVM_ARR_HDR, (size_t)slot * (size_t)len);
+    memcpy((char *)np + ASTRA_LLVM_ARR_HDR + (size_t)slot * (size_t)len, ev, (size_t)slot);
+    for (int64_t i = 0; i < nlen; i++)
+        astra_llvm_retain_slot(pty, (const char *)np + ASTRA_LLVM_ARR_HDR + (size_t)slot * (size_t)i);
+    return np;
+}
+
+/* `push` sobre caja/par (espejo de astra_llvm_substr_str_fail): la caja es
+ * nil/ok/err/some, nunca un array plano, y type_name del VM lo dice. */
+void astra_llvm_push_fail(unsigned line, const void *p) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "push expects an array, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
+/* Elemento de `push` con un tipo dinámico distinto del elemento del array —
+ * el checker solo lo deja pasar por los parámetros `unknown` (DEC-019). La
+ * frase abrevia la del checker de arrays (`array element N has type X,
+ * expected Y`) porque el runtime no conoce N; el lado que es caja se nombra
+ * dinámicamente (some/ok/err) y el otro por su ptype, como el VM. */
+void astra_llvm_push_elem_fail(unsigned line, const void *arr, const void *ev, int32_t ev_pty) {
+    int32_t ap;
+    int64_t alen;
+    memcpy(&ap, (const char *)arr + 8, sizeof ap);
+    memcpy(&alen, arr, sizeof alen);
+    /* Los arrays de Astra-0 no pueden estar vacíos (el literal exige
+     * elementos y push solo añade), pero si el día de mañana lo estuvieran,
+     * nombrar el lado esperado leería pasando del objeto: un array vacío no
+     * tiene elemento que nombrar y dice `nil`. */
+    const char *e0 = alen > 0 ? (const char *)arr + ASTRA_LLVM_ARR_HDR : NULL;
+    char buf[128];
+    snprintf(buf, sizeof buf, "push element has type %s, expected %s",
+             astra_llvm_pty_name(ev_pty, ev),
+             astra_llvm_pty_name(ap, e0));
+    astra_llvm_fail(line, buf);
+}
+
+/* `str_to_int(string) -> i64` (DEC-019, research/028 M2b): el decimal que
+ * to_string produce — `str_to_int(to_string(n))` redondea para todo entero
+ * nombrable. Un `-` inicial forma parte de esa rendered y se acepta; `+`,
+ * espacios, `_` y los prefijos `0x`/`0b`/`0o` no (son del lexer). Cualquier
+ * otra entrada — incluido el string vacío — es UN error de runtime que nombra
+ * la entrada, y la magnitud se capa en INT64_MAX exactamente como el
+ * accumulate_digit del lexer, así que "-9223372036854775808" falla igual que
+ * el literal en origen. El emisor ya filtró el tipo del receptor. */
+int64_t astra_llvm_str_to_int(unsigned line, const void *ps) {
+    if (!ps) {
+        astra_llvm_fail(line, "str_to_int expects a string, got nil");
+        return 0; /* noreturn en el IR; en C, para el compilador */
+    }
+    const AstraLLVMStr *s = (const AstraLLVMStr *)ps;
+    const char *p = s->data;
+    int64_t i = 0, len = s->len;
+    int neg = 0;
+    if (i < len && p[i] == '-') { neg = 1; i++; }
+    uint64_t acc = 0;
+    int any = 0;
+    for (; i < len; i++) {
+        char c = p[i];
+        if (c < '0' || c > '9') {
+            /* The literal is DISPLAYED truncated to 64 bytes (and, like
+             * every %s, up to the first NUL): identical wording on all four
+             * routes — the seed and the C backend cap their error buffers at
+             * different sizes otherwise. */
+            char msg[128];
+            snprintf(msg, sizeof msg, "str_to_int: invalid integer literal '%.*s'",
+                     (int)(len < 64 ? len : 64), p);
+            astra_llvm_fail(line, msg);
+            return 0;
+        }
+        any = 1;
+        uint64_t d = (uint64_t)(c - '0');
+        if (acc > ((uint64_t)INT64_MAX - d) / 10) {
+            astra_llvm_fail(line, "str_to_int: integer literal is out of range for i64");
+            return 0;
+        }
+        acc = acc * 10 + d;
+    }
+    if (!any) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "str_to_int: invalid integer literal '%.*s'",
+                 (int)(len < 64 ? len : 64), p);
+        astra_llvm_fail(line, msg);
+        return 0;
+    }
+    return neg ? -(int64_t)acc : (int64_t)acc;
+}
+
+/* `str_to_int` sobre caja/par (espejo de astra_llvm_ord_fail): la caja es
+ * nil/ok/err/some, nunca un string plano, y type_name del VM lo dice. */
+void astra_llvm_str_to_int_fail(unsigned line, const void *p) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "str_to_int expects a string, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
 /* ---- structs (M2.b) ----------------------------------------------------- */
 
 /* Structs are heap handles like arrays (aliasing, Hallazgo G) but printed and
