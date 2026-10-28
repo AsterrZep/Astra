@@ -1,11 +1,12 @@
 # Capítulo 14 — Referencia: builtins, keywords y errores de runtime
 
-> **Estado de este capítulo** (2026-10-28): los cinco builtins fusionados en
-> `main` (`print`, `len`, `s[i]`, `to_string`, `read_file`) están documentados
-> con sus textos de error **copiados de las ejecuciones reales** de este día
-> (seed VM y zig VM, byte-idénticos). `ord`/`substr` están en revisión
-> (PR #23, DEC-018) y `push`/`str_to_int` en implementación: sus filas llevan
-> estado, y esta tabla se actualizará cuando aterricen.
+> **Estado de este capítulo** (2026-10-28, actualizado): los **8 builtins**
+> están **todos en `main`** — `print`, `len`, `s[i]`, `to_string`,
+> `read_file` (M1) y `ord`, `substr`, `push`, `str_to_int` (M2a/M2b,
+> DEC-018/019) — documentados con sus textos de error **copiados de las
+> ejecuciones reales** (seed VM y zig VM, byte-idénticos; las 4 rutas en los
+> tests de paridad). Las filas de los cuatro nuevos llevan su firma y
+> errores verificados en `main`.
 
 Este capítulo no enseña nada nuevo: es la **hoja de referencia** que consultas
 cuando dudas de una firma, de un texto de error o de si una palabra está
@@ -133,16 +134,16 @@ Notas de contrato:
 - El tipo nombrado en los guards (`got int`, `got float`) es el `type_name`
   del VM: si smuggleas otro tipo, el mensaje nombra el real.
 
-## En revisión e implementación: `ord`, `substr`, `push`, `str_to_int`
+## Los cuatro nuevos: `ord`, `substr`, `push`, `str_to_int`
 
-La stdlib M2 está en vuelo. Estado real hoy:
+Aterrizaron en `main` con la stdlib M2 (PRs #23 y #26). Estado real hoy:
 
-| Builtin | Firma prevista | Semántica prevista | Estado (2026-10-28) |
-|:--------|:---------------|:-------------------|:--------------------|
-| `ord` | `ord(s) -> i64` | **Primer byte** de `s`; `""` = error de runtime | **PR #23 en revisión** (DEC-018, fijada en `expressions/ord_*.astra`) |
-| `substr` | `substr(s, start, len) -> string` | `len` bytes desde `start`; **error, nunca recorte**, fuera de `[0, len(s)]` | **PR #23 en revisión** (DEC-018, `expressions/substr_*.astra`) |
-| `push` | `push(arr, v) -> array` | **Nuevo** array con `v` al final (el original no cambia) | **En implementación** (DEC-019 en preparación) |
-| `str_to_int` | `str_to_int(s) -> i64` | Decimal de `s` a entero; casos inválidos = error de runtime | **En implementación** (DEC-019 en preparación) |
+| Builtin | Firma | Semántica | Estado (2026-10-28) |
+|:--------|:------|:----------|:--------------------|
+| `ord` | `ord(s) -> i64` | **Primer byte** de `s`; `""` = error de runtime | ✅ **En `main`** (DEC-018, fijada en `expressions/ord_*.astra`) |
+| `substr` | `substr(s, start, len) -> string` | `len` bytes desde `start`; **error, nunca recorte**, fuera de `[0, len(s)]` | ✅ **En `main`** (DEC-018, `expressions/substr_*.astra`) |
+| `push` | `push(arr, v) -> array` | **Nuevo** array con `v` al final (el original no cambia — DEC-019) | ✅ **En `main`** (DEC-019, `push_alias.astra` fija la copia) |
+| `str_to_int` | `str_to_int(s) -> i64` | Decimal de `s` a entero; inválidos = error de runtime | ✅ **En `main`** (DEC-019, `str_to_int_*.astra`) |
 
 Los textos de error ya están fijados por los tests del PR de `ord`/`substr`:
 `ord() of empty string`, `ord expects a string, got int`,
@@ -213,8 +214,8 @@ achica.
   `to_string` solo enteros; `read_file` colapsa todo fallo en un error.
 - Los errores de runtime llevan `fichero:línea: runtime error:` y salen con
   código 1 — texto idéntico en las 4 rutas, y esa identidad es gate.
-- `ord`/`substr` (PR #23) y `push`/`str_to_int` (implementación) llegan en
-  los próximos PRs; esta tabla se actualizará.
+- `ord`/`substr` (DEC-018) y `push`/`str_to_int` (DEC-019) ya están en
+  `main` — esta referencia cubre los 8.
 - 36 keywords + nombres de builtin reservados (DEC-015): no se pueden
   redeclarar, en ningún ámbito.
 

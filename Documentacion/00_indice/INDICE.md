@@ -24,6 +24,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
 | [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–030) | 30 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
+| [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
 ---
 
@@ -108,13 +109,27 @@ Los dos PDFs de los que arrancó todo: *Arquitectura Lenguaje Astra* y
 
 ---
 
+## 9. `09_libro/` — Guía de usuario (libro)
+
+*The Astra Programming Language* — libro de usuario estilo *The Rust
+Programming Language*, **16 capítulos** (00 introducción → 15 glosario) +
+`README.md` con la guía de estilo + **91 ficheros de ejemplo `.astra`** en
+`ejemplos/`, todos ejecutados con el toolchain real y con la salida pegada
+de las corridas. Escrito en 4 bloques paralelos (2026-10-28) contra el
+compilador real: documenta **solo lo implementado** y remite a
+`DECISIONES.md`/`ARCHITECTURE.md` para el porqué. Su escritura actuó como
+auditoría de docs: 8 divergencias halladas quedaron en el backlog. El build
+HTML (mdBook o equivalente) es el siguiente paso — el contenido, no.
+
+---
+
 ## Estado del proyecto de un vistazo (2026-10-28)
 
 | Área | Estado | Gate / cifra |
 |:-----|:-------|:-------------|
-| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **311 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **143 total, 3 skip, 0 fail** |
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **312 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **143 total, 3 skip, 0 fail** |
 | Registro de constructos | ✅ (índice documental — DEC-002) | `--check-constructs` → **47 constructos, 27 operadores**; hooks = aspiración, no plan de migración |
-| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **185 ficheros, 0 divergentes** |
+| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` ✅ · `dump_parity.sh` → **186 ficheros, 0 divergentes** |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
 | **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **197/197** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
 | **Decisiones de lenguaje** | ✅ 19 registradas (18 aceptadas) | `DECISIONES.md` — DEC-001..019 (DEC-012 sigue `Propuesta`); las 4 decisiones abiertas de la crítica (025 §2.8) congeladas e implementadas |

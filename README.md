@@ -16,7 +16,7 @@
 
 ---
 
-> **Status (2026-10-28)**: Phase 1 (`seed/`, C) complete — `cd seed && make test` → **311 passed, 0 failed**. Phase 2 (`zig/`) has the Astra-0 frontend, module system, traits, generics and `?`, verified against the seed suite — `zig build test` → **73/73**, `dump_parity.sh` → **185 files, 0 divergent**. The LLVM backend is **opt-in** (`-Dllvm`) and green: `llvm_parity.sh` → **197/197** (skips fail the gate; native, `-O2`, aarch64 under qemu, wasm32-wasi under Node) — see [Benchmarks](#benchmarks-2026-10-27). **Stdlib M1/M2b shipped**: `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int` + a self-hosted lexer gate (`selfhost/lexer_gate.sh` → 7/7 routes + token-stream parity vs `--dump-tokens`). **Not built yet**: wider stdlib, ARC/ORC + fibers, comptime, package manager, Phase 3 self-compilation. Single source of truth for status: [`Documentacion/00_indice/INDICE.md`](Documentacion/00_indice/INDICE.md).
+> **Status (2026-10-28)**: Phase 1 (`seed/`, C) complete — `cd seed && make test` → **312 passed, 0 failed**. Phase 2 (`zig/`) has the Astra-0 frontend, module system, traits, generics and `?`, verified against the seed suite — `zig build test` → **73/73**, `dump_parity.sh` → **186 files, 0 divergent**. The LLVM backend is **opt-in** (`-Dllvm`) and green: `llvm_parity.sh` → **197/197** (skips fail the gate; native, `-O2`, aarch64 under qemu, wasm32-wasi under Node) — see [Benchmarks](#benchmarks-2026-10-27). **Stdlib M1/M2b shipped**: `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int` + a self-hosted lexer gate (`selfhost/lexer_gate.sh` → 7/7 routes + token-stream parity vs `--dump-tokens`). **User guide**: [the book](Documentacion/09_libro/README.md) — 16 chapters, 91 executed examples. **Not built yet**: wider stdlib, ARC/ORC + fibers, comptime, package manager, Phase 3 self-compilation. Single source of truth for status: [`Documentacion/00_indice/INDICE.md`](Documentacion/00_indice/INDICE.md).
 
 **Astra** is a compiled programming language that aims to unify the ergonomics of Python/TypeScript with the native speed of C/Rust — without the complexity of Rust's Borrow Checker or GC pauses.
 
@@ -89,7 +89,8 @@ Astra/
     ├── 05_fase_llvm/             # LLVM backend: plan + status (2)
     ├── 06_auditorias/            # Audits: coherence + pre-LLVM (2)
     ├── 07_investigacion/         # Research reports 001–030 (30 files)
-    └── 08_originales/            # Source PDFs (2)
+    ├── 08_originales/            # Source PDFs (2)
+    └── 09_libro/                 # User guide: 16 chapters + 91 examples (17)
 ```
 
 ## Documentation
@@ -114,6 +115,7 @@ document is listed there with a one-line description.
 - **[06_auditorias](Documentacion/06_auditorias/)** — [Coherence audit](Documentacion/06_auditorias/COHERENCE_AUDIT.md) and [pre-LLVM audit](Documentacion/06_auditorias/PRE_LLVM_AUDIT.md)
 - **[07_investigacion](Documentacion/07_investigacion/)** — 30 deep-dive research reports (001–030) on compilers, runtimes, language design, external critique analysis and benchmarks
 - **[08_originales](Documentacion/08_originales/)** — Original design PDFs
+- **[09_libro](Documentacion/09_libro/README.md)** — *The Astra Programming Language*: user guide in book style (16 chapters, 91 executed examples; ES)
 
 ## Benchmarks (2026-10-27)
 
@@ -188,7 +190,7 @@ States — never a bare `[x]`:
 |:-----|:------|:---------|
 | Language design and architecture specification | **Specified** | `Documentacion/01_lenguaje/ARCHITECTURE.md` (§1–§41) |
 | Cross-platform research (Linux, macOS, Windows, Android, iOS, visionOS) | **Specified** | `research/018`, `research/019`, ARCHITECTURE §24–27. *Cross-verified* only for `aarch64-linux-gnu` and `wasm32-wasi`: `zig/tests/llvm_cross.sh`, `llvm_wasm.sh` → 197/197 |
-| Compiler architecture (multi-IR, query system) | **Specified (partial)** | multi-IR: ARCHITECTURE §20.1 · query system: **0 hits** in `seed/src`+`zig/src` · dual backend **Verified**: `make test` 311/311 + `llvm_parity.sh` 197/197 |
+| Compiler architecture (multi-IR, query system) | **Specified (partial)** | multi-IR: ARCHITECTURE §20.1 · query system: **0 hits** in `seed/src`+`zig/src` · dual backend **Verified**: `make test` 312/312 + `llvm_parity.sh` 197/197 |
 | Memory model (ARC/ORC, cycle detection, fiber-aware) | **Specified — not implemented** | ARCHITECTURE §2; `vm.c` never frees (`grep -c 'free(' seed/src/vm.c` → 0, arena-only), no cycle detection, no fiber-awareness. Ref-counting exists only on the LLVM route (M4.e, no cycles) |
 | Concurrency model (green threads, channels, atomics) | **Specified — not implemented** | ARCHITECTURE §3/§35; `grep -riE "fiber\|scheduler\|spawn\|channel\|Atomic\[" seed/src zig/src` → **0**; `transfer` → 0 |
 | Standard library design (~64 modules) | **Specified** | `research/015`, ARCHITECTURE §32; `std/…` is rejected by the Zig CLI |
@@ -204,7 +206,7 @@ States — never a bare `[x]`:
 | **Phase 2 core**: Zig compiler — Astra-0 frontend, modules, traits, generics, `?` | **Verified** | `cd zig && zig build test` → **73/73**; `zig/tests/dump_parity.sh` → **147 files, 0 divergent** (2026-10-27) |
 | **LLVM backend** (`-Dllvm`, opt-in): `--emit-obj`/`--jit`, cross aarch64, wasm32-wasi, `--fast-math`, unboxed Option/Result | **Verified (CI)** | `zig/tests/llvm_parity.sh` → **197/197**, plain and `ASTRA_LLVM_OPT=2` (skips fail since #21); jobs `llvm`, `llvm-cross`, `llvm-wasm` green on every PR |
 | **Phase 2 full language**: comptime, ARC/ORC, fibers, FFI, stdlib | **Not started** | `Documentacion/04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
-| **Astra-0 stdlib (M1/M2b)**: `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int` + self-hosted lexer | **Verified** | 8 builtins in 4 routes; `seed/tests/selfhost/lexer_gate.sh` → **7/7** (seed VM, C backend, zig VM, LLVM `--jit`/`--emit-obj`/cross/wasm) + strong token-stream parity vs `--dump-tokens`; `make test` → **311/0** |
+| **Astra-0 stdlib (M1/M2b)**: `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int` + self-hosted lexer | **Verified** | 8 builtins in 4 routes; `seed/tests/selfhost/lexer_gate.sh` → **7/7** (seed VM, C backend, zig VM, LLVM `--jit`/`--emit-obj`/cross/wasm) + strong token-stream parity vs `--dump-tokens`; `make test` → **312/0** |
 | **Language decisions registry** | **Verified** | `Documentacion/01_lenguaje/DECISIONES.md` → 16 entries (DEC-001..016), rule in AGENTS.md |
 | **Fase 3**: Astra compiles itself | **Not started** | needs Phase 2 + the compiler tree written in Astra (prereq stdlib M1/M2 done) |
 
