@@ -1,0 +1,9 @@
+// NO COMPILA HOY — la forma con barra `std/...` se rechaza con diagnóstico
+// explícito: no existe stdlib. (La forma punteada `std.io` es una ruta
+// relativa normal que busca std/io.astra.)
+// SALIDA ESPERADA (error): sin_stdlib.astra: error: cannot resolve 'std/io': no standard library exists yet
+use std/io
+
+fn main() {
+    print(1)
+}

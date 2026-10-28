@@ -1,0 +1,9 @@
+// NO COMPILA — ciclo de imports: prohibido por ARCHITECTURE §10.6 y
+// detectado por el cargador (la única revisión que no puede verse fichero
+// a fichero). a -> b -> a.
+// SALIDA ESPERADA (error): a.astra: error: circular import: a.astra -> b.astra -> a.astra
+from b import bee
+
+pub fn aae() -> i32 { 1 }
+
+fn main() { print(bee()) }

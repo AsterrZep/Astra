@@ -1,0 +1,4 @@
+// NO COMPILA — mitad del ciclo a -> b -> a.
+from a import aae
+
+pub fn bee() -> i32 { aae() }

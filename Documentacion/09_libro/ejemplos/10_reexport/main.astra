@@ -1,0 +1,11 @@
+// Re-export: los nombres que `middle` adelanta viven en base; se leen como
+// bindings `from` y como miembros del espacio de nombres `middle`.
+from middle import twice, K, extra
+import middle
+
+fn main() {
+    print(twice(K))     // 10
+    print(extra())      // 6
+    print(middle.twice(3)) // 6
+    print(middle.K)     // 5
+}

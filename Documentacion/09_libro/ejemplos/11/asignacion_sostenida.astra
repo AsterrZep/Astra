@@ -1,0 +1,20 @@
+// Capítulo 11 — asignación sostenida cuyo resultado NO depende de cuándo se
+// reclame la memoria: pasa igual en arena (VMs seed/zig, backend C) y en ARC
+// (ruta LLVM). Patrón de seed/tests/conformance/memory/loop_reuse.astra
+// (DEC-009); el techo de RSS de la ruta nativa lo gatea zig/tests/llvm_mem.sh.
+fn make() -> [i32] {
+    return [1, 2, 3, 4, 5, 6, 7, 8]
+}
+
+fn main() {
+    let mut i = 0
+    let mut s = 0
+    while i < 200000 {
+        let a = make()
+        s = s + a[0]
+        i = i + 1
+    }
+    print(s)
+    let last = make()
+    print(last[7])
+}

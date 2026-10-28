@@ -1,0 +1,10 @@
+// Submódulo relativo: main.astra lo importa como geometry.shape.
+pub const SIDES = 4
+
+pub fn area(x: i32) -> i32 {
+    x * x
+}
+
+fn private_diag(x: i32) -> i32 {
+    x + x
+}

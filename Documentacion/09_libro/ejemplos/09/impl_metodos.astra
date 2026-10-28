@@ -1,0 +1,40 @@
+// Capítulo 09 — `impl` con métodos: dispatch estático resuelto en
+// compile time sobre el receptor (sin vtable). Patrón fijado por
+// seed/tests/conformance/traits/method_dispatch.astra.
+struct Point {
+    x: i32
+    y: i32
+}
+
+enum Color {
+    Red
+    Green
+}
+
+impl Point {
+    fn get_x(self) -> i32 {
+        self.x
+    }
+    fn add(self, n: i32) -> i32 {
+        self.x + n
+    }
+    // Los métodos pueden devolver el propio tipo y encadenarse.
+    fn moved(self, dx: i32) -> Point {
+        Point { x: self.x + dx, y: self.y }
+    }
+}
+
+impl Color {
+    fn name(self) -> string {
+        return match self {
+            Color.Red => "red",
+            Color.Green => "green",
+        };
+    }
+}
+
+let p = Point { x: 40, y: 2 }
+print(p.get_x())
+print(p.add(2))
+print(p.moved(2).get_x())
+print(Color.Red.name())

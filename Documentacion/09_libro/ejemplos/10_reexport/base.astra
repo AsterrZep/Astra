@@ -1,0 +1,3 @@
+// Módulo base del ejemplo de re-export (capítulo 10).
+pub fn twice(x: i32) -> i32 { x * 2 }
+pub const K = 5

@@ -1,0 +1,5 @@
+// `use base` re-exporta los exports públicos de base (un nivel por
+// sentencia) además de los propios.
+use base
+
+pub fn extra() -> i32 { 6 }

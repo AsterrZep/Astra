@@ -1,0 +1,17 @@
+// NO COMPILA HOY — límite documentado (PHASE2_PROGRESS §8.2): un item de
+// trait con cuerpo se rechaza con un error dedicado en los dos compiladores.
+// SALIDA ESPERADA (error): trait_default.astra:5:5: error: default trait methods are not yet supported
+trait Show {
+    fn show(self) -> string { return "default" }
+}
+
+struct Point { x: i32 }
+
+impl Show for Point {
+    fn show(self) -> string { return "point" }
+}
+
+fn main() {
+    let p = Point { x: 1 }
+    print(p.show())
+}
