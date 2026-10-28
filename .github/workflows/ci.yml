@@ -70,18 +70,20 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: make release
         working-directory: seed
-      # Self-hosting gates (research/028 §2.4/§4.3, DEC-014/016/017): io_gate
-      # and lexer_gate fix their own cwd, so they can run from anywhere. This
-      # job builds no zig, so the zig VM / LLVM routes SKIP inside lexer_gate;
-      # the `llvm` job runs the same gates with those routes enabled (it is
-      # the only job with a -Dllvm zig). lexer_gate also runs the STRONG gate
-      # lexer_tokens_parity.sh (Astra-0 token stream vs --dump-tokens), which
-      # only needs the seed binary built above.
+      # Self-hosting gates (research/028 §2.4/§4.3, DEC-014/016/017 + parser
+      # DEC-025): io_gate, lexer_gate and parser_gate fix their own cwd, so
+      # they can run from anywhere. This job builds no zig, so the zig VM /
+      # LLVM routes SKIP inside them; the `llvm` job runs the same gates with
+      # those routes enabled (it is the only job with a -Dllvm zig).
+      # lexer_gate also runs the STRONG gate lexer_tokens_parity.sh
+      # (Astra-0 token stream vs --dump-tokens); parser_gate's golden comes
+      # from --dump-ast and it re-checks its freshness, seed-only.
       - name: Self-hosting gates (seed VM + C backend)
         if: needs.changes.outputs.code == 'true'
         run: |
           ./tests/selfhost/io_gate.sh
           ./tests/selfhost/lexer_gate.sh
+          ./tests/selfhost/parser_gate.sh
         working-directory: seed
       # libFuzzer harness (PHASE1 §4bis#23): build it, then execute every
       # test program through the instrumented binary exactly once (-runs=0).
@@ -210,18 +212,20 @@ jobs:
       - name: Build zig with the LLVM backend
         run: zig build -Dllvm
         working-directory: zig
-      # Self-hosting gates with the LLVM routes enabled (DEC-017): this is the
-      # only job with a -Dllvm zig, so here lexer_gate exercises zig VM,
-      # --jit, --emit-obj+link and (skipping cleanly) the cross/wasm routes —
-      # the llvm-cross / llvm-wasm jobs could host those two later, one step
-      # each. The seed is built first because the gates' canonical route and
-      # the strong gate (lexer_tokens_parity.sh vs --dump-tokens) need
-      # astra-seed. Job-level `if` above already guards the docs fast-path.
+      # Self-hosting gates with the LLVM routes enabled (DEC-017 + DEC-025):
+      # this is the only job with a -Dllvm zig, so here lexer_gate and
+      # parser_gate exercise zig VM, --jit, --emit-obj+link and (skipping
+      # cleanly) the cross/wasm routes — the llvm-cross / llvm-wasm jobs could
+      # host those two later, one step each. The seed is built first because
+      # the gates' canonical route, the strong gate (lexer_tokens_parity.sh)
+      # and parser_gate's golden freshness need astra-seed. Job-level `if`
+      # above already guards the docs fast-path.
       - name: Self-hosting gates (zig VM + LLVM routes)
         run: |
           make -C seed
           ./seed/tests/selfhost/io_gate.sh
           ./seed/tests/selfhost/lexer_gate.sh
+          ./seed/tests/selfhost/parser_gate.sh
       - name: LLVM-route parity (VM <-> --emit-obj -> link)
         run: ./zig/tests/llvm_parity.sh
       # M4: el mismo gate con el pipeline del new PM (default<O2> + licm /

@@ -1,0 +1,494 @@
+// parser.astra — parser de Astra-0 auto-hospedado, v1 (DEC-025).
+// Lee parser_input.astra (read_file usa path RELATIVO: el gate fija el cwd)
+// y emite UNA línea con el AST en s-expresión prefijo:
+//   Node(kid1 kid2 ...)  ·  hojas con payload  FnDecl(main)  ·  hojas finas  Break
+// El golden es parser.expected, generado con
+//   astra-seed --dump-ast parser_input.astra | awk -f normalize_ast.awk
+// (implementación independiente: el parser en C vs. éste).
+//
+// Alcance v1 (decisión): statements con ';' obligatorio (NEWLINE como
+// terminador queda fuera), literales int decimal/string plano/bool, unary
+// -/!, precedencia de 27 ops del seed, calls, index, paréntesis, array
+// literals, const/fn/params/return-type, let(+mut, tipo opcional), assign,
+// if/else/else-if, while, return, break. Sin annotations complejas, campos,
+// match, lambdas, genéricos ni escapes de string.
+
+// ---------- estado del lexer ----------
+let mut src = ""
+let mut slen: i64 = 0
+let mut pos: i64 = 0
+let mut tk = ""        // IDENT | INT | STRING | KEYWORD | PUNCT | EOF
+let mut tl = ""        // lexeme (STRING incluye las comillas)
+let mut ntk = ""       // siguiente token (peek, sin consumir)
+let mut ntl = ""
+let mut has_look = false
+let mut look_tk = ""
+let mut look_tl = ""
+
+fn is_space(c: string) -> bool {
+    c == " " || c == "\t" || c == "\r" || c == "\n"
+}
+
+fn is_digit(c: string) -> bool {
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+fn is_alpha(c: string) -> bool {
+    c == "_" || c == "a" || c == "b" || c == "c" || c == "d" || c == "e" || c == "f" || c == "g" || c == "h" || c == "i" || c == "j" || c == "k" || c == "l" || c == "m" || c == "n" || c == "o" || c == "p" || c == "q" || c == "r" || c == "s" || c == "t" || c == "u" || c == "v" || c == "w" || c == "x" || c == "y" || c == "z" || c == "A" || c == "B" || c == "C" || c == "D" || c == "E" || c == "F" || c == "G" || c == "H" || c == "I" || c == "J" || c == "K" || c == "L" || c == "M" || c == "N" || c == "O" || c == "P" || c == "Q" || c == "R" || c == "S" || c == "T" || c == "U" || c == "V" || c == "W" || c == "X" || c == "Y" || c == "Z"
+}
+
+fn is_word(c: string) -> bool {
+    is_alpha(c) || is_digit(c)
+}
+
+fn is_kw(w: string) -> bool {
+    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "true" || w == "false"
+}
+
+// lex_core: escanea UN token en ntk/ntl sin tocar tk/tl (permite peek).
+fn lex_core() {
+    let mut skipping = true;
+    while skipping && pos < slen {
+        let c = src[pos];
+        if is_space(c) {
+            pos = pos + 1;
+        } else if c == "/" && pos + 1 < slen && src[pos + 1] == "/" {
+            while pos < slen && src[pos] != "\n" {
+                pos = pos + 1;
+            }
+        } else {
+            skipping = false;
+        }
+    }
+    if pos >= slen {
+        ntk = "EOF";
+        ntl = "";
+        return;
+    }
+    let c = src[pos];
+    if c == "\"" {
+        let start = pos;
+        pos = pos + 1;
+        while pos < slen && src[pos] != "\"" {
+            if src[pos] == "\\" {
+                pos = pos + 1;
+            }
+            pos = pos + 1;
+        }
+        if pos < slen {
+            pos = pos + 1;
+        }
+        ntk = "STRING";
+        ntl = substr(src, start, pos - start);
+        return;
+    }
+    if is_digit(c) {
+        let start = pos;
+        while pos < slen && is_digit(src[pos]) {
+            pos = pos + 1;
+        }
+        ntk = "INT";
+        ntl = substr(src, start, pos - start);
+        return;
+    }
+    if is_alpha(c) {
+        let start = pos;
+        while pos < slen && is_word(src[pos]) {
+            pos = pos + 1;
+        }
+        let w = substr(src, start, pos - start);
+        ntl = w;
+        if is_kw(w) {
+            ntk = "KEYWORD";
+        } else {
+            ntk = "IDENT";
+        }
+        return;
+    }
+    let mut two = "";
+    if pos + 1 < slen {
+        two = substr(src, pos, 2);
+    }
+    if two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||" || two == "->" {
+        ntk = "PUNCT";
+        ntl = two;
+        pos = pos + 2;
+        return;
+    }
+    ntk = "PUNCT";
+    ntl = c;
+    pos = pos + 1;
+}
+
+fn advance() {
+    if has_look {
+        tk = look_tk;
+        tl = look_tl;
+        has_look = false;
+        return;
+    }
+    lex_core();
+    tk = ntk;
+    tl = ntl;
+}
+
+fn peek_kind() -> string {
+    if !has_look {
+        lex_core();
+        look_tk = ntk;
+        look_tl = ntl;
+        has_look = true;
+    }
+    look_tk
+}
+
+fn peek_lex() -> string {
+    if !has_look {
+        lex_core();
+        look_tk = ntk;
+        look_tl = ntl;
+        has_look = true;
+    }
+    look_tl
+}
+
+// ---------- utilidades de composición ----------
+fn join2(a: string, b: string) -> string {
+    // early returns: el if-expressions multilinea como cola de fn todavía no
+    // tipa en los dos compiladores («if branches have different types»)
+    if a == "" {
+        return b;
+    }
+    if b == "" {
+        return a;
+    }
+    a + " " + b
+}
+
+// attach("FnDecl(main)", "Param(a ...) Block(...)") inserta los kids antes
+// del ÚLTIMO ')' del texto; sin ')' y con kids, abre uno nuevo.
+fn attach(text: string, kids: string) -> string {
+    if kids == "" {
+        return text;
+    }
+    let mut p: i64 = -1;
+    let mut i: i64 = len(text) - 1;
+    while i >= 0 {
+        if text[i] == ")" {
+            p = i;
+            i = -1;
+        } else {
+            i = i - 1;
+        }
+    }
+    if p < 0 {
+        return text + "(" + kids + ")";
+    }
+    return substr(text, 0, p) + " " + kids + substr(text, p, len(text) - p);
+}
+
+fn report_err(msg: string) {
+    print("PARSE-ERROR: " + msg + " got '" + tl + "'");
+}
+
+fn expect_punct(w: string) {
+    if tk == "PUNCT" && tl == w {
+        advance();
+        return;
+    }
+    report_err("expected '" + w + "'");
+    advance();
+}
+
+// ---------- precedencia (tabla de --dump-operators) ----------
+fn bp_of(op: string) -> i64 {
+    if op == "||" {
+        return 3;
+    }
+    if op == "&&" {
+        return 4;
+    }
+    if op == "==" || op == "!=" {
+        return 8;
+    }
+    if op == "<" || op == ">" || op == "<=" || op == ">=" {
+        return 9;
+    }
+    if op == "+" || op == "-" {
+        return 11;
+    }
+    if op == "*" || op == "/" || op == "%" {
+        return 12;
+    }
+    0
+}
+
+// ---------- parser ----------
+fn parse_type() -> string {
+    if tk == "IDENT" {
+        let t = "TypeIdent(" + tl + ")";
+        advance();
+        return t;
+    }
+    report_err("expected type");
+    advance();
+    "TypeIdent(?)"
+}
+
+fn parse_expr(min_bp: i64) -> string {
+    let mut left = "";
+    if tk == "PUNCT" && (tl == "-" || tl == "!") {
+        let op = tl;
+        advance();
+        left = "UnaryOp(" + op + " " + parse_expr(13) + ")";
+    } else {
+        left = parse_primary();
+    }
+    while tk == "PUNCT" && tl == "(" {
+        advance();
+        let mut args = "";
+        while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
+            let a = parse_expr(1);
+            args = join2(args, a);
+            if tk == "PUNCT" && tl == "," {
+                advance();
+            }
+        }
+        expect_punct(")");
+        left = "Call(" + join2(left, args) + ")";
+    }
+    while tk == "PUNCT" && tl == "[" {
+        advance();
+        let idx = parse_expr(1);
+        expect_punct("]");
+        left = "Index(" + join2(left, idx) + ")";
+    }
+    while true {
+        if tk != "PUNCT" {
+            break;
+        }
+        let bp = bp_of(tl);
+        if bp == 0 || bp < min_bp {
+            break;
+        }
+        let op = tl;
+        advance();
+        let right = parse_expr(bp + 1);
+        left = "BinaryOp(" + op + " " + left + " " + right + ")";
+    }
+    left
+}
+
+fn parse_primary() -> string {
+    if tk == "INT" {
+        let t = "IntLit(" + tl + ")";
+        advance();
+        return t;
+    }
+    if tk == "STRING" {
+        let t = "StringLit(" + tl + ")";
+        advance();
+        return t;
+    }
+    if tk == "KEYWORD" && (tl == "true" || tl == "false") {
+        let t = "BoolLit(" + tl + ")";
+        advance();
+        return t;
+    }
+    if tk == "IDENT" {
+        let t = "Ident(" + tl + ")";
+        advance();
+        return t;
+    }
+    if tk == "PUNCT" && tl == "(" {
+        advance();
+        let inner = parse_expr(1);
+        expect_punct(")");
+        return inner;
+    }
+    if tk == "PUNCT" && tl == "[" {
+        advance();
+        let mut elems = "";
+        let mut count: i64 = 0;
+        while !(tk == "PUNCT" && tl == "]") && tk != "EOF" {
+            let e = parse_expr(1);
+            elems = join2(elems, e);
+            count = count + 1;
+            if tk == "PUNCT" && tl == "," {
+                advance();
+            }
+        }
+        expect_punct("]");
+        return attach("ArrayLit(" + to_string(count) + ")", elems);
+    }
+    report_err("expected expression");
+    advance();
+    "PARSE-ERROR"
+}
+
+fn parse_block() -> string {
+    expect_punct("{");
+    let mut body = "";
+    while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+        let s = parse_stmt();
+        body = join2(body, s);
+    }
+    expect_punct("}");
+    attach("Block", body)
+}
+
+fn parse_if() -> string {
+    advance();
+    let cond = parse_expr(1);
+    let thenb = parse_block();
+    let mut kids = join2(cond, thenb);
+    if tk == "KEYWORD" && tl == "else" {
+        advance();
+        if tk == "KEYWORD" && tl == "if" {
+            // el seed envuelve el if-else-if en un Block: Else(Block(If(...)))
+            kids = join2(kids, "Else(Block(" + parse_if() + "))");
+        } else {
+            kids = join2(kids, "Else(" + parse_block() + ")");
+        }
+    }
+    "If(" + kids + ")"
+}
+
+fn parse_stmt() -> string {
+    if tk == "KEYWORD" && tl == "let" {
+        advance();
+        let mut is_mut = false;
+        if tk == "KEYWORD" && tl == "mut" {
+            is_mut = true;
+            advance();
+        }
+        if tk != "IDENT" {
+            report_err("expected variable name");
+            advance();
+            return "PARSE-ERROR";
+        }
+        let nm = tl;
+        advance();
+        let mut head = "VarDecl(" + nm;
+        if is_mut {
+            head = head + ", mut";
+        }
+        head = head + ")";
+        let mut kids = "";
+        if tk == "PUNCT" && tl == ":" {
+            advance();
+            kids = join2(kids, parse_type());
+        }
+        expect_punct("=");
+        kids = join2(kids, parse_expr(1));
+        expect_punct(";");
+        return attach(head, kids);
+    }
+    if tk == "KEYWORD" && tl == "if" {
+        return parse_if();
+    }
+    if tk == "KEYWORD" && tl == "while" {
+        advance();
+        let cond = parse_expr(1);
+        let body = parse_block();
+        return "While(" + join2(cond, body) + ")";
+    }
+    if tk == "KEYWORD" && tl == "return" {
+        advance();
+        if tk == "PUNCT" && tl == ";" {
+            advance();
+            return "Return";
+        }
+        let e = parse_expr(1);
+        expect_punct(";");
+        return "Return(" + e + ")";
+    }
+    if tk == "KEYWORD" && tl == "break" {
+        advance();
+        expect_punct(";");
+        return "Break";
+    }
+    if tk == "IDENT" && peek_kind() == "PUNCT" && peek_lex() == "=" {
+        let nm = tl;
+        advance();
+        advance();
+        let rhs = parse_expr(1);
+        expect_punct(";");
+        return "Assign(Ident(" + nm + ") " + rhs + ")";
+    }
+    let e = parse_expr(1);
+    expect_punct(";");
+    e
+}
+
+fn parse_item() -> string {
+    if tk == "KEYWORD" && tl == "const" {
+        advance();
+        if tk != "IDENT" {
+            report_err("expected const name");
+            advance();
+            return "PARSE-ERROR";
+        }
+        let nm = tl;
+        advance();
+        expect_punct("=");
+        let v = parse_expr(1);
+        expect_punct(";");
+        return attach("ConstDecl(" + nm + ")", v);
+    }
+    if tk == "KEYWORD" && tl == "fn" {
+        advance();
+        if tk != "IDENT" {
+            report_err("expected function name");
+            advance();
+            return "PARSE-ERROR";
+        }
+        let nm = tl;
+        advance();
+        expect_punct("(");
+        let mut kids = "";
+        while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
+            if tk != "IDENT" {
+                report_err("expected parameter name");
+                advance();
+                return "PARSE-ERROR";
+            }
+            let pn = tl;
+            advance();
+            expect_punct(":");
+            let pt = parse_type();
+            kids = join2(kids, attach("Param(" + pn + ")", pt));
+            if tk == "PUNCT" && tl == "," {
+                advance();
+            }
+        }
+        expect_punct(")");
+        if tk == "PUNCT" && tl == "->" {
+            advance();
+            let rt = parse_type();
+            kids = join2(kids, attach("ReturnType", rt));
+        }
+        kids = join2(kids, parse_block());
+        return attach("FnDecl(" + nm + ")", kids);
+    }
+    report_err("expected item (const/fn)");
+    advance();
+    "PARSE-ERROR"
+}
+
+fn parse_module() -> string {
+    let mut items = "";
+    while tk != "EOF" {
+        items = join2(items, parse_item());
+    }
+    attach("Module", items)
+}
+
+fn main() {
+    src = read_file("parser_input.astra");
+    slen = len(src);
+    pos = 0;
+    has_look = false;
+    advance();
+    print(parse_module());
+}

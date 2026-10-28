@@ -1,0 +1,40 @@
+// parser_input.astra — fixture for the self-hosted parser gate (DEC-025).
+// Subset of Astra-0 that parser.astra v1 accepts: const, fn with params and
+// return type, let(+mut, optional type annotation), assignment, if/else/else-if,
+// while, return, break, expression statements; expressions with int/string/
+// bool literals, unary -/!, binary ops (seed precedence), calls, index,
+// parens and array literals. Every statement ends with ';' — NEWLINE as a
+// statement terminator is OUT OF SCOPE for parser.astra v1 (see DEC-025).
+// String literals stay plain (no escapes): --dump-ast prints them decoded.
+const LIMIT = 10;
+fn add(a: i32, b: i32) -> i32 {
+    let mut total: i32 = a + b;
+    total = total * 2 + 1;
+    return total;
+}
+fn pick(n: i32) -> i32 {
+    if n < 0 {
+        return -n;
+    } else if n == 0 {
+        return 0;
+    } else {
+        return n;
+    }
+}
+fn main() {
+    let name = "astra";
+    let flag = true;
+    let arr = [1, 2, 3];
+    let mut v = arr[1];
+    let sum = add(pick(-5), LIMIT);
+    if sum < 0 && flag || !flag {
+        print(name);
+    } else {
+        print(sum);
+    }
+    while v < LIMIT {
+        v = v + arr[0];
+        if v == 4 { break; }
+    }
+    print(v % 2 == 0);
+}
