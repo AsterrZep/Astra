@@ -23,6 +23,7 @@
 | DEC-013 | Stdlib M1: `len(x) -> i64` para arrays y strings; `s[i]` → **string de 1 byte** (OOB = error de runtime con el texto de los arrays); los strings son inmutables (`s[i] = …` es error de compilación) | Aceptada (test-pinned) | 2026-10-27 | `arrays/len_array.astra`, `expressions/len_string.astra`, `expressions/str_index.astra`, `expressions/str_index_oob.astra`, `expressions/len_int_runtime_error.astra`, `ui/str_index_assign_rejected.astra`, `codegen/str_index.astra`, `codegen/len_builtin.astra` (PR D-PR1) |
 | DEC-014 | Stdlib M1: `to_string(x) -> string` **solo enteros** (otros tipos = error de runtime con el texto de las 4 rutas) y `read_file(path: string) -> string` (todo fallo de apertura/lectura colapsa en `cannot open file '<path>'`); la lectura positiva vive fuera de `conformance/` | Aceptada (test-pinned) | 2026-10-27 | `expressions/to_string_roundtrip.astra`, `expressions/to_string_float_rejected.astra`, `expressions/read_file_missing.astra`, `expressions/read_file_nil_path.astra`, `codegen/to_string.astra`, `codegen/read_file_missing.astra`, `seed/tests/selfhost/io_gate.sh` (4 rutas) (PR D-PR2) |
 | DEC-015 | Los nombres de builtin (`print`, `len`, `to_string`, `read_file`) están **reservados**: redeclararlos con `let`/`const`/`fn` en cualquier ámbito es error de compilación, idéntico en los dos typecheckers | Aceptada (test-pinned) | 2026-10-27 | `ui/builtin_shadow_print.astra`, `ui/builtin_shadow_len.astra`, `ui/builtin_shadow_to_string.astra`, `ui/builtin_shadow_read_file.astra` (primera línea byte-idéntica seed↔zig) (PR D-PR2) |
+| DEC-016 | El lexer de Astra-0 (`seed/tests/selfhost/lexer.astra`) es el primer componente self-hosting: lexea `lexer_input.astra` con solo los builtins M1 y emite un token por línea `<KIND>:<lexeme>@<line>`; el stream se gatea byte a byte contra `lexer.expected` en las 4 rutas, fuera de `conformance/` (cwd) | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → 4/4 rutas (seed VM, `--emit-c`+gcc, zig VM, LLVM `--jit`) contra `lexer.expected` (PR D-PR3a) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -241,3 +242,64 @@
   los 4 con **una sola** diagnóstica y la primera línea byte-idéntica
   seed↔zig.
 - **Spec**: «pendiente de escribir en ARCHITECTURE».
+
+### DEC-016 — Lexer de Astra-0 como gate de self-hosting
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR3a (2026-10-27)
+- **Fecha**: 2026-10-27
+- **Decisión**: `seed/tests/selfhost/lexer.astra` — un lexer mini **escrito
+  en Astra-0** — es el primer componente self-hosting de la cadena de
+  bootstrap (`research/028` §4.2/§5: el lexer es E/S + cómputo puro sobre
+  bytes, no toca ABI). Usa solo los builtins M1 de DEC-013/DEC-014 (`len`,
+  `s[i]` → 1 byte, `to_string` solo enteros, `read_file`) más lo que
+  Astra-0 ya tenía (`==`/`+` de string, `match` con literales + or-patterns
+  + `_`, `while`/`continue`, structs). Su salida es **un token por línea**
+  con el formato fijado en el propio fichero (comentario de cabecera):
+  - `<KIND>:<lexeme>@<line>` con `KIND ∈ KEYWORD | IDENT | INT | STRING |
+    SYMBOL | OP | ERROR`; la última línea de toda ejecución es
+    `EOF@<line>`; en `ERROR` el hueco del lexeme es un mensaje
+    (`ERROR:unknown char '$'@41`, `ERROR:unterminated string@<n>`).
+  - Cobertura de tokens: los **36 keywords** de `seed/src/lexer.c`
+    (tabla `keyword_kind`), identificadores con `_` y dígitos, enteros
+    decimal y hex (`0x…`), strings con escapes copiados verbatim
+    (`\\ \" \n` y bytes UTF-8 alto pasan tal cual), comentarios `//` (sin
+    emitir), operadores de 1 y 2 chars (`== != <= >= && || -> :: => ..`) y
+    puntuación `( ) { } [ ] + - * / = ; , . : | ! < > ?`.
+  - **Ubicación**: `seed/tests/selfhost/`, junto a `io_gate.sh` y **nunca**
+    en `conformance/` (DEC-014, `research/028` §2.4: los gates corren con
+    cwd distinto — `seed/`, `zig/`, raíz — y la ruta wasm no tiene
+    `preopens`; un caso con `read_file` ahí fallaría por el camino de
+    ejecución, no por el lenguaje). El gate `lexer_gate.sh` fija el cwd con
+    `cd "$here"` y compara **byte a byte** contra el golden commiteado
+    `lexer.expected` en las **4 rutas** (seed VM, `--emit-c`+gcc, zig VM,
+    LLVM `--jit`); el fixture `lexer_input.astra` es un Astra-0 no trivial
+    (struct, enum, match, closures, `for..in` con rango, escapes, hex) con
+    **un carácter inválido `$` a propósito** para que el golden fije también
+    el camino de error — solo se lexea, nunca se compila.
+- **Alternativas consideradas**: (1) usar `lexer.astra` como su propio
+  fixture — descartado: cada edición del lexer regenera un golden gigante
+  (los 52 or-patterns de `is_alpha` ocupan solos decenas de tokens) y se
+  pierde el valor de regresión; (2) gate «fuerte» contra
+  `astra-seed --dump-tokens` en el mismo PR (`research/028` §4.3) —
+  **pospuesto a PR3b**: los formatos difieren (el C imprime
+  `<línea>:<col>  <KIND>  <lexeme>`, **incluye tokens NEWLINE** que este
+  lexer se salta, y da a cada operador su propio KIND mientras aquí se
+  agrupan en `SYMBOL:`/`OP:`), así que la normalización necesita su propio
+  diseño; (3) el formato `"<KIND> <lexeme> @<line>"` de `research/028`
+  §4.2 — se eligió `<KIND>:<lexeme>@<line>` (separador `:` como en la
+  propia lista de ejemplos del informe, con `@line` conservado).
+- **Coste aceptado**: 0 cambios de código de compilador (ni seed ni zig);
+  4 ficheros nuevos en `seed/tests/selfhost/`. Lexemas por concat `+`
+  (O(n²)) y `is_alpha` con 52 or-patterns literales en una sola línea (el
+  parser no continúa un patrón de match a través de NEWLINE): sin `substr`
+  ni `ord` (M2, PR4) — con esos builtins el lexer se acorta sin tocar el
+  gate. `let mut i: i64` es obligatorio: `len` devuelve `i64` y comparar
+  anchos distintos en `i < n` es error de compilación (DEC-006).
+- **Evidencia**: `seed/tests/selfhost/lexer_gate.sh` → **4/4 rutas ok**
+  (seed VM, C backend `--emit-c`+gcc, zig VM, LLVM `--jit`) contra
+  `lexer.expected` (179 líneas; sha256
+  `f3e66f929e8084d6ea2a74562030e0b0836728fd4310b51b1118f919dbe71498`);
+  `io_gate.sh` sigue 4/4 y `make test` 286/0 (este PR no añade casos de
+  conformance — el lexer vive fuera por decisión propia).
+- **Spec**: «pendiente de escribir en ARCHITECTURE» (`research/028` §4.2/§4.3
+  es la spec de facto: formato de salida, cobertura y ubicación del gate).
