@@ -474,6 +474,22 @@ pub const TypeChecker = struct {
         sti_params[0] = self.newType(.unknown);
         self.insert(.{ .name = "str_to_int", .type_ = self.newFn(sti_params, self.newType(.int64)), .is_mut = false, .is_fn = true });
 
+        // chr(i) -> string (DEC-020, research/028 M3): the 1-byte string whose
+        // first byte is `i` (0..255) — the inverse of `ord` (DEC-018). Unknown
+        // parameter like ord's, so `chr(65)` (i32 literal, DEC-006) type checks
+        // and the runtime guard rejects non-int / out-of-range values with
+        // `chr expects an int, got <tipo>` / `chr value N out of bounds (0..255)`.
+        const chr_params = try self.a.alloc(*Type, 1);
+        chr_params[0] = self.newType(.unknown);
+        self.insert(.{ .name = "chr", .type_ = self.newFn(chr_params, self.newType(.string)), .is_mut = false, .is_fn = true });
+
+        // read_line() -> string (DEC-020, research/028 M3): one line of stdin
+        // up to (not including) the trailing `\n`, or a runtime error `end of
+        // input` on EOF with no data. No parameters: the runtime's argc check
+        // reports `expected 0 arguments but got N`.
+        const rl_params = try self.a.alloc(*Type, 0);
+        self.insert(.{ .name = "read_line", .type_ = self.newFn(rl_params, self.newType(.string)), .is_mut = false, .is_fn = true });
+
         // Option: some(T) -> Option, none -> Option
         {
             const opt = self.pool.enumType("Option") catch @panic("OOM");
@@ -1486,10 +1502,14 @@ pub const TypeChecker = struct {
         } else {
             const iter = self.checkNode(f.iter);
             if (isErrorType(iter)) return iter;
-            if (iter.kind != .array) {
-                return self.errorType(self.tree.loc(f.iter), "for loop must iterate over an array or range, got {s}", .{iter.kind.name()});
+            if (iter.kind != .array and iter.kind != .string) {
+                return self.errorType(self.tree.loc(f.iter), "for loop must iterate over an array, string or range, got {s}", .{iter.kind.name()});
             }
-            var_type = iter.elem.?;
+            // Un string itera BYTE a BYTE, con `c` como string de 1 byte — el
+            // mismo modelo que `s[i]` (DEC-013). El emitter reutiliza LEN+INDEX
+            // sin distinguir receiver, así que la semántica es la misma en las
+            // cuatro rutas.
+            var_type = if (iter.kind == .string) self.newType(.string) else iter.elem.?;
         }
 
         self.pushScope();
@@ -1847,7 +1867,7 @@ pub const TypeChecker = struct {
     // binding on another. Reports and returns true when `name` is builtin —
     // byte-identical to seed's builtin_redeclare_error.
     fn builtinRedeclareError(self: *TypeChecker, loc: lexer.Loc, name: []const u8) bool {
-        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int" };
+        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int", "chr", "read_line" };
         for (k_builtins) |b| {
             if (std.mem.eql(u8, name, b)) {
                 self.errFmt(loc, "'{s}' is a builtin and cannot be redeclared", .{name});

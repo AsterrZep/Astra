@@ -1,0 +1,8 @@
+// chr(i) out of [0, 255] is a RUNTIME error (DEC-020): never a masked low
+// byte. `chr(256)` and `chr(-1)` are rejected word-for-word the same on the
+// four routes, the same no-silent-clipping contract as substr bounds
+// (DEC-018) and s[i] (DEC-013).
+// EXPECT-RUNTIME-ERROR: chr value 256 out of bounds (0..255)
+fn main() {
+    print(chr(256))
+}

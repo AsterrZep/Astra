@@ -1,0 +1,42 @@
+// Iterating a string with for-in (DEC-020, research/028 M3): `c` is a 1-byte
+// STRING, byte by byte, matching s[i] (DEC-013) and ord (DEC-018) — so a lexer
+// can walk the source with `for c in s { … }` and compare `c` to a literal.
+// Empty string iterates zero times; `continue` and `break` work as in arrays.
+// EXPECT: h
+// EXPECT: o
+// EXPECT: l
+// EXPECT: a
+// EXPECT: hello
+// EXPECT: 5
+// EXPECT: done
+// EXPECT: x
+// EXPECT: y
+// EXPECT: s
+// EXPECT: t
+fn main() {
+    for c in "hola" {
+        print(c)
+    }
+    let mut acc = ""
+    for c in "hello" {
+        acc = acc + c
+    }
+    print(acc)
+    print(len(acc))
+    for c in "" {
+        print("never")
+    }
+    print("done")
+    for c in "xay" {
+        if c == "a" {
+            continue
+        }
+        print(c)
+    }
+    for c in "stop" {
+        if c == "o" {
+            break
+        }
+        print(c)
+    }
+}

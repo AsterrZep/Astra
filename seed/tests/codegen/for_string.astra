@@ -1,0 +1,18 @@
+// C round-trip for `for c in s` string iteration (DEC-020): the emitted
+// LEN+INDEX path must return 1-byte strings from astra_string_get exactly like
+// the VM's OPCODE_INDEX string arm, so the compiled program's output is
+// byte-identical to the VM route.
+// EXPECT: h
+// EXPECT: e
+// EXPECT: l
+// EXPECT: l
+// EXPECT: o
+// EXPECT: olleh
+fn main() {
+    let mut rev = ""
+    for c in "hello" {
+        print(c)
+        rev = c + rev
+    }
+    print(rev)
+}

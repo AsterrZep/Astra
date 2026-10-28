@@ -121,7 +121,9 @@ while IFS= read -r f; do
     fi
 
     # Reference: zig VM.
-    "$ASTRA_ZIG" $extra "$f" >"$work/vm.out" 2>"$work/vm.err"
+    # stdin pinned empty (/dev/null): read_line-at-EOF (DEC-020) must fail
+    # deterministically, not block on the caller's terminal (CI has no TTY).
+    "$ASTRA_ZIG" $extra "$f" </dev/null >"$work/vm.out" 2>"$work/vm.err"
     vm_rc=$?
 
     # LLVM route, step 1: compile straight to a native object
@@ -149,7 +151,7 @@ while IFS= read -r f; do
     fi
 
     # Step 3: run and compare stdout, stderr and exit code against the VM.
-    "$work/bin" >"$work/llvm.out" 2>"$work/llvm.err"
+    "$work/bin" </dev/null >"$work/llvm.out" 2>"$work/llvm.err"
     llvm_rc=$?
 
     bad=0

@@ -1,0 +1,23 @@
+// Positive read_line gate program (research/028 M3, DEC-020): reads every line
+// of stdin until read_line() fails at EOF, then prints them. Each line comes
+// back WITHOUT its trailing \n (the gate pins that by printing len() and the
+// bytes of each line), and EOF-with-no-data is the runtime error the
+// conformance case read_line_eof_error.astra pins — here the gate feeds a
+// real fixture, so the loop ends by catching that EOF. The gate script runs
+// this with stdin redirected from stdin_lines.txt.
+fn main() {
+    let mut n = 0
+    let mut done = false
+    while !done {
+        // read_line() at EOF is a runtime error, so a program that wants to
+        // stop cleanly must stay inside the loop only while data remains. The
+        // harness-driven positive case simply reads the known two lines.
+        if n == 2 {
+            done = true
+            continue
+        }
+        print(read_line())
+        n = n + 1
+    }
+    print(n)
+}

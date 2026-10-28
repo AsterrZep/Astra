@@ -528,6 +528,11 @@ pub const Emitter = struct {
     r_push_elem_fail: c.LLVMValueRef,
     r_str_to_int: c.LLVMValueRef,
     r_str_to_int_fail: c.LLVMValueRef,
+    // `chr(i)` / `read_line()` (DEC-020): i64 → string de 1 byte (la inversa
+    // de ord) y una línea de stdin; los fallos de rango/EOF viven en el runtime.
+    r_chr: c.LLVMValueRef,
+    r_chr_fail: c.LLVMValueRef,
+    r_read_line: c.LLVMValueRef,
 
     fns: std.StringHashMap(FnInfo),
     globals: std.StringHashMap(GlobalInfo),
@@ -669,6 +674,9 @@ pub const Emitter = struct {
             .r_push_elem_fail = undefined,
             .r_str_to_int = undefined,
             .r_str_to_int_fail = undefined,
+            .r_chr = undefined,
+            .r_chr_fail = undefined,
+            .r_read_line = undefined,
         };
         self.declareRuntime();
         return self;
@@ -754,6 +762,11 @@ pub const Emitter = struct {
         self.r_push_elem_fail = self.declVoid("astra_llvm_push_elem_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr, self.t_i32 });
         self.r_str_to_int = self.declRet(self.t_i64, "astra_llvm_str_to_int", &.{ self.t_i32, self.t_ptr });
         self.r_str_to_int_fail = self.declVoid("astra_llvm_str_to_int_fail", &.{ self.t_i32, self.t_ptr });
+        // `chr` / `read_line` (DEC-020): i64 → string de 1 byte, y una línea
+        // de stdin; los dos fallos de rango/EOF viven dentro del runtime C.
+        self.r_chr = self.declRet(self.t_ptr, "astra_llvm_chr", &.{ self.t_i32, self.t_i64 });
+        self.r_chr_fail = self.declVoid("astra_llvm_chr_fail", &.{ self.t_i32, self.t_ptr });
+        self.r_read_line = self.declRet(self.t_ptr, "astra_llvm_read_line", &.{ self.t_i32 });
 
         // Contador de profundidad de llamada (guard VM_CALL_DEPTH): global
         // interno, cero-inicializado; el backend C usa `astra_depth` igual.
@@ -783,6 +796,7 @@ pub const Emitter = struct {
             self.r_read_file,      self.r_read_file_fail,
             self.r_ord,            self.r_substr,
             self.r_push,          self.r_str_to_int,
+            self.r_chr,           self.r_read_line,
         };
         for (helpers) |h| self.addFnAttr(h, "nounwind");
         const noreturn_helpers = [_]c.LLVMValueRef{
@@ -791,6 +805,7 @@ pub const Emitter = struct {
             self.r_to_string_fail, self.r_read_file_fail,
             self.r_ord_fail,       self.r_substr_str_fail, self.r_substr_int_fail,
             self.r_push_fail,      self.r_push_elem_fail,  self.r_str_to_int_fail,
+            self.r_chr_fail,
         };
         for (noreturn_helpers) |h| {
             self.addFnAttr(h, "noreturn");
@@ -2120,17 +2135,24 @@ pub const Emitter = struct {
             self.emitStoreOwned(bound_alloca, ev);
         } else {
             const av = self.emitExpr(fe.iter) orelse return;
-            if (av.ty != .arr_) {
-                self.unsupported(idx, "for..in expects an array or a range");
+            if (av.ty != .arr_ and av.ty != .str_) {
+                self.unsupported(idx, "for..in expects an array, a string or a range");
                 return;
             }
-            // `Val.payload_ty` del array es su tipo de elemento (M2.a): la
-            // variable del loop se tipa con él (`for s in strs`, enums, …).
-            const ety = av.payload_ty orelse return self.unsupported(idx, "array without an element type");
-            elem_ty = ety;
+            if (av.ty == .str_) {
+                // Un string itera BYTE a BYTE: `c` es un string de 1 byte,
+                // idéntico a `s[i]` (DEC-013). El mismo camino LEN+INDEX que el
+                // array — el índice corre de 0 a len(s) y `astra_llvm_str_index`
+                // recorta un byte — pero la variable del loop es `.str_`.
+                elem_ty = .str_;
+            } else {
+                // `Val.payload_ty` del array es su tipo de elemento (M2.a): la
+                // variable del loop se tipa con él (`for s in strs`, enums, …).
+                elem_ty = av.payload_ty orelse return self.unsupported(idx, "array without an element type");
+            }
             bound_alloca = self.buildAlloca(self.t_ptr);
             self.emitStoreOwned(bound_alloca, av);
-            self.trackOwned(bound_alloca, .arr_, null);
+            self.trackOwned(bound_alloca, av.ty, null);
             _ = c.LLVMBuildStore(self.builder, c.LLVMConstInt(self.t_i64, 0, 0), i_alloca);
         }
         _ = c.LLVMBuildBr(self.builder, cond_bb);
@@ -2164,6 +2186,15 @@ pub const Emitter = struct {
         c.LLVMPositionBuilderAtEnd(self.builder, body_bb);
         const cur = if (is_range) iv else blk: {
             const ap = c.LLVMBuildLoad2(self.builder, self.t_ptr, bound_alloca, "");
+            if (elem_ty == .str_) {
+                // String: `s[i]` vía el helper, que recorta un byte y devuelve
+                // un string FRESH con rc=1 — hay que registrarlo como temporal
+                // para que el clear del frame pareje su alloc.
+                var sargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, self.tree.loc(idx).line, 0), ap, iv };
+                const sp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_str_index), self.r_str_index, &sargs, 3, "");
+                self.emitTmpPush(sp);
+                break :blk sp;
+            }
             const ep = self.elemSlotAddr(ap, iv, elem_ty);
             break :blk c.LLVMBuildLoad2(self.builder, self.llvmTy(elem_ty), ep, "");
         };
@@ -3173,6 +3204,8 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, name, "substr")) return self.emitSubstr(idx);
                 if (std.mem.eql(u8, name, "push")) return self.emitPush(idx);
                 if (std.mem.eql(u8, name, "str_to_int")) return self.emitStrToInt(idx);
+                if (std.mem.eql(u8, name, "chr")) return self.emitChr(idx);
+                if (std.mem.eql(u8, name, "read_line")) return self.emitReadLine(idx);
                 const info = self.fns.get(name) orelse {
                     // Constructor pelón de variante de enum: `Circle(x)`
                     // (el seed resuelve la variante en cualquier enum).
@@ -4170,6 +4203,102 @@ pub const Emitter = struct {
         c.LLVMPositionBuilderAtEnd(self.builder, cont_bb);
     }
 
+    /// `chr(i) -> string` (DEC-020, research/028 M3): el string de 1 byte cuyo
+    /// primer byte es `i` (0..255) — la inversa de `ord` (DEC-018), byte y no
+    /// codepoint, así `chr(ord(s))` round-tripea un `s` de 1 byte. Fuera de
+    /// rango es error de runtime, nunca el byte bajo enmascarado. El parámetro
+    /// es unknown en el checker (patrón ord), así que cada tipo trae su guard
+    /// con la redacción del VM (`chr expects an int, got <tipo>`); el rango se
+    /// ve dentro de `astra_llvm_chr`, que recibe el valor real.
+    fn emitChr(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        const args = self.tree.extraSlice(call.args);
+        if (args.len != 1) {
+            // El typechecker registra chr con exactamente un parámetro: esto
+            // solo lo alcanza un programa que se saltó el chequeo.
+            self.unsupported(idx, "chr takes exactly one argument");
+            return null;
+        }
+        const line = self.tree.loc(idx).line;
+        const v = self.emitExpr(args[0]) orelse return null;
+        // Tras el guard: inalcanzable — el dummy solo puebla el bloque muerto.
+        const dummy = Val{ .ref = c.LLVMConstPointerNull(self.t_ptr), .ty = .str_ };
+
+        // Parámetro 0: debe ser entero, mismo patrón que substr's start/len.
+        if (!self.emitChrIntArg(v, line, idx)) return dummy;
+
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), v.ref };
+        const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_chr), self.r_chr, &fargs, 2, "");
+        self.emitTmpPush(rp);
+        return .{ .ref = rp, .ty = .str_ };
+    }
+
+    /// Guard del parámetro de `chr` (DEC-020): el parámetro es unknown en el
+    /// checker, así que un float/bool/string llega a runtime y el VM lo
+    /// rechaza con `chr expects an int, got <tipo>` — este brazo reproduce
+    /// esa redacción por tipo estático, palabra por palabra. Devuelve `true`
+    /// cuando el argumento es aceptable; `false` tras haber emitido el fallo.
+    fn emitChrIntArg(self: *Emitter, v: Val, line: u32, idx: u32) bool {
+        switch (v.ty) {
+            .i64_ => return true,
+            .f64_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "chr expects an int, got float");
+                return false;
+            },
+            .bool_ => {
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "chr expects an int, got bool");
+                return false;
+            },
+            .str_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "chr expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "chr expects an int, got string");
+                return false;
+            },
+            .arr_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "chr expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "chr expects an int, got array");
+                return false;
+            },
+            .struct_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "chr expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "chr expects an int, got struct");
+                return false;
+            },
+            .enum_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "chr expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "chr expects an int, got enum");
+                return false;
+            },
+            .fn_ => {
+                self.emitGuardTrue(c.LLVMBuildIsNull(self.builder, v.ref, ""), line, "chr expects an int, got nil");
+                self.emitGuardTrue(c.LLVMConstInt(self.t_i1, 1, 0), line, "chr expects an int, got function");
+                return false;
+            },
+            .boxed_ => {
+                self.emitSubstrBoxFail(line, v.ref, self.r_chr_fail);
+                return false;
+            },
+            .pair_ => {
+                const bx = self.coerceToBox(v, idx) orelse return false;
+                self.emitSubstrBoxFail(line, bx.ref, self.r_chr_fail);
+                return false;
+            },
+        }
+    }
+
+    /// `read_line() -> string` (DEC-020, research/028 M3): una línea de stdin
+    /// hasta (sin incluir) el `\n` final, o error de runtime `end of input` en
+    /// EOF sin datos. Sin parámetros: el checker registra la firma, así que un
+    /// argumento no llega aquí. El bloque sale por astra_llvm_alloc (rc/kind)
+    /// y el emisor lo registra como temporal igual que a substr.
+    fn emitReadLine(self: *Emitter, idx: u32) ?Val {
+        const line = self.tree.loc(idx).line;
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0) };
+        const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_read_line), self.r_read_line, &fargs, 1, "");
+        self.emitTmpPush(rp);
+        return .{ .ref = rp, .ty = .str_ };
+    }
+
     // ── Guards de aritmética (idénticos al VM) ──────────────────────────────
 
     fn emitDivRem(self: *Emitter, a: c.LLVMValueRef, b: c.LLVMValueRef, line: u32, is_rem: bool, ty: Ty) c.LLVMValueRef {
@@ -5020,6 +5149,9 @@ pub const Emitter = struct {
                     // ord -> i64 y substr -> string (DEC-018), idéntica razón.
                     if (std.mem.eql(u8, nm, "ord")) return .i64_;
                     if (std.mem.eql(u8, nm, "substr")) return .str_;
+                    // chr -> string y read_line -> string (DEC-020), idéntica razón.
+                    if (std.mem.eql(u8, nm, "chr")) return .str_;
+                    if (std.mem.eql(u8, nm, "read_line")) return .str_;
                     if (self.fns.get(nm)) |fi| return fi.ret_ty;
                     if (self.variant_map.contains(nm)) return .enum_;
                     return null;

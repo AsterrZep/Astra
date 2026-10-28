@@ -77,12 +77,12 @@ while IFS= read -r f; do
     fi
 
     # Reference: zig VM.
-    "$ASTRA_ZIG" $extra "$f" >"$work/vm.out" 2>"$work/vm.err"
+    "$ASTRA_ZIG" $extra "$f" </dev/null >"$work/vm.out" 2>"$work/vm.err"
     vm_rc=$?
 
     # LLJIT route: compile-and-run in-process. Constructs outside the backend's
     # scope are a clean skip (the emitter rejects them before the JIT runs).
-    "$ASTRA_ZIG" --jit $extra $OPT_ARGS "$f" >"$work/jit.out" 2>"$work/jit.err"
+    "$ASTRA_ZIG" --jit $extra $OPT_ARGS "$f" </dev/null >"$work/jit.out" 2>"$work/jit.err"
     jit_rc=$?
     if [ "$jit_rc" != 0 ] && grep -q "not supported by the LLVM backend" "$work/jit.err"; then
         echo "skip $rel (not LLVM scope)"

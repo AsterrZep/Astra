@@ -1,0 +1,10 @@
+// C round-trip for `chr` (DEC-020): astra_builtin_chr must build the 1-byte
+// string and word the range guard exactly like the seed VM, so the compiled
+// program's output and its bounds error are byte-identical to the VM route.
+// The positive output is pinned by conformance/expressions/chr_basic.astra,
+// which sweep_emit_c.sh runs through both backends; this twin pins the C
+// runtime's bounds message with the `file:line:` prefix the harness requires.
+// EXPECT-RUNTIME-ERROR: chr value 256 out of bounds (0..255)
+fn main() {
+    print(chr(256))
+}

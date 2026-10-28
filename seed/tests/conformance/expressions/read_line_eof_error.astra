@@ -1,0 +1,13 @@
+// read_line() at EOF with no data is a RUNTIME error (DEC-020, research/028
+// M3): `end of input`. The harness gives the program stdin=/dev/null (or a
+// closed stdin), which is an immediate, deterministic EOF — so the first
+// read_line() fails before it can read a byte. This is the pin for the
+// EOF-without-data contract: a real line (the positive case) lives in the
+// selfhost/io_gate_stdin.sh gate, where stdin is redirected from a fixture
+// (conformance has no stdin to give).
+// EXPECT-RUNTIME-ERROR: end of input
+fn main() {
+    print("before")
+    print(read_line())
+    print("after")
+}

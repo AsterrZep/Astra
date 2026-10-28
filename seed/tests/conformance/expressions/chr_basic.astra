@@ -1,0 +1,22 @@
+// chr(i) -> string (DEC-020, research/028 M3): the 1-byte string whose first
+// byte is `i` — the inverse of `ord` (DEC-018), so a lexer that classified a
+// byte can rebuild it, and `chr(ord(s))` round-trips any 1-byte `s`. A byte,
+// not a codepoint, matching `s[i]` (DEC-013) and `ord`. The argument takes an
+// i32 literal (DEC-006) or an i64 local alike — the parameter is `unknown`,
+// because a call checks arguments by exact type equality and Astra-0 has no
+// coercion; the range [0, 255] is a runtime guard (chr_oob error test).
+// EXPECT: A
+// EXPECT: a
+// EXPECT: 0
+// EXPECT: true
+// EXPECT: true
+// EXPECT: true
+fn main() {
+    print(chr(65))
+    print(chr(97))
+    print(ord(chr(0)))
+    print(chr(65) == "A")
+    print(chr(ord("Z")) == "Z")
+    let i: i64 = 200
+    print(chr(i) == chr(200))
+}

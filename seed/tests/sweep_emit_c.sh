@@ -49,7 +49,10 @@ while IFS= read -r f; do
         continue
     fi
 
-    "$SEED" "$f" >"$work/vm.out" 2>"$work/vm.err"
+    # stdin is pinned to empty (/dev/null): a case that reads stdin
+    # (read_line at EOF, DEC-020) must fail deterministically instead of
+    # blocking on the caller's terminal. CI already runs without a TTY.
+    "$SEED" "$f" </dev/null >"$work/vm.out" 2>"$work/vm.err"
     vm_rc=$?
 
     if ! "$SEED" --emit-c "$f" >"$work/emit.err" 2>&1; then
@@ -81,7 +84,7 @@ while IFS= read -r f; do
         continue
     fi
 
-    "$work/bin" >"$work/c.out" 2>"$work/c.err"
+    "$work/bin" </dev/null >"$work/c.out" 2>"$work/c.err"
     c_rc=$?
 
     bad=0

@@ -737,6 +737,79 @@ static bool builtin_str_to_int(VM *vm, Value *args, uint8_t argc, uint32_t line,
     return true;
 }
 
+/* Builtin `chr(i) -> string` (DEC-020, research/028 M3): the 1-byte string
+ * whose FIRST BYTE is `i` (0..255) — the inverse of `ord` (DEC-018), byte and
+ * not codepoint, because `s[i]` hands back a 1-byte string and the seed's
+ * lexer walks bytes; a future lexer.astra emits strings with it. Out of range
+ * is a runtime error (`chr value N out of bounds (0..255)`), never a masked
+ * low byte: a caller that passed 300 meant something else and must learn it
+ * here (same no-silent-clipping contract as `substr` bounds, DEC-018). */
+static bool builtin_chr(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 1) {
+        vm_runtime_error(vm, line, "expected 1 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value i = args[0];
+    if (i.kind != VAL_INT) {
+        vm_runtime_error(vm, line, "chr expects an int, got %s", type_name(i));
+        return false;
+    }
+    int64_t code = i.as.int_val;
+    if (code < 0 || code > 255) {
+        vm_runtime_error(vm, line, "chr value %ld out of bounds (0..255)", (long)code);
+        return false;
+    }
+    char b = (char)(unsigned char)code;
+    *out = value_string(arena_strdup(vm->arena, &b, 1), 1);
+    return true;
+}
+
+/* Builtin `read_line() -> string` (DEC-020, research/028 M3): one line of
+ * STANDARD INPUT up to (not including) the trailing `\n`, or a runtime error
+ * `end of input` on EOF with no data. stdin is read a byte at a time through
+ * fgetc so the SAME buffer serves every consecutive call (a lexer reads the
+ * source line by line): fread-by-blocks would consume the bytes of the NEXT
+ * line into a discarded buffer. A final line without `\n` returns what it has
+ * (standard reader convention); an empty line yields "". On a closed or
+ * /dev/null stdin (every conformance harness) the first call is EOF, i.e. the
+ * deterministic `end of input` error the conformance case pins. */
+static bool builtin_read_line(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    (void)args;
+    if (argc != 0) {
+        vm_runtime_error(vm, line, "expected 0 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    if (vm->stdin_buf == NULL) {
+        vm->stdin_cap = 4096;
+        vm->stdin_buf = arena_alloc(vm->arena, vm->stdin_cap, _Alignof(char));
+        if (!vm->stdin_buf) {
+            vm_runtime_error(vm, line, "out of memory reading stdin");
+            return false;
+        }
+    }
+    size_t len = 0;
+    int c;
+    while ((c = fgetc(stdin)) != EOF && c != '\n') {
+        if (len == vm->stdin_cap) {
+            char *bigger = arena_alloc(vm->arena, vm->stdin_cap * 2, _Alignof(char));
+            if (!bigger) {
+                vm_runtime_error(vm, line, "out of memory reading stdin");
+                return false;
+            }
+            memcpy(bigger, vm->stdin_buf, len);
+            vm->stdin_buf = bigger;
+            vm->stdin_cap *= 2;
+        }
+        vm->stdin_buf[len++] = (char)c;
+    }
+    if (c == EOF && len == 0 && ferror(stdin) == 0) {
+        vm_runtime_error(vm, line, "end of input");
+        return false;
+    }
+    *out = value_string(vm->stdin_buf, len);
+    return true;
+}
+
 /* -----------------------------------------------------------
  * VM execution
  * ----------------------------------------------------------- */
@@ -976,6 +1049,10 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 if (!vm_push(vm, value_fn(vm->builtin_push_fn))) return VM_RUNTIME_ERROR;
             } else if (name && strcmp(name, "str_to_int") == 0) {
                 if (!vm_push(vm, value_fn(vm->builtin_str_to_int_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "chr") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_chr_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "read_line") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_read_line_fn))) return VM_RUNTIME_ERROR;
             } else {
                 /* Look up in globals table */
                 bool found = false;
@@ -1736,6 +1813,12 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 } else if (fn == vm->builtin_str_to_int_fn) {
                     if (!builtin_str_to_int(vm, &vm->stack[fn_idx + 1], argc, line, &result))
                         return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_chr_fn) {
+                    if (!builtin_chr(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_read_line_fn) {
+                    if (!builtin_read_line(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
                 } else {
                     result = builtin_print(&vm->stack[fn_idx + 1], argc);
                 }
@@ -2117,6 +2200,22 @@ VM *vm_create(Arena *arena) {
     sti_fn->param_count = 255;
     sti_fn->local_count = 0;
     vm->builtin_str_to_int_fn = sti_fn;
+    FnObj *chr_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    chr_fn->code = NULL;
+    chr_fn->code_len = 0;
+    chr_fn->constants = NULL;
+    chr_fn->const_len = 0;
+    chr_fn->param_count = 255;
+    chr_fn->local_count = 0;
+    vm->builtin_chr_fn = chr_fn;
+    FnObj *rl_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    rl_fn->code = NULL;
+    rl_fn->code_len = 0;
+    rl_fn->constants = NULL;
+    rl_fn->const_len = 0;
+    rl_fn->param_count = 255;
+    rl_fn->local_count = 0;
+    vm->builtin_read_line_fn = rl_fn;
     return vm;
 }
 
