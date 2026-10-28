@@ -118,7 +118,7 @@ Los dos PDFs de los que arrancó todo: *Arquitectura Lenguaje Astra* y
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
 | **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **176/176** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
 | **Decisiones de lenguaje** | ✅ 16 registradas | `DECISIONES.md` — DEC-001..016; las 4 decisiones abiertas de la crítica (025 §2.8) congeladas e implementadas |
-| **Stdlib Astra-0 (M1/M2)** | ✅ 4 builtins + lexer | `len`, `s[i]`, `to_string`, `read_file` en 4 rutas · `selfhost/lexer_gate.sh` → **4/4** (lexer escrito en Astra-0) |
+| **Stdlib Astra-0 (M1/M2)** | ✅ 4 builtins + lexer | `len`, `s[i]`, `to_string`, `read_file` en 4 rutas · `selfhost/lexer_gate.sh` → **7/7** rutas + gate fuerte `lexer_tokens_parity.sh` vs `--dump-tokens` (lexer escrito en Astra-0) |
 | **Enforcement entre fibras** | 🔵 Especificado, no implementado | `ARCHITECTURE.md` §2.6 (Opción F) · DEC-012 `Propuesta` → regla 5 de AGENTS bloquea backend work |
 | Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
 | **Fase 3** — Astra se compila a sí misma | ⏳ Pendiente | prerequisitos: stdlib M1/M2 ✅ + árbol de compilador en Astra |
