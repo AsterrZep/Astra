@@ -81,7 +81,10 @@ while IFS= read -r f; do
     fi
 
     # Reference: native zig VM (this is the same reference llvm_parity uses).
-    "$ASTRA_ZIG" $extra "$f" >"$work/vm.out" 2>"$work/vm.err"
+    # stdin pinned empty (/dev/null): read_line-at-EOF (DEC-020) must fail
+    # deterministically, not block on the caller's terminal (CI has no TTY) —
+    # and never eat this loop's < <(find …) fixture-list pipe.
+    "$ASTRA_ZIG" $extra "$f" </dev/null >"$work/vm.out" 2>"$work/vm.err"
     vm_rc=$?
 
     # Cross route, step 1: emit an object for the foreign target.
@@ -107,7 +110,8 @@ while IFS= read -r f; do
     fi
 
     # Step 3: cross-run under qemu and compare stdout/stderr/exit vs the VM.
-    "$QEMU" -L "$QEMU_SYSROOT" "$work/bin" >"$work/cross.out" 2>"$work/cross.err"
+    # stdin pinned empty (/dev/null), same reason as the VM reference above.
+    "$QEMU" -L "$QEMU_SYSROOT" "$work/bin" </dev/null >"$work/cross.out" 2>"$work/cross.err"
     cross_rc=$?
 
     bad=0
