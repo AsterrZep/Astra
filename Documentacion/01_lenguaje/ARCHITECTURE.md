@@ -119,12 +119,14 @@ siguen pendientes de la Fase 2.*
 
 ### 2.6 Frontera de fibra — regla de cruce (especificado, NO implementado)
 
-> **Estado (2026-10-27)**: especificado en `research/026` («Opción F»,
-> ratificada como D7 con **implementación pospuesta** — `DECISIONES.md`
-> DEC-012). **Nada de lo que sigue existe en el código**: `transfer` no lexea,
-> no hay fibras, no hay chequeo de unicidad. Mientras DEC-012 esté en estado
-> `Propuesta`, la regla 5 de `AGENTS.md` bloquea trabajo de backend que tenga
-> que codificarla.
+> **Estado (2026-10-28)**: especificado en `research/026` («Opción F»)
+> y **ratificado** como DEC-012 `Aceptada (doc)` el 2026-10-28, con la
+> sintaxis de `transfer` fijada en DEC-022 (builtin, forma de llamada) y
+> el alcance del walk RT1 en DEC-023 (solo M4 hasta que una DEC añada rc
+> al VM Zig). **Nada de lo que sigue existe en el código**: `transfer` no
+> lexea, no hay fibras, no hay chequeo de unicidad. La implementación
+> (constructo + S1/S2/S3 + `.copy()`) es el PR «fase E»; la regla 8 de
+> `AGENTS.md` exige que ese PR lleve sus checks en el mismo cambio.
 
 Las reglas §2.4/§2.5 valen *dentro* de una fibra; en la frontera:
 
@@ -2299,6 +2301,11 @@ trait Sync { }
 // Mutex<T> es Send + Sync si T es Send
 // Channel<T> es Send si T es Send
 ```
+
+> **Nota (026 Paso 2, DEC-012):** `Send` para agregados = cumplir §2.6 —
+> un tipo que cruza fronteras de fibra pasa por la regla de unicidad
+> (estática o walk RT1) en el punto de cruce; declararlo `Send` no la
+> sustituye. Especificado, no implementado; ver §2.6.
 
 ### 35.6 Fiber-Aware vs OS-Level
 

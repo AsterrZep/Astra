@@ -33,6 +33,7 @@
 | **Cross-Platform** | Compile from any host to Linux, macOS, Windows, Android, iOS, visionOS, and WebAssembly. |
 | **Type Inference** | Hindley-Milner type inference with dimensional types (units of measure). |
 | **Comptime** | Zig-style compile-time metaprogramming. No macros, no templates — just code. |
+| **Fiber Ownership Enforcement** | Shared within a fiber, verified unique on every fiber crossing (ARCHITECTURE §2.6; DEC-012 ratified — specified, not implemented). |
 | **Curated Stdlib** | ~64 modules covering networking, crypto, JSON, HTTP, testing, and more. |
 
 ## What the Language Will Look Like
@@ -207,7 +208,7 @@ States — never a bare `[x]`:
 | **LLVM backend** (`-Dllvm`, opt-in): `--emit-obj`/`--jit`, cross aarch64, wasm32-wasi, `--fast-math`, unboxed Option/Result | **Verified (CI)** | `zig/tests/llvm_parity.sh` → **205/205**, plain and `ASTRA_LLVM_OPT=2` (skips fail since #21); jobs `llvm`, `llvm-cross`, `llvm-wasm` green on every PR |
 | **Phase 2 full language**: comptime, ARC/ORC, fibers, FFI, stdlib | **Not started** | `Documentacion/04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
 | **Astra-0 stdlib (M1/M2b/M3 — MVP complete)**: `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int`, `chr`, `read_line`, `for c in s` + self-hosted lexer | **Verified** | 10 builtins in 4 routes (DEC-013..020); `seed/tests/selfhost/lexer_gate.sh` → **7/7** (seed VM, C backend, zig VM, LLVM `--jit`/`--emit-obj`/cross/wasm) + strong token-stream parity vs `--dump-tokens`; `seed/tests/selfhost/io_gate.sh` → **8/8**; `make test` → **319/0** |
-| **Language decisions registry** | **Verified** | `Documentacion/01_lenguaje/DECISIONES.md` → 21 entries (DEC-001..021; DEC-012/021 in `Propuesta`), rule in AGENTS.md |
+| **Language decisions registry** | **Verified** | `Documentacion/01_lenguaje/DECISIONES.md` → 23 entries (DEC-001..023; only DEC-021 in `Propuesta`), rule in AGENTS.md |
 | **Fase 3**: Astra compiles itself | **Not started** | needs Phase 2 + the compiler tree written in Astra (prereq stdlib M1/M2/M3 done) |
 
 ## Contributing

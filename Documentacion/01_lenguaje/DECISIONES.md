@@ -19,7 +19,7 @@
 | DEC-009 | Los VMs (seed/zig) y el backend C no liberan memoria (arena/vitalicio); la ruta LLVM libera con ARC — divergencia **documentada y gateada** con techo de RSS | Aceptada (test-pinned + gate) | 2026-10-27 | `memory/loop_reuse.astra` + gate `zig/tests/llvm_mem.sh` (techo 64 MB, CI job `llvm`) |
 | DEC-010 | Los floats se imprimen con formato `%g` | Aceptada (test-pinned) | 2026-09 | conformance de expresiones |
 | DEC-011 | Las sentencias se terminan con `;` o con newline | Aceptada (test-pinned) | 2026-09 | suite de conformidad (estilo mixto) |
-| DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: regla de cruce con unicidad comprobada; `transfer(x)` será builtin, sin keyword; el walk de rc se difiere al primer cruce real — scheduler/send) | **Propuesta** (D7 pospuesto; Fase 0 completada: `ARCHITECTURE.md` §2.6 escrita) | 2026-10-27 | `research/026` §3–§4; `ARCHITECTURE.md` §2.6; `research/031` §0 |
+| DEC-012 | Modelo de enforcement entre fibras = **Opción F** (`research/026`: compartir intra-fibra gratis — DEC-001 —; toda frontera exige valor único: estático si se prueba, walk `rc==1` en runtime si no; escapes = `.copy()` o `Atomic[T]`; walk = gate del primer cruce real) | **Aceptada (doc)** — ratificada 2026-10-28 (Fase 0 completa: `ARCHITECTURE.md` §2.6 + invariant 8 de AGENTS + DEC-022/023); **implementación pospuesta** al PR «fase E» (constructo + S1/S2/S3 en 2 frontends + `.copy()` × 4 motores) | 2026-10-27 | `research/026` §3–§5; `ARCHITECTURE.md` §2.6; `research/031` §1-P1/P2/P8 (huecos cerrados con DEC-022/023); pin futuro: `ui/transfer_*`, `conformance/transfer/*` (PR fase E) |
 | DEC-013 | Stdlib M1: `len(x) -> i64` para arrays y strings; `s[i]` → **string de 1 byte** (OOB = error de runtime con el texto de los arrays); los strings son inmutables (`s[i] = …` es error de compilación) | Aceptada (test-pinned) | 2026-10-27 | `arrays/len_array.astra`, `expressions/len_string.astra`, `expressions/str_index.astra`, `expressions/str_index_oob.astra`, `expressions/len_int_runtime_error.astra`, `ui/str_index_assign_rejected.astra`, `codegen/str_index.astra`, `codegen/len_builtin.astra` (PR D-PR1) |
 | DEC-014 | Stdlib M1: `to_string(x) -> string` **solo enteros** (otros tipos = error de runtime con el texto de las 4 rutas) y `read_file(path: string) -> string` (todo fallo de apertura/lectura colapsa en `cannot open file '<path>'`); la lectura positiva vive fuera de `conformance/` | Aceptada (test-pinned) | 2026-10-27 | `expressions/to_string_roundtrip.astra`, `expressions/to_string_float_rejected.astra`, `expressions/read_file_missing.astra`, `expressions/read_file_nil_path.astra`, `codegen/to_string.astra`, `codegen/read_file_missing.astra`, `seed/tests/selfhost/io_gate.sh` (4 rutas) (PR D-PR2) |
 | DEC-015 | Los nombres de builtin (`print`, `len`, `to_string`, `read_file`) están **reservados**: redeclararlos con `let`/`const`/`fn` en cualquier ámbito es error de compilación, idéntico en los dos typecheckers | Aceptada (test-pinned) | 2026-10-27 | `ui/builtin_shadow_print.astra`, `ui/builtin_shadow_len.astra`, `ui/builtin_shadow_to_string.astra`, `ui/builtin_shadow_read_file.astra` (primera línea byte-idéntica seed↔zig) (PR D-PR2) |
@@ -29,6 +29,8 @@
 | DEC-019 | Stdlib M2b: `push(arr, v) -> array` devuelve un array **NUEVO** (copia manual; el llamante re-bindea `a = push(a, v)` y el viejo queda intacto — crecer in-place es imposible en la ruta LLVM, cuyo objeto guarda los elementos **en línea** y es compartido por todos los bindings) con **guard de homogeneidad en runtime** (`push element has type X, expected Y`), y `str_to_int(s) -> i64` = el decimal de `to_string` con **error de runtime** para entradas inválidas, vacías o fuera de rango (acepta `-`, no `+` ni espacios ni `0x`); ambos parámetros `unknown` con guards (patrón `ord`, DEC-018), retorno de `push` `array<unknown>`, y los dos nombres se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/push_basic.astra`, `expressions/push_alias.astra`, `expressions/push_int_arg.astra`, `expressions/push_elem_error.astra`, `expressions/push_nil.astra`, `expressions/str_to_int_basic.astra`, `expressions/str_to_int_invalid.astra`, `expressions/str_to_int_empty.astra`, `expressions/str_to_int_range.astra`, `expressions/str_to_int_int_arg.astra`, `expressions/str_to_int_nul.astra`, `codegen/push_roundtrip.astra`, `codegen/push_elem_error.astra`, `ui/builtin_shadow_push.astra`, `ui/builtin_shadow_str_to_int.astra` (PR D-PR4b) |
 | DEC-020 | Stdlib M3 (cierre del MVP): `chr(i: i64) -> string` = string de **1 byte** cuyo primer byte es `i` (rango `[0, 255]` en runtime, fuera = error `chr value N out of bounds (0..255)` — la inversa de `ord`, DEC-018), `read_line() -> string` = una línea de **stdin** sin el `\n` final (EOF sin datos = error de runtime `end of input`; la ruta wasm sin stdin da el mismo EOF, comportamiento documentado), y `for c in s { … }` sobre un string itera **byte a byte** con `c: string` de 1 byte (abierto en los dos typecheckers y emitido vía el LEN+INDEX que las cuatro rutas ya tenían); `chr` y `read_line` se suman a la lista reservada de DEC-015 | Aceptada (test-pinned) | 2026-10-28 | `expressions/chr_basic.astra`, `expressions/chr_oob_error.astra`, `expressions/chr_int_arg_error.astra`, `expressions/read_line_eof_error.astra`, `loops/for_string.astra`, `codegen/chr_oob.astra`, `codegen/for_string.astra`, `seed/tests/selfhost/io_gate.sh` (lectura positiva de `read_line` con stdin desde `stdin_lines.txt`, 4 rutas) (PR D-PR5) |
 | DEC-021 | El manifest del proyecto y la CLI unificada se llaman **`astraea`** — `astraea.toml` + `astraea.lock` + comando `astraea` (estilo Cargo: nombre propio del *tool*, no del lenguaje); el `astra.toml` actual se queda como marcador de raíz **hasta** que la CLI exista, y el rename llega de una vez en ese PR (nota: la DEC-020 la crea el PR de M3) | **Propuesta** (dirección decidida 2026-10-28; implementación bloqueada hasta la CLI unificada) | 2026-10-28 | Mediciones de registros 2026-10-28 (sección abajo) · Spec: `ARCHITECTURE.md` §33.2 |
+| DEC-022 | `transfer(x)` es un **builtin** con sintaxis de llamada `transfer(x)` — no keyword: sin `constructs/transfer.c` ni fila de registro (`--check-constructs` sigue 47/27); el nombre se suma a las listas reservadas de DEC-015 en los dos typecheckers; la semántica (S1/S2 + invalidación R4) entra en el mismo PR que el constructo (fase E de DEC-012) | **Aceptada (doc)** — comportamiento pinneado por el PR fase E (`ui/builtin_shadow_transfer.astra`, `ui/transfer_*`, `conformance/transfer/*`) | 2026-10-28 | `research/026` §3.2/§3.5 (superficie `transfer(e)`); `research/031` §1-P2 y §3-E; AGENTS invariant 6; patrón DEC-013..020 |
+| DEC-023 | RT1 (walk `rc==1` en el cruce) vive en **M4** (ruta LLVM, que ya tiene rc desde M4.e) hasta que una decisión futura añada rc al VM Zig; M3 queda sin RT1 mientras DEC-009 mantenga la divergencia arena — el walk es gate de la primera feature con cruce real (scheduler/send), no antes | **Aceptada (doc)** — sin código hoy; el pin (`EXPECT-RUNTIME-ERROR: cannot transfer: value graph is shared`) llega con el scheduler, suite Phase 2 | 2026-10-28 | `research/031` §1-P1 («RT1 vive en M4…») y §3-F; `research/027` §3.2 op. 3A; `research/026` §3.2 fila RT1 (enmendada por cita) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -73,26 +75,41 @@
   `llvm_parity` fail=0, `llvm_fuzz` fail=0.
 - **Spec**: `research/027` §4.
 
-### DEC-012 — Enforcement entre fibras: Opción F (pospuesto)
-- **Estado**: Propuesta — D7 pospuesto el 2026-10-27; Fase 0 completada
-  (la regla vive en `ARCHITECTURE.md` §2.6); mientras sea `Propuesta`, la
-  regla 5 de AGENTS bloquea backend work que tenga que codificarla.
-- **Fecha**: 2026-10-27
-- **Decisión (dirección)**: compartir intra-fibra es gratis (DEC-001);
-  **cruzar frontera de fibra exige valor único en ese punto** — estático si
-  se prueba, walk de `rc` en runtime si no; si no es único → `.copy()` o
-  `AtomicRef[T]`. `transfer(x)` será un **builtin** (estilo `print`), no
-  keyword. El walk RT1 se difiere al primer feature con cruce real
-  (scheduler/send) — sin rc en los VMs antes de tiempo.
+### DEC-012 — Enforcement entre fibras: Opción F (ratificada)
+- **Estado**: **Aceptada (doc)** — ratificada el 2026-10-28. La Fase 0 está
+  completa: `ARCHITECTURE.md` §2.6 escrita (PR #15), invariant 8 en
+  `AGENTS.md` y las notas de `§35.5`/`COMPARATIVE_ANALYSIS` añadidas en el
+  PR de ratificación. La **implementación queda pospuesta** al PR «fase E»
+  (constructo + S1/S2/S3 en los 2 frontends + `.copy()` en 4 motores); no
+  existe código hoy (`transfer` no lexea, `grep` → 0 en ambos árboles).
+- **Fecha**: 2026-10-27 (dirección); 2026-10-28 (ratificación).
+- **Decisión**: compartir intra-fibra es gratis (DEC-001); **cruzar frontera
+  de fibra exige valor único en ese punto** — estático si se prueba, walk de
+  `rc` en runtime si no; si no es único → `.copy()` o `Atomic[T]`.
+  `transfer(x)` será un **builtin** con sintaxis de llamada (fijado en
+  DEC-022). El walk RT1 vive en **M4** y llega con el primer feature con
+  cruce real — scheduler/send (fijado en DEC-023) — sin rc en los VMs antes
+  de tiempo.
 - **Alternativas consideradas**: A tracing GC (contradice «sin pausas»);
   B RC atómico aceptando carreras (contradice «thread-safe»); D owner-check
   por acceso (queda como red de v2, no como base); E sin mutable compartido
   (pierde el pitch).
-- **Coste aceptado**: Fase 0 = docs (ARCHITECTURE §2.6 «pendiente»);
-  implementación futura = S1/S2/S3 en 2 frontends + `.copy()` en 4 runtimes.
-- **Evidencia**: `research/026` §3–§4 (spec operativa R1–R7); `research/031`
-  §0 (NEEDS WORK: estimación de esfuerzo pendiente antes del PR grande).
-- **Spec**: «pendiente de escribir en ARCHITECTURE §2.6».
+- **Coste aceptado (estimación calibrada 2026-10-28**, opinión calibrada —
+  no hay velocidad histórica por feature en el repo, `research/031` §4):
+  el PR fase E completo se estima en **~15–25 días-hombre**: plumbing de
+  `transfer` en 4 motores (8–9 ficheros, patrón DEC-013..020, ~4–6 d por
+  builtin) + análisis de flujo S1/S2 intraprocedural × 2 frontends (misma
+  clase que el `lastReadOf` de Nim, `research/026` §3.3) + S3 (cierre de
+  efectos sobre globales en el grafo de llamadas del módulo) + `.copy()`
+  (copia estructural profunda × 4 motores, sin rc — el seed puede llevarlo)
+  + la batería UI/conformance/paridad (FC/FZ byte-idénticos).
+- **Evidencia**: `research/026` §3–§5 (spec operativa R1–R7);
+  `research/031` §1-P1/P2/P8 — los cuatro huecos que abrió (sintaxis de
+  `transfer`, alcance del RT1, estimación, Fase 0) quedan cerrados por
+  DEC-022, DEC-023, la estimación de arriba y este PR. Evidencia ejecutable
+  pendiente hasta el PR fase E: `ui/transfer_{aliased,used_after,captured}.astra`,
+  `ui/spawn_global_atomic.astra`, `conformance/transfer/transfer_{unique,copy}.astra`.
+- **Spec**: `ARCHITECTURE.md` §2.6.
 
 ### DEC-013 — Stdlib M1: `len(x)` y `s[i]` (índice de string)
 
@@ -772,3 +789,62 @@
   `registry.npmjs.org`, `crates.io/api/v1/crates`, `pypi.org/pypi`,
   `api.github.com` el 2026-10-28).
 - **Spec**: `ARCHITECTURE.md` §33.2 (puntero añado en este PR).
+
+### DEC-022 — Sintaxis de `transfer`: builtin en forma de llamada
+- **Estado**: **Aceptada (doc)** — dirección ya assertada por DEC-012 y
+  `ARCHITECTURE.md` §2.4/§2.6/§21.3; formalizada como decisión propia
+  (requisito de `research/031` §3-E antes de planificar la fase E). El
+  comportamiento se pinnea en el PR fase E.
+- **Fecha**: 2026-10-28.
+- **Decisión**: `transfer(x)` es un **builtin** en posición de llamada —
+  **no keyword**. Consecuencias: sin `constructs/transfer.c`, sin fila en el
+  registro de constructos (`--check-constructs` se queda en 47/27, invariante
+  6 intacta), y el nombre `transfer` se suma a las listas reservadas de
+  DEC-015 en los dos typecheckers (pin: `ui/builtin_shadow_transfer.astra`).
+  La semántica (S1 use-after-transfer, S2 alias en el cruce, invalidación
+  R4 del binding emisor) **no** vive en esta decisión: entra en el mismo PR
+  que el constructo (`research/026` §3.2/§3.5).
+- **Alternativas consideradas**: (1) keyword `transfer a` — descartada: cuesta
+  token de lexer + fichero de registro + fila (invariante 6), hace que
+  `transfer` deje de lexear como identificador en todo el lenguaje, y
+  todos los ejemplos de 025/026/ARCHITECTURE usan forma de llamada;
+  (2) método `a.transfer()` — descartada: el cruce se define sobre el grafo
+  de valores, no sobre un receiver, y se enredaría con la sintaxis de
+  `.copy()` que aún no existe; (3) keyword `move a` — descartada: renombra
+  el concepto respecto de ARCHITECTURE §2.4/§3.3, que dicen `transfer(var)`
+  desde el diseño original.
+- **Coste aceptado**: el patrón DEC-013..020 (builtin en 4 motores, ~8–9
+  ficheros, 1 opcode o camino de builtin-call nuevo) + el chequeo S1/S2 en
+  2 typecheckers; ver la estimación calibrada de DEC-012.
+- **Evidencia**: hoy ninguna ejecutable (no hay `transfer` en el léxico);
+  pins pre-declarados `ui/builtin_shadow_transfer.astra` y la batería
+  `026` §3.5 en el PR fase E.
+- **Spec**: `ARCHITECTURE.md` §2.6.
+
+### DEC-023 — Alcance del motor del walk RT1: M4, no M3
+- **Estado**: **Aceptada (doc)** — resuelve el conflicto `research/026`
+  fila RT1 («M3 y M4») vs `research/027`-Rec3 / DEC-009 («los VMs no
+  portan ARC») según la recomendación literal de `research/031` §1-P1.
+- **Fecha**: 2026-10-28.
+- **Decisión**: el walk de unicidad en runtime RT1 (`rc == 1` en todo el
+  grafo alcanzable en el punto de cruce) vive en **M4** — la ruta LLVM,
+  que ya tiene refcounting desde M4.e — hasta que una decisión futura añada
+  rc al VM Zig. M3 (VM seed/zig, arena) queda **sin RT1** mientras DEC-009
+  mantenga la divergencia documentada. RT1 sigue siendo el **gate de
+  entrada de la primera feature que ejecute un cruce real**
+  (scheduler/`spawn`/`send`), nunca «después» (`research/026` §3.2 fila
+  RT1, enmendada por cita — 026 no se edita). M1/M2 siguen siendo solo
+  estáticos (move + nil invalidation, S1/S2), como 026 ya especificaba.
+- **Alternativas consideradas**: portar ARC al VM Zig ahora para cumplir la
+  fila M3 de 026 — descartada: `research/027` §3.2 op. 3B la declara
+  «ALTA, no recomendada hoy» y DEC-009 ya fija la divergencia; declarar
+  027-Rec3 solo temporal para M3 sin fijar alcance — descartada: deja el
+  conflicto abierto para el siguiente planificador.
+- **Coste aceptado**: cero hoy; el pin eventual
+  (`EXPECT-RUNTIME-ERROR: cannot transfer: value graph is shared (rc=2 …)`)
+  llega con el scheduler en la suite Phase 2 (el seed no puede ejecutarlo:
+  no tiene fibras — logistics ya señaladas en `research/026` §4 Paso 4.3).
+- **Evidencia**: `research/031` §1-P1 y §3-F; `research/027` §3.2 op. 3A;
+  DEC-009 (hermana de esta decisión).
+- **Spec**: `ARCHITECTURE.md` §2.6 (párrafo 5, «el walk llega con el
+  primer cruce real»).
