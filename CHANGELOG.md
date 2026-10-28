@@ -8,6 +8,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Respuesta a la crítica externa → decisión, implementación y libro
+  (2026-10-27/28, 17 PRs)**: la crítica (`research/025`) señalaba cuatro
+  decisiones de runtime abiertas, un modelo de seguridad sin enforcement, un
+  bootstrap imposible, un roadmap con `[x]` falsos y un lenguaje sin primer
+  paso de self-hosting. Todo quedó decidido, implementado y gateado:
+  - **Registro de decisiones** nuevo `Documentacion/01_lenguaje/DECISIONES.md`
+    (DEC-001..019) con reglas en `AGENTS.md` (nada aterriza sin `DEC-NNN`;
+    estado en un solo sitio; decisiones abiertas bloquean backends).
+  - **Decisiones de runtime implementadas**: DEC-006/007 (rango de literal en
+    compile-time + wrap definido), DEC-008 (construcción calificada
+    obligatoria de variantes), DEC-009 (divergencia de memoria documentada y
+    gateada con `llvm_mem.sh`, techo 64 MB), DEC-001/002 (contrato de
+    aliasing fijado por 3 tests).
+  - **Modelo de enforcement entre fibras especificado** (`ARCHITECTURE.md`
+    §2.6, Opción F; DEC-012 `Propuesta` — implementación pospuesta hasta
+    scheduler/send, bloqueada por regla de proceso).
+  - **Bootstrap y proceso corregidos**: `COMPILER_STRATEGY` §7.1 describe la
+    cadena real (port manual C→Zig); roadmap en tres estados
+    (Specified/Implemented/Verified) con fuente única en `INDICE.md`;
+    registro de constructs declarado índice documental (DEC-002).
+  - **Stdlib Astra-0 M1/M2b**: 8 builtins en las 4 rutas — `len`, `s[i]`,
+    `to_string`, `read_file` (DEC-013/014), `ord`, `substr` (DEC-018),
+    `push`, `str_to_int` (DEC-019) — + reserva de nombres builtin
+    (DEC-015) y **lexer self-hosteado** (`seed/tests/selfhost/lexer.astra`)
+    gateado en **7 rutas** con paridad de 176 tokens vs `--dump-tokens`
+    (DEC-016/017).
+  - **Bug cerrado**: el buffer `extra` del AST se liberaba bajo slices ya
+    entregados → crash `0xAAAAAAAA` del emisor zig con genéricos (clase
+    completa, también LLVM); fix con fixture de regresión y test unitario.
+  - **Guía de usuario** `Documentacion/09_libro/`: 16 capítulos estilo
+    *The Rust Book* + 91 ejemplos ejecutados con el toolchain real.
+  - **Benchmarks** (`research/030` + `030_benchmarks_suite/`): Astra-LLVM vs
+    Rust/Go/C/Zig — fib(30) 8–9× de C, arranque 0,8 ms, memoria 1,2 MB
+    plana (vs 400–729 MB de los VMs en arena).
+  - **CI**: fast-path para PRs de docs (los jobs LLVM se saltan; los checks
+    requeridos siguen reportando), caché de Zig, `llvm_parity` **falla con
+    skips** (la regresión de DEC-008 se escondió un merge en un skip
+    silencioso) y gate de techo de RSS.
+  - Gates al cierre: `make test` **312/0** · `dump_parity` **186/0** ·
+    `llvm_parity` **197/197** · `lexer_gate` **7/7 + 176 tokens**.
+
+### Added
 - **Backend LLVM: des-boxing de Option/Result (M6.c, etapa c.2 — payloads
   `str_`)**: el par `{i8 tag; i64 payload}` ahora también transporta
   punteros de string — `string?` vive en SSA sin caja en params/rets/`let`

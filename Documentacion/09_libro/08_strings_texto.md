@@ -246,15 +246,15 @@ programas (el libro tampoco la usa en ejemplos):
 | `s[i]` | byte `i` → string de 1 byte | **Disponible** (DEC-013) |
 | `to_string(x)` | entero → `string` | **Disponible** (DEC-014) |
 | `read_file(path)` | `string` → `string` | **Disponible** (DEC-014) |
-| `ord(s)` | `string` → primer byte `i64` | **Próximamente** — decidida como DEC-018 (2026-10-28); llegando a `main` |
-| `substr(s, start, len)` | `string` → `string` | **Próximamente** — DEC-018, ídem |
-| `push(arr, v)` | array → array nuevo con `v` al final | **En revisión** — tests ya en la suite, decisión (DEC-019) sin registrar aún |
-| `str_to_int(s)` | `string` → `i64` | **En revisión** — ídem |
+| `ord(s)` | `string` → primer byte `i64` | **Disponible** (DEC-018) |
+| `substr(s, start, len)` | `string` → `string` | **Disponible** (DEC-018) |
+| `push(arr, v)` | array → array nuevo con `v` al final | **Disponible** (DEC-019 — el original no cambia) |
+| `str_to_int(s)` | `string` → `i64` | **Disponible** (DEC-019 — inválidos = error de runtime) |
 
-Mientras tanto, lo que hace hoy cada cosa en esa tabla: `ord`/`substr`
-podrían cambiar de forma o texto de error antes de consolidarse, y por eso
-este capítulo no las enseña; si necesitas un byte concreto, `s[i]` ya te lo
-da, y para recortar puedes reconstruir con un bucle y `+`.
+Los cuatro últimos aterrizaron con la stdlib M2 (2026-10-28): firmas,
+textos de error y ejemplos de uso están en el
+[capítulo 14 (referencia)](14_referencia_builtins.md). Truco que sigue
+siendo útil: para un byte concreto, `s[i]` ya te lo da directamente.
 
 ## Resumen
 
