@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Disparo manual (gh workflow run CI --ref <rama>): útil como workaround
+  # cuando el evento pull_request no llega a crear run, y para re-ejecuciones
+  # dirigidas sin tocar la rama.
+  workflow_dispatch:
 
 # Fast path para PRs que solo tocan documentación: los tres checks
 # requeridos (seed/zig/parity) SIEMPRE corren — con pasos guardados, su
