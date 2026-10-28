@@ -23,7 +23,8 @@
 | DEC-013 | Stdlib M1: `len(x) -> i64` para arrays y strings; `s[i]` → **string de 1 byte** (OOB = error de runtime con el texto de los arrays); los strings son inmutables (`s[i] = …` es error de compilación) | Aceptada (test-pinned) | 2026-10-27 | `arrays/len_array.astra`, `expressions/len_string.astra`, `expressions/str_index.astra`, `expressions/str_index_oob.astra`, `expressions/len_int_runtime_error.astra`, `ui/str_index_assign_rejected.astra`, `codegen/str_index.astra`, `codegen/len_builtin.astra` (PR D-PR1) |
 | DEC-014 | Stdlib M1: `to_string(x) -> string` **solo enteros** (otros tipos = error de runtime con el texto de las 4 rutas) y `read_file(path: string) -> string` (todo fallo de apertura/lectura colapsa en `cannot open file '<path>'`); la lectura positiva vive fuera de `conformance/` | Aceptada (test-pinned) | 2026-10-27 | `expressions/to_string_roundtrip.astra`, `expressions/to_string_float_rejected.astra`, `expressions/read_file_missing.astra`, `expressions/read_file_nil_path.astra`, `codegen/to_string.astra`, `codegen/read_file_missing.astra`, `seed/tests/selfhost/io_gate.sh` (4 rutas) (PR D-PR2) |
 | DEC-015 | Los nombres de builtin (`print`, `len`, `to_string`, `read_file`) están **reservados**: redeclararlos con `let`/`const`/`fn` en cualquier ámbito es error de compilación, idéntico en los dos typecheckers | Aceptada (test-pinned) | 2026-10-27 | `ui/builtin_shadow_print.astra`, `ui/builtin_shadow_len.astra`, `ui/builtin_shadow_to_string.astra`, `ui/builtin_shadow_read_file.astra` (primera línea byte-idéntica seed↔zig) (PR D-PR2) |
-| DEC-016 | El lexer de Astra-0 (`seed/tests/selfhost/lexer.astra`) es el primer componente self-hosting: lexea `lexer_input.astra` con solo los builtins M1 y emite un token por línea `<KIND>:<lexeme>@<line>`; el stream se gatea byte a byte contra `lexer.expected` en las 4 rutas, fuera de `conformance/` (cwd) | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → 4/4 rutas (seed VM, `--emit-c`+gcc, zig VM, LLVM `--jit`) contra `lexer.expected` (PR D-PR3a) |
+| DEC-016 | El lexer de Astra-0 (`seed/tests/selfhost/lexer.astra`) es el primer componente self-hosting: lexea `lexer_input.astra` con solo los builtins M1 y emite un token por línea `<KIND>:<lexeme>@<line>`; el stream se gatea byte a byte contra `lexer.expected` en las 4 rutas, fuera de `conformance/` (cwd) | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → 4/4 rutas (seed VM, `--emit-c`+gcc, zig VM, LLVM `--jit`) contra `lexer.expected` (PR D-PR3a; rutas y gate fuerte cerrados en DEC-017) |
+| DEC-017 | Cierre del gate del lexer self-hosting (PR3b): `lexer_gate.sh` crece a **7 rutas** ( + `--emit-obj`+link nativo, cross aarch64 bajo qemu, wasm32-wasi bajo Node WASI con preopens — cada una con skip limpio sin su toolchain) y añade el **gate fuerte** `lexer_tokens_parity.sh` (el stream de `lexer.astra` normalizado contra `astra-seed --dump-tokens`: 1:1 en KEYWORD/IDENT(`_`)/INT(hex→valor)/PUNCT/ERROR/EOF; fuera NEWLINE, columnas, contenido de STRING, FLOAT_LIT y la cola tras el primer ERROR); CI lo cablea en los jobs `seed` y `llvm` con los mismos guards, sin renombrar checks | Aceptada (test-pinned) | 2026-10-27 | `seed/tests/selfhost/lexer_gate.sh` → **7/7 rutas** + `lexer_tokens_parity.sh` → **176 tokens** (PR D-PR3b) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -285,7 +286,7 @@
   `<línea>:<col>  <KIND>  <lexeme>`, **incluye tokens NEWLINE** que este
   lexer se salta, y da a cada operador su propio KIND mientras aquí se
   agrupan en `SYMBOL:`/`OP:`), así que la normalización necesita su propio
-  diseño; (3) el formato `"<KIND> <lexeme> @<line>"` de `research/028`
+  diseño (resuelto en PR3b: DEC-017); (3) el formato `"<KIND> <lexeme> @<line>"` de `research/028`
   §4.2 — se eligió `<KIND>:<lexeme>@<line>` (separador `:` como en la
   propia lista de ejemplos del informe, con `@line` conservado).
 - **Coste aceptado**: 0 cambios de código de compilador (ni seed ni zig);
@@ -303,3 +304,76 @@
   conformance — el lexer vive fuera por decisión propia).
 - **Spec**: «pendiente de escribir en ARCHITECTURE» (`research/028` §4.2/§4.3
   es la spec de facto: formato de salida, cobertura y ubicación del gate).
+
+### DEC-017 — Cierre del gate del lexer self-hosting (PR3b de DEC-016)
+
+- **Estado**: Aceptada (test-pinned) — fijada en el PR D-PR3b (2026-10-27)
+- **Fecha**: 2026-10-27
+- **Decisión**: tres piezas, todas en `tests/` y CI — **0 cambios de
+  compilador** (ni seed ni zig):
+  1. **Rutas nuevas de `lexer_gate.sh`** (4 → 7): además de seed VM,
+     `--emit-c`+gcc, zig VM y LLVM `--jit`, la ruta nativa de producción
+     `--emit-obj` + enlace del runtime TU (receta `llvm_parity.sh`), la ruta
+     cross aarch64 (`--emit-obj --target` + `aarch64-linux-gnu-gcc` + qemu)
+     y la ruta wasm32-wasi (`--emit-obj --target` + `wasm-ld` + wasi-libc +
+     Node WASI vía `demo/wasi_run.mjs`, que desde PR2 lleva
+     `preopens {"/": cwd}` — `read_file` funciona en wasm). Cada ruta nueva
+     tiene **skip limpio** (no fallo) si falta su toolchain o si el zig no
+     está construido con `-Dllvm`.
+  2. **Gate fuerte** `lexer_tokens_parity.sh`: la salida de `lexer.astra` y
+     la de `astra-seed --dump-tokens lexer_input.astra` se **normalizan**
+     (awk embebido) a `line KIND value` y se comparan con diff — 176 tokens
+     en el fixture commiteado. KINDs que mapean 1:1: KEYWORD (el dump
+     imprime el keyword como su propio kind), IDENT (`_` del dump ≡
+     `IDENT _`: `lexer.astra` no tiene token UNDERSCORE), INT (el dump
+     imprime el valor parseado — `0x2A` ≡ `42`; el normalizador convierte
+     hex→decimal), PUNCT (`SYMBOL:`/`OP:` ≡ los kinds por-operador del
+     dump), ERROR (KIND+línea; el dump no imprime el mensaje) y EOF.
+     **Fuera del gate** (parcial honesto, con la razón en la cabecera del
+     script): NEWLINE (el lexer los salta, DEC-016), columnas (lexer.astra
+     solo trackea línea), contenido de STRING (el dump imprime el valor
+     procesado con escapes resueltos — crudo y multi-línea si contiene
+     `\n` —, el lexer el lexema verbatim: re-producir los escapes testaría
+     el normalizador, no el lexer; el contenido queda pinneado byte a byte
+     por `lexer.expected`), FLOAT_LIT (lexer.astra no lexea floats: si
+     aparece uno en el fixture el normalizador **falla ruidosamente** con
+     UNMAPPED, no lo esconde) y los tokens tras el primer ERROR
+     (`run_dump_tokens` para en `TOKEN_ERROR` mientras `lexer.astra`
+     recupera y sigue: el gate compara el prefijo común hasta e incluyendo
+     el primer ERROR; la cola de recuperación la pinnea el golden).
+     `lexer_gate.sh` lo invoca al final, así que una sola ejecución cubre
+     golden + rutas + paridad de stream.
+  3. **CI** (`.github/workflows/ci.yml`): paso «Self-hosting gates (seed VM
+     + C backend)» en el job `seed` — corre `io_gate.sh` y `lexer_gate.sh`
+     con el mismo guard `if: needs.changes.outputs.code == 'true'` que el
+     resto de pasos del job (sin zig ahí, las rutas zig/LLVM skipean y el
+     gate fuerte corre contra el seed) — y paso «Self-hosting gates (zig VM
+     + LLVM routes)» en el job `llvm` (único job con `-Dllvm`; construye el
+     seed con `make -C seed` porque las rutas canónicas y el gate fuerte
+     necesitan `astra-seed`): ahí corren zig VM, `--jit` y
+     `--emit-obj`+link; cross/wasm skipean por toolchain (cablearlos en los
+     jobs `llvm-cross`/`llvm-wasm` es un paso cada uno, dejado pendiente).
+     **Ningún job renombrado**: los checks requeridos por los rulesets no
+     cambian.
+- **Alternativas consideradas**: (1) meter el gate fuerte como paso extra
+  dentro de `lexer_gate.sh` en vez de script propio — se hizo lo mejor de
+  los dos: script propio (invocable y testeable independiente) **invocado**
+  por `lexer_gate.sh` al final; (2) cablear las rutas cross/wasm en CI ya —
+  el mínimo viable acordado era `seed` + `llvm`; ambas rutas quedan
+  verificadas localmente (7/7) y anotadas en el script y en el paso de CI
+  para los jobs `llvm-cross`/`llvm-wasm`; (3) comparar también el contenido
+  de STRING re-procesando escapes en el normalizador — descartado por
+  frágil (el parseo multi-línea del dump es ambiguo en general) y porque
+  testaría el normalizador, no el lexer.
+- **Coste aceptado**: 0 cambios de compilador; 1 fichero nuevo
+  (`seed/tests/selfhost/lexer_tokens_parity.sh`), ~150 líneas añadidas a
+  `lexer_gate.sh` y ~30 a `ci.yml`. El gate fuerte compara el stream de
+  `lexer.astra` contra el seed; si el zig está construido exige además que
+  su `--dump-tokens` sea byte-idéntico al del seed en este fixture
+  (`dump_parity.sh` no cubre `selfhost/`), y las demás rutas ya exigen
+  byte-parity con `lexer.expected` — así el gate cubre ambos frontends.
+- **Evidencia**: `seed/tests/selfhost/lexer_gate.sh` → **7/7 rutas ok**
+  (seed VM, C backend `--emit-c`+gcc, zig VM, LLVM `--jit`,
+  LLVM `--emit-obj`+link, LLVM cross aarch64+qemu, LLVM wasm32-wasi+Node
+  WASI) + `lexer_tokens_parity.sh` → `ok (176 tokens …)`; `io_gate.sh` →
+  4/4; `make test` 286/0; `llvm_parity.sh` 176/176 skip=0.
