@@ -1,0 +1,9 @@
+// NO COMPILA HOY — límite del capítulo 10: `pub` se aplica de verdad en la
+// ruta multi-módulo de astra-zig; importar un nombre sin `pub` es error de
+// compilación. Ver «Lo que no puedes hacer».
+// SALIDA ESPERADA (error): importa_privado.astra: error: module 'geometry.shape' does not export 'private_diag'
+from geometry.shape import private_diag
+
+fn main() {
+    print(private_diag(2))
+}

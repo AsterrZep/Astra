@@ -1,0 +1,5 @@
+// Indexing past the end fails with the very wording arrays use.
+fn main() {
+    let s = "hello"
+    print(s[5])
+}

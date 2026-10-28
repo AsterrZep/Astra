@@ -1,0 +1,7 @@
+// Módulo dependencia con código de nivel módulo: se ejecuta ANTES que el
+// fichero que lo importa (orden post-order del cargador, PHASE2 §7.3).
+print("1. modulo deps corriendo")
+
+pub fn value() -> i32 {
+    7
+}

@@ -1,0 +1,14 @@
+// Ejemplo del capítulo 10 — programa multi-fichero de verdad:
+//   astra.toml          raíz del proyecto (marca `@/`)
+//   lib/util.astra      dependencia de nivel raíz
+//   geometry/shape.astra submódulo relativo a este fichero
+from @/lib.util import twice
+from geometry.shape import area, SIDES
+import geometry.shape as geo
+
+fn main() {
+    print(twice(21))     // 42
+    print(area(5))       // 25
+    print(SIDES)         // 4
+    print(geo.area(3))   // 9
+}

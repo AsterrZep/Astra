@@ -1,0 +1,6 @@
+// read_file: todo fallo de apertura/lectura colapsa en UN solo error (DEC-014).
+// Salida (stderr):
+//   error_read_file.astra:5: runtime error: cannot open file 'no_existe.txt'
+fn main() {
+    print(read_file("no_existe.txt"))
+}

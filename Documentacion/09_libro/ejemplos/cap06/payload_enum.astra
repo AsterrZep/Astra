@@ -1,0 +1,29 @@
+// Variants with payload, constructed ONLY as Enum.Variant(...) (DEC-008),
+// and destructured by a binding pattern in each arm.
+enum Color {
+    Rgb(i32, i32, i32)
+    Named(string)
+}
+
+fn main() {
+    let c = Color.Rgb(10, 20, 30);
+    match c {
+        Color.Rgb(r, g, b) => {
+            print(r);
+            print(g);
+            print(b);
+        },
+        Color.Named(name) => {
+            print(name);
+        },
+    }
+    let d = Color.Named("teal");
+    match d {
+        Color.Rgb(r, g, b) => {
+            print(r + g + b);
+        },
+        Color.Named(name) => {
+            print(name);
+        },
+    }
+}

@@ -1,0 +1,5 @@
+// Strings are immutable: a write through an index is a compile error.
+fn main() {
+    let mut s = "abc"
+    s[0] = "x"
+}

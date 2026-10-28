@@ -1,0 +1,7 @@
+// to_string convierte solo enteros (DEC-014): un float se rechaza en runtime
+// con el tipo real del valor.
+// Salida (stderr):
+//   error_to_string_float.astra:6: runtime error: to_string expects an int, got float
+fn main() {
+    print(to_string(1.5))
+}

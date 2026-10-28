@@ -1,0 +1,8 @@
+// Capítulo 11 — handle compartido: `let b = a` copia el handle (la
+// referencia), no los elementos (DEC-001/DEC-002, fijado por seed/tests/conformance/arrays/alias_write.astra).
+// Es el contrato sobre el que se cimienta el conteo de referencias (ARC).
+let mut a = [1, 2, 3]
+let mut b = a
+b[0] = 99
+print(a[0])
+print(b[0])

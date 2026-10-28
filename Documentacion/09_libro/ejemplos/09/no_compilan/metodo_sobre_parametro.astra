@@ -1,0 +1,21 @@
+// NO COMPILA HOY — límite documentado (PHASE2_PROGRESS §9.6): el dispatch
+// de métodos no consulta los bounds, así que `x.show()` con `T: Show` es
+// error en los dos compiladores. Ver capítulo 09 «Límites conocidos».
+// SALIDA ESPERADA (error): metodo_sobre_parametro.astra:10:5: error: cannot access field on non-struct type type parameter
+trait Show {
+    fn show(self) -> string
+}
+
+fn describe<T: Show>(x: T) -> string {
+    x.show()
+}
+
+struct Point { x: i32 }
+
+impl Show for Point {
+    fn show(self) -> string { return "point" }
+}
+
+fn main() {
+    print(describe(Point { x: 1 }))
+}

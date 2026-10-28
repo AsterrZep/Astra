@@ -1,0 +1,7 @@
+// NO COMPILA HOY — sin astra.toml por encima no hay raíz `@/` que resuelva.
+// SALIDA ESPERADA (error): sin_manifest.astra: error: cannot resolve '@/base': no astra.toml found (project root)
+from @/base import twice
+
+fn main() {
+    print(twice(1))
+}

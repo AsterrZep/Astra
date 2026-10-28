@@ -1,0 +1,9 @@
+// Programa para la sesión de depuración del capítulo 13 (--debug).
+// Línea 7 (`let c = a * b`): punto de ruptura de la sesión del libro;
+// los operandos 6 y 7 se ven en la pila con `stack`/`p`.
+fn main() {
+    let a = 6
+    let b = 7
+    let c = a * b
+    print(c)
+}

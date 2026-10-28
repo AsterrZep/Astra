@@ -1,0 +1,26 @@
+// Capítulo 09 — bounds: `T: Show` exige un registro `impl Show for X`
+// para el tipo concreto en cada sitio donde el binding se vuelve concreto.
+// Patrón fijado por seed/tests/conformance/generics/bounds_ok.astra.
+trait Show {
+}
+
+struct Point {
+    x: i32
+}
+
+impl Show for Point {
+}
+
+struct Box<T: Show> {
+    v: T
+}
+
+fn accept<T: Show>(x: T) -> i32 {
+    1
+}
+
+let p = Point { x: 1 }
+let b = Box { v: p }
+print(accept(p))
+print(b.v.x)
+print("point")

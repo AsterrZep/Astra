@@ -1,0 +1,8 @@
+// The bare spelling is rejected for user variants — the compiler points at
+// the qualified one (DEC-008).
+enum A { Some2(i32) None2 }
+
+fn main() {
+    let x = Some2(1);
+    print(x);
+}
