@@ -1,0 +1,4 @@
+// Módulo auxiliar: solo lo marcado `pub` es visible desde fuera.
+pub fn doble(n: i64) -> i64 {
+    return n * 2
+}

@@ -1,0 +1,7 @@
+// Índice de string fuera de rango: el mismo texto que los arrays (DEC-013).
+// Salida (stderr):
+//   error_index_oob.astra:6: runtime error: index 5 out of bounds (len 5)
+fn main() {
+    let s = "hello"
+    print(s[5])
+}

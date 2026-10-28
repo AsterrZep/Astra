@@ -1,0 +1,8 @@
+// len() de un escalar: el typechecker acepta cualquier receptor (igual que
+// print) y cada runtime lo rechaza con este texto (DEC-013).
+// Salida (stderr), idéntica en las 4 rutas:
+//   error_len_int.astra:6: runtime error: cannot take length of int
+fn main() {
+    let n = len(1)
+    print(n)
+}

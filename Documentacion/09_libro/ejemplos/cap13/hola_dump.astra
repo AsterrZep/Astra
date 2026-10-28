@@ -1,0 +1,9 @@
+// Programa mínimo para probar los --dump-* del capítulo 13.
+fn sum(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+fn main() {
+    let total = sum(2, 3)
+    print(total)
+}
