@@ -26,13 +26,25 @@ invariants and the workstream table live there.
    ```bash
    # seed side (always with the sanitizer build while developing)
    cd seed && make debug && ./tests/run_tests.sh && ./astra-seed --check-constructs
+   ./tests/sweep_emit_c.sh                      # every non-ui case through --emit-c + gcc
 
    # zig side
    cd zig && export PATH="$HOME/zig:$PATH" && zig build test --summary all
+
+   # selfhost gates when touching seed/tests/selfhost/** or Astra-0 fixtures
+   ./seed/tests/selfhost/{io,lexer,parser}_gate.sh
+
+   # llvm_parity (plain + ASTRA_LLVM_OPT=2) when touching zig/src or the suite
+   ./zig/tests/llvm_parity.sh && ASTRA_LLVM_OPT=2 ./zig/tests/llvm_parity.sh
    ```
 
    Manual repro programs live in `/tmp/opencode/*.astra`; run them through
    EVERY backend touched (VM, `--emit-c`+gcc, astra-zig) and diff outputs.
+   **Counters are measured, never remembered**: paste the actual output of
+   every gate you cite in a PR or status table (INDICE rule). EXPECT
+   directives: one `// EXPECT:` per output line; **one** `EXPECT-ERROR:` /
+   `EXPECT-RUNTIME-ERROR:` per file (run_tests fails a file with more —
+   split it).
 5. **Push after every green commit.** `git push` immediately; never
    accumulate a stack of local commits.
 6. **Watch CI.** After pushing, `gh run list --limit 5`. A red run must be
@@ -62,6 +74,20 @@ The default posture is **more agents, not fewer**:
 
 ## Rules that make the loop safe
 
+- **Decisions before code.** Any PR that adds/changes/rejects a language
+  behaviour ships its `DEC-NNN` (table row + section) and the conformance
+  test that pins it, in the same PR — see AGENTS §"Language decisions".
+  A PR whose `DEC` needed by it is in `Propuesta` cannot land (rule 5).
+- **Signed commits, verify locally.** Signing is SSH (`gpg.format=ssh`,
+  key `~/.ssh/id_ed25519`); pass **`-S` explicitly** (`commit.gpgsign`
+  alone did not fire on an amend) and check
+  `git cat-file commit HEAD | grep -c gpgsig` → 1 before pushing. Never
+  `--no-verify`: `main` rejects unsigned commits.
+- **Golden files come from the real compiler, never from the new
+  implementation** (DEC-025 pattern): generate expected output from
+  `astra-seed --dump-tokens/--dump-ast` through a dumb normalizer, commit
+  it, and have the gate re-derive it each run (freshness check). Otherwise
+  the gate only proves the new code agrees with itself.
 - **Seed↔Zig parity.** The Zig compiler must accept everything the seed
   accepts (the conformance suite is the gate). A bug found in one backend
   is fixed in BOTH. Accepting more in Zig than in the seed is allowed only
@@ -80,3 +106,68 @@ The default posture is **more agents, not fewer**:
   warning is a failed build.
 - **No drive-by refactors.** If a change wants more than its commit scope,
   it becomes its own todo item and its own commit.
+
+## Environment (verified 2026-10-28 on this box)
+
+- **Zig 0.16.x** may be absent (CI pins 0.16.0 via `mlugg/setup-zig`). Install
+  locally with:
+  ```bash
+  mkdir -p ~/zig && curl -sL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz \
+    | tar -xJ -C ~/zig --strip-components=1 && ~/zig/zig version   # 0.16.0
+  export PATH="$HOME/zig:$PATH"
+  ```
+- **`zig build -Dllvm` fails to link on gcc-16/binutils-2.46 glibc** with
+  `fatal linker error: unhandled relocation type R_X86_64_PC64 … crt1.o:.sframe`
+  (zig 0.16's self-hosted linker cannot process `.sframe` relocations, and
+  `-fno-lld` / `-flld` don't help — `-flld` segfaults the driver). Workaround
+  that makes every llvm gate runnable locally (never commit any of it):
+  ```bash
+  mkdir -p /tmp/opencode/syslib
+  objcopy --remove-section=.sframe --remove-section=.rela.sframe /usr/lib/crt1.o /tmp/opencode/syslib/crt1.o
+  for f in /usr/lib/*; do b=$(basename "$f"); [ "$b" = crt1.o ] && continue; \
+       [ -e /tmp/opencode/syslib/"$b" ] || ln -s "$f" /tmp/opencode/syslib/"$b"; done
+  mkdir -p /tmp/opencode/fakegcc
+  cat > /tmp/opencode/fakegcc/cc <<'SH'
+  #!/bin/bash
+  for a in "$@"; do [ "$a" = "-print-file-name=crt1.o" ] && { echo /tmp/opencode/syslib/crt1.o; exit 0; }; done
+  exec /usr/bin/cc "$@"
+  SH
+  chmod +x /tmp/opencode/fakegcc/cc
+  export PATH="/tmp/opencode/fakegcc:$HOME/zig:$PATH"   # zig asks `cc -print-file-name=crt1.o`
+  zig build -Dllvm
+  ```
+  zig resolves `crti.o`/`libc.so`/… **relative to the returned crt1.o dir**,
+  hence the symlink farm. Without this, llvm_parity/llvm_jit/cross/wasm are
+  unrunnable locally — rely on CI only as a last resort.
+
+## Writing Astra-0 code (gotchas verified by execution)
+
+Everything below was reproduced on VM seed, `--emit-c`+gcc, zig VM and LLVM
+`--jit` — trust these over prose docs, and re-verify before citing:
+
+- **`else` must sit on the same line as the closing `}`** (`} else {`); on
+  its own line both compilers reject the file («unexpected token in
+  expression»). Known limitation, deliberately NOT pinned yet (DEC-025).
+- **A multiline `if/else if/else` as the LAST expression of a function
+  does not type** («if branches have different types: string vs void») —
+  use early `return`s, or bind it to a `let` first. Single-line
+  `if c { a } else { b }` tails are fine.
+- **`ok`, `err`, `some`, `none` and the 10 builtin names are reserved**
+  (DEC-015): you cannot `let`/`fn` them — `fn err(…)` fails to parse.
+  Pick `report_err`-style names.
+- **Counters from `len()` are `i64`**: `let mut i = 0` then `i + len(s)`
+  is a type error — write `let mut i: i64 = 0` (DEC-006/013).
+- **`match` arms need commas** between them, and enum patterns must be
+  qualified (`Color.Rojo`, DEC-008). Payload patterns only accept named
+  bindings — no `_` per field, no nested qualified paths, no or-patterns
+  of qualified variants (yet).
+- **String arrays print unquoted**: `print(["a","b"])` → `[a, b]` on all
+  routes; write EXPECTs accordingly.
+- **`[]` (empty array literal) is rejected by the LLVM emitter** and any
+  llvm_parity skip is a FAIL — seed arrays with a non-empty literal
+  (`let mut parts = [""]`) instead.
+- **`substr(s, start, len)`** (length, not end); `push` returns a NEW
+  array (rebind: `a = push(a, v)`); `none` prints as `nil`, `some(n)` as
+  `some(n)`.
+- Assignment to globals from functions works (all 4 routes) — that is how
+  parser.astra keeps its lexer state.
