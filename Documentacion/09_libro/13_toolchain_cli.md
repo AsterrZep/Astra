@@ -304,9 +304,9 @@ Empieza siempre con `h` si lo olvidas.
 ## Los gates de self-hosting: 7 rutas para un mismo fichero
 
 `seed/tests/selfhost/` guarda los primeros componentes escritos **en Astra-0**
-— un lexer (`lexer.astra`) y una lectura de fichero (`read_positive.astra`) —
-y sus gates los corren por todas las rutas exigibles, comparando contra un
-golden cometido.
+— un lexer (`lexer.astra`), un parser (`parser.astra`, DEC-025) y una lectura
+de fichero (`read_positive.astra`) — y sus gates los corren por todas las
+rutas exigibles, comparando contra un golden cometido.
 
 ### `io_gate.sh` — read_file por 4 rutas
 
@@ -351,6 +351,32 @@ escrito en su propio lenguaje debe ver los mismos tokens que el compilador C.
 Ese es el corazón del plan de autoalojamiento: cada paso de la cadena bootstrap
 se gana su gate antes de que el siguiente se apoye en él.
 
+### `parser_gate.sh` — el parser self-hosteado (DEC-025)
+
+```bash
+./seed/tests/selfhost/parser_gate.sh
+# salida (últimas líneas):
+ok   seed VM
+ok   C backend (--emit-c + gcc)
+ok   zig VM
+ok   LLVM (--jit)
+ok   LLVM (--emit-obj + link)
+skip LLVM cross aarch64-linux-gnu (toolchain no disponible)
+skip LLVM wasm32-wasi (sysroot no disponible)
+ok   golden freshness (--dump-ast | normalize_ast.awk == parser.expected)
+
+parser_gate: every route matches parser.expected; golden freshness holds
+```
+
+`parser.astra` (~450 líneas) es un parser recursivo con Pratt escrito en
+Astra-0: lee `parser_input.astra` y emite el AST como s-expresión prefijo de
+una línea. Su golden **no lo escribió el propio parser**: sale de
+`astra-seed --dump-ast` a través de `normalize_ast.awk` (el parser en C
+contra el parser en Astra-0, con un awk que solo adapta el formato), y cada
+corrida lo regenera y lo re-compara — freshness incluido. El alcance v1
+está declarado en DEC-025: statements con `;`, subconjunto de constructos,
+sin NEWLINE-terminador todavía.
+
 ## Variables de entorno que vale la pena conocer
 
 | Variable | Efecto |
@@ -380,12 +406,13 @@ todos documentados en la cabecera de su script.
 - Dos compiladores: `astra-seed` (C, Fase 1, incluye VM + backend C) y
   `astra-zig` (Zig, Fase 2, módulos + backend LLVM con `-Dllvm`).
 - Los dumps (`--dump-tokens`, `--dump-ast`, `--dump-bytecode`) son idénticos
-  en ambos — el gate de paridad de dumps lo garantiza sobre 184 ficheros.
+  en ambos — el gate de paridad de dumps lo garantiza sobre 200 ficheros.
 - `--check-constructs` es la brújula cuando tocas la gramática: registro,
   lexer, parser y tabla de operadores, o rojo.
 - `--debug` depura bytecode de Astra con puntos de ruptura por línea fuente.
-- Los gates de selfhost (`io_gate.sh`, `lexer_gate.sh`) son el patrón del
-  proyecto: un comportamiento, muchas rutas, un golden, cero divergencias.
+- Los gates de selfhost (`io_gate.sh`, `lexer_gate.sh`, `parser_gate.sh`)
+  son el patrón del proyecto: un comportamiento, muchas rutas, un golden,
+  cero divergencias.
 - No hay `astra build`: las recetas de este capítulo y del 12 *son* la
   toolchain de hoy.
 

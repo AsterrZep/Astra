@@ -718,3 +718,36 @@ propósito:
   `import std.mod` falla con `expected module path segment, got mod`
   (`ui/import_keyword_segment.astra`). Sin prueba, esta frontera era la primera
   que se habría roto al añadir `mod`/`pub` al léxico.
+
+## 7. Self-hosting gates — lexer, io, parser (2026-10-28)
+
+Los componentes escritos **en Astra-0** viven en `seed/tests/selfhost/`
+(fuera de `conformance/`: cwd propio y preopens de wasm, `research/028`
+§2.4) y cada uno tiene su gate de rutas:
+
+| Gate | Componente | Rutas | Golden |
+|:-----|:-----------|:------|:-------|
+| `io_gate.sh` | `read_positive.astra` / `read_line_positive.astra` (DEC-014/020) | 4 (seed VM, C, zig VM, `--jit`) | `read.expected` + `read_line.expected` |
+| `lexer_gate.sh` | `lexer.astra` (DEC-016/017) | 7 (+`--emit-obj`, cross, wasm) | `lexer.expected` + gate fuerte `lexer_tokens_parity.sh` (176 tokens vs `--dump-tokens`) |
+| `parser_gate.sh` | `parser.astra` (DEC-025) | 7 | `parser.expected` generado de `--dump-ast \| normalize_ast.awk` + **freshness check** en cada corrida |
+
+`parser.astra` (v1, DEC-025) es el paso después del lexer: parser recursivo
+con Pratt sobre la tabla de precedencia del seed, estado global + peek de un
+token, salida s-expresión prefijo de una línea. Su alcance declarado:
+statements con `;`, subconjunto de constructos (const/fn/params, let+mut con
+tipo opcional, assign, if/else/else-if, while, return, break, literales
+int/string/bool, unary, binary, calls, index, arrays), sin NEWLINE como
+terminador, sin escapes de string, sin hex.
+
+**Plan de crecimiento** (cada paso con su `DEC-NNN` y su golden):
+1. NEWLINE como terminador de statement (habilita fixture sin `;`).
+2. `match` con patrones/arms + lambdas.
+3. Capa de items completa (structs/enums/trait/impl, `use`/`import`).
+4. Diagnósticos de error comparados con los del seed (tipo de recovery).
+5. Solo entonces el siguiente componente: typechecker (proyecto aparte —
+   `research/002` §6.3, ~4k líneas de C).
+
+Hallazgos de lenguaje tocados al construirlo, **sin pinneear** (ambos
+compiladores coinciden, candidatos a DEC futura): `else` en línea aparte del
+`}` se rechaza (`ui` pendiente); `if/else if/else` multilinea como cola de
+fn no tipa («if branches have different types: string vs void»).

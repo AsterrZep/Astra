@@ -32,6 +32,7 @@
 | DEC-022 | `transfer(x)` es un **builtin** con sintaxis de llamada `transfer(x)` — no keyword: sin `constructs/transfer.c` ni fila de registro (`--check-constructs` sigue 47/27); el nombre se suma a las listas reservadas de DEC-015 en los dos typecheckers; la semántica (S1/S2 + invalidación R4) entra en el mismo PR que el constructo (fase E de DEC-012) | **Aceptada (doc)** — comportamiento pinneado por el PR fase E (`ui/builtin_shadow_transfer.astra`, `ui/transfer_*`, `conformance/transfer/*`) | 2026-10-28 | `research/026` §3.2/§3.5 (superficie `transfer(e)`); `research/031` §1-P2 y §3-E; AGENTS invariant 6; patrón DEC-013..020 |
 | DEC-023 | RT1 (walk `rc==1` en el cruce) vive en **M4** (ruta LLVM, que ya tiene rc desde M4.e) hasta que una decisión futura añada rc al VM Zig; M3 queda sin RT1 mientras DEC-009 mantenga la divergencia arena — el walk es gate de la primera feature con cruce real (scheduler/send), no antes | **Aceptada (doc)** — sin código hoy; el pin (`EXPECT-RUNTIME-ERROR: cannot transfer: value graph is shared`) llega con el scheduler, suite Phase 2 | 2026-10-28 | `research/031` §1-P1 («RT1 vive en M4…») y §3-F; `research/027` §3.2 op. 3A; `research/026` §3.2 fila RT1 (enmendada por cita) |
 | DEC-024 | Stdlib post-M3 en **Astra puro** (no builtins, plan de `research/028` §1.2): funciones `contains(s, sub) -> bool` (aguja vacía = `true`), `index_of(s, sub) -> i64?` (ocurrencia más a la izquierda; ausente = `none`; aguja vacía = `some(0)`), y `split(s, sep) -> [string]` (campos se preservan, sep al inicio/final da campo vacío, sin sep = `[s]`, **`sep` vacío = array de bytes de `s`** — caso especial tipo JS; nunca error, porque el código de usuario no puede lanzar errores de runtime) — cada test define sus helpers en línea (no existe stdlib compartida: el seed compila un fichero y `std/…` está rechazado) y los nombres **no** se reservan (libres para el usuario y para un futuro `Array.contains` de `research/015`) | Aceptada (test-pinned) | 2026-10-28 | `conformance/stdlib/{contains_basic,index_of_basic,split_basic,split_fields,split_chars_empty_sep}.astra`, `codegen/{contains,split}_roundtrip.astra`, `codegen/split_fields.astra` (4 rutas verificadas) (PR stdlib-postM3) |
+| DEC-025 | **`parser.astra` es el segundo componente self-hosting**: parser de Astra-0 (v1) en Astra-0 que lee `parser_input.astra` (subconjunto: items `const`/`fn` con params y retorno, statements con `;` obligatorio, `let`(+mut, tipo opcional), assign, if/else/else-if, while, return, break; exprs con literales int decimal/string plano/bool, unary -/!, precedencia de la tabla de operadores, calls, index, paréntesis, array literals); emite el AST como **s-expresión prefijo de una línea** y se gatea contra `parser.expected`, golden generado por `--dump-ast | normalize_ast.awk` (implementaciones independientes: parser C vs Astra-0) en **7 rutas** + **freshness check** del golden en cada corrida; fuerza `;` en todo statement y no modela NEWLINE-terminador, escapes de string ni literales hex — límites declarados, no accidental | Aceptada (test-pinned) | 2026-10-28 | `seed/tests/selfhost/parser_gate.sh` → 5/5 rutas locales (seed VM, `--emit-c`+gcc, zig VM, `--jit`, `--emit-obj`+link; cross/wasm skip limpio sin toolchain) + freshness `--dump-ast` == golden · CI jobs `seed` y `llvm` · fixture `parser_input.astra` (corre: 31/true) (PR parser-selfhost) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -890,3 +891,57 @@
   `--jit` LLVM con salida byte-idéntica.
 - **Spec**: `ARCHITECTURE.md` §32.2 (la tabla de builtins no crece; estas
   funciones viven en el libro `09_libro/08_strings_texto.md`).
+
+### DEC-025 — `parser.astra`: segundo componente self-hosting (parser en Astra-0)
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR parser-selfhost
+  (2026-10-28).
+- **Fecha**: 2026-10-28.
+- **Decisión**: después del lexer (DEC-016/017), el **parser** se escribe en
+  Astra-0 como `seed/tests/selfhost/parser.astra` (~450 líneas): parser
+  recursivo con Pratt sobre la tabla de precedencia de `--dump-operators`,
+  con estado global (pos, token actual, un peek de un token) — los módulos
+  son globales mutables y las funciones los escriben (patrón verificado en
+  las 4 rutas).
+  - **Formato de salida**: s-expresión prefijo de **una línea**
+    (`FnDecl(add Param(a TypeIdent(i32)) … Block(…))`), construido con un
+    `attach(text, kids)` que inserta los hijos antes del último `)` del
+    texto con payload.
+  - **Golden independiente**: `parser.expected` sale de
+    `astra-seed --dump-ast parser_input.astra | awk -f normalize_ast.awk`
+    — el parser en C contra el parser en Astra-0, con el awk como simple
+    adaptador de formato (indentación → prefijo), sin conocimiento de
+    nombres de nodo. El gate **regenera y re-compara** el golden en cada
+    corrida (freshness), así el fixture no puede divergir de `--dump-ast`
+    en silencio.
+  - **Gate**: `parser_gate.sh`, clon del de lexer → **7 rutas** (seed VM,
+    `--emit-c`+gcc, zig VM, LLVM `--jit`, `--emit-obj`+link, cross aarch64
+    bajo qemu, wasm32-wasi bajo Node), skips limpios sin toolchain, cableado
+    en CI (jobs `seed` y `llvm`).
+- **Límites declarados (v1, no accidentales)**: (1) todo statement termina
+  en `;` — NEWLINE como terminador queda fuera (el seed lo acepta; la
+  fixture lo evita); (2) literales int solo decimales (el dump imprime el
+  valor de hex, no el lexema); (3) strings **planos** sin escapes (el dump
+  los imprime decodificados, con saltos de línea reales); (4) subconjunto
+  de constructos: sin match, lambdas, genéricos, campos, traits ni
+  anotaciones complejas; (5) `else` en la misma línea del `}` que cierra el
+  `if` (limitación conocida del parser de los 2 compiladores, sin decidir
+  aún).
+- **Alternativas consideradas**: s-expr multilinea con indentación
+  (descartada: requeriría shift de indentación al componer subárboles —
+  O(n²) peor y código de más); construir el AST como structs/arrays
+  (descartada: arrays heterogéneos no existen y `a[i].field` está rechazado
+  en la ruta LLVM); golden generado por el propio `parser.astra`
+  (descartada: dejaría de ser un gate — el golden debe venir del compilador
+  real).
+- **Coste aceptado**: 0 líneas de compilador; el fixture es single-file y
+  los helpers de DEC-024 no hacen falta (el parser no busca substrings).
+  Hallazgos de lenguaje que el PR NO pinnea (comportamiento existente
+  compartido por ambos compiladores, candidatos a DEC futura): `else` en
+  línea aparte se rechaza; `if/else if/else` multilinea como **cola** de fn
+  no tipa («if branches have different types: string vs void») — se esquiva
+  con early-returns.
+- **Evidencia**: `parser_gate.sh` (rutas + freshness), `parser_input.astra`
+  (corre en el VM: `31` / `true`), CI jobs `seed` y `llvm`.
+- **Spec**: alcance y límites en la cabecera de `parser.astra`; plan de
+  crecimiento (patrones, `fn` completo con NEWLINE, `--dump-ast` como gate
+  fuerte vivo) en `PHASE1_PROGRESS` §selfhosting.
