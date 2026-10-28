@@ -308,6 +308,8 @@ pub const VM = struct {
     builtin_len_fn: *FnObj = undefined,
     builtin_to_string_fn: *FnObj = undefined,
     builtin_read_file_fn: *FnObj = undefined,
+    builtin_ord_fn: *FnObj = undefined,
+    builtin_substr_fn: *FnObj = undefined,
 
     error_msg: []const u8 = "",
     error_line: u32 = 0,
@@ -353,6 +355,12 @@ pub const VM = struct {
         const rf = try a.create(FnObj);
         rf.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
         vm.builtin_read_file_fn = rf;
+        const ord = try a.create(FnObj);
+        ord.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_ord_fn = ord;
+        const sub = try a.create(FnObj);
+        sub.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_substr_fn = sub;
         return vm;
     }
 
@@ -835,6 +843,10 @@ pub const VM = struct {
                         if (!self.push(bc.vFn(self.builtin_to_string_fn))) return .runtime_error;
                     } else if (std.mem.eql(u8, name, "read_file")) {
                         if (!self.push(bc.vFn(self.builtin_read_file_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "ord")) {
+                        if (!self.push(bc.vFn(self.builtin_ord_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "substr")) {
+                        if (!self.push(bc.vFn(self.builtin_substr_fn))) return .runtime_error;
                     } else {
                         var found = false;
                         var i: usize = 0;
@@ -1258,6 +1270,10 @@ pub const VM = struct {
                             (self.builtinToString(args, line) orelse return .runtime_error)
                         else if (fn_obj == self.builtin_read_file_fn)
                             (self.builtinReadFile(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_ord_fn)
+                            (self.builtinOrd(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_substr_fn)
+                            (self.builtinSubstr(args, line) orelse return .runtime_error)
                         else
                             try self.builtinPrint(args);
                         self.sp = fn_idx;
@@ -1515,6 +1531,74 @@ pub const VM = struct {
             return null;
         };
         return bc.vString(data);
+    }
+
+    /// Builtin `ord(s) -> i64` (DEC-018, research/028 M2a): the value of the
+    /// FIRST BYTE of `s` (0..255) — a byte, not a codepoint, because `s[i]`
+    /// already yields a 1-byte string (DEC-013) and the seed's lexer walks
+    /// bytes. Returns null with the VM error already set; the wording mirrors
+    /// the seed's builtin_ord so all four routes print identical text.
+    fn builtinOrd(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 1) {
+            _ = self.rt(line, "expected 1 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const s = args[0];
+        if (tag(s) != .string) {
+            _ = self.rt(line, "ord expects a string, got {s}", .{typeName(s)});
+            return null;
+        }
+        if (s.string.len == 0) {
+            _ = self.rt(line, "ord() of empty string", .{});
+            return null;
+        }
+        return bc.vInt(@intCast(s.string[0]));
+    }
+
+    /// Builtin `substr(s, start, len) -> string` (DEC-018, research/028
+    /// M2a): `len` bytes from `start`, or a runtime error — no silent
+    /// clipping, the same contract as `s[i]`. The slice borrows the source
+    /// bytes like the string arm of `.index` does (strings are immutable).
+    /// Returns null with the VM error already set.
+    fn builtinSubstr(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 3) {
+            _ = self.rt(line, "expected 3 arguments but got {d}", .{args.len});
+            return null;
+        }
+        const sv = args[0];
+        if (tag(sv) != .string) {
+            _ = self.rt(line, "substr expects a string, got {s}", .{typeName(sv)});
+            return null;
+        }
+        // Both integer parameters word their rejection the same way, so the
+        // emitter's per-argument guards reuse the text verbatim.
+        const st = args[1];
+        if (tag(st) != .int) {
+            _ = self.rt(line, "substr expects an int, got {s}", .{typeName(st)});
+            return null;
+        }
+        const ln = args[2];
+        if (tag(ln) != .int) {
+            _ = self.rt(line, "substr expects an int, got {s}", .{typeName(ln)});
+            return null;
+        }
+        const str = sv.string;
+        const slen: i64 = @intCast(str.len);
+        const start = st.int;
+        const n = ln.int;
+        if (start < 0 or start > slen) {
+            _ = self.rt(line, "substr start {d} out of bounds (len {d})", .{ start, slen });
+            return null;
+        }
+        // `start <= slen` is established above, so `slen - start` is the exact
+        // room left and the comparison can never overflow (a huge `n` such as
+        // 9223372036854775807 must fail, not wrap).
+        if (n < 0 or n > slen - start) {
+            _ = self.rt(line, "substr length {d} out of bounds (len {d})", .{ n, slen });
+            return null;
+        }
+        const from: usize = @intCast(start);
+        return bc.vString(str[from .. from + @as(usize, @intCast(n))]);
     }
 };
 

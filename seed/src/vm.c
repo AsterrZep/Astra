@@ -572,6 +572,75 @@ static bool builtin_read_file(VM *vm, Value *args, uint8_t argc, uint32_t line, 
     return true;
 }
 
+/* Builtin `ord(s) -> i64` (DEC-018, research/028 M2a): the value of the
+ * FIRST BYTE of `s` (0..255) — a byte, not a codepoint, because `s[i]`
+ * already hands back a 1-byte string (DEC-013) and the seed's lexer walks
+ * bytes, so the four routes and a future lexer.astra all agree. An empty
+ * string has no first byte: it reports instead of reading past the buffer. */
+static bool builtin_ord(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 1) {
+        vm_runtime_error(vm, line, "expected 1 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value s = args[0];
+    if (s.kind != VAL_STRING) {
+        vm_runtime_error(vm, line, "ord expects a string, got %s", type_name(s));
+        return false;
+    }
+    if (s.as.string_val.len == 0) {
+        vm_runtime_error(vm, line, "ord() of empty string");
+        return false;
+    }
+    *out = value_int((int64_t)(unsigned char)s.as.string_val.str[0]);
+    return true;
+}
+
+/* Builtin `substr(s, start, len) -> string` (DEC-018, research/028 M2a):
+ * `len` bytes of `s` from `start`, or a runtime error — no silent clipping,
+ * so a caller that asked for more than the string holds learns it here (the
+ * same contract as `s[i]`, whose OOB is an error too). The slice borrows the
+ * source bytes like `s[i]` does: every string is arena-allocated (invariant
+ * 5) and immutable, so the pointer outlives the expression. */
+static bool builtin_substr(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 3) {
+        vm_runtime_error(vm, line, "expected 3 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    Value sv = args[0], st = args[1], ln = args[2];
+    if (sv.kind != VAL_STRING) {
+        vm_runtime_error(vm, line, "substr expects a string, got %s", type_name(sv));
+        return false;
+    }
+    /* Both integer parameters word their rejection the same way, so the
+     * emitter's per-argument guards can reuse the text verbatim. */
+    if (st.kind != VAL_INT) {
+        vm_runtime_error(vm, line, "substr expects an int, got %s", type_name(st));
+        return false;
+    }
+    if (ln.kind != VAL_INT) {
+        vm_runtime_error(vm, line, "substr expects an int, got %s", type_name(ln));
+        return false;
+    }
+    size_t slen = sv.as.string_val.len;
+    int64_t start = st.as.int_val, n = ln.as.int_val;
+    if (start < 0 || (uint64_t)start > slen) {
+        vm_runtime_error(vm, line, "substr start %ld out of bounds (len %zu)",
+                         (long)start, slen);
+        return false;
+    }
+    /* `start <= slen` is established above, so `slen - start` is the exact
+     * room left and the comparison can never overflow (a huge `n` such as
+     * 9223372036854775807 must fail, not wrap). */
+    if (n < 0 || n > (int64_t)(slen - (size_t)start)) {
+        vm_runtime_error(vm, line, "substr length %ld out of bounds (len %zu)",
+                         (long)n, slen);
+        return false;
+    }
+    *out = value_string(sv.as.string_val.str ? sv.as.string_val.str + start : NULL,
+                        (size_t)n);
+    return true;
+}
+
 /* -----------------------------------------------------------
  * VM execution
  * ----------------------------------------------------------- */
@@ -803,6 +872,10 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 if (!vm_push(vm, value_fn(vm->builtin_to_string_fn))) return VM_RUNTIME_ERROR;
             } else if (name && strcmp(name, "read_file") == 0) {
                 if (!vm_push(vm, value_fn(vm->builtin_read_file_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "ord") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_ord_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "substr") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_substr_fn))) return VM_RUNTIME_ERROR;
             } else {
                 /* Look up in globals table */
                 bool found = false;
@@ -1551,6 +1624,12 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 } else if (fn == vm->builtin_read_file_fn) {
                     if (!builtin_read_file(vm, &vm->stack[fn_idx + 1], argc, line, &result))
                         return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_ord_fn) {
+                    if (!builtin_ord(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_substr_fn) {
+                    if (!builtin_substr(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
                 } else {
                     result = builtin_print(&vm->stack[fn_idx + 1], argc);
                 }
@@ -1900,6 +1979,22 @@ VM *vm_create(Arena *arena) {
     rf_fn->param_count = 255;
     rf_fn->local_count = 0;
     vm->builtin_read_file_fn = rf_fn;
+    FnObj *ord_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    ord_fn->code = NULL;
+    ord_fn->code_len = 0;
+    ord_fn->constants = NULL;
+    ord_fn->const_len = 0;
+    ord_fn->param_count = 255;
+    ord_fn->local_count = 0;
+    vm->builtin_ord_fn = ord_fn;
+    FnObj *sub_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    sub_fn->code = NULL;
+    sub_fn->code_len = 0;
+    sub_fn->constants = NULL;
+    sub_fn->const_len = 0;
+    sub_fn->param_count = 255;
+    sub_fn->local_count = 0;
+    vm->builtin_substr_fn = sub_fn;
     return vm;
 }
 

@@ -687,6 +687,44 @@ TypeChecker *typechecker_create(Arena *arena, StringTable *strings) {
         symbol_table_insert(tc->symbols, sym);
     }
 
+    /* ord(s) -> i64 — primer BYTE de un string (DEC-018, research/028 M2a).
+     * El parámetro es unknown como el de print/len/to_string: el rechazo es
+     * de runtime con el `type_name` del VM (`ord expects a string, got <tipo>`
+     * y `ord() of empty string`), que las cuatro rutas escriben igual. */
+    {
+        Type **params = arena_new_array(arena, Type *, 1);
+        params[0] = type_new(arena, TYPE_UNKNOWN);
+        Type *ord_type = type_new_fn(arena, params, 1, type_new(arena, TYPE_INT64));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "ord"),
+            .type = ord_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
+    /* substr(s, start, len) -> string — subcadena de `len` bytes desde
+     * `start` (DEC-018, research/028 M2a). Los tres parámetros son unknown
+     * porque Astra-0 no tiene coerción en la llamada (`type_eq` exacto): un
+     * parámetro anotado i64 rechazaría `substr(s, 1, 3)` (literal i32 por
+     * DEC-006) y `len(s)` (i64) no calzaría con un i32 anotado. El checker
+     * acepta cualquier valor y cada runtime rechaza con el mismo texto. */
+    {
+        Type **params = arena_new_array(arena, Type *, 3);
+        params[0] = type_new(arena, TYPE_UNKNOWN);
+        params[1] = type_new(arena, TYPE_UNKNOWN);
+        params[2] = type_new(arena, TYPE_UNKNOWN);
+        Type *sub_type = type_new_fn(arena, params, 3, type_new(arena, TYPE_STRING));
+        Symbol sym = {
+            .name = string_intern_cstr(strings, "substr"),
+            .type = sub_type,
+            .is_mut = false,
+            .is_fn = true,
+        };
+        symbol_table_insert(tc->symbols, sym);
+    }
+
     /* Register built-in Option enum: some(T) -> Option[T], none -> Option[T] */
     {
         Type *opt_type = type_new(arena, TYPE_ENUM);
@@ -2659,7 +2697,7 @@ static Type *default_int_type(Arena *a, Node *init) {
  * Reports and returns true when `name` is builtin. */
 static bool builtin_redeclare_error(TypeChecker *tc, SrcLoc loc,
                                     InternedString name) {
-    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file" };
+    static const char *kBuiltins[] = { "print", "len", "to_string", "read_file", "ord", "substr" };
     for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
         const char *b = kBuiltins[i];
         if (name.len == strlen(b) && memcmp(name.str, b, name.len) == 0) {

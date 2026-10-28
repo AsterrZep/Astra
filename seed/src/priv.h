@@ -260,6 +260,8 @@ struct VM {
     FnObj      *builtin_len_fn;
     FnObj      *builtin_to_string_fn;
     FnObj      *builtin_read_file_fn;
+    FnObj      *builtin_ord_fn;
+    FnObj      *builtin_substr_fn;
 
     const char *error_msg;
     uint32_t    error_line;

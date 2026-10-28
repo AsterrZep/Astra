@@ -1,0 +1,9 @@
+// The start must sit inside [0, len(s)] (DEC-018): start == len(s) is valid
+// only with len == 0 (expressions/substr_basic.astra pins that empty slice),
+// so one byte past the end is an error even when nothing is taken from it —
+// no route clips or clamps the index.
+// EXPECT-RUNTIME-ERROR: substr start 6 out of bounds (len 5)
+fn main() {
+    let s = "hello"
+    print(substr(s, 6, 0))
+}

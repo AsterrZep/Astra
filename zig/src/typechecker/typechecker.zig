@@ -429,6 +429,24 @@ pub const TypeChecker = struct {
         rf_params[0] = self.newType(.string);
         self.insert(.{ .name = "read_file", .type_ = self.newFn(rf_params, self.newType(.string)), .is_mut = false, .is_fn = true });
 
+        // ord(s) -> i64: the first BYTE of a string (DEC-018, research/028
+        // M2a). Unknown parameter like print's — the runtime wording
+        // (`ord expects a string, got <tipo>` / `ord() of empty string`) is
+        // the parity surface, byte-identical to the seed.
+        const ord_params = try self.a.alloc(*Type, 1);
+        ord_params[0] = self.newType(.unknown);
+        self.insert(.{ .name = "ord", .type_ = self.newFn(ord_params, self.newType(.int64)), .is_mut = false, .is_fn = true });
+
+        // substr(s, start, len) -> string (DEC-018, research/028 M2a): three
+        // unknown parameters, because a call checks arguments by exact type
+        // equality — an annotated i64 would reject `substr(s, 1, 3)` (i32
+        // literal, DEC-006) and an annotated i32 would reject `len(s)`.
+        const sub_params = try self.a.alloc(*Type, 3);
+        sub_params[0] = self.newType(.unknown);
+        sub_params[1] = self.newType(.unknown);
+        sub_params[2] = self.newType(.unknown);
+        self.insert(.{ .name = "substr", .type_ = self.newFn(sub_params, self.newType(.string)), .is_mut = false, .is_fn = true });
+
         // Option: some(T) -> Option, none -> Option
         {
             const opt = self.pool.enumType("Option") catch @panic("OOM");
@@ -1802,7 +1820,7 @@ pub const TypeChecker = struct {
     // binding on another. Reports and returns true when `name` is builtin —
     // byte-identical to seed's builtin_redeclare_error.
     fn builtinRedeclareError(self: *TypeChecker, loc: lexer.Loc, name: []const u8) bool {
-        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file" };
+        const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr" };
         for (k_builtins) |b| {
             if (std.mem.eql(u8, name, b)) {
                 self.errFmt(loc, "'{s}' is a builtin and cannot be redeclared", .{name});

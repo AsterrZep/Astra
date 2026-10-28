@@ -1,0 +1,10 @@
+// Asking for more bytes than the string holds past `start` is an ERROR, never
+// a silent clip (DEC-018) — the same contract as `s[i]` (DEC-013), so a
+// caller that miscalculated a lexeme learns it here instead of getting a
+// shorter one. The `start` bound has its own case in substr_start_error
+// (DEC-018).
+// EXPECT-RUNTIME-ERROR: substr length 99 out of bounds (len 5)
+fn main() {
+    let s = "hello"
+    print(substr(s, 1, 99))
+}

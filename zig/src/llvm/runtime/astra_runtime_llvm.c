@@ -613,6 +613,84 @@ void astra_llvm_read_file_fail(unsigned line, const void *p) {
     astra_llvm_fail(line, buf);
 }
 
+/* ---- ord / substr (DEC-018, research/028 M2a) --------------------------- */
+
+/* `ord(string) -> i64`: el valor del PRIMER byte (0..255) — byte y no
+ * codepoint, porque `s[i]` ya devuelve un string de 1 byte (DEC-013) y el
+ * lexer del seed recorre bytes. Un string vacío no tiene primer byte y lo
+ * dice (`ord() of empty string`), la misma frase del seed y del backend C;
+ * el nil del receptor lo trae el guard del emisor con type_name. */
+int64_t astra_llvm_ord(unsigned line, const void *ps) {
+    if (!ps) {
+        astra_llvm_fail(line, "ord expects a string, got nil");
+        return 0; /* noreturn en el IR; en C, para el compilador */
+    }
+    const AstraLLVMStr *s = (const AstraLLVMStr *)ps;
+    if (s->len == 0) astra_llvm_fail(line, "ord() of empty string");
+    return (int64_t)(unsigned char)s->data[0];
+}
+
+/* `ord` sobre caja/par (espejo de astra_llvm_to_string_fail): la caja es
+ * nil/ok/err/some, nunca un string plano, y type_name del VM lo dice. */
+void astra_llvm_ord_fail(unsigned line, const void *p) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "ord expects a string, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
+/* `substr(string, start, len) -> string`: `len` bytes desde `start`, sin
+ * recorte silencioso — fuera de rango es error, el mismo contrato que `s[i]`.
+ * El emisor ya filtró los tipos de los tres argumentos; aquí se ven los
+ * límites con la longitud real, con la redacción exacta del seed y del
+ * backend C. El resultado sale por astra_llvm_alloc (rc/kind) como
+ * str_concat/str_index, y el emisor lo registra como temporal igual que a
+ * esos. */
+void *astra_llvm_substr(unsigned line, const void *ps, int64_t start, int64_t n) {
+    if (!ps) {
+        astra_llvm_fail(line, "substr expects a string, got nil");
+        return NULL; /* noreturn en el IR; en C, para el compilador */
+    }
+    const AstraLLVMStr *s = (const AstraLLVMStr *)ps;
+    if (start < 0 || start > s->len) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "substr start %lld out of bounds (len %lld)",
+                 (long long)start, (long long)s->len);
+        astra_llvm_fail(line, msg);
+        return NULL;
+    }
+    /* `start <= s->len` queda establecido arriba, así que el hueco restante
+     * es exacto y `start + n` no puede desbordar: un `n` enorme (p. ej.
+     * 9223372036854775807) debe fallar, no envolverse. */
+    if (n < 0 || n > s->len - start) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "substr length %lld out of bounds (len %lld)",
+                 (long long)n, (long long)s->len);
+        astra_llvm_fail(line, msg);
+        return NULL;
+    }
+    AstraLLVMStr *out = (AstraLLVMStr *)astra_llvm_alloc(
+        line, (int64_t)sizeof(int64_t) + n + 1, ASTRA_LLVM_KIND_STR);
+    out->len = n;
+    if (n > 0) memcpy(out->data, s->data + start, (size_t)n);
+    out->data[n] = '\0';
+    return out;
+}
+
+/* `substr` sobre caja/par (espejo de astra_llvm_to_string_fail): dos helpers
+ * porque la redacción depende del parámetro que falla (receptor vs start/len)
+ * y el emisor elige uno u otro. */
+void astra_llvm_substr_str_fail(unsigned line, const void *p) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "substr expects a string, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
+void astra_llvm_substr_int_fail(unsigned line, const void *p) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "substr expects an int, got %s", astra_llvm_boxed_name(p));
+    astra_llvm_fail(line, buf);
+}
+
 /* ---- structs (M2.b) ----------------------------------------------------- */
 
 /* Structs are heap handles like arrays (aliasing, Hallazgo G) but printed and
