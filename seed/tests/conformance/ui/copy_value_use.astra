@@ -1,0 +1,6 @@
+// DEC-027 §1: copy exists only as the method form — the name is reserved
+// but never registered as a value.
+// EXPECT-ERROR: copy must be called as x.copy()
+fn main() {
+    let f = copy;
+}

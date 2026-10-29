@@ -1,0 +1,6 @@
+// DEC-027 (fase E2): `copy` is reserved even though only the method form
+// exists — the emitter resolves the marker by name (GET_GLOBAL "copy"), so
+// a user binding of the same name would diverge across routes (DEC-015).
+// EXPECT-ERROR: 'copy' is a builtin and cannot be redeclared
+// EXPECT-ERROR-FIRST: 6:1: error: 'copy' is a builtin and cannot be redeclared
+let copy = 5

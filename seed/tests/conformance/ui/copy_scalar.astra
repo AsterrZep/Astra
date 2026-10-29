@@ -1,0 +1,8 @@
+// DEC-027 §1: the receiver of x.copy() must be an aggregate (scalars copy
+// as themselves but cross for free — §2.6 rule 2 — so the escape is for
+// handles only).
+// EXPECT-ERROR: copy expects an aggregate, got i32
+fn main() {
+    let x = 5;
+    let c = x.copy();
+}

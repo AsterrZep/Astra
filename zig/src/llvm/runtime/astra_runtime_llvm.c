@@ -1119,6 +1119,140 @@ static void astra_llvm_release_slot(int32_t pty, const char *slot) {
     astra_llvm_release(child);
 }
 
+/* ---- copy (DEC-027, fase E2): deep structural copy ----
+ *
+ * Kind-driven walk (mirror of the destructor): fresh objects at rc=1 with
+ * interior nodes parent-owned — unlike array_push, whose elements are
+ * SHARED with the old array and therefore retained. Strings are immutable:
+ * retain + same pointer. Depth-capped because cycles are constructible
+ * (`n.kid = some(n)`); the wording matches vm.c / codegen_runtime.h byte
+ * for byte. `p == NULL` is `none`/`nil` (no header — never touch the hdr).
+ */
+#define ASTRA_LLVM_COPY_MAX_DEPTH 64
+
+static void *astra_llvm_copy_d(unsigned line, const void *p, int depth) {
+    if (depth > ASTRA_LLVM_COPY_MAX_DEPTH)
+        astra_llvm_fail(line, "copy depth limit exceeded");
+    if (!p) return NULL;
+    const AstraLLVMHdr *h = astra_llvm_hdr(p);
+    switch (h->kind) {
+    case ASTRA_LLVM_KIND_STR:
+        astra_llvm_retain((void *)p);
+        return (void *)p;
+    case ASTRA_LLVM_KIND_BOX: {
+        AstraLLVMBox b;
+        memcpy(&b, p, sizeof b);
+        AstraLLVMBox *nb = (AstraLLVMBox *)astra_llvm_alloc(line, sizeof b, ASTRA_LLVM_KIND_BOX);
+        nb->tag = b.tag;
+        nb->ptype = b.ptype;
+        nb->payload = b.payload;
+        if (b.ptype >= 4 && b.ptype <= 9)
+            nb->payload = (int64_t)(intptr_t)astra_llvm_copy_d(line, (void *)(intptr_t)b.payload, depth + 1);
+        return nb;
+    }
+    case ASTRA_LLVM_KIND_ARR: {
+        int64_t len;
+        int32_t pty;
+        memcpy(&len, p, sizeof len);
+        memcpy(&pty, (const char *)p + 8, sizeof pty);
+        const int slot = astra_llvm_arr_slot(pty);
+        void *np = astra_llvm_alloc(line, ASTRA_LLVM_ARR_HDR + (int64_t)slot * len, ASTRA_LLVM_KIND_ARR);
+        memcpy(np, &len, sizeof len);
+        memcpy((char *)np + 8, &pty, sizeof pty);
+        for (int64_t i = 0; i < len; i++) {
+            const char *src = (const char *)p + ASTRA_LLVM_ARR_HDR + (size_t)slot * (size_t)i;
+            char *dst = (char *)np + ASTRA_LLVM_ARR_HDR + (size_t)slot * (size_t)i;
+            if (pty <= 3) {
+                memcpy(dst, src, (size_t)slot);
+            } else {
+                void *child = astra_llvm_copy_d(line, *(void *const *)src, depth + 1);
+                memcpy(dst, &child, sizeof child);
+            }
+        }
+        return np;
+    }
+    case ASTRA_LLVM_KIND_STRUCT: {
+        const AstraLLVMStructDef *def;
+        memcpy(&def, p, sizeof def);
+        if (!def) return (void *)p;
+        void *np = astra_llvm_alloc(line, 8 + 8 * (int64_t)def->nfields, ASTRA_LLVM_KIND_STRUCT);
+        memcpy(np, &def, sizeof def);
+        for (int32_t i = 0; i < def->nfields; i++) {
+            const char *src = (const char *)p + 8 + 8 * (size_t)i;
+            char *dst = (char *)np + 8 + 8 * (size_t)i;
+            if (def->ptypes[i] <= 3) {
+                memcpy(dst, src, 8);
+            } else {
+                void *child = astra_llvm_copy_d(line, *(void *const *)src, depth + 1);
+                memcpy(dst, &child, sizeof child);
+            }
+        }
+        return np;
+    }
+    case ASTRA_LLVM_KIND_ENUM: {
+        const AstraLLVMEnumDef *def;
+        int32_t vi, vkind;
+        memcpy(&def, p, sizeof def);
+        memcpy(&vi, (const char *)p + 8, sizeof vi);
+        memcpy(&vkind, (const char *)p + 12, sizeof vkind);
+        if (!def || vi < 0 || vi >= def->nvariants || vkind != 1) {
+            /* Unit variant: share the object (its own rc tracks the owners). */
+            astra_llvm_retain((void *)p);
+            return (void *)p;
+        }
+        const AstraLLVMVariantDef *v = &def->variants[vi];
+        void *np = astra_llvm_alloc(line, 16 + 8 * (int64_t)v->npayload, ASTRA_LLVM_KIND_ENUM);
+        memcpy(np, &def, sizeof def);
+        memcpy((char *)np + 8, &vi, sizeof vi);
+        memcpy((char *)np + 12, &vkind, sizeof vkind);
+        for (int32_t i = 0; i < v->npayload; i++) {
+            const char *src = (const char *)p + 16 + 8 * (size_t)i;
+            char *dst = (char *)np + 16 + 8 * (size_t)i;
+            if (v->ptypes[i] <= 3) {
+                memcpy(dst, src, 8);
+            } else {
+                void *child = astra_llvm_copy_d(line, *(void *const *)src, depth + 1);
+                memcpy(dst, &child, sizeof child);
+            }
+        }
+        return np;
+    }
+    case ASTRA_LLVM_KIND_FN: {
+        const AstraLLVMFnObj *f = (const AstraLLVMFnObj *)p;
+        AstraLLVMFnObj *g = (AstraLLVMFnObj *)astra_llvm_alloc(line, sizeof(AstraLLVMFnObj), ASTRA_LLVM_KIND_FN);
+        g->code = f->code;
+        g->cap_ptypes = f->cap_ptypes;
+        g->ncaps = f->ncaps;
+        g->env = NULL;
+        if (f->env && f->ncaps > 0 && f->cap_ptypes) {
+            void *nenv = astra_llvm_alloc(line, 8 * (int64_t)f->ncaps, ASTRA_LLVM_KIND_ENV);
+            for (int32_t i = 0; i < f->ncaps; i++) {
+                const char *src = (const char *)f->env + 8 * (size_t)i;
+                char *dst = (char *)nenv + 8 * (size_t)i;
+                if (f->cap_ptypes[i] <= 3) {
+                    memcpy(dst, src, 8);
+                } else {
+                    void *child = astra_llvm_copy_d(line, *(void *const *)src, depth + 1);
+                    memcpy(dst, &child, sizeof child);
+                }
+            }
+            g->env = nenv;
+        }
+        return g;
+    }
+    case ASTRA_LLVM_KIND_ENV:
+        /* The env is only reached through FN (copied there). */
+        astra_llvm_retain((void *)p);
+        return (void *)p;
+    default:
+        return (void *)p;
+    }
+}
+
+void *astra_llvm_copy(unsigned line, const void *p) {
+    return astra_llvm_copy_d(line, p, 0);
+}
+
 static void astra_llvm_destroy(int32_t kind, void *p) {
     switch (kind) {
         case ASTRA_LLVM_KIND_STR:

@@ -1053,6 +1053,12 @@ static Type *typecheck_ident(TypeChecker *tc, Node *node) {
         return tc_error_type(tc, node->loc,
                              "transfer must be called directly as transfer(variable)");
     }
+    /* DEC-027: `copy` exists only as the method `x.copy()` — it is
+     * reserved (kBuiltins) but never registered as a value. */
+    if (name.len == 4 && memcmp(name.str, "copy", 4) == 0) {
+        return tc_error_type(tc, node->loc,
+                             "copy must be called as x.copy()");
+    }
     Symbol *sym = symbol_table_lookup(tc->symbols, name);
     if (!sym) {
         return tc_error_type(tc, node->loc, "undefined variable '%.*s'",
@@ -1919,6 +1925,26 @@ static Type *typecheck_call(TypeChecker *tc, Node *node) {
         if (m) {
             callee_node->as.field_access.method = m->global;
             return typecheck_method_call(tc, node, m);
+        }
+        /* DEC-027 (fase E2): `x.copy()` — the deep-copy builtin method.
+         * Runs after the method table (a user `copy` method wins) and
+         * before the field-read fall-through. Returns the RECEIVER's type
+         * so `let c = a.copy(); c[0]` types without an annotation. */
+        if (callee_node->as.field_access.field.len == 4 &&
+            memcmp(callee_node->as.field_access.field.str, "copy", 4) == 0) {
+            if (node->as.call.args.len != 0) {
+                return tc_error_type(tc, node->loc, "copy takes no arguments");
+            }
+            switch (obj->kind) {
+            case TYPE_ARRAY: case TYPE_STRUCT: case TYPE_ENUM: case TYPE_FN:
+            case TYPE_STRING: case TYPE_OPTIONAL: case TYPE_UNKNOWN:
+                return obj;
+            default:
+                return tc_error_type(tc,
+                                     callee_node->as.field_access.object->loc,
+                                     "copy expects an aggregate, got %s",
+                                     type_kind_name(obj->kind));
+            }
         }
         /* No method: fall through — the object re-typechecks below, but it
          * was clean (an error type returns above), so no message repeats. */
@@ -2824,7 +2850,7 @@ static Type *default_int_type(Arena *a, Node *init) {
  * Reports and returns true when `name` is builtin. */
 static const char *kBuiltins[] = {
     "print", "len", "to_string", "read_file", "ord", "substr", "push",
-    "str_to_int", "chr", "read_line", "transfer"
+    "str_to_int", "chr", "read_line", "transfer", "copy"
 };
 
 static bool is_builtin_name(InternedString name) {
@@ -4303,7 +4329,19 @@ static void own_visit(OwnWalk *w, Node *n, bool stmt_ok) {
         }
         own_visit(w, n->as.call.callee, false);
         {
-            bool esc = own_callee_escapes(n->as.call.callee);
+            Node *callee = n->as.call.callee;
+            bool esc = own_callee_escapes(callee);
+            if (callee->kind == NODE_FIELD_ACCESS) {
+                /* DEC-027: a user method receives `self` as argument 0, so
+                 * the receiver escapes (soundness hole closed in fase E2);
+                 * `.copy()` only reads its receiver — it must NOT escape,
+                 * or `let c = a.copy(); transfer(a)` would break. */
+                bool is_copy = callee->as.field_access.field.len == 4 &&
+                               memcmp(callee->as.field_access.field.str,
+                                      "copy", 4) == 0;
+                if (is_copy) esc = false;
+                else own_escape_root(w, callee->as.field_access.object);
+            }
             for (size_t i = 0; i < n->as.call.args.len; i++) {
                 Node *arg = n->as.call.args.data[i];
                 own_visit(w, arg, false);

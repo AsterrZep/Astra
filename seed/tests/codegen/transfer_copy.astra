@@ -1,0 +1,17 @@
+// DEC-027 (fase E2) — the legal escape of S2: `a` is aliased (so it cannot
+// transfer) but its copy is a fresh Unico object, so transfer(c) passes and
+// the source stays intact. The E1 escape hatch, now implemented.
+// C round-trip for the fase-E2 escape hatch (DEC-027): the method form
+// lowers to GET_GLOBAL copy + receiver + CALL 1, which the C backend
+// resolves through cg_builtins.
+//
+// EXPECT: 1
+// EXPECT: copied
+fn main() {
+    let mut a = [1, 2, 3];
+    let mut b = a;
+    let c = a.copy();
+    transfer(c);
+    print(b[0]);
+    print("copied");
+}

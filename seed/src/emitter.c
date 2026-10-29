@@ -1476,6 +1476,24 @@ static void emit_expr(Emitter *e, Node *node) {
             emit_inst_index(e, OPCODE_CONST, nil_idx, line);
             break;
         }
+        /* DEC-027 (fase E2): `x.copy()` — the receiver travels as the
+         * single argument of the builtin: GET_GLOBAL "copy" + receiver +
+         * CALL 1. The typechecker left method == NULL (no mangling), so
+         * this must run before the variant/generic paths, which would
+         * lower it as a field READ and drop the receiver (argc = 0). */
+        if (callee->kind == NODE_FIELD_ACCESS &&
+            !callee->as.field_access.method.str &&
+            callee->as.field_access.field.len == 4 &&
+            memcmp(callee->as.field_access.field.str, "copy", 4) == 0) {
+            uint32_t line = node->loc.line;
+            uint32_t name_idx = add_constant(e,
+                value_string(callee->as.field_access.field.str, callee->as.field_access.field.len));
+            emit_inst_index(e, OPCODE_GET_GLOBAL, name_idx, line);
+            emit_expr(e, callee->as.field_access.object);
+            emit_inst(e, OPCODE_CALL, line);
+            sp_set_argcount(e, e->code_len - 1, 1);
+            break;
+        }
         /* Static method dispatch (Phase 2.3 step 4): the checker annotated
          * the callee with its mangled global, so push that function, then the
          * receiver (argument 0), then the source arguments. */

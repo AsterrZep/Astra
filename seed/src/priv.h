@@ -263,6 +263,7 @@ struct VM {
     FnObj      *builtin_ord_fn;
     FnObj      *builtin_substr_fn;
     FnObj      *builtin_push_fn;
+    FnObj      *builtin_copy_fn;
     FnObj      *builtin_str_to_int_fn;
     FnObj      *builtin_chr_fn;
     FnObj      *builtin_read_line_fn;

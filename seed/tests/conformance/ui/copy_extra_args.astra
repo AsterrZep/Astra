@@ -1,0 +1,7 @@
+// DEC-027 §1: x.copy() takes no explicit arguments — the receiver IS the
+// single argument of the builtin.
+// EXPECT-ERROR: copy takes no arguments
+fn main() {
+    let mut a = [1, 2];
+    let c = a.copy(1);
+}
