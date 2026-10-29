@@ -28,7 +28,7 @@
 | **Decisiones de lenguaje** | 1 en `Propuesta` (DEC-021) + **24 puntos sin DEC** (§3: D1–D24) que hoy se están resolviendo «de facto» en código o en informes | §3 de este informe | 🔴 El bloqueo real: sin DEC no hay backend ni feature nueva (regla 5 `AGENTS.md`) |
 | **Funcionalidad** | Self-hosting a ~2/3 (corpus 196/304); Tier 1/2/3 del GAP casi entero (comptime, fibers, ARC/ORC, FFI, macros, paquetes) | §2 | 🟡 |
 | **Documentación** | 13 desincronizaciones objetivas verificadas hoy (10 corregidas en este mismo cambio, 3 pendientes) + 6 DEC sin escribir en `ARCHITECTURE.md` | §4 | 🟡 |
-| **Presupuesto de decisiones** | Ciclo desde 2026-09-16: `CODE = 146`, `DEC = 22` → **15 %** (la regla pide ≥ 20 %) | `AGENTS.md` §Commit budget | 🔴 Bajo |
+| **Presupuesto de decisiones** | Ciclo desde 2026-09-16: `CODE = 146`, `DEC = 24` (incluye el commit de este PR) → **16,4 %** (la regla pide ≥ 20 %) | `AGENTS.md` §Commit budget | 🔴 Bajo |
 
 **El hallazgo de fondo:** el proyecto no tiene deuda de *calidad de ejecución*
 (la suite está verde en las cuatro rutas y los gates son serios) — tiene
@@ -267,10 +267,12 @@ registradas — 32 aceptadas, 1 en `Propuesta` (DEC-021)**.
 
 ### 3.5 Deuda del propio proceso de decisiones
 
-- **Presupuesto de commits incumplido en este ciclo** (`INI=2026-09-16`):
-  `CODE = 146`, `DEC = 22` → `DEC * 5 = 110 < 146` (**15 %**, la regla pide
-  ≥ 20 %). Cierra solo con ≥ 30 commits a `DECISIONES.md` — es decir, las
-  DEC de §3.1/§3.2 **son** la salida del déficit, no un trámite aparte.
+- **Presupuesto de commits incumplido en este ciclo** (`INI=2026-09-16`),
+  medido tras este cambio: `CODE = 146`, `DEC = 24` (23 tras el PR #82 +
+  el commit de este PR, que corrige el estado de DEC-012) →
+  `DEC * 5 = 120 < 146` (**16,4 %**, la regla pide ≥ 20 %). Cierra solo
+  con `DEC ≥ 30`, es decir con las DEC de §3.1/§3.2 escritas: **son** la
+  salida del déficit, no un trámite aparte.
 - **6 entradas con `Spec: pendiente de escribir en ARCHITECTURE`**:
   DEC-006 (enteros), DEC-013/014 (builtins M1), DEC-015 (nombres
   reservados), DEC-016 (lexer selfhost), DEC-020 (builtins M3). Todas
@@ -353,7 +355,7 @@ cd seed && make test                            # passed: 352   failed: 0
 grep -v -E '^\s*(#|$)' tests/selfhost/typechecker_corpus.list | wc -l   # 196
 gh issue list --state open --limit 100          # 32 issues (#49–#80: 10 A · 15 M · 7 B)
 git log --format=%H --since=2026-09-16 -- seed/src zig/src | sort -u | wc -l   # 146 (CODE)
-git log --format=%H --since=2026-09-16 -- Documentacion/01_lenguaje/DECISIONES.md | sort -u | wc -l   # 22 (DEC)
+git log --format=%H --since=2026-09-16 -- Documentacion/01_lenguaje/DECISIONES.md | sort -u | wc -l   # 24 (DEC → 16,4 %; 22 antes de este PR)
 find Documentacion/09_libro/ejemplos -name '*.astra' | wc -l   # 91
 # muestreo de ejemplos del libro (cap05/cap12) con astra-zig: salidas correctas
 ```
