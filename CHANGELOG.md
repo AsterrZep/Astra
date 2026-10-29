@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **parser.astra v2.2 — capa de items (DEC-030)**: paso 3 de
+  `PHASE1_PROGRESS` §7 — con esto el parser self-hosteado cubre **todos
+  los items de módulo** del subconjunto: `struct` (+ struct literals con
+  el flag `no_struct_lit` del seed: `IDENT {` es literal salvo en
+  condiciones de if/while y target de match, restaurado dentro de
+  paréntesis — parser.c:1894/649/704/730/910/289; `Punto {}` vacío
+  aceptado), `trait` (firmas sin cuerpo → `Block` vacío que el seed
+  sintetiza), `impl Trait for T` / impl inherente (payload de texto
+  crudo), `use` (dump sin payload — mirror lossy) / `import … as` /
+  `from … import … as` con rutas punteadas (segmento = sólo IDENT,
+  espejo de `ui/import_keyword_segment`), `pub` antes de fn/struct/
+  const/enum/trait (`Pub*Decl` verificados) y asignación a campo
+  `p.x = v` (destino = expresión LValue como el seed). Fixture v2.2 con
+  `struct+trait+impl+pub` ejecutándose en el VM (35/10/7 verificados).
+  Límites declarados: sin genéricos en items, sin pub-impl/use/import,
+  sin literales float en el fixture (el dump usa `%g` y `to_string` es
+  sólo-enteros). Gate: parser_gate 5 rutas + freshness; resto intacto
+  (350/0 · 74/74 · 209 · 221/221).
+
 - **parser.astra v2.1 — lambdas (DEC-029)**: tercer incremento del parser
   self-hosted, cierre del paso 2 de `PHASE1_PROGRESS` §7 (match +
   lambdas). Forma `|params| [-> type] { block }` — el cuerpo **exige
