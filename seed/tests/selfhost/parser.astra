@@ -175,7 +175,7 @@ fn is_word(c: string) -> bool {
 }
 
 fn is_kw(w: string) -> bool {
-    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var"
+    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var" || w == "in"
 }
 
 // lex_core: escanea UN token en ntk/ntl sin tocar tk/tl (permite peek).
@@ -247,11 +247,19 @@ fn lex_core() {
         }
         return;
     }
+    if pos + 2 < slen {
+        if substr(src, pos, 3) == "..=" {
+            ntk = "PUNCT";
+            ntl = "..=";
+            pos = pos + 3;
+            return;
+        }
+    }
     let mut two = "";
     if pos + 1 < slen {
         two = substr(src, pos, 2);
     }
-    if two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||" || two == "->" || two == "=>" {
+    if two == ".." || two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||" || two == "->" || two == "=>" {
         ntk = "PUNCT";
         ntl = two;
         pos = pos + 2;
@@ -446,6 +454,9 @@ fn stmt_end() {
 
 // ---------- precedencia (tabla de --dump-operators) ----------
 fn bp_of(op: string) -> i64 {
+    if op == ".." || op == "..=" {
+        return 2;   // PREC_RANGE del seed (entre ASSIGN y ||)
+    }
     if op == "||" {
         return 3;
     }
@@ -572,11 +583,28 @@ fn parse_expr(min_bp: i64) -> i64 {
         }
         let op = tl;
         advance();
-        let right = parse_expr(bp + 1);
-        let bn = mk("BinaryOp(" + op + ")");
-        add_child(bn, left);
-        add_child(bn, right);
-        left = bn;
+        if op == ".." || op == "..=" {
+            // parse_range del seed: loc = left; fin abierto cuando el
+            // siguiente token no puede abrir una expresión.
+            let mut end: i64 = 0;
+            let term = tk == "EOF" || (tk == "PUNCT" && (tl == ";" || tl == "," || tl == ")" || tl == "]" || tl == "}"));
+            if !term {
+                end = parse_expr(bp + 1);
+            }
+            let rn = mk("Range(" + op + ")");
+            set_loc(rn, tree.ln[left], tree.co[left]);
+            add_child(rn, left);
+            if end != 0 {
+                add_child(rn, end);
+            }
+            left = rn;
+        } else {
+            let right = parse_expr(bp + 1);
+            let bn = mk("BinaryOp(" + op + ")");
+            add_child(bn, left);
+            add_child(bn, right);
+            left = bn;
+        }
     }
     left
 }
@@ -1000,6 +1028,44 @@ fn parse_stmt() -> i64 {
         add_child(wn, cond);
         add_child(wn, body);
         return wn;
+    }
+    if tk == "KEYWORD" && tl == "for" {
+        // parse_for del seed (parser.c:720): loc = keyword; var; 'in';
+        // iter con no_struct_lit; '{' obligatorio (sin él el body va NULL).
+        let fln = t_line;
+        let flc = t_col;
+        advance();
+        if tk != "IDENT" {
+            ef("loop variable name");
+            advance();
+            return mk("PARSE-ERROR");
+        }
+        let vnm = tl;
+        advance();
+        if tk == "KEYWORD" && tl == "in" {
+            advance();
+        } else {
+            ef("'in'");
+            advance();
+            return mk("PARSE-ERROR");
+        }
+        let saved_nsl = no_struct_lit;
+        no_struct_lit = true;
+        let iter = parse_expr(1);
+        no_struct_lit = saved_nsl;
+        let fnod = mk("For(" + vnm + ")");
+        set_loc(fnod, fln, flc);
+        add_child(fnod, iter);
+        if tk == "PUNCT" && tl == "{" {
+            add_child(fnod, parse_block());
+        } else {
+            ef("'{' for for body");
+            return fnod;
+        }
+        // return explícito (como el resto de casos de parse_stmt): una
+        // cola desnuda tras el `if` no devolvía el nodo (verificado con el
+        // tree del mini `for i in 0..5`).
+        return fnod;
     }
     if tk == "KEYWORD" && tl == "return" {
         let retl = t_line;

@@ -689,6 +689,15 @@ fn tc_expr(node: i64) -> i64 {
         return tc_match(node);
     }
 
+    if lab == "For" {
+        return tc_for(node);
+    }
+
+    if lab == "Range" {
+        tc_err(node, "range expression is only valid as a for-loop iterator");
+        return tc_prim(17);
+    }
+
     if lab == "ArrayLit" {
         let mut c = tree.first[node];
         if c == 0 {
@@ -1698,6 +1707,53 @@ fn tc_impl(node: i64) {
             m = m + 1;
         }
     }
+}
+
+// typecheck_for (typechecker.c:2255): rangos con bounds enteros (fin
+// abierto rechazado) o iterador array/string; la variable vive en su
+// propio scope.
+fn tc_for(node: i64) -> i64 {
+    let iter_node = tree.first[node];
+    let mut var_t: i64 = 0;
+    if knames[tree.kind[iter_node]] == "Range" {
+        let start = tree.first[iter_node];
+        let end = tree.next[start];
+        if end == 0 {
+            tc_err(iter_node, "open-ended ranges are not supported in Astra-0");
+            return tc_prim(17);
+        }
+        let st = tc_expr(start);
+        if tc_is_error(tcv_tps.kind[st]) { return st; }
+        if !tc_is_integer(tcv_tps.kind[st]) {
+            tc_err(start, "range start must be integer type, got " + tc_kname(tcv_tps.kind[st]));
+            return tc_prim(17);
+        }
+        let et = tc_expr(end);
+        if tc_is_error(tcv_tps.kind[et]) { return et; }
+        if !tc_is_integer(tcv_tps.kind[et]) {
+            tc_err(end, "range end must be integer type, got " + tc_kname(tcv_tps.kind[et]));
+            return tc_prim(17);
+        }
+        var_t = tc_prim(3);
+    } else {
+        let iter = tc_expr(iter_node);
+        if tc_is_error(tcv_tps.kind[iter]) { return iter; }
+        let ik = tcv_tps.kind[iter];
+        if ik != 12 && ik != 8 {
+            tc_err(iter_node, "for loop must iterate over an array, string or range, got " + tc_kname(ik));
+            return tc_prim(17);
+        }
+        if ik == 8 {
+            var_t = tc_prim(8);
+        } else {
+            var_t = tcv_tps.a[iter];
+        }
+    }
+    tc_scope_enter();
+    tc_declare(tc_payload(tree.text[node]), var_t, false, false);
+    tc_block_child(tree.next[iter_node]);
+    tc_scope_exit();
+    tc_prim(1)
 }
 
 // ---------- let / const (clones de typecheck_var_decl / const_decl) ----------
