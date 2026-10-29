@@ -35,6 +35,7 @@ let mut nln: i64 = 1        // línea del token recién leído (lex_core)
 let mut t_line: i64 = 1     // línea del token actual
 let mut prev_line: i64 = 1  // línea del último token consumido
 let mut look_line: i64 = 1
+let mut no_struct_lit = false  // DEC-030: espejo del flag del seed (parser.c:1894)
 
 fn is_space(c: string) -> bool {
     c == " " || c == "\t" || c == "\r" || c == "\n"
@@ -53,7 +54,7 @@ fn is_word(c: string) -> bool {
 }
 
 fn is_kw(w: string) -> bool {
-    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "true" || w == "false" || w == "match" || w == "enum"
+    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as"
 }
 
 // lex_core: escanea UN token en ntk/ntl sin tocar tk/tl (permite peek).
@@ -265,6 +266,29 @@ fn bp_of(op: string) -> i64 {
 }
 
 // ---------- parser ----------
+// DEC-030: ruta de módulo punteada — sólo IDENT tras cada '.' (una
+// palabra clave tras el punto es error, espejo de ui/import_keyword_segment).
+fn parse_path_text() -> string {
+    if tk != "IDENT" {
+        report_err("expected module path");
+        advance();
+        return "?";
+    }
+    let mut path = tl;
+    advance();
+    while tk == "PUNCT" && tl == "." {
+        advance();
+        if tk != "IDENT" {
+            report_err("expected module path segment");
+            advance();
+            return path + ".?";
+        }
+        path = path + "." + tl;
+        advance();
+    }
+    path
+}
+
 fn parse_type() -> string {
     if tk == "IDENT" {
         let t = "TypeIdent(" + tl + ")";
@@ -362,13 +386,45 @@ fn parse_primary() -> string {
         return parse_lambda();
     }
     if tk == "IDENT" {
+        // DEC-030: `IDENT {` es struct literal salvo con el flag activo
+        // (condiciones de if/while y target de match — el seed decide con
+        // no_struct_lit, no con lookahead: parser.c:1894). Los argumentos
+        // de llamada heredan el flag igual que en el seed.
+        if !no_struct_lit && peek_kind() == "PUNCT" && peek_lex() == "{" {
+            let name = tl;
+            advance(); // consume el ident; tk ahora es '{'
+            advance(); // consume '{'
+            let mut fields = "";
+            while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+                if tk != "IDENT" {
+                    report_err("expected field name");
+                    advance();
+                    return "PARSE-ERROR";
+                }
+                let fname = tl;
+                advance();
+                expect_punct(":");
+                let val = parse_expr(1);
+                fields = join2(fields, attach("Field(" + fname + ")", val));
+                if tk == "PUNCT" && tl == "," {
+                    advance();
+                }
+            }
+            expect_punct("}");
+            return attach("StructLit(" + name + ")", fields);
+        }
         let t = "Ident(" + tl + ")";
         advance();
         return t;
     }
     if tk == "PUNCT" && tl == "(" {
+        // DEC-030: dentro de paréntesis los struct literals vuelven a ser
+        // legales (el seed restablece el flag, parser.c:289).
         advance();
+        let saved_nsl = no_struct_lit;
+        no_struct_lit = false;
         let inner = parse_expr(1);
+        no_struct_lit = saved_nsl;
         expect_punct(")");
         return inner;
     }
@@ -543,7 +599,10 @@ fn parse_pattern() -> string {
 // omite (mirror lossy, PHASE2_PROGRESS §7) y el golden sale de ahi.
 fn parse_match() -> string {
     advance(); // match
+    let saved_nsl = no_struct_lit;
+    no_struct_lit = true;
     let target = parse_expr(1);
+    no_struct_lit = saved_nsl;
     expect_punct("{");
     let mut arms = "";
     while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
@@ -584,7 +643,10 @@ fn parse_block() -> string {
 
 fn parse_if() -> string {
     advance();
+    let saved_nsl = no_struct_lit;
+    no_struct_lit = true;
     let cond = parse_expr(1);
+    no_struct_lit = saved_nsl;
     let thenb = parse_block();
     let mut kids = join2(cond, thenb);
     if tk == "KEYWORD" && tl == "else" {
@@ -641,7 +703,10 @@ fn parse_stmt() -> string {
     }
     if tk == "KEYWORD" && tl == "while" {
         advance();
+        let saved_nsl = no_struct_lit;
+        no_struct_lit = true;
         let cond = parse_expr(1);
+        no_struct_lit = saved_nsl;
         let body = parse_block();
         return "While(" + join2(cond, body) + ")";
     }
@@ -664,20 +729,81 @@ fn parse_stmt() -> string {
         stmt_end();
         return "Break";
     }
-    if tk == "IDENT" && peek_kind() == "PUNCT" && peek_lex() == "=" {
-        let nm = tl;
-        advance();
+    // DEC-030: el destino se parsea como expresión (Ident, campo o índice
+    // — el seed permite los tres LValue) y un '=' posterior lo convierte
+    // en Assign; sin '=', es sentencia de expresión.
+    let e = parse_expr(1);
+    if tk == "PUNCT" && tl == "=" {
         advance();
         let rhs = parse_expr(1);
         stmt_end();
-        return "Assign(Ident(" + nm + ") " + rhs + ")";
+        return "Assign(" + e + " " + rhs + ")";
     }
-    let e = parse_expr(1);
     stmt_end();
     e
 }
 
+// DEC-030: `fn` compartido por item, trait y impl. sig_only = dentro de
+// un trait (firma sin cuerpo → Block vacío, que el seed sintetiza);
+// el ':' del parámetro es opcional (el seed lo exige fuera de trait/impl
+// vía allow_self — superconjunto declarado en DEC-030 §4).
+fn parse_fn(is_pub: bool, sig_only: bool) -> string {
+    advance(); // fn
+    if tk != "IDENT" {
+        report_err("expected function name");
+        advance();
+        return "PARSE-ERROR";
+    }
+    let nm = tl;
+    advance();
+    expect_punct("(");
+    let mut kids = "";
+    while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
+        if tk != "IDENT" {
+            report_err("expected parameter name");
+            advance();
+            return "PARSE-ERROR";
+        }
+        let pn = tl;
+        advance();
+        let mut pnode = "Param(" + pn + ")";
+        if tk == "PUNCT" && tl == ":" {
+            advance();
+            pnode = attach(pnode, parse_type());
+        }
+        kids = join2(kids, pnode);
+        if tk == "PUNCT" && tl == "," {
+            advance();
+        }
+    }
+    expect_punct(")");
+    if tk == "PUNCT" && tl == "->" {
+        advance();
+        kids = join2(kids, attach("ReturnType", parse_type()));
+    }
+    if tk == "PUNCT" && tl == "{" {
+        kids = join2(kids, parse_block());
+    } else if sig_only {
+        kids = join2(kids, "Block");
+    } else {
+        report_err("expected '{' for function body");
+        return "PARSE-ERROR";
+    }
+    if is_pub {
+        return attach("PubFnDecl(" + nm + ")", kids);
+    }
+    return attach("FnDecl(" + nm + ")", kids);
+}
+
 fn parse_item() -> string {
+    let mut is_pub = false;
+    if tk == "KEYWORD" && tl == "pub" {
+        is_pub = true;
+        advance();
+    }
+    if tk == "KEYWORD" && tl == "fn" {
+        return parse_fn(is_pub, false);
+    }
     if tk == "KEYWORD" && tl == "const" {
         advance();
         if tk != "IDENT" {
@@ -690,42 +816,10 @@ fn parse_item() -> string {
         expect_punct("=");
         let v = parse_expr(1);
         stmt_end();
+        if is_pub {
+            return attach("PubConstDecl(" + nm + ")", v);
+        }
         return attach("ConstDecl(" + nm + ")", v);
-    }
-    if tk == "KEYWORD" && tl == "fn" {
-        advance();
-        if tk != "IDENT" {
-            report_err("expected function name");
-            advance();
-            return "PARSE-ERROR";
-        }
-        let nm = tl;
-        advance();
-        expect_punct("(");
-        let mut kids = "";
-        while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
-            if tk != "IDENT" {
-                report_err("expected parameter name");
-                advance();
-                return "PARSE-ERROR";
-            }
-            let pn = tl;
-            advance();
-            expect_punct(":");
-            let pt = parse_type();
-            kids = join2(kids, attach("Param(" + pn + ")", pt));
-            if tk == "PUNCT" && tl == "," {
-                advance();
-            }
-        }
-        expect_punct(")");
-        if tk == "PUNCT" && tl == "->" {
-            advance();
-            let rt = parse_type();
-            kids = join2(kids, attach("ReturnType", rt));
-        }
-        kids = join2(kids, parse_block());
-        return attach("FnDecl(" + nm + ")", kids);
     }
     if tk == "KEYWORD" && tl == "enum" {
         // DEC-028: EnumDecl(name) + Variant(v) con Field(TypeIdent) por
@@ -765,9 +859,176 @@ fn parse_item() -> string {
             }
         }
         expect_punct("}");
+        if is_pub {
+            return attach("PubEnumDecl(" + nm + ")", variants);
+        }
         return attach("EnumDecl(" + nm + ")", variants);
     }
-    report_err("expected item (const/fn/enum)");
+    if tk == "KEYWORD" && tl == "struct" {
+        // DEC-030: StructDecl(name) + Field(f) con TypeIdent hijo.
+        advance();
+        if tk != "IDENT" {
+            report_err("expected struct name");
+            advance();
+            return "PARSE-ERROR";
+        }
+        let nm = tl;
+        advance();
+        expect_punct("{");
+        let mut fields = "";
+        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+            if tk != "IDENT" {
+                report_err("expected field name");
+                advance();
+                return "PARSE-ERROR";
+            }
+            let fname = tl;
+            advance();
+            expect_punct(":");
+            let ftype = parse_type();
+            fields = join2(fields, attach("Field(" + fname + ")", ftype));
+            if tk == "PUNCT" && tl == "," {
+                advance();
+            }
+        }
+        expect_punct("}");
+        if is_pub {
+            return attach("PubStructDecl(" + nm + ")", fields);
+        }
+        return attach("StructDecl(" + nm + ")", fields);
+    }
+    if tk == "KEYWORD" && tl == "trait" {
+        // DEC-030: Trait(name) + firmas fn (sin cuerpo → Block vacío).
+        advance();
+        if tk != "IDENT" {
+            report_err("expected trait name");
+            advance();
+            return "PARSE-ERROR";
+        }
+        let nm = tl;
+        advance();
+        expect_punct("{");
+        let mut items = "";
+        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+            if !(tk == "KEYWORD" && tl == "fn") {
+                report_err("only 'fn' items are supported in a trait");
+                break;
+            }
+            items = join2(items, parse_fn(false, true));
+        }
+        expect_punct("}");
+        if is_pub {
+            return attach("PubTrait(" + nm + ")", items);
+        }
+        return attach("Trait(" + nm + ")", items);
+    }
+    if tk == "KEYWORD" && tl == "impl" {
+        // DEC-030: Impl(Area for Punto) / Impl(Punto) — payload de texto
+        // crudo; métodos con cuerpo (sig_only = false).
+        if is_pub {
+            report_err("'pub' is not supported before impl");
+        }
+        advance();
+        let t1 = parse_path_text();
+        let mut head = t1;
+        if tk == "KEYWORD" && tl == "for" {
+            advance();
+            let t2 = parse_path_text();
+            head = t1 + " for " + t2;
+        }
+        expect_punct("{");
+        let mut items = "";
+        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+            if !(tk == "KEYWORD" && tl == "fn") {
+                report_err("only 'fn' items are supported in an impl");
+                break;
+            }
+            items = join2(items, parse_fn(false, false));
+        }
+        expect_punct("}");
+        return attach("Impl(" + head + ")", items);
+    }
+    if tk == "KEYWORD" && tl == "use" {
+        // DEC-030: el dump del seed imprime `Use` SIN payload (mirror lossy).
+        if is_pub {
+            report_err("'pub' is not supported before use");
+        }
+        advance();
+        let path = parse_path_text();
+        stmt_end();
+        return "Use";
+    }
+    if tk == "KEYWORD" && tl == "import" {
+        // DEC-030: Import(ruta) o Import(ruta as alias) con texto crudo.
+        if is_pub {
+            report_err("'pub' is not supported before import");
+        }
+        advance();
+        let path = parse_path_text();
+        let mut alias = "";
+        if tk == "KEYWORD" && tl == "as" {
+            advance();
+            if tk != "IDENT" {
+                report_err("expected alias name");
+                advance();
+                return "PARSE-ERROR";
+            }
+            alias = tl;
+            advance();
+        }
+        stmt_end();
+        if alias == "" {
+            return "Import(" + path + ")";
+        }
+        return "Import(" + path + " as " + alias + ")";
+    }
+    if tk == "KEYWORD" && tl == "from" {
+        // DEC-030: From(ruta) + ImportItem(n) / ImportItem(n as a).
+        if is_pub {
+            report_err("'pub' is not supported before from");
+        }
+        advance();
+        let path = parse_path_text();
+        if !(tk == "KEYWORD" && tl == "import") {
+            report_err("expected 'import' after module path");
+            return "PARSE-ERROR";
+        }
+        advance();
+        let mut items = "";
+        let mut done = false;
+        while !done {
+            if tk != "IDENT" {
+                break;
+            }
+            let inm = tl;
+            advance();
+            let mut it = "ImportItem(" + inm;
+            if tk == "KEYWORD" && tl == "as" {
+                advance();
+                if tk != "IDENT" {
+                    report_err("expected alias name");
+                    advance();
+                    return "PARSE-ERROR";
+                }
+                it = it + " as " + tl;
+                advance();
+            }
+            it = it + ")";
+            items = join2(items, it);
+            if tk == "PUNCT" && tl == "," {
+                advance();
+            } else {
+                done = true;
+            }
+        }
+        stmt_end();
+        return attach("From(" + path + ")", items);
+    }
+    if is_pub {
+        report_err("unexpected item after 'pub'");
+    } else {
+        report_err("expected item (fn/struct/const/enum/trait/impl/use/import/from)");
+    }
     advance();
     "PARSE-ERROR"
 }
