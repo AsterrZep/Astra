@@ -304,6 +304,12 @@ fn tc_resolve_type(node: i64) -> i64 {
         tc_err(node, "unknown type '" + nm + "'");
         return tc_prim(17);
     }
+    if lab == "TypeOptional" {
+        let inner_node = tc_type_child(node);
+        let inner = tc_resolve_type(inner_node);
+        if tc_is_error(tcv_tps.kind[inner]) { return inner; }
+        return tc_optional(inner);
+    }
     if lab == "TypeFn" {
         // fn(T1,…) -> R: hijos params… + retorno (flg==2). Los params van
         // clonados (tc_chain_node) como en las firmas de fn.
@@ -456,6 +462,25 @@ fn tc_contains_return(node: i64) -> bool {
         return false;
     }
     false
+}
+
+fn tc_optional(inner: i64) -> i64 {
+    let n = tc_mk(13);
+    tcv_tps.a[n] = inner;
+    n
+}
+
+// try_check_enclosing_return (typechecker.c:2696): `expr?` desenrolla el
+// frame — el retorno anotado debe poder llevar la ausencia.
+fn tc_try_check_ret(node: i64) {
+    let ret = tcv_ret;
+    if ret != 0 {
+        let k = tcv_tps.kind[ret];
+        if k == 17 || k == 10 || k == 13 {
+            return;
+        }
+    }
+    tc_err(node, "? operator requires the enclosing function to return an optional type");
 }
 
 // ---------- expresiones (clones de typechecker.c §5) ----------
@@ -726,6 +751,29 @@ fn tc_expr(node: i64) -> i64 {
 
     if lab == "Lambda" {
         return tc_lambda(node);
+    }
+
+    if lab == "SomeExpr" || lab == "OkExpr" || lab == "ErrExpr" {
+        // typechecker.c:3765-3782: optional(envolvente del payload)
+        let inner = tc_expr(tree.first[node]);
+        if tc_is_error(tcv_tps.kind[inner]) { return inner; }
+        return tc_optional(inner);
+    }
+
+    if lab == "NoneExpr" {
+        return tc_prim(9);   // nil: ≃ optional vía tc_eq
+    }
+
+    if lab == "TryExpr" {
+        // typechecker.c:3784: sólo un valor tagged puede desenrollar
+        let inner = tc_expr(tree.first[node]);
+        if tc_is_error(tcv_tps.kind[inner]) { return inner; }
+        if tcv_tps.kind[inner] != 13 {
+            tc_err(node, "? operator requires Result or Option, got " + tc_kname(tcv_tps.kind[inner]));
+            return inner;
+        }
+        tc_try_check_ret(node);
+        return tcv_tps.a[inner];
     }
 
     if lab == "ArrayLit" {
@@ -1289,6 +1337,32 @@ fn tc_check_pattern(pat: i64, target: i64, covn: i64, mark: bool) -> i64 {
             if nb > 0 {
                 tc_err(pat, "variant '" + vname + "' has no payload but pattern binds " + to_string(nb));
                 return 0;
+            }
+        }
+        return 0;
+    }
+    if lab == "PatternBuiltinVariant" {
+        // typechecker.c:2565: none no chequea el target; some/ok/err
+        // cubren el slot de payload y bajan con el tipo INTERNO.
+        let bvk = str_to_int(tc_payload(tree.text[pat]));
+        if bvk == 3 {
+            if mark && tcv_tps.kind[target] == 13 && covn > 1 {
+                tcv_covered[1] = true;
+            }
+            return 0;
+        }
+        if mark && tcv_tps.kind[target] == 13 && covn > 0 {
+            tcv_covered[0] = true;
+        }
+        let payload = tree.first[pat];
+        if payload != 0 {
+            let mut pt: i64 = target;
+            if tcv_tps.kind[target] == 13 && tcv_tps.a[target] != 0 {
+                pt = tcv_tps.a[target];
+            }
+            let wc = tc_check_pattern(payload, pt, covn, mark);
+            if wc == 1 {
+                return 1;
             }
         }
         return 0;

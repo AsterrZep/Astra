@@ -178,7 +178,7 @@ fn is_word(c: string) -> bool {
 }
 
 fn is_kw(w: string) -> bool {
-    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var" || w == "in"
+    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var" || w == "in" || w == "some" || w == "none" || w == "ok" || w == "err"
 }
 
 // lex_core: escanea UN token en ntk/ntl sin tocar tk/tl (permite peek).
@@ -509,6 +509,16 @@ fn parse_type() -> i64 {
     if tk == "IDENT" {
         let t = mk("TypeIdent(" + tl + ")");
         advance();
+        if tk == "PUNCT" && tl == "?" {
+            // OptionalType ::= PrimaryType "?" (parser.c:1759; loc = '?')
+            let qln = t_line;
+            let qlc = t_col;
+            advance();
+            let on = mk("TypeOptional");
+            set_loc(on, qln, qlc);
+            add_child(on, t);
+            return on;
+        }
         return t;
     }
     if tk == "KEYWORD" && tl == "fn" {
@@ -603,6 +613,15 @@ fn parse_expr(min_bp: i64) -> i64 {
             add_child(ix, left);
             add_child(ix, idx);
             left = ix;
+        } else if tk == "PUNCT" && tl == "?" {
+            // parser.c:2075: TryExpr con loc = el propio '?'
+            let qln = t_line;
+            let qlc = t_col;
+            advance();
+            let tn = mk("TryExpr");
+            set_loc(tn, qln, qlc);
+            add_child(tn, left);
+            left = tn;
         } else {
             postfixing = false;
         }
@@ -661,6 +680,46 @@ fn parse_primary() -> i64 {
     }
     if tk == "KEYWORD" && tl == "match" {
         return parse_match();
+    }
+    if tk == "KEYWORD" && (tl == "some" || tl == "ok" || tl == "err") {
+        // parser.c:1925-1950: SomeExpr/OkExpr/ErrExpr con '(' obligatorio
+        let kw = tl;
+        let kln = t_line;
+        let klc = t_col;
+        advance();
+        if tk == "PUNCT" && tl == "(" {
+            advance();
+        } else {
+            ef("'(' after " + kw);
+            advance();
+            return mk("PARSE-ERROR");
+        }
+        let val = parse_expr(1);
+        if tk == "PUNCT" && tl == ")" {
+            advance();
+        } else {
+            ef("')'");
+            advance();
+        }
+        let mut en: i64 = 0;
+        if kw == "some" {
+            en = mk("SomeExpr");
+        } else if kw == "ok" {
+            en = mk("OkExpr");
+        } else {
+            en = mk("ErrExpr");
+        }
+        set_loc(en, kln, klc);
+        add_child(en, val);
+        return en;
+    }
+    if tk == "KEYWORD" && tl == "none" {
+        let kln = t_line;
+        let klc = t_col;
+        advance();
+        let nn = mk("NoneExpr");
+        set_loc(nn, kln, klc);
+        return nn;
     }
     if tk == "PUNCT" && (tl == "|" || tl == "||") {
         // DEC-029: en posición de expresión un '|' inicial SOLO puede ser
@@ -826,6 +885,36 @@ fn parse_pattern_alt() -> i64 {
         let t = mk("BoolLit(" + tl + ")");
         advance();
         return t;
+    }
+    if tk == "KEYWORD" && (tl == "some" || tl == "ok" || tl == "err") {
+        // parser.c:783: PatternBuiltinVariant(bvk) + payload opcional
+        let mut bvk = 2;
+        if tl == "ok" { bvk = 0; }
+        if tl == "err" { bvk = 1; }
+        let kln = t_line;
+        let klc = t_col;
+        advance();
+        let pb = mk("PatternBuiltinVariant(" + to_string(bvk) + ")");
+        set_loc(pb, kln, klc);
+        if tk == "PUNCT" && tl == "(" {
+            advance();
+            add_child(pb, parse_pattern());
+            if tk == "PUNCT" && tl == ")" {
+                advance();
+            } else {
+                ef("')' after pattern");
+                advance();
+            }
+        }
+        return pb;
+    }
+    if tk == "KEYWORD" && tl == "none" {
+        let kln = t_line;
+        let klc = t_col;
+        advance();
+        let pb = mk("PatternBuiltinVariant(3)");
+        set_loc(pb, kln, klc);
+        return pb;
     }
     if tk == "IDENT" {
         if tl == "_" {

@@ -230,3 +230,22 @@ lambda/closures.astra
 lambda/lambda_basic.astra
 lambda/lambda_multi.astra
 ui/lambda_untyped_param.astra
+
+# ---- M-T4c (2026-10-29): opcionales — keywords some/none/ok/err
+# (SomeExpr/NoneExpr/OkExpr/ErrExpr + PatternBuiltinVariant(N)), `?` como
+# TryExpr (loc = '?') y TypeOptional en parse_type; tc: optional(envolvente),
+# none→nil, `?` con su doble check y patrones builtin-variant con slots de
+# cobertura. Fuera por features adyacentes: enums/option_branch_unify (tipo
+# [T]), enums/option_str_payload (if como expresión).
+enums/match_binding_reclaim.astra
+enums/match_guard_payload_stub.astra
+enums/nested_option_result.astra
+enums/option_basic.astra
+enums/option_equality.astra
+enums/payload_binding_types.astra
+enums/result_basic.astra
+enums/try_operator.astra
+expressions/match_fallthrough_trap.astra
+expressions/none_literal.astra
+ui/option_type_error.astra
+ui/try_non_optional.astra
