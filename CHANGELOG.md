@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **M-T1: parser.astra a tablas SoA (DEC-032)**: el AST vive ahora en
+  `struct Ast { kind: [i64], text: [string], first: [i64], next: [i64] }`
+  con tabla de etiquetas `knames` (índice 0 = centinela; primer-hijo +
+  hermano-siguiente) y la s-expresión de una línea pasó a ser su
+  **rendering preorder** con el `attach()` de siempre. Refactor interno
+  sin cambio observable: golden **byte-idéntico a la primera**, 7 rutas
+  + freshness + diag 16/16 y el resto de gates verdes (352/0 · 74/74 ·
+  209 · 221/221). Es el sustrato que caminará el typechecker (M-T2).
+
 - **Typechecker en Astra-0: investigación + decisiones (DEC-032/033)**:
   `research/032` fija el alcance (≈55 de los 102 mensajes de
   `typechecker.c`, corpus medido 189/304 parsean con el parser
