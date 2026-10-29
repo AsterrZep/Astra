@@ -1,0 +1,15 @@
+// DEC-033(a): if/else if/else as the LAST expression of a function is a
+// compile error in BOTH compilers — the nested else-if types void in tail
+// position (a plain if/else tail works — the asymmetry is pinned as-is).
+// EXPECT-ERROR: if branches have different types
+// EXPECT-ERROR-FIRST: 7:5: error: if branches have different types: i32 vs void
+fn j(a: i32, b: i32) -> i32 {
+    if a == 0 {
+        b
+    } else if a == 1 {
+        b + 1
+    } else {
+        b + 2
+    }
+}
+fn main() { print(j(0, 5)); }
