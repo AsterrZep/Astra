@@ -1,0 +1,105 @@
+# typechecker_corpus.list — corpus del gate diferencial del typechecker
+# self-hosteado (M-T2, DEC-032). Clasificación medida 2026-10-29: de los
+# 304 ficheros de conformance/, 186 parsean con parser.astra y 98 de ellos
+# usan sólo features del núcleo (sin match/struct/enum/trait/impl/lambda).
+# Directiva: (E) = EXPECT-ERROR → veredicto REJECT + paridad de la primera
+# línea; (P) = EXPECT y (R) = EXPECT-RUNTIME-ERROR → veredicto ACCEPT.
+#
+# Excluidos de los 98 (11 — capas ajenas al typechecker M-T2, nunca en
+# silencio; cada uno con su motivo):
+#   ui/deep_elseif · ui/expr_chain_deep · ui/nesting_too_deep ·
+#   ui/integer_literal_out_of_range · ui/invalid_escape -> gaps del
+#   parser/lexer (backlog de DEC-028..031; break_value y var_keyword ya
+#   cerrados: el parser rechaza `break <valor>` y `var` con el texto del
+#   seed)
+#   ui/break_outside_loop · ui/continue_outside_loop · ui/loop_nesting_deep ·
+#   ui/too_many_locals  -> mensajes del EMITTER (capa posterior)
+arrays/bool_equality.astra
+arrays/len_array.astra
+arrays/literal_index.astra
+arrays/out_of_bounds.astra
+control/while_break.astra
+control/while_continue.astra
+expressions/chr_basic.astra
+expressions/chr_int_arg_error.astra
+expressions/chr_oob_error.astra
+expressions/deep_recursion.astra
+expressions/empty_string_concat.astra
+expressions/empty_string_eq.astra
+expressions/integer_types.astra
+expressions/integer_wrap.astra
+expressions/int_min_div_neg1.astra
+expressions/len_int_runtime_error.astra
+expressions/len_string.astra
+expressions/modulo_zero.astra
+expressions/nested_print.astra
+expressions/not_op.astra
+expressions/ord_basic.astra
+expressions/ord_empty_error.astra
+expressions/ord_int_arg.astra
+expressions/push_alias.astra
+expressions/push_basic.astra
+expressions/push_int_arg.astra
+expressions/read_file_missing.astra
+expressions/read_file_nil_path.astra
+expressions/read_line_eof_error.astra
+expressions/recursion_depth_limit.astra
+expressions/stack_overflow_limit.astra
+expressions/str_index.astra
+expressions/str_index_oob.astra
+expressions/string_concat.astra
+expressions/string_order_rejected.astra
+expressions/str_to_int_basic.astra
+expressions/str_to_int_empty.astra
+expressions/str_to_int_int_arg.astra
+expressions/str_to_int_invalid.astra
+expressions/str_to_int_nul.astra
+expressions/str_to_int_range.astra
+expressions/substr_basic.astra
+expressions/substr_bounds_error.astra
+expressions/substr_start_error.astra
+expressions/to_string_roundtrip.astra
+expressions/unannotated_return.astra
+functions/implicit_return.astra
+functions/recursion.astra
+loops/while_brace_same_line.astra
+module/toplevel_stmts.astra
+module/use_paths.astra
+stdlib/contains_basic.astra
+stdlib/contains_empty.astra
+types/global_string_concat.astra
+types/int_width_semantics.astra
+types/nil_string_concat.astra
+types/nil_string_concat_both.astra
+types/nil_string_concat_right.astra
+types/string_escapes.astra
+types/string_nul.astra
+types/string_order_nil.astra
+ui/assign_immutable.astra
+ui/builtin_shadow_copy.astra
+ui/builtin_shadow_len.astra
+ui/builtin_shadow_ord.astra
+ui/builtin_shadow_print.astra
+ui/builtin_shadow_push.astra
+ui/builtin_shadow_read_file.astra
+ui/builtin_shadow_str_to_int.astra
+ui/builtin_shadow_substr.astra
+ui/builtin_shadow_to_string.astra
+ui/builtin_shadow_transfer.astra
+ui/call_non_function.astra
+ui/duplicate_function.astra
+ui/elseif_tail_rejected.astra
+ui/guards_conditions.astra
+ui/import_keyword_segment.astra
+ui/index_non_array.astra
+ui/int_literal_range.astra
+ui/int_literal_range_unsigned.astra
+ui/missing_return_value.astra
+ui/null_rejected.astra
+ui/reassign_function.astra
+ui/toplevel_return.astra
+ui/type_alias_rejected.astra
+ui/type_mismatch.astra
+ui/while_condition.astra
+ui/break_value.astra
+ui/var_keyword_rejected.astra
