@@ -37,6 +37,7 @@
 | DEC-027 | **`.copy()` — fase E2**: deep copy estructural **solo en forma de método** `x.copy()` (la forma directa `copy(x)` no existe: el nombre no se registra como símbolo → `copy must be called as x.copy()`); nombre **reservado** en kBuiltins/k_builtins (`ui/builtin_shadow_copy`); receptor con el mismo conjunto de tipos que `transfer` (agregados+string+optional+unknown, escalares → `copy expects an aggregate, got i32`); devuelve el **tipo estático del receptor**; `x.copy(args)` → `copy takes no arguments`; semántica: recursivo sobre arrays/structs/enum/optional-caja (parejas: bits+retain), strings **compartidos** (inmutables, retain en LLVM), closures = shell nuevo con env profundo y **markers compartidos** (despacho por identidad de puntero), **depth cap 64** → `copy depth limit exceeded` (ciclos construibles: `n.kid = some(n)`); walker: el receiver de un **método de usuario** pasa a escaparse (S2) pero el de `.copy()` no; el receiver de `.copy()` NO escapa (la fuente queda transferible) | Aceptada (test-pinned) | 2026-10-28 | `ui/builtin_shadow_copy.astra`, `ui/copy_{scalar,extra_args,value_use}.astra`, `ui/transfer_method_escaped.astra`, `conformance/transfer/{transfer_copy,copy_independent,copy_cycle}.astra` (ciclo = EXPECT-RUNTIME-ERROR), `codegen/{transfer_copy,copy_independent}.astra` (PR fase-E2) |
 | DEC-028 | **parser.astra v2 — NEWLINE como terminador + `match` + items `enum`** (paso 1–2 del plan de `PHASE1_PROGRESS` §7): fin de sentencia = `;` **o** cambio de línea **o** `}` **o** EOF (espejo del `optional_semi` del seed, verificado: `fn f() -> i32 { return 5 }` y `let a = 1`\n`let b = 2` sin `;` son válidos); `else` exige **misma línea** que el `}` que cierra el then (el seed rechaza `}\nelse`); expresiones **no** continúan tras NEWLINE en el seed (`let x = 1 +`\n`2` → error) → el fixture evita operadores a fin de línea (límite declarado); `match`: comas **obligatorias** entre brazos (sin coma el seed falla, verificado), trailing opcional, guardas parseadas pero **no emitidas** (el dump del seed omite el guard — mirror lossy de PHASE2 §7); patrones = literal(+`-`)/string/bool/`PatternOr(n)`/`PatternWildcard`/ruta calificada `FieldAccess`/binding `PatternBind`/`PatternVariantBind`+`Bind(name)`; items `enum` con `Variant(name)`+`Field(TypeIdent)`; fixture v2 mezcla sentencias con y sin `;` para cubrir ambos caminos; sin lambdas aún (siguiente paso) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture `parser_input.astra` v2 + `parser.expected` regenerado de `--dump-ast` + freshness en las 7 rutas) (PR parser-v2) |
 | DEC-029 | **parser.astra v2.1 — lambdas** (paso 2 de `PHASE1_PROGRESS` §7, cerrado): `|params| [-> type] { block }` — el cuerpo **exige bloque** (el seed rechaza `|y| y * 2`, verificado); sin parámetros: `||` es el token OR_OR y el seed lo rechaza, `| |` (espaciado) sí parsea y typecheckea con `-> T` — el parser acepta ambas grafías vía el mismo loop; **tipos de parámetro y `-> ret` se parsean y se descartan del dump**: el dump del seed imprime `Lambda [Param(name)]* [TypeIdent(ret)] Block` — el TypeIdent es SOLO la anotación de retorno (verificado: `|x: i32| -> i32` imprime TypeIdent, `|a: i32, b: i32|` sin `->` no imprime ninguno); sin tipos fn en anotaciones (parse_type v2 sigue con ident simple); fixture con 4 lambdas (tipada+ret, identidad sin tipar, multi-tipada, `| | -> i32`) + llamadas, todas terminadas por NEWLINE | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture v2.1 + golden regenerado + freshness, 7 rutas) (PR parser-lambdas) |
+| DEC-030 | **parser.astra v2.2 — capa de items** (paso 3 de `PHASE1_PROGRESS` §7): `struct` (fields `nombre: Tipo` → `Field(name)+TypeIdent`), `trait` (solo firmas `fn` sin cuerpo → `Block` vacío — el seed sintetiza el bloque; métodos-default = rechazo del typecheck, no del parser), `impl [Trait for] Type` (`Impl(Area for Punto)` / `Impl(Punto)`, payload = texto crudo) y `pub` delante de fn/struct/const/enum/trait (`Pub*Decl`, nombres verificados: PubFnDecl/PubStructDecl/PubConstDecl/PubEnumDecl/PubTrait); `use`/`import`/`import … as`/`from … import …` con rutas punteadas — el dump de `use` va **sin payload** (mirror lossy) y `Import(path as alias)`/`ImportItem(n as a)` llevan el texto crudo; **struct literals** con la misma regla del flag `no_struct_lit` del seed (parser.c:1894): `IDENT {` = literal salvo en condiciones de `if`/`while` y target de `match` (el flag se pone en esas 4 contextos y se restablece dentro de paréntesis — verificado en parser.c:649/704/730/910); `Punto {}` vacío aceptado; parámetros con `:` opcional (`self` tipado-less solo en trait/impl en el seed — el parser v2.2 lo admite en cualquier fn, límite declarado); sin genéricos en items; sin `pub` antes de impl/use/import; sin literales float en el fixture (el dump usa %g y `to_string` es solo-enteros) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture v2.2 + golden regenerado + freshness, 7 rutas) (PR parser-items) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1169,4 +1170,56 @@
 - **Evidencia**: `parser_gate.sh` (7 rutas + freshness) con el fixture
   v2.1; las cuatro formas fueron ejecutadas en el seed antes de
   escribirse (42/41/42/7).
+- **Spec**: cabecera de `parser.astra`.
+
+### DEC-030 — parser.astra v2.2: capa de items (struct/trait/impl/use/import)
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR parser-items
+  (2026-10-29).
+- **Fecha**: 2026-10-29.
+- **Decisión**: paso 3 del plan de `PHASE1_PROGRESS` §7 — con esto el
+  parser cubre **todos los items de módulo** del subconjunto Astra-0:
+  1. **Items**: `struct` (campos `name: Type` → `Field(name)` +
+     `TypeIdent` hijo), `trait` (sólo firmas: una firma sin cuerpo produce
+     `Block` vacío — el seed lo sintetiza, verificado; los métodos
+     default son rechazo del *typecheck*, no del parser: `--dump-ast` es
+     parse-only y el gate no typechequea), `impl [Trait for] Type` con
+     payload de texto crudo (`Impl(Area for Punto)` / `Impl(Punto)`),
+     `pub` delante de `fn`/`struct`/`const`/`enum`/`trait` con los
+     prefijos verificados (`PubFnDecl`, `PubStructDecl`, `PubConstDecl`,
+     `PubEnumDecl`, `PubTrait` — `pub` antes de `impl`/`use`/`import` no
+     se soporta, el seed tiene campos is_pub solo en esas declaraciones).
+  2. **Módulo**: `use ruta.dotted` → nodo `Use` **sin payload** (mirror
+     lossy del dump, PHASE2 §7), `import ruta [as alias]` →
+     `Import(ruta as alias)` con texto crudo, `from ruta import a, b as c`
+     → `From(ruta)` + `ImportItem(a)`/`ImportItem(b as c)` con texto
+     crudo; segmentos de ruta sólo IDENT (una palabra clave tras un `.`
+     es error — espejo de `ui/import_keyword_segment`).
+  3. **Struct literals** con la regla literal del seed: flag
+     `no_struct_lit` (`parser.c:1894`) activo en las **cuatro**
+     condiciones (if/while/for/match — `parser.c:649/704/730/910`) y
+     restablecido dentro de paréntesis (`parser.c:289`); `IDENT {` en
+     cualquier otro sitio es literal (los argumentos de llamada heredan
+     el flag, igual que el seed). `Punto {}` vacío → `StructLit(Punto)`
+     (verificado).
+  4. **Parámetros**: `:` opcional en cualquier `fn` (el seed restringe
+     `self` tipado-less a trait/impl con `allow_self` — el parser v2.2 lo
+     admite en todas partes: superconjunto, declaración como límite).
+- **Límites declarados**: sin genéricos en items (`struct Box<T>`,…),
+  sin `pub` antes de impl/use/import, rutas de impl sólo con ident
+  simple, **sin literales float en el fixture** (el dump los formatea con
+  `%g` y `to_string` es sólo-enteros — imprimir `FloatLit` igual que el
+  seed requeriría un builtin de float; los campos del fixture son i32).
+- **Alternativas consideradas**: lookahead `IDENT { IDENT :` para
+  distinguir literal de bloque (descartado: el seed usa flag de contexto
+  y el lookahead rompería `Punto {}` y divergiría); ignorar el flag y
+  tratar `IDENT {` siempre como literal (descartado: rompe `if x {`),
+  sin estructura de items (era el paso — sin ella el parser no parsea el
+  corpus real del repo).
+- **Coste aceptado**: ~130 líneas en `parser.astra` (parse_fn compartido
+  con trait/impl, items, struct-lit con flag, rutas de módulo), 0
+  líneas de compilador.
+- **Evidencia**: `parser_gate.sh` (7 rutas + freshness) con el fixture
+  v2.2; todas las formas dump-first con `--dump-ast` del seed y el
+  fixture ejecutándose en el VM (incluye `p.area()` sobre
+  `struct+trait+impl`).
 - **Spec**: cabecera de `parser.astra`.

@@ -10,7 +10,14 @@
 // v2.1 (DEC-029): lambdas — |params| [-> type] { block }; param types and
 // the -> ret annotation are parsed but only the ret shows up in the seed's
 // dump; one lambda per accepted shape (typed+ret, untyped, multi, `| |`).
+// v2.2 (DEC-030): items — use/import/from (module), struct + struct
+// literal + field assign, trait (signature-only method), trait impl +
+// inherent impl, pub fn; the struct-literal flag of the seed (no_struct_lit)
+// keeps `if … {` / `match … {` from being read as literals.
 // Same subset as v1 otherwise (see parser.astra's header for the limits).
+use collections.list
+import math.geom as g
+from str.utils import trim, upper as up
 const LIMIT = 10
 enum Size {
     XS
@@ -41,6 +48,29 @@ fn classify(n: i32, s: Size) -> i32 {
     }
     return r + t
 }
+struct Punto {
+    x: i32
+    y: i32
+}
+
+trait Area {
+    fn area(self) -> i32
+}
+
+impl Area for Punto {
+    fn area(self) -> i32 {
+        self.x * self.y
+    }
+}
+
+impl Punto {
+    fn shift(self, d: i32) -> i32 {
+        self.x + d
+    }
+}
+
+pub fn extra(n: i32) -> i32 { n }
+
 fn pick(n: i32) -> i32 {
     if n < 0 {
         return -n
@@ -68,6 +98,11 @@ fn main() {
     let cls = classify(1, Size.S)
     print(cls)
     print(v % 2 == 0)
+    let mut p = Punto { x: 4, y: 5 };
+    p.x = 7
+    print(p.area())
+    print(p.shift(3))
+    print(extra(7))
     let inc = |x: i32| -> i32 { x + 1 }
     let ident = |y| { y }
     let sum2 = |a: i32, b: i32| { a + b }

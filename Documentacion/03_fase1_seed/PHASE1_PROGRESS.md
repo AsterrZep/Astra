@@ -748,7 +748,11 @@ terminador, sin escapes de string, sin hex.
    items `enum` incluidos) + **lambdas** (DEC-029: cuerpo=bloque exigido,
    `|params| [-> type]`, tipos de parámetro descartados del dump, `| |`
    espaciado para lista vacía).
-3. Capa de items completa (structs/trait/impl, `use`/`import`).
+3. ✅ Capa de items completa (DEC-030: `struct` + struct literals con el
+   flag `no_struct_lit` del seed, `trait` con firmas, `impl` con
+   `for`/inherente, `use`/`import`/`from`, `pub`, asignación a campo
+   `p.x = v`) — con esto el parser cubre todos los items de módulo del
+   subconjunto.
 4. Diagnósticos de error comparados con los del seed (tipo de recovery).
 5. Solo entonces el siguiente componente: typechecker (proyecto aparte —
    `research/002` §6.3, ~4k líneas de C).
