@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **parser.astra v2.3 — diagnósticos de error (DEC-031)**: paso 4 de
+  `PHASE1_PROGRESS` §7. Formato byte-idéntico al del seed
+  (`file:line:col: error: msg`; expect = `expected <msg>, got <kind>`
+  con la tabla de token_kind_name — `_` es token propio — y síntesis de
+  NEWLINE donde el seed la ve: `print(1\n}` → `expected ')', got
+  NEWLINE`; parser_error sin got; `error: parse failed` final sin dump).
+  Correcciones de comportamiento verificadas contra el seed y
+  documentadas en DEC-031 (el separador NUNCA es obligatorio — corrige
+  DEC-028 §1 —, `=` opcional en let, sentencias a nivel de módulo, coma
+  de match sin mensaje, `else` en línea aparte como sentencia,
+  `invalid assignment target`). Gate nuevo `parser_diag_parity.sh`:
+  paridad del PRIMER error sobre 16 fixtures rotos, cableado en
+  `parser_gate.sh` (la cascada posterior queda fuera de alcance v1).
+  Resto intacto: 350/0 · 74/74 · 209 · 221/221.
+
 - **parser.astra v2.2 — capa de items (DEC-030)**: paso 3 de
   `PHASE1_PROGRESS` §7 — con esto el parser self-hosteado cubre **todos
   los items de módulo** del subconjunto: `struct` (+ struct literals con

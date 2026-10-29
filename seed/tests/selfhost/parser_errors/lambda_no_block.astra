@@ -1,0 +1,4 @@
+fn main() {
+    let f = |x| x + 1;
+    print(2);
+}

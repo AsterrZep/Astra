@@ -1,0 +1,2 @@
+use a.;
+fn main() { print(1); }

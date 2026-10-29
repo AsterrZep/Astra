@@ -1,0 +1,2 @@
+from a.b x;
+fn main() { print(1); }

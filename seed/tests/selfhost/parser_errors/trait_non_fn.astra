@@ -1,0 +1,4 @@
+trait T {
+    let x = 1;
+}
+fn main() { print(1); }

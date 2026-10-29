@@ -38,6 +38,7 @@
 | DEC-028 | **parser.astra v2 — NEWLINE como terminador + `match` + items `enum`** (paso 1–2 del plan de `PHASE1_PROGRESS` §7): fin de sentencia = `;` **o** cambio de línea **o** `}` **o** EOF (espejo del `optional_semi` del seed, verificado: `fn f() -> i32 { return 5 }` y `let a = 1`\n`let b = 2` sin `;` son válidos); `else` exige **misma línea** que el `}` que cierra el then (el seed rechaza `}\nelse`); expresiones **no** continúan tras NEWLINE en el seed (`let x = 1 +`\n`2` → error) → el fixture evita operadores a fin de línea (límite declarado); `match`: comas **obligatorias** entre brazos (sin coma el seed falla, verificado), trailing opcional, guardas parseadas pero **no emitidas** (el dump del seed omite el guard — mirror lossy de PHASE2 §7); patrones = literal(+`-`)/string/bool/`PatternOr(n)`/`PatternWildcard`/ruta calificada `FieldAccess`/binding `PatternBind`/`PatternVariantBind`+`Bind(name)`; items `enum` con `Variant(name)`+`Field(TypeIdent)`; fixture v2 mezcla sentencias con y sin `;` para cubrir ambos caminos; sin lambdas aún (siguiente paso) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture `parser_input.astra` v2 + `parser.expected` regenerado de `--dump-ast` + freshness en las 7 rutas) (PR parser-v2) |
 | DEC-029 | **parser.astra v2.1 — lambdas** (paso 2 de `PHASE1_PROGRESS` §7, cerrado): `|params| [-> type] { block }` — el cuerpo **exige bloque** (el seed rechaza `|y| y * 2`, verificado); sin parámetros: `||` es el token OR_OR y el seed lo rechaza, `| |` (espaciado) sí parsea y typecheckea con `-> T` — el parser acepta ambas grafías vía el mismo loop; **tipos de parámetro y `-> ret` se parsean y se descartan del dump**: el dump del seed imprime `Lambda [Param(name)]* [TypeIdent(ret)] Block` — el TypeIdent es SOLO la anotación de retorno (verificado: `|x: i32| -> i32` imprime TypeIdent, `|a: i32, b: i32|` sin `->` no imprime ninguno); sin tipos fn en anotaciones (parse_type v2 sigue con ident simple); fixture con 4 lambdas (tipada+ret, identidad sin tipar, multi-tipada, `| | -> i32`) + llamadas, todas terminadas por NEWLINE | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture v2.1 + golden regenerado + freshness, 7 rutas) (PR parser-lambdas) |
 | DEC-030 | **parser.astra v2.2 — capa de items** (paso 3 de `PHASE1_PROGRESS` §7): `struct` (fields `nombre: Tipo` → `Field(name)+TypeIdent`), `trait` (solo firmas `fn` sin cuerpo → `Block` vacío — el seed sintetiza el bloque; métodos-default = rechazo del typecheck, no del parser), `impl [Trait for] Type` (`Impl(Area for Punto)` / `Impl(Punto)`, payload = texto crudo) y `pub` delante de fn/struct/const/enum/trait (`Pub*Decl`, nombres verificados: PubFnDecl/PubStructDecl/PubConstDecl/PubEnumDecl/PubTrait); `use`/`import`/`import … as`/`from … import …` con rutas punteadas — el dump de `use` va **sin payload** (mirror lossy) y `Import(path as alias)`/`ImportItem(n as a)` llevan el texto crudo; **struct literals** con la misma regla del flag `no_struct_lit` del seed (parser.c:1894): `IDENT {` = literal salvo en condiciones de `if`/`while` y target de `match` (el flag se pone en esas 4 contextos y se restablece dentro de paréntesis — verificado en parser.c:649/704/730/910); `Punto {}` vacío aceptado; parámetros con `:` opcional (`self` tipado-less solo en trait/impl en el seed — el parser v2.2 lo admite en cualquier fn, límite declarado); sin genéricos en items; sin `pub` antes de impl/use/import; sin literales float en el fixture (el dump usa %g y `to_string` es solo-enteros) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture v2.2 + golden regenerado + freshness, 7 rutas) (PR parser-items) |
+| DEC-031 | **parser.astra v2.3 — diagnósticos de error con paridad de primer error** (paso 4 de `PHASE1_PROGRESS` §7): formato del seed `file:line:col: error: msg` (parser.c:78/133) con las dos formas — expect `expected <msg>, got <kind>` (got = token_kind_name: keywords en minúscula, IDENT/INT_LIT/STRING_LIT/EOF en mayúscula, `_` es token propio) y parser_error `<msg>` sin got; síntesis de NEWLINE donde el seed la vería (call `)` sin skip_newlines: `print(1\n}` → `expected *')', got NEWLINE` en fin-de-línea); `error: parse failed` final + supresión del AST con errores (driver.c:668); **correcciones de comportamiento verificadas contra el seed**: el separador NUNCA es obligatorio (`print(1) print(2)` parsea — corrige el modelo de DEC-028 §1), `=` opcional en `let` (`let x 5;` = VarDecl+sentencia), sentencias a nivel de módulo (`foo bar` = dos idents), la coma faltante de `match` NO se reporta (rompe y el `}` esperado choca: `expected *'}', got <kind>`), `else` en línea aparte cae como sentencia (`unexpected token in expression`), `invalid assignment target` para no-LValue; gate `parser_diag_parity.sh` = paridad del PRIMER error + línea final sobre 16 fixtures rotos (la cascada posterior DIFEREE y queda fuera de alcance — recuperación completa = paso siguiente) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_diag_parity.sh` → 16/16 (primer error + parse-failed byte-idénticos, rutas dentro de `parser_gate.sh`) (PR parser-diag) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1223,3 +1224,55 @@
   fixture ejecutándose en el VM (incluye `p.area()` sobre
   `struct+trait+impl`).
 - **Spec**: cabecera de `parser.astra`.
+
+### DEC-031 — parser.astra v2.3: diagnósticos de error (paridad de primer error)
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR parser-diag
+  (2026-10-29).
+- **Fecha**: 2026-10-29.
+- **Decisión**: cuarto incremento de `parser.astra` (paso 4 de
+  `PHASE1_PROGRESS` §7 — «diagnósticos comparados con los del seed»):
+  1. **Formato**: `file:line:col: error: <msg>` en cada diagnóstico, con
+     las dos formas del seed: *expect* `expected <msg>, got <kind>`
+     (`parser.c:133`; got = `token_kind_name`: keywords en su grafía,
+     punctuación su grafía, `IDENT`/`INT_LIT`/`STRING_LIT`/`EOF`
+     mayúscula, y **`_` es un token propio** — verificado con
+     `match_no_comma`: `got _`) y *parser_error* `<msg>` sin got
+     (`parser.c:78`). Síntesis de NEWLINE para los expect que el seed ve
+     sin `skip_newlines` (verificado: cierre de llamada — `print(1\n}`
+     → `expected ')', got NEWLINE` en la columna fin-de-línea); el resto
+     reporta en el token actual (`ef_now`). Al final: `error: parse failed`
+     y **sin dump del AST** cuando hubo errores (`driver.c:668`).
+  2. **Correcciones de comportamiento** (cada una verificada ejecutando
+     el seed antes de escribir — DEC-028 §1 se corrige): el separador
+     **nunca** es obligatorio (`print(1) print(2)`, `let x = 1 let y = 2`
+     y `let x 5 print(x)` parsean y corren — `stmt_end` sólo consume el
+     `;` opcional); `=` opcional en `let` (VarDecl sin inicializador +
+     la siguiente expresión como sentencia); **sentencias a nivel de
+     módulo** (`foo bar` = dos idents — `parse_module` rama a
+     `parse_stmt`, espejo de `toplevel_stmts`); la coma faltante de
+     `match` **no se reporta**: el bucle de brazos rompe y el `}`
+     esperado choca con el primer token del siguiente brazo
+     (`expected '}', got <kind>`); `else` en línea aparte cae como
+     sentencia (`unexpected token in expression` en el `else`); y
+     `invalid assignment target` para no-LValue, reportado en el token
+     después del `=`.
+  3. **Gate**: `parser_diag_parity.sh` — 16 fixtures rotos en
+     `selfhost/parser_errors/`, comparación del **primer** error + la
+     línea final, con rutas normalizadas; cableado dentro de
+     `parser_gate.sh` (seed-only, como `lexer_tokens_parity`).
+     **Fuera de alcance v1**: la cascada posterior al primer error (la
+     recuperación completa del seed — sync por declaración, aborting
+     guards, dummy `<?>` — es el paso siguiente cuando se necesite).
+- **Alternativas consideradas**: replicar la recuperación completa ya
+  (descartada de v1: el parser usa avance-eager y no el modelo
+  current/sin-consumir del seed; coste alto y la paridad de primer error
+  ya fija formato+posición+palabra); comparar todos los errores
+  (descartado: cascadas divergentes harían rojo un gate útil);NEWLINE
+  como token explícito (descartado: la síntesis por línea-lograda cubre
+  los casos verificados sin reescribir el lexer).
+- **Coste aceptado**: ~90 líneas (columnas, helpers de diagnóstico,
+  alineación de mensajes) + 16 fixtures + el gate; 0 líneas de
+  compilador.
+- **Evidencia**: `parser_diag_parity.sh` → 16/16; el gate de rutas y el
+  freshness siguen en verde con el fixture v2.2 sin cambios de salida.
+- **Spec**: cabecera de `parser.astra` + esta sección.

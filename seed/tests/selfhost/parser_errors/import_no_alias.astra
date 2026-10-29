@@ -1,0 +1,2 @@
+import a as 5;
+fn main() { print(1); }

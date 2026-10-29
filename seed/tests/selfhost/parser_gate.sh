@@ -233,9 +233,15 @@ else
     fail=1
 fi
 
+# Diagnostics parity (DEC-031): first-error byte-parity vs the seed over
+# parser_errors/*. Seed-only, so it can never skip; prints its own lines.
+if ! "$here/parser_diag_parity.sh"; then
+    fail=1
+fi
+
 echo "----"
 if [ "$fail" -eq 0 ]; then
-    echo "parser_gate: every route matches parser.expected; golden freshness holds"
+    echo "parser_gate: every route matches parser.expected; golden freshness + diag parity hold"
 else
     echo "parser_gate: FAIL"
 fi

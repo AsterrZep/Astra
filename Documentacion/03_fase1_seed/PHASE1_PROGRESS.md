@@ -753,7 +753,11 @@ terminador, sin escapes de string, sin hex.
    `for`/inherente, `use`/`import`/`from`, `pub`, asignación a campo
    `p.x = v`) — con esto el parser cubre todos los items de módulo del
    subconjunto.
-4. Diagnósticos de error comparados con los del seed (tipo de recovery).
+4. ✅ Diagnósticos de error con paridad de **primer error** (DEC-031:
+   formato `file:line:col: error:` + expect/`got KIND` con síntesis de
+   NEWLINE + `error: parse failed`; gate `parser_diag_parity.sh` 16/16
+   dentro de `parser_gate.sh`; la cascada posterior — recuperación
+   completa del seed — queda para cuando se necesite).
 5. Solo entonces el siguiente componente: typechecker (proyecto aparte —
    `research/002` §6.3, ~4k líneas de C).
 
