@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–035) | 34 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–036) | 35 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
@@ -79,12 +79,12 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-34 informes numerados `001`–`032`, `034` y `035`, sin solapamientos: cada uno
+35 informes numerados `001`–`032`, `034`–`036`, sin solapamientos: cada uno
 es un dossier autocontenido sobre un tema (gramática, diseño del seed, backend
 C, enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
 concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
 externa, enforcement de seguridad, semántica de runtime, stdlib, benchmarks,
-sistemas de enteros, punteros…).
+sistemas de enteros, punteros, iteradores…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
   diseño del seed y patrones del backend C.
@@ -114,6 +114,13 @@ sistemas de enteros, punteros…).
   **medida** (chase 794.7 ns/nodo vs array 6.71 ns/elem ≈ 118×;
   `unique_ptr`=8 B, `shared_ptr`=16 B, `?*T`=8 B, `Option<&T>`=8 B por
   nicho) con el encaje de `Ptr<T>`/unsafe de ARCHITECTURE §8.5.
+- `036` **iteradores y protocolos de iteración**: los 5 ejes de diseño
+  (protocolo pull/push, lazy/eager, rangos inclusivo/exclusivo,
+  invalidación, sintaxis de bucle) en Rust/Python/C++/JS/Java/C#/Swift/
+  Kotlin/Go/Elixir/Ruby/Julia/Haskell/Zig; verificado Go 1.23 range-over-func
+  y el Rust Book; reality-check de `research/015` §4 con 8 probes del seed
+  (rango sólo-en-`for`, sin `loop`, `break`-con-valor rechazado con mensaje
+  propio) y plan en 3 fases para Astra.
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
