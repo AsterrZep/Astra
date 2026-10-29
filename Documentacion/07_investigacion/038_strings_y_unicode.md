@@ -1,4 +1,4 @@
-# 037 — Strings y Unicode: UTF-8 vs UTF-16 vs graphemas, y qué le conviene a Astra
+# 038 — Strings y Unicode: UTF-8 vs UTF-16 vs graphemas, y qué le conviene a Astra
 
 > **Alcance**: dossier sobre los modelos de string — codificación interna,
 > qué mide `len()`, indexación, normalización, seguridad y orden — en Go,
@@ -258,7 +258,7 @@ vistas, Rust con `bytes()/chars()`, JS con `Segmenter`).
 | `"ab" == "a" + "b"` | `true` — `==` por **interning** (astra.h: «compared by pointer comparison») |
 | `to_string(42)` | `42` — existe (PR2 de 028) |
 | `for c in s` | byte a byte, `c: string` de 1 byte (DEC-020, test `loops/for_string.astra`) |
-| `let x: i32 = 0; x + len(s)` | `type mismatch: cannot apply '+' to i32 and i64` — sin promoción (informe `034` §13) |
+| `let x: i32 = 0; x + len(s)` | `type mismatch: cannot apply '+' to i32 and i64` — sin promoción (informe `035` §13) |
 
 Todo coherente con DEC-013 (`len`/`s[i]` → string de 1 byte, OOB = error),
 DEC-018 (`ord` = primer byte, `substr` en bytes, «nunca recorta») y
@@ -273,14 +273,14 @@ bytes ya está test-pinned en las cuatro rutas**.
 2. **Capas complementarias en stdlib, no en el tipo** (todas condicionadas
    a sus `DEC-NNN`):
    - `code_points(s)` y `graphemes(s)` como iteradores (UAX#29 para
-     graphemes; cross-ref informe `036` — el protocolo Iterator de la
+     graphemes; cross-ref informe `037` — el protocolo Iterator de la
      Fase 1/2 encaja aquí exactamente);
    - `normalize(s, form)` opcional (referencia: crate
      `unicode-normalization`);
    - comparación: `==` por bytes **documentado** + `compare_ci`/
      collation en librería (ICU detrás, como PostgreSQL);
    - validación UTF-8 explícita estilo Rust (`Result`, no pánico) en la
-     frontera de decodificación/FFI (cross-ref `035` §5);
+     frontera de decodificación/FFI (cross-ref `036` §5);
    - anti-spoofing UTS#39 en la capa de red/DNS, jamás en el runtime.
 3. **Una entrada de DEC que fije «`len` = bytes» y el plan de capas
    Unicode por fases**, para que la futura discusión de graphemes no

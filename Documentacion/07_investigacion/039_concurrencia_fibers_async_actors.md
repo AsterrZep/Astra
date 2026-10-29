@@ -1,4 +1,4 @@
-# 038 — Concurrencia: fibers, async/await, goroutines y actors — qué eligen los lenguajes y qué le conviene a Astra
+# 039 — Concurrencia: fibers, async/await, goroutines y actors — qué eligen los lenguajes y qué le conviene a Astra
 
 > **Alcance**: dossier sobre los modelos de concurrencia de lenguaje y
 > runtime — hilos 1:1, green threads M:N, event loops async, actores,
@@ -80,7 +80,7 @@ máquina de estados — de ahí el «colores de función» que Zig y Astra recha
   carreras ⇒ secuencialmente consistentes); `go build -race` (TSan) mata
   el programa al detectar carrera `[citado: go.dev/ref/mem]`.
 - **1.22-1.25**: `for range` sobre enteros + corrección de variables de
-  bucle; **1.23** paquete `iter` + range-over-func (informe `036` §10);
+  bucle; **1.23** paquete `iter` + range-over-func (informe `037` §10);
   **1.25**: `GOMAXPROCS` consciente de cgroups, `testing/synctest`
   (tiempo virtual para testear concurrencia), GC experimental *greentea*
   (−10..−40 % de overhead) y `WaitGroup.Go` `[citado: go.dev/doc/go1.25]`.
@@ -148,7 +148,7 @@ máquina de estados — de ahí el «colores de función» que Zig y Astra recha
   redundantes eliminados `[citado: Clang ARC]`.
 - **C#**: pionero de `async/await` mainstream (2012, C# 5) sobre `Task` +
   thread pool; `IAsyncEnumerable`+`await foreach` = pull lazy async
-  (informe `036` §7). **`Span<T>`/`Memory<T>`** para no allocar en E/S.
+  (informe `037` §7). **`Span<T>`/`Memory<T>`** para no allocar en E/S.
 - **C++26: Execution control library** (P2300R10 senders/receivers) +
   *async scopes* (P3149R11 `counting_scope`) + tipos de tarea de coroutine
   (P3552R3) `[citado: cppreference C++26]` — C++ persigue 12 años la
@@ -283,7 +283,7 @@ producción con ellos no.
 |:------|:--------|:----------|
 | `spawn` | `spawn foo();` | `error: undefined variable 'spawn'` — **no existe aún** (S3 fuera de alcance por DEC-026) |
 | `transfer` + uso | `transfer(a); print(a);` | `error: use of transferred variable 'a'` — **la invalidación de move está viva** (fase E1, DEC-026) |
-| memoria del probe de arrays | 1 M / 2 M arrays locales en bucle | RSS **lineal**: 135 MB / 268 MB (ver informe `039`) — sin free en el VM |
+| memoria del probe de arrays | 1 M / 2 M arrays locales en bucle | RSS **lineal**: 135 MB / 268 MB (ver informe `040`) — sin free en el VM |
 
 Y en el repo (leído): DEC-012 (opción F ratificada: `val` cruza siempre,
 `var` sólo con unicidad probada, walk `rc==1` como gate), DEC-022
@@ -371,4 +371,4 @@ presupuestada como «siguiente PR» en DEC-026).
 - DEC-012/022/023/026 (`Documentacion/01_lenguaje/DECISIONES.md`) ·
   ARCHITECTURE §2.6/§3 (plan M:N, targets) · `research/026` (enforcement
   S1/S2/RT1) · probes `spawn`/`transfer` en `/tmp/opencode/intprobe`
-  `[ejecutado]` · comparativa RSS en informe `039` §14.
+  `[ejecutado]` · comparativa RSS en informe `040` §14.

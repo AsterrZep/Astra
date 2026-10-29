@@ -1,4 +1,4 @@
-# 036 — Iteradores y protocolos de iteración: cómo los hacen y qué le conviene a Astra
+# 037 — Iteradores y protocolos de iteración: cómo los hacen y qué le conviene a Astra
 
 > **Alcance**: dossier sobre los modelos de iteración — protocolos pull vs
 > push, lazy vs eager, rangos, adapters, invalidación y sintaxis de bucles —
@@ -127,7 +127,7 @@ pub trait Iterator {
   Heredero directo de **range-v3** (Eric Niebler, 2013-2018).
 - **Coste**: templates puro = cero en runtime; el precio es **tiempo de
   compilación** (instanciaciones) y tamaño de binario — el mismo trade-off
-  de los genéricos monomorfizados (§13 de `034` no aplica: aquí es el bando
+  de los genéricos monomorfizados (§13 de `035` no aplica: aquí es el bando
   Zig/Rust).
 - **C++23/26**: `ranges::to<T>()` para materializar; `views::zip` etc.
   siguen creciendo. El C-style `for(;;)` convive — nadie lo toca.
@@ -382,7 +382,7 @@ La recomendación **sigue en pie y se refuerza con los datos nuevos**:
    boxed — condición técnica a verificar en el PR de la Fase 2.
 4. **Coherencias a fijar en la misma DEC**: rango exclusivo (ya medido),
    iterador de string = bytes (DEC-020 — **no** prometer graphemas;
-   cross-ref informe `037`), sin C-style `for`, `for` sin forma
+   cross-ref informe `038`), sin C-style `for`, `for` sin forma
    índice+valor (hoy) o con (`enumerate` en Fase 2).
 
 ### 14.4 Qué NO hace este informe

@@ -1,4 +1,4 @@
-# 035 — Punteros: qué hacen los demás lenguajes, por qué, y cuáles son los más eficientes
+# 036 — Punteros: qué hacen los demás lenguajes, por qué, y cuáles son los más eficientes
 
 > **Alcance**: dossier sobre los modelos de puntero/referencia de los
 > principales lenguajes — C, C++, Rust, Zig, Go, Swift, Java, C#, Python,
@@ -217,7 +217,7 @@ Puntos de diseño:
 - **`Unmanaged<T>`**: punteros sin ARC para FFI, con `retain`/`release`
   manuales.
 - **Sin punteros a miembro ni aritmética en safe code**; los índices de
-  colección son `Int` (firmado, §034) y las referencias no-null se codifican
+  colección son `Int` (firmado, §035) y las referencias no-null se codifican
   como `Optional` con nicho igual que Rust.
 
 ## §8 — Los administrados: todo es un puntero, pero no lo ves

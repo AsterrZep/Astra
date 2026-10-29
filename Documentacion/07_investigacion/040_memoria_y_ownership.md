@@ -1,4 +1,4 @@
-# 039 — Modelos de memoria y ownership: GC, RC, arenas y ownership en compile-time — qué usan y qué le conviene a Astra
+# 040 — Modelos de memoria y ownership: GC, RC, arenas y ownership en compile-time — qué usan y qué le conviene a Astra
 
 > **Alcance**: dossier sobre los modelos de gestión de memoria — tracing
 > GC, reference counting, ownership/borrowing, arenas/regiones y manejo

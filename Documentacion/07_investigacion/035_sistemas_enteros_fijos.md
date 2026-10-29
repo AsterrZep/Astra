@@ -1,4 +1,4 @@
-# 034 — Sistemas de enteros de ancho fijo (`i8`…`i64` / `u8`…`u64`): cómo y por qué los diseñan Zig 0.17, C, C++, Java, Python, Rust, Swift, Go, C#, JavaScript y Kotlin
+# 035 — Sistemas de enteros de ancho fijo (`i8`…`i64` / `u8`…`u64`): cómo y por qué los diseñan Zig 0.17, C, C++, Java, Python, Rust, Swift, Go, C#, JavaScript y Kotlin
 
 > **Alcance**: dossier autocontenido sobre los sistemas de tipos enteros
 > «de familia `iN`/`uN`» — cómo funcionan en cada lenguaje, por qué sus
