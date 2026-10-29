@@ -167,3 +167,42 @@ ui/trait_default_method.astra
 # nxt[P] = P (tipo nominal compartido) y tc_arg_count colgaba en cualquier
 # walk de la cadena; traits/method_dispatch.astra era el único hang del corpus.
 traits/method_dispatch.astra
+
+# ---- M-T4 medición 2026-10-29 (fase 1): los 31 ficheros NO en corpus cuya
+# semilla y el combinado ya coincidían en veredicto + primera línea (se midió
+# con la misma lógica que este gate). Entran sin cambios de código; el resto
+# de los 165 fuera de corpus queda atribuido en el propio listado (opcional/
+# genéricos/for/lambda/ownership/gaps de parser-lexer) para M-T4+.
+enums/or_patterns.astra
+expressions/short_circuit_call_arg.astra
+module/import_from.astra
+traits/trait_inert.astra
+transfer/transfer_global_nil.astra
+transfer/transfer_unique.astra
+ui/as_cast_rejected.astra
+ui/compound_assign_rejected.astra
+ui/else_newline_rejected.astra
+ui/expect_colon.astra
+ui/expect_fn_name.astra
+ui/expect_rparen.astra
+ui/for_as_expression.astra
+ui/from_without_items.astra
+ui/fuzz_field_access_null_type.astra
+ui/impl_missing_self.astra
+ui/impl_primitive_receiver.astra
+ui/impl_self_type_mismatch.astra
+ui/parse_missing_body.astra
+ui/pub_let.astra
+ui/struct_shorthand_rejected.astra
+# ui/too_many_locals NO entra: su error de la semilla es del EMITTER y va
+# sin línea:col (`ui/too_many_locals.astra: error: too many locals`) — el
+# gate exige diagnóstico con línea:col para E; hermana de los 4 emitter-owned.
+ui/trailing_semi_after_loop.astra
+ui/trait_const_item.astra
+ui/trait_missing_method.astra
+ui/trait_signature_mismatch.astra
+ui/trait_unknown.astra
+ui/transfer_arity.astra
+ui/tuple_rejected.astra
+ui/use_colon_colon.astra
+ui/while_as_expression.astra
