@@ -139,6 +139,12 @@ The default posture is **more agents, not fewer**:
   zig resolves `crti.o`/`libc.so`/… **relative to the returned crt1.o dir**,
   hence the symlink farm. Without this, llvm_parity/llvm_jit/cross/wasm are
   unrunnable locally — rely on CI only as a last resort.
+  Two traps verified in practice: (a) **`/tmp/opencode` does not survive
+  sessions** — if `ls /tmp/opencode/fakegcc` fails, re-create the wrapper
+  and the symlink farm with the recipe above before any `-Dllvm` build;
+  (b) a plain `zig build` (or `zig build test`) **overwrites the
+  `-Dllvm` binary** — every llvm gate run needs `zig build -Dllvm` first
+  (the gate's "compiler built without -Dllvm" skip is how you notice).
 
 ## Writing Astra-0 code (gotchas verified by execution)
 
