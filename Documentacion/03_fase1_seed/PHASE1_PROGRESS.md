@@ -758,8 +758,13 @@ terminador, sin escapes de string, sin hex.
    NEWLINE + `error: parse failed`; gate `parser_diag_parity.sh` 16/16
    dentro de `parser_gate.sh`; la cascada posterior — recuperación
    completa del seed — queda para cuando se necesite).
-5. Solo entonces el siguiente componente: typechecker (proyecto aparte —
-   `research/002` §6.3, ~4k líneas de C).
+5. Typechecker (proyecto aparte): **investigación cerrada** —
+   `research/032` (alcance ~55 checks, corpus 189/304 medido, estructuras
+   LLVM-safe, shape del gate) + `DEC-032` (alcance y forma de v1) +
+   `DEC-033` (pines previos: if/else-if como cola y else en línea aparte,
+   ambos ya con `ui/`). Sigue: milestone M-T1 (refactor del parser a
+   tablas SoA) → M-T2 núcleo → M-T3 methods/trait/match → M-T4 corpus;
+   `research/002` §6.3, ~4k líneas de C de referencia.
 
 Hallazgos de lenguaje tocados al construirlo, **sin pinneear** (ambos
 compiladores coinciden, candidatos a DEC futura): `else` en línea aparte del

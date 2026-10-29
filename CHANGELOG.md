@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Typechecker en Astra-0: investigación + decisiones (DEC-032/033)**:
+  `research/032` fija el alcance (≈55 de los 102 mensajes de
+  `typechecker.c`, corpus medido 189/304 parsean con el parser
+  self-hosted → gate de ≈176 ficheros, estructuras de datos válidas en
+  la ruta LLVM — SoA campo→índice — y gate diferencial veredicto+primer
+  error en 7 rutas). `DEC-032` resuelve las 10 preguntas abiertas (7
+  rutas, tablas SoA en vez de strings, exclusiones explícitas, espejo
+  byte a byte del seed, `some/none` como nodos propios en el parser,
+  single-file, presupuesto = los 256 globales del VM como guarda,
+  orden typechecker→emitter, 4 milestones ~10–15 d/h). `DEC-033` pinnea
+  los dos hallazgos de control-flow con tests `ui/` de primera línea
+  byte-idéntica seed↔zig: `if/else if/else` como cola de `fn`
+  (`if branches have different types: <T> vs void`) y `}`
+  NEWLINE `else` (`unexpected token in expression`). Gates: 352/0 ·
+  ui parity 146/0 · resto intacto.
+
 - **parser.astra v2.3 — diagnósticos de error (DEC-031)**: paso 4 de
   `PHASE1_PROGRESS` §7. Formato byte-idéntico al del seed
   (`file:line:col: error: msg`; expect = `expected <msg>, got <kind>`

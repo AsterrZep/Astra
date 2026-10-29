@@ -133,12 +133,12 @@ HTML (mdBook o equivalente) es el siguiente paso — el contenido, no.
 
 | Área | Estado | Gate / cifra |
 |:-----|:-------|:-------------|
-| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **350 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **160 total, 3 skip, 0 fail** + selfhost `io`/`lexer`/`parser_gate` OK (2026-10-28) |
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **352 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **160 total, 3 skip, 0 fail** + selfhost `io`/`lexer`/`parser_gate` OK (2026-10-28) |
 | Registro de constructos | ✅ (índice documental — DEC-002) | `--check-constructs` → **47 constructos, 27 operadores**; hooks = aspiración, no plan de migración |
-| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` → **74/74** · `dump_parity.sh` → **209 ficheros, 0 divergentes** + `ui_message_parity` first_fail=0 (144) |
+| **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` → **74/74** · `dump_parity.sh` → **209 ficheros, 0 divergentes** + `ui_message_parity` first_fail=0 (146) |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
 | **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **221/221** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
-| **Decisiones de lenguaje** | ✅ 31 registradas (30 aceptadas) | `DECISIONES.md` — DEC-001..031 (única en `Propuesta`: DEC-021, la CLI `astraea`); del ciclo 2026-10-28/29: DEC-012/022 ratificadas + DEC-023 (RT1@M4) + DEC-024/025 (stdlib/parser) + DEC-026/027 (fase E1/E2) + DEC-028..031 (parser v2/v2.1/v2.2/v2.3) |
+| **Decisiones de lenguaje** | ✅ 33 registradas (32 aceptadas) | `DECISIONES.md` — DEC-001..033 (única en `Propuesta`: DEC-021, la CLI `astraea`); del ciclo 2026-10-28/29: DEC-012/022 ratificadas + DEC-023 (RT1@M4) + DEC-024..031 (stdlib + parser v2..v2.3) + DEC-032/033 (typechecker en Astra + pines de control-flow) |
 | **Stdlib Astra-0 (M1/M2b/M3 — MVP cerrado)** | ✅ 10 builtins + `for c in s` + lexer + helpers puros | `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int`, `chr`, `read_line` en 4 rutas (DEC-013..020) + helpers en Astra puro `contains`/`index_of`/`split` (DEC-024, `conformance/stdlib/`) · `selfhost/lexer_gate.sh` → **7/7** rutas + gate fuerte `lexer_tokens_parity.sh` vs `--dump-tokens` (lexer escrito en Astra-0) · `selfhost/io_gate.sh` → **8/8** |
 | **Enforcement entre fibras** | 🟡 v1+E2 implementado y gateado | S1/S2 + nil-red + `.copy()` (deep copy con depth cap) en 4 rutas (DEC-012/022/026/027 `test-pinned`) · S3/`spawn` = fase E3 · RT1 solo M4 (DEC-023) hasta scheduler/send |
 | Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
