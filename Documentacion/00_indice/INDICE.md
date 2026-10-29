@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–036) | 35 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–037) | 36 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
@@ -79,12 +79,12 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-35 informes numerados `001`–`032`, `034`–`036`, sin solapamientos: cada uno
+36 informes numerados `001`–`032`, `034`–`037`, sin solapamientos: cada uno
 es un dossier autocontenido sobre un tema (gramática, diseño del seed, backend
 C, enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
 concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
 externa, enforcement de seguridad, semántica de runtime, stdlib, benchmarks,
-sistemas de enteros, punteros, iteradores…).
+sistemas de enteros, punteros, iteradores, strings/Unicode…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
   diseño del seed y patrones del backend C.
@@ -121,6 +121,12 @@ sistemas de enteros, punteros, iteradores…).
   y el Rust Book; reality-check de `research/015` §4 con 8 probes del seed
   (rango sólo-en-`for`, sin `loop`, `break`-con-valor rechazado con mensaje
   propio) y plan en 3 fases para Astra.
+- `037` **strings y Unicode**: UTF-8 vs UTF-16 vs graphemas con la tabla
+  de divergencias real (`👩‍👩‍👧` = 5/18/8/1), los 3 campamentos + Python,
+  JEP 254/400, normalización, UTS#39/overlong/JSON UTF-8, rendimiento
+  (simdutf ≥1000 M chars/s) y el retrato medido de Astra (`len`=bytes,
+  `ord("á")`=195, escapes sin `\uXXXX`, `==` por interning) con
+  recomendación de capas Unicode por fases sin romper DEC-013.
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
