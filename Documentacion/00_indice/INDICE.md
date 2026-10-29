@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032) | 32 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–040) | 40 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
@@ -79,12 +79,13 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-32 informes numerados `001`–`032`, sin solapamientos: cada uno es un
+40 informes numerados `001`–`040`, sin solapamientos: cada uno es un
 dossier autocontenido sobre un tema (gramática, diseño del seed, backend C,
 enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
 concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
-externa, enforcement de seguridad, semántica de runtime, stdlib,
-benchmarks…).
+externa, enforcement de seguridad, semántica de runtime, stdlib, benchmarks,
+taxonomía de vulnerabilidades y auditoría, sistemas de enteros, punteros,
+iteradores, strings/Unicode, concurrencia, memoria…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
   diseño del seed y patrones del backend C.
@@ -102,6 +103,52 @@ benchmarks…).
   inventario de ~55 checks, corpus medido (189/304 parsean con el parser
   self-hosted), estructuras de datos viables en la ruta LLVM y el shape
   del gate diferencial; abre DEC-032.
+- `033` **taxonomía de auditoría**: 90 casos (30 críticos / 30
+  intermedios / 30 básicos) por niveles CVSS, extrapolados a Astra.
+- `034` **informe de auditoría**: 42 hallazgos verificados de seguridad
+  y robustez del compilador.
+- `035` **sistemas de enteros de ancho fijo** (`i8`…`i64`/`u8`…`u64`):
+  cómo y por qué los diseña Zig 0.17, C, C++, Java, Python, Rust, Swift,
+  Go, C#, JS y Kotlin; el espectro de semánticas de overflow (UB → wrap →
+  trap → imposible) y el encaje con DEC-006/007 (incluye probes
+  empíricos del seed: sólo `i32/i64/u32/u64` existen hoy).
+- `036` **punteros: modelos y eficiencia**: las seis familias de modelo
+  (dirección cruda, sin aritmética, GC, ownership, handles/offsets,
+  capabilities CHERI), C/C++/Rust/Zig/Go/Swift/Java/C#/Python/JS/Ada/Erlang
+  comparados, la capa hardware (PAC/MTE/MPX-fracasó), y eficiencia
+  **medida** (chase 794.7 ns/nodo vs array 6.71 ns/elem ≈ 118×;
+  `unique_ptr`=8 B, `shared_ptr`=16 B, `?*T`=8 B, `Option<&T>`=8 B por
+  nicho) con el encaje de `Ptr<T>`/unsafe de ARCHITECTURE §8.5.
+- `037` **iteradores y protocolos de iteración**: los 5 ejes de diseño
+  (protocolo pull/push, lazy/eager, rangos inclusivo/exclusivo,
+  invalidación, sintaxis de bucle) en Rust/Python/C++/JS/Java/C#/Swift/
+  Kotlin/Go/Elixir/Ruby/Julia/Haskell/Zig; verificado Go 1.23 range-over-func
+  y el Rust Book; reality-check de `research/015` §4 con 8 probes del seed
+  (rango sólo-en-`for`, sin `loop`, `break`-con-valor rechazado con mensaje
+  propio) y plan en 3 fases para Astra.
+- `038` **strings y Unicode**: UTF-8 vs UTF-16 vs graphemas con la tabla
+  de divergencias real (`👩‍👩‍👧` = 5/18/8/1), los 3 campamentos + Python,
+  JEP 254/400, normalización, UTS#39/overlong/JSON UTF-8, rendimiento
+  (simdutf ≥1000 M chars/s) y el retrato medido de Astra (`len`=bytes,
+  `ord("á")`=195, escapes sin `\uXXXX`, `==` por interning) con
+  recomendación de capas Unicode por fases sin romper DEC-013.
+- `039` **concurrencia: fibers, async/await, goroutines y actors**: los
+  6 modelos estelares con costes medidos (mutex 21 ns sin contención /
+  ~125 ns con 2 hilos, TSan 5-15×), Loom (JEP 444/491/505), BEAM por
+  reductions, Go CSP+DRF-SC, Zig tras borrar async (std.Io), concurrencia
+  estructurada (nursery/scope), y el encaje en DEC-012/022/023/026 con
+  probes (`spawn` no existe aún; `transfer` ya invalida) — recomendación:
+  spawn scoped, canales por defecto con RT1 en send/recv, cancelación por
+  scope.
+- `040` **memoria y ownership**: las 5 familias (tracing GC, RC+ciclo
+  colector, ARC, ownership compile-time, arenas/manual) con precedentes
+  verificados — ZGC JEP 439 (pausas <1 ms, Cassandra ¼ heap/4×), pacer
+  de Go, CPython umbral `(2000,10,10)` medido, PHP Bacon–Rajan,
+  mimalloc 0,2 % — y los gates de Astra: tabla de las 4 rutas
+  (seed 404 MB / zig 721 MB / C 489 MB / LLVM 77 MB acotado) + probes
+  propios (RSS lineal con arrays, plano con strings ⇒ el hueco está en
+  el handler de arrays) con recomendación para Rec3: gate RSS por
+  backend + ciclo-colector opcional en Fase 2, sin tracing GC.
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
