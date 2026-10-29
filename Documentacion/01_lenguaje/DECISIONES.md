@@ -36,6 +36,7 @@
 | DEC-026 | **Fase E v1 de enforcement — detalles de `transfer` sin fibras**: solo la forma-directa-sentencia `transfer(x);` (1 argumento, variable desnuda); tipos escalar rechazados en compile-time (`transfer expects an aggregate, got i32`); S1/S2 como pasada post-typecheck en los 2 frontends con las semánticas de `research/026` §3.3 (Único/Aliased/Escapado + movidos, alcance por bloques, joins conservadores en if/loops, alias por `let y = x` **sonoro** (ambos → Aliased), escapes por call no-builtin/contenedor/captura, globales usados desde fn = Escapado al transferir); nil-red de R4 en los emisores (`CONST nil; SET` del binding, observable solo en globales entre funciones — S1 es intraprocedural); mensajes nuevos: M1 `transfer must be called directly as transfer(variable)`, M2 `transfer must be its own statement`, S2-escaped `cannot transfer 'x': value has escaped`; S3/`spawn` y `.copy()` quedan fuera (siguiente PR / Phase 2) | Aceptada (test-pinned) | 2026-10-28 | `ui/transfer_{aliased,used_after,captured,escaped,nested,value_use,scalar,bad_form}.astra`, `ui/builtin_shadow_transfer.astra`, `conformance/transfer/transfer_unique.astra`, `conformance/transfer/transfer_global_nil.astra` (EXPECT-RUNTIME-ERROR), `codegen/transfer_unique.astra` (PR fase-E1) |
 | DEC-027 | **`.copy()` — fase E2**: deep copy estructural **solo en forma de método** `x.copy()` (la forma directa `copy(x)` no existe: el nombre no se registra como símbolo → `copy must be called as x.copy()`); nombre **reservado** en kBuiltins/k_builtins (`ui/builtin_shadow_copy`); receptor con el mismo conjunto de tipos que `transfer` (agregados+string+optional+unknown, escalares → `copy expects an aggregate, got i32`); devuelve el **tipo estático del receptor**; `x.copy(args)` → `copy takes no arguments`; semántica: recursivo sobre arrays/structs/enum/optional-caja (parejas: bits+retain), strings **compartidos** (inmutables, retain en LLVM), closures = shell nuevo con env profundo y **markers compartidos** (despacho por identidad de puntero), **depth cap 64** → `copy depth limit exceeded` (ciclos construibles: `n.kid = some(n)`); walker: el receiver de un **método de usuario** pasa a escaparse (S2) pero el de `.copy()` no; el receiver de `.copy()` NO escapa (la fuente queda transferible) | Aceptada (test-pinned) | 2026-10-28 | `ui/builtin_shadow_copy.astra`, `ui/copy_{scalar,extra_args,value_use}.astra`, `ui/transfer_method_escaped.astra`, `conformance/transfer/{transfer_copy,copy_independent,copy_cycle}.astra` (ciclo = EXPECT-RUNTIME-ERROR), `codegen/{transfer_copy,copy_independent}.astra` (PR fase-E2) |
 | DEC-028 | **parser.astra v2 — NEWLINE como terminador + `match` + items `enum`** (paso 1–2 del plan de `PHASE1_PROGRESS` §7): fin de sentencia = `;` **o** cambio de línea **o** `}` **o** EOF (espejo del `optional_semi` del seed, verificado: `fn f() -> i32 { return 5 }` y `let a = 1`\n`let b = 2` sin `;` son válidos); `else` exige **misma línea** que el `}` que cierra el then (el seed rechaza `}\nelse`); expresiones **no** continúan tras NEWLINE en el seed (`let x = 1 +`\n`2` → error) → el fixture evita operadores a fin de línea (límite declarado); `match`: comas **obligatorias** entre brazos (sin coma el seed falla, verificado), trailing opcional, guardas parseadas pero **no emitidas** (el dump del seed omite el guard — mirror lossy de PHASE2 §7); patrones = literal(+`-`)/string/bool/`PatternOr(n)`/`PatternWildcard`/ruta calificada `FieldAccess`/binding `PatternBind`/`PatternVariantBind`+`Bind(name)`; items `enum` con `Variant(name)`+`Field(TypeIdent)`; fixture v2 mezcla sentencias con y sin `;` para cubrir ambos caminos; sin lambdas aún (siguiente paso) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture `parser_input.astra` v2 + `parser.expected` regenerado de `--dump-ast` + freshness en las 7 rutas) (PR parser-v2) |
+| DEC-029 | **parser.astra v2.1 — lambdas** (paso 2 de `PHASE1_PROGRESS` §7, cerrado): `|params| [-> type] { block }` — el cuerpo **exige bloque** (el seed rechaza `|y| y * 2`, verificado); sin parámetros: `||` es el token OR_OR y el seed lo rechaza, `| |` (espaciado) sí parsea y typecheckea con `-> T` — el parser acepta ambas grafías vía el mismo loop; **tipos de parámetro y `-> ret` se parsean y se descartan del dump**: el dump del seed imprime `Lambda [Param(name)]* [TypeIdent(ret)] Block` — el TypeIdent es SOLO la anotación de retorno (verificado: `|x: i32| -> i32` imprime TypeIdent, `|a: i32, b: i32|` sin `->` no imprime ninguno); sin tipos fn en anotaciones (parse_type v2 sigue con ident simple); fixture con 4 lambdas (tipada+ret, identidad sin tipar, multi-tipada, `| | -> i32`) + llamadas, todas terminadas por NEWLINE | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture v2.1 + golden regenerado + freshness, 7 rutas) (PR parser-lambdas) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1125,3 +1126,47 @@
 - **Evidencia**: `parser_gate.sh` (7 rutas + freshness) con el fixture v2
   — el golden es el AST del parser en C, implementación independiente.
 - **Spec**: alcance y límites en la cabecera de `parser.astra`.
+
+### DEC-029 — parser.astra v2.1: lambdas
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR
+  parser-lambdas (2026-10-29).
+- **Fecha**: 2026-10-29.
+- **Decisión**: tercer incremento de `seed/tests/selfhost/parser.astra`
+  (paso 2 de `PHASE1_PROGRESS` §7 — «match + lambdas», ahora completo):
+  1. **Forma**: `|params| [-> type] { block }`. El cuerpo **debe ser
+     bloque — el seed rechaza el cuerpo sin llaves (`|y| y * 2` →
+     `expected '{' for lambda body`, verificado); el parser reporta lo
+     mismo. Cada parámetro: `IDENT [":" type]`; la anotación `-> type`
+     es opcional en el parser (el seed la exige solo en algunos casos —
+     `| | {}` sin anotación falla con `lambda requires explicit return
+     type annotation` — y la inferencia cubre los demás: `|a: i32, b: i32|`
+     sin `->` typecheckea, verificado) y se **descarta** (el dump no la
+     imprime).
+  2. **Sin parámetros**: `||` lexea como token OR_OR y el seed lo
+     rechaza en posición de expresión (verificado); la grafía espaciada
+     `| |` sí parsea (dos PUNCT `|`) y con `-> T` typecheckea y corre
+     (verificado) — el loop de parámetros del parser cubre ambos casos
+     sin código especial (`||` tratado como cierre inmediato).
+  3. **Dump**: `Lambda` + `[Param(name)]*` + `[TypeIdent(ret)]` +
+     `Block` — **los tipos de parámetro no se imprimen** (comment de
+     `ast.zig` + verificado empíricamente: `|x: i32| -> i32` imprime un
+     TypeIdent que es el de retorno, `|a: i32, b: i32|` sin `->` no
+     imprime ninguno). El golden sale de `--dump-ast`, así que la forma
+     anterior es ley.
+  4. **Fixture**: cuatro lambdas en `main` (tipada con ret, identidad sin
+     tipar, multi-tipada, `| | -> i32`) + llamadas, todas con NEWLINE
+     (los dos caminos del terminador siguen cubiertos); sin tipos fn
+     (`fn(i32) -> i32`) en anotaciones — `parse_type` v2 sigue con
+     ident simple (límite declarado desde DEC-025).
+- **Alternativas consideradas**: emitir tipos de parámetro en el dump
+  (descartado: el golden es el dump del seed, que no los imprime — el
+  parser debe reproducirlo, no «mejorarlo»); soportar cuerpo sin bloque
+  (descartado: el seed lo rechaza); soportar `||` como lista vacía
+  (imposible sin cambiar el lexer: es un único token OR_OR — y el seed
+  tampoco lo acepta).
+- **Coste aceptado**: ~45 líneas en `parser.astra` (`parse_lambda` en
+  `parse_primary` + entrada por `|`/`||`), 0 líneas de compilador.
+- **Evidencia**: `parser_gate.sh` (7 rutas + freshness) con el fixture
+  v2.1; las cuatro formas fueron ejecutadas en el seed antes de
+  escribirse (42/41/42/7).
+- **Spec**: cabecera de `parser.astra`.
