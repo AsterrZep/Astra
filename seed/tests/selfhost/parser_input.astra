@@ -6,8 +6,11 @@
 // or-patterns, a guard (parsed but omitted from the dump — the golden comes
 // from --dump-ast), qualified variants with payload bindings, block arms and
 // a statement-position match. No operators at end of line: the seed cuts
-// the statement at the NEWLINE (DEC-028 §1). Same subset as v1 otherwise
-// (see parser.astra's header for the declared limits).
+// the statement at the NEWLINE (DEC-028 §1).
+// v2.1 (DEC-029): lambdas — |params| [-> type] { block }; param types and
+// the -> ret annotation are parsed but only the ret shows up in the seed's
+// dump; one lambda per accepted shape (typed+ret, untyped, multi, `| |`).
+// Same subset as v1 otherwise (see parser.astra's header for the limits).
 const LIMIT = 10
 enum Size {
     XS
@@ -65,4 +68,12 @@ fn main() {
     let cls = classify(1, Size.S)
     print(cls)
     print(v % 2 == 0)
+    let inc = |x: i32| -> i32 { x + 1 }
+    let ident = |y| { y }
+    let sum2 = |a: i32, b: i32| { a + b }
+    let sev = | | -> i32 { 7 }
+    print(inc(41))
+    print(ident(7))
+    print(sum2(40, 2))
+    print(sev())
 }
