@@ -249,3 +249,63 @@ expressions/match_fallthrough_trap.astra
 expressions/none_literal.astra
 ui/option_type_error.astra
 ui/try_non_optional.astra
+
+
+# ---- E-2 + sintaxis M-T4e (2026-10-29): if/bloques como expresión, tipos
+# [T], lvalue-Index (el nodo "Index" sin payload no matcheaba el chequeo
+# del parser), shifts/bitwise, .copy() (DEC-027), comentarios de bloque
+# anidados, escapes de string, keyword comptime. Medición completa de los
+# no-corpus: 52 would-pass. Siguen fuera los dos E cuyo error de la
+# semilla NO lleva columna (el gate E exige file:line:col): 
+# ui/too_many_locals (emitter, "file: error:") y ui/capture_assign
+# (emitter.c:2219, "file:line: error:" sin col) — familia emitter-owned.
+arrays/alias_write.astra
+arrays/element_assign.astra
+arrays/returned_literal.astra
+blocks/if_value.astra
+blocks/tail_compound_multiline.astra
+blocks/tail_expression.astra
+control/if_else.astra
+enums/option_branch_unify.astra
+enums/option_str_payload.astra
+expressions/aggregate_equality.astra
+expressions/match_inline_if_let.astra
+expressions/nested_comment.astra
+expressions/push_nil.astra
+expressions/runtime_error_line_branch.astra
+expressions/shift_range.astra
+loops/for_nil.astra
+loops/loop_residue_inline.astra
+memory/loop_reuse.astra
+stdlib/index_of_basic.astra
+stdlib/split_basic.astra
+stdlib/split_chars_empty_sep.astra
+stdlib/split_fields.astra
+structs/field_assign.astra
+traits/trait_conformance.astra
+transfer/copy_cycle.astra
+transfer/copy_independent.astra
+transfer/transfer_copy.astra
+types/forward_type_refs.astra
+types/nil_aggregates.astra
+types/nil_fn_call.astra
+types/optional_syntax.astra
+ui/comptime_rejected.astra
+ui/copy_extra_args.astra
+ui/copy_scalar.astra
+ui/copy_value_use.astra
+ui/expect_loop_var.astra
+ui/for_iter_type.astra
+ui/if_branch_types.astra
+ui/immutable_element_assign.astra
+ui/invalid_escape.astra
+ui/lambda_type_mismatch.astra
+ui/option_type_mismatch.astra
+ui/optional_match_missing_none.astra
+ui/optional_match_missing_payload.astra
+ui/range_outside_for.astra
+ui/str_index_assign_rejected.astra
+ui/try_bad_return.astra
+ui/try_toplevel.astra
+ui/unary_requires.astra
+ui/unterminated_string.astra

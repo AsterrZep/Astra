@@ -304,6 +304,11 @@ fn tc_resolve_type(node: i64) -> i64 {
         tc_err(node, "unknown type '" + nm + "'");
         return tc_prim(17);
     }
+    if lab == "TypeArray" {
+        let elem = tc_resolve_type(tc_type_child(node));
+        if tc_is_error(tcv_tps.kind[elem]) { return elem; }
+        return tc_array(elem);
+    }
     if lab == "TypeOptional" {
         let inner_node = tc_type_child(node);
         let inner = tc_resolve_type(inner_node);
@@ -504,6 +509,12 @@ fn tc_expr(node: i64) -> i64 {
 
     if lab == "Ident" {
         let name = tc_payload(tree.text[node]);
+        // typechecker.c:1058: copy está reservada pero NUNCA registrada
+        // como valor — sólo existe la forma `x.copy()`.
+        if name == "copy" {
+            tc_err(node, "copy must be called as x.copy()");
+            return tc_prim(17);
+        }
         let i = tc_lookup(name);
         if i < 0 {
             tc_err(node, "undefined variable '" + name + "'");
@@ -640,6 +651,27 @@ fn tc_expr(node: i64) -> i64 {
             let mrow = tc_find_method(obj, field);
             if mrow > 0 {
                 return tc_method_call(node, mrow);
+            }
+            // DEC-027: `x.copy()` — el builtin después de la tabla de
+            // métodos (un `copy` de usuario gana) y antes del read de
+            // campo; devuelve el TIPO del receptor.
+            if field == "copy" {
+                let mut nargs: i64 = 0;
+                let mut c2 = tree.next[tree.first[node]];
+                while c2 != 0 {
+                    nargs = nargs + 1;
+                    c2 = tree.next[c2];
+                }
+                if nargs != 0 {
+                    tc_err(node, "copy takes no arguments");
+                    return tc_prim(17);
+                }
+                let okk = tcv_tps.kind[obj];
+                if okk == 12 || okk == 15 || okk == 16 || okk == 14 || okk == 8 || okk == 13 || okk == 10 {
+                    return obj;
+                }
+                tc_err(tree.first[callee], "copy expects an aggregate, got " + tc_kname(okk));
+                return tc_prim(17);
             }
             // sin método: cae al camino normal (el objeto ya tipó limpio,
             // así que su error — p.ej. "has no field" — sale sin duplicar)
@@ -2362,7 +2394,7 @@ fn tc_init() {
     tc_declare_builtin("chr", 1, 10, tc_prim(8));
     tc_declare_builtin("read_line", 0, 10, tc_prim(8));
     tc_declare_builtin("transfer", 1, 10, tc_prim(1));
-    tc_declare_builtin("copy", 1, 10, tc_prim(10));
+    // copy NO se registra (typechecker.c:1057): sólo existe `x.copy()`
 }
 
 // ---------- driver ----------

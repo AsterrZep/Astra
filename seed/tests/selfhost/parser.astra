@@ -178,7 +178,7 @@ fn is_word(c: string) -> bool {
 }
 
 fn is_kw(w: string) -> bool {
-    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var" || w == "in" || w == "some" || w == "none" || w == "ok" || w == "err"
+    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var" || w == "in" || w == "some" || w == "none" || w == "ok" || w == "err" || w == "comptime"
 }
 
 // lex_core: escanea UN token en ntk/ntl sin tocar tk/tl (permite peek).
@@ -199,6 +199,27 @@ fn lex_core() {
             while pos < slen && src[pos] != "\n" {
                 pos = pos + 1;
             }
+        } else if c == "/" && pos + 1 < slen && src[pos + 1] == "*" {
+            // El seed cuenta profundidad desde el primer commit (audit §2.9):
+            // `/* outer /* inner */ still */` — la primera salida prematura
+            // dejaba salir código de dentro del comentario.
+            pos = pos + 2;
+            let mut depth: i64 = 1;
+            while pos < slen && depth > 0 {
+                if src[pos] == "\n" {
+                    cur_line = cur_line + 1;
+                    pos = pos + 1;
+                    line_start = pos;
+                } else if src[pos] == "/" && pos + 1 < slen && src[pos + 1] == "*" {
+                    depth = depth + 1;
+                    pos = pos + 2;
+                } else if src[pos] == "*" && pos + 1 < slen && src[pos + 1] == "/" {
+                    depth = depth - 1;
+                    pos = pos + 2;
+                } else {
+                    pos = pos + 1;
+                }
+            }
         } else {
             skipping = false;
         }
@@ -213,12 +234,41 @@ fn lex_core() {
     let c = src[pos];
     if c == "\"" {
         let start = pos;
+        let start_ln = cur_line;
+        let start_col = pos - line_start + 1;
         pos = pos + 1;
+        let mut bad = false;
+        let mut unter = false;
         while pos < slen && src[pos] != "\"" {
-            if src[pos] == "\\" {
+            if src[pos] == "\n" {
+                unter = true;
+                pos = slen;
+            } else if src[pos] == "\\" {
+                pos = pos + 1;
+                if pos >= slen {
+                    unter = true;
+                } else {
+                    let e = src[pos];
+                    if !(e == "n" || e == "t" || e == "r" || e == "\\" || e == "\"" || e == "0") {
+                        bad = true;
+                    }
+                    pos = pos + 1;
+                }
+            } else {
                 pos = pos + 1;
             }
-            pos = pos + 1;
+        }
+        if unter {
+            report_at(start_ln, start_col, "unterminated string literal");
+            ntk = "STRING";
+            ntl = substr(src, start, pos - start);
+            if pos < slen && src[pos] == "\"" {
+                pos = pos + 1;
+            }
+            return;
+        }
+        if bad {
+            report_at(start_ln, start_col, "invalid escape sequence");
         }
         if pos < slen {
             pos = pos + 1;
@@ -262,7 +312,7 @@ fn lex_core() {
     if pos + 1 < slen {
         two = substr(src, pos, 2);
     }
-    if two == ".." || two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||" || two == "->" || two == "=>" {
+    if two == ".." || two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||" || two == "->" || two == "=>" || two == "<<" || two == ">>" {
         ntk = "PUNCT";
         ntl = two;
         pos = pos + 2;
@@ -472,6 +522,18 @@ fn bp_of(op: string) -> i64 {
     if op == "<" || op == ">" || op == "<=" || op == ">=" {
         return 9;
     }
+    if op == "<<" || op == ">>" {
+        return 10;   // PREC_SHIFT
+    }
+    if op == "&" {
+        return 7;    // PREC_BIT_AND
+    }
+    if op == "^" {
+        return 6;    // PREC_BIT_XOR
+    }
+    if op == "|" {
+        return 5;    // PREC_BIT_OR
+    }
     if op == "+" || op == "-" {
         return 11;
     }
@@ -520,6 +582,33 @@ fn parse_type() -> i64 {
             return on;
         }
         return t;
+    }
+    if tk == "PUNCT" && tl == "[" {
+        // OptionalType/TypeArray del seed (parse_type_impl rama LBRACKET):
+        // loc = '['; sólo el elemento (sin tamaño `[T; N]` — sin fixture).
+        let aln = t_line;
+        let alc = t_col;
+        advance();
+        let elem = parse_type();
+        if tk == "PUNCT" && tl == "]" {
+            advance();
+        } else {
+            ef("']'");
+            advance();
+        }
+        let an = mk("TypeArray");
+        set_loc(an, aln, alc);
+        add_child(an, elem);
+        if tk == "PUNCT" && tl == "?" {
+            let qln = t_line;
+            let qlc = t_col;
+            advance();
+            let on = mk("TypeOptional");
+            set_loc(on, qln, qlc);
+            add_child(on, an);
+            return on;
+        }
+        return an;
     }
     if tk == "KEYWORD" && tl == "fn" {
         // parse_type_impl del seed (parser.c, rama TOKEN_FN): fn(T,...) -> R.
@@ -677,6 +766,14 @@ fn parse_primary() -> i64 {
         let t = mk("BoolLit(" + tl + ")");
         advance();
         return t;
+    }
+    if tk == "KEYWORD" && tl == "if" {
+        // parser.c:1912: el if es expresión (mismo parse_if que sentencia)
+        return parse_if();
+    }
+    if tk == "PUNCT" && tl == "{" {
+        // parser.c:1908: el bloque es expresión (TOKEN_LBRACE primario)
+        return parse_block();
     }
     if tk == "KEYWORD" && tl == "match" {
         return parse_match();
@@ -1243,7 +1340,8 @@ fn parse_stmt() -> i64 {
         // DEC-031: LValue del seed (parser.c:396-398) — el reporte cae en
         // el token DESPUÉS del '=' (verificado: 1 = 2 → en el 2).
         let et = tree.text[e];
-        if !(starts_with(et, "Ident(") || starts_with(et, "FieldAccess(") || starts_with(et, "Index(")) {
+        // Index se crea SIN payload ("Index"), por eso el starts_with sin '('
+        if !(starts_with(et, "Ident(") || starts_with(et, "FieldAccess(") || starts_with(et, "Index")) {
             perr("invalid assignment target");
         }
         let rhs = parse_expr(1);
@@ -1354,6 +1452,33 @@ fn parse_item() -> i64 {
     if tk == "KEYWORD" && tl == "pub" {
         is_pub = true;
         advance();
+    }
+    if tk == "PUNCT" && tl == "[" {
+        // OptionalType/TypeArray del seed (parse_type_impl rama LBRACKET):
+        // loc = '['; sólo el elemento (sin tamaño `[T; N]` — sin fixture).
+        let aln = t_line;
+        let alc = t_col;
+        advance();
+        let elem = parse_type();
+        if tk == "PUNCT" && tl == "]" {
+            advance();
+        } else {
+            ef("']'");
+            advance();
+        }
+        let an = mk("TypeArray");
+        set_loc(an, aln, alc);
+        add_child(an, elem);
+        if tk == "PUNCT" && tl == "?" {
+            let qln = t_line;
+            let qlc = t_col;
+            advance();
+            let on = mk("TypeOptional");
+            set_loc(on, qln, qlc);
+            add_child(on, an);
+            return on;
+        }
+        return an;
     }
     if tk == "KEYWORD" && tl == "fn" {
         return parse_fn(is_pub, false);
