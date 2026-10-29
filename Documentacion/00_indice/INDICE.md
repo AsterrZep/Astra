@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–037) | 36 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–038) | 37 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
@@ -79,12 +79,12 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-36 informes numerados `001`–`032`, `034`–`037`, sin solapamientos: cada uno
+37 informes numerados `001`–`032`, `034`–`038`, sin solapamientos: cada uno
 es un dossier autocontenido sobre un tema (gramática, diseño del seed, backend
 C, enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
 concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
 externa, enforcement de seguridad, semántica de runtime, stdlib, benchmarks,
-sistemas de enteros, punteros, iteradores, strings/Unicode…).
+sistemas de enteros, punteros, iteradores, strings/Unicode, concurrencia…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
   diseño del seed y patrones del backend C.
@@ -127,6 +127,14 @@ sistemas de enteros, punteros, iteradores, strings/Unicode…).
   (simdutf ≥1000 M chars/s) y el retrato medido de Astra (`len`=bytes,
   `ord("á")`=195, escapes sin `\uXXXX`, `==` por interning) con
   recomendación de capas Unicode por fases sin romper DEC-013.
+- `038` **concurrencia: fibers, async/await, goroutines y actors**: los
+  6 modelos estelares con costes medidos (mutex 21 ns sin contención /
+  ~125 ns con 2 hilos, TSan 5-15×), Loom (JEP 444/491/505), BEAM por
+  reductions, Go CSP+DRF-SC, Zig tras borrar async (std.Io), concurrencia
+  estructurada (nursery/scope), y el encaje en DEC-012/022/023/026 con
+  probes (`spawn` no existe aún; `transfer` ya invalida) — recomendación:
+  spawn scoped, canales por defecto con RT1 en send/recv, cancelación por
+  scope.
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
