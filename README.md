@@ -89,7 +89,7 @@ Astra/
     ├── 04_fase2_zig/             # Phase 2: kickoff, architecture, plans, status (6)
     ├── 05_fase_llvm/             # LLVM backend: plan + status (2)
     ├── 06_auditorias/            # Audits: coherence + pre-LLVM (2)
-    ├── 07_investigacion/         # Research reports 001–030 (30 files)
+    ├── 07_investigacion/         # Research reports 001–032 (32 files)
     ├── 08_originales/            # Source PDFs (2)
     └── 09_libro/                 # User guide: 16 chapters + 91 examples (17)
 ```
@@ -114,7 +114,7 @@ document is listed there with a one-line description.
 - **[04_fase2_zig](Documentacion/04_fase2_zig/)** — Phase 2 (self-hosting Zig compiler): kickoff, architecture, implementation plan, research, gap analysis and [live status](Documentacion/04_fase2_zig/PHASE2_PROGRESS.md)
 - **[05_fase_llvm](Documentacion/05_fase_llvm/)** — LLVM backend: [plan](Documentacion/05_fase_llvm/LLVM_BACKEND_PLAN.md) and [status](Documentacion/05_fase_llvm/PHASE_LLVM_PROGRESS.md)
 - **[06_auditorias](Documentacion/06_auditorias/)** — [Coherence audit](Documentacion/06_auditorias/COHERENCE_AUDIT.md) and [pre-LLVM audit](Documentacion/06_auditorias/PRE_LLVM_AUDIT.md)
-- **[07_investigacion](Documentacion/07_investigacion/)** — 30 deep-dive research reports (001–030) on compilers, runtimes, language design, external critique analysis and benchmarks
+- **[07_investigacion](Documentacion/07_investigacion/)** — 32 deep-dive research reports (001–032) on compilers, runtimes, language design, external critique analysis, benchmarks and the Astra-typechecker scope
 - **[08_originales](Documentacion/08_originales/)** — Original design PDFs
 - **[09_libro](Documentacion/09_libro/README.md)** — *The Astra Programming Language*: user guide in book style (16 chapters, 91 executed examples; ES)
 

@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–030) | 30 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032) | 32 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
@@ -79,11 +79,11 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-30 informes numerados `001`–`030`, sin solapamientos: cada uno es un
+32 informes numerados `001`–`032`, sin solapamientos: cada uno es un
 dossier autocontenido sobre un tema (gramática, diseño del seed, backend C,
 enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
 concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
-externa, enforcement de seguridad, semántica de runtime, stdlib y
+externa, enforcement de seguridad, semántica de runtime, stdlib,
 benchmarks…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
@@ -96,6 +96,12 @@ benchmarks…).
   decisiones de semántica de runtime (027), stdlib mínimo para self-hosting
   (028), arreglos de proceso/bootstrap (029) y benchmarks vs Rust/Go/C/Zig
   (030, con suite reproducible en `030_benchmarks_suite/`).
+- `031` reality-check de 026–030 antes de ratificarlos (§3 cerró la
+  secuencia A–F que se ejecutó).
+- `032` alcance del **typechecker en Astra-0** (paso 5 de PHASE1 §7):
+  inventario de ~55 checks, corpus medido (189/304 parsean con el parser
+  self-hosted), estructuras de datos viables en la ruta LLVM y el shape
+  del gate diferencial; abre DEC-032.
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
