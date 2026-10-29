@@ -219,3 +219,14 @@ loops/range_exclusive.astra
 loops/range_inclusive.astra
 enums/mixed_patterns.astra
 loops/iter_height_norm.astra
+
+# ---- M-T4b (2026-10-29): lambdas + tipo fn(T)->R — parse_type gana
+# TypeFn (retorno marcado con flg=2), el parser conserva los tipos de
+# parámetro de lambda bajo emit_lambda_types (el dump del seed no los
+# imprime), y tc_lambda clona typecheck_lambda (params unknown-sin-
+# anotación, inferencia de retorno). Fuera por ownership: ui/capture_assign,
+# ui/transfer_captured.
+lambda/closures.astra
+lambda/lambda_basic.astra
+lambda/lambda_multi.astra
+ui/lambda_untyped_param.astra
