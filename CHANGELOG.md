@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **parser.astra v2 — NEWLINE, `match` e items `enum` (DEC-028)**: segundo
+  incremento del parser self-hosteado (plan de `PHASE1_PROGRESS` §7,
+  pasos 1–2 sin lambdas). Fin de sentencia = `;` **o** cambio de línea
+  **o** `}` **o** EOF (espejo del `optional_semi` del seed — verificado:
+  `return 5 }` y sentencias por NEWLINE sin `;` son válidos, y el seed
+  corta la expresión en el NEWLINE); `else` exige la misma línea que el
+  `}` (el v1 era más permisivo, el seed rechaza `}\nelse`); `match` como
+  expresión y sentencia con comas **obligatorias** entre brazos (verificado
+  contra el seed), guardas parseadas pero **no emitidas** (el dump del seed
+  las omite — mirror lossy), patrones literal/`-`/string/bool/or/wildcard/
+  ruta calificada/`PatternBind`/`PatternVariantBind`+`Bind`; items `enum`
+  con `Variant`+`Field`; postfix `.` refactorizado en un solo loop en orden
+  de fuente (`Size.S`, `f(x).y`, `a[i].z`). Fixture v2 sin `;` en su
+  mayoría + match con guardas/bindings/brazos-block/match-en-sentencia;
+  `parser.expected` regenerado de `--dump-ast` (freshness lo mantiene).
+  Gate: 5 rutas ok + freshness (cross/wasm = skip de toolchain, CI los
+  corre).
+
 - **Fase E2 — `.copy()` deep copy + receiver-escape (DEC-027)**: el escape
   legal de S2 en los 4 motores — método `x.copy()` (fallback tras la tabla
   de métodos; devuelve el tipo del receptor; `copy` reservado; sin forma
