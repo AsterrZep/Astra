@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **M-T2: typechecker de Astra-0 + gate diferencial (DEC-032)**: el
+  núcleo self-hosteado del typechecker (~35 checks clonados byte a byte
+  de `typechecker.c` — type_eq con unknown/nil-optional/adopción de
+  literales, DEC-006, mensajes Y posiciones) en
+  `seed/tests/selfhost/typechecker.astra` (prefijo `tc_`, concatenado al
+  parser sin su `main` según DEC-032 §6-2), con scopes por
+  profundidad+generación, builtins con firmas (los 12 de DEC-015..022) y
+  `type_eq` recursivo. Gate `typechecker_gate.sh`: **89/89** ficheros
+  (veredicto + primer error, patron `parser_diag_parity`) en **4 rutas**
+  (VM seed, C, VM zig, LLVM `--jit`), cableado en `parser_gate.sh`.
+  Exclusiones documentadas en `typechecker_corpus.list` (11 gaps del
+  parser/lexer + 4 del emitter — ninguna en silencio). Paridades de
+  parser incluidas: keywords `continue`/`mod`/`var`, `break <valor>`
+  rechazado con el texto del seed y el kind de los nodos con arity
+  conocida-al-final (ArrayLit/PatternOr).
+
 - **M-T1: parser.astra a tablas SoA (DEC-032)**: el AST vive ahora en
   `struct Ast { kind: [i64], text: [string], first: [i64], next: [i64] }`
   con tabla de etiquetas `knames` (índice 0 = centinela; primer-hijo +

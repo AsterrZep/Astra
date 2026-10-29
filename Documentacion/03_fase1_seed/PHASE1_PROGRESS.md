@@ -766,11 +766,20 @@ terminador, sin escapes de string, sin hex.
    tablas SoA) → M-T2 núcleo → M-T3 methods/trait/match → M-T4 corpus;
    `research/002` §6.3, ~4k líneas de C de referencia.
    **M-T1 ✅ (2026-10-29)**: `parser.astra` construye el AST en **tablas
-   SoA** (`struct Ast { kind, text, first, next }` + tabla `knames`, índice
-   0 = centinela, primer-hijo/ Hermano-siguiente) y la s-expresión pasó a
-   ser su rendering preorder con el `attach()` de siempre — **golden
-   byte-idéntico a la primera** y las 7 rutas + freshness + diag 16/16
-   intactos; es el vehículo que M-T2 (núcleo de checks) caminará.
+   SoA** (`struct Ast { kind, text, first, next, flg, ln, co }` + tabla
+   `knames`; la s-expresión es su rendering preorder con `attach()` —
+   golden byte-idéntico a la primera).
+   **M-T2 ✅ (2026-10-29)**: `typechecker.astra` (~1150 líneas, prefijo
+   `tc_`) — núcleo de ~35 checks clonados byte a byte de
+   `typechecker.c` (type_eq con sus 3 reglas, DEC-006, mensajes y
+   posiciones), scopes por profundidad+generación, builtins con firmas y
+   el **gate diferencial** `typechecker_gate.sh`: combinado
+   (parser sin main + typechecker) sobre **89 ficheros** — veredicto +
+   primer error — en **4 rutas** (VM seed, C, VM zig, LLVM `--jit`),
+   cableado en `parser_gate.sh`. Exclusiones documentadas en
+   `typechecker_corpus.list` (11 gaps de parser/lexer + 4 del emitter);
+   los 3 límites de profundidad del seed siguen excluidos. Sigue: M-T3
+   (methods/trait/match/exhaustividad + corpus creciente) → M-T4.
 
 Hallazgos de lenguaje tocados al construirlo, **sin pinneear** (ambos
 compiladores coinciden, candidatos a DEC futura): `else` en línea aparte del
