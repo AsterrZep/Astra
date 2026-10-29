@@ -1,6 +1,6 @@
 # Astra — Índice maestro de la documentación
 
-> **Última revisión:** 2026-10-28 · **Rama:** reorganización en carpetas
+> **Última revisión:** 2026-10-29 · **Rama:** reorganización en carpetas
 > numeradas · **Estado del proyecto:** Fase 1 ✅ · Fase 2 (frontend + módulos) ✅ ·
 > Fase LLVM (M0–M6.c) ✅
 
@@ -21,7 +21,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`03_fase1_seed/`](../03_fase1_seed/) | Estado del compilador semilla en C | 1 |
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
-| [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
+| [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código y deuda pendiente | 3 |
 | [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–040) | 40 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
@@ -76,6 +76,7 @@ implementación, al final las auditorías y el material de investigación.
 |:----------|:-------------|:-------|
 | [`COHERENCE_AUDIT.md`](../06_auditorias/COHERENCE_AUDIT.md) | Auditoría de coherencia documento↔código (2026-09-16/21). Registro histórico. | ES |
 | [`PRE_LLVM_AUDIT.md`](../06_auditorias/PRE_LLVM_AUDIT.md) | Auditoría previa a la Fase 2.6 sobre todo el código, con repros y tests por hallazgo (2026-10-14). Registro histórico. | ES |
+| [`DEUDA_PENDIENTE_2026-10-29.md`](../06_auditorias/DEUDA_PENDIENTE_2026-10-29.md) | **Inventario de deuda**: 32 issues abiertos de `research/034`, huecos de funcionalidad (GAP/PHASE1/PHASE2/LLVM), ~24 decisiones sin abrir y 10 desincronizaciones doc↔código. Registro datado. | ES |
 
 ## 7. `07_investigacion/` — Informes de investigación
 
@@ -180,12 +181,13 @@ HTML (mdBook o equivalente) es el siguiente paso — el contenido, no.
 
 | Área | Estado | Gate / cifra |
 |:-----|:-------|:-------------|
-| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **352 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **160 total, 3 skip, 0 fail** + selfhost `io`/`lexer`/`parser_gate` OK (diag 19/19) — con `typechecker_gate` diferencial (141/141 ×4 rutas, M-T3) (2026-10-29) |
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **352 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **160 total, 3 skip, 0 fail** + selfhost `io`/`lexer`/`parser_gate` OK (diag 19/19) — con `typechecker_gate` diferencial (**196/196** ×4 rutas, M-T4c) (2026-10-29) |
 | Registro de constructos | ✅ (índice documental — DEC-002) | `--check-constructs` → **47 constructos, 27 operadores**; hooks = aspiración, no plan de migración |
 | **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` → **74/74** · `dump_parity.sh` → **209 ficheros, 0 divergentes** + `ui_message_parity` first_fail=0 (146) |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |
 | **Fase LLVM** (opt-in `-Dllvm`) | ✅ M0–M6.c | `llvm_parity.sh` → **221/221** (también `ASTRA_LLVM_OPT=2`; skips = fallo desde #21) + `llvm_mem.sh` → techo 64 MB |
 | **Decisiones de lenguaje** | ✅ 33 registradas (32 aceptadas) | `DECISIONES.md` — DEC-001..033 (única en `Propuesta`: DEC-021, la CLI `astraea`); del ciclo 2026-10-28/29: DEC-012/022 ratificadas + DEC-023 (RT1@M4) + DEC-024..031 (stdlib + parser v2..v2.3) + DEC-032/033 (typechecker en Astra + pines de control-flow) |
+| **Deuda abierta** | 📋 Inventariada (2026-10-29) | `06_auditorias/DEUDA_PENDIENTE_2026-10-29.md` — **32 issues** de `research/034` (#49–#80: 10 ALTA · 15 MEDIA · 7 BAJA) + **24 puntos de decisión** sin `DEC-NNN` (D1–D24) + presupuesto de DEC del ciclo al **16,4 %** (regla ≥ 20 %) |
 | **Stdlib Astra-0 (M1/M2b/M3 — MVP cerrado)** | ✅ 10 builtins + `for c in s` + lexer + helpers puros | `len`, `s[i]`, `to_string`, `read_file`, `ord`, `substr`, `push`, `str_to_int`, `chr`, `read_line` en 4 rutas (DEC-013..020) + helpers en Astra puro `contains`/`index_of`/`split` (DEC-024, `conformance/stdlib/`) · `selfhost/lexer_gate.sh` → **7/7** rutas + gate fuerte `lexer_tokens_parity.sh` vs `--dump-tokens` (lexer escrito en Astra-0) · `selfhost/io_gate.sh` → **8/8** |
 | **Enforcement entre fibras** | 🟡 v1+E2 implementado y gateado | S1/S2 + nil-red + `.copy()` (deep copy con depth cap) en 4 rutas (DEC-012/022/026/027 `test-pinned`) · S3/`spawn` = fase E3 · RT1 solo M4 (DEC-023) hasta scheduler/send |
 | Lenguaje completo (comptime, ARC/ORC, fibers, FFI, stdlib) | ⏳ Pendiente | ver `04_fase2_zig/PHASE2_GAP_ANALYSIS.md` §11 |
