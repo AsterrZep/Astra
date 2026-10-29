@@ -206,3 +206,16 @@ ui/transfer_arity.astra
 ui/tuple_rejected.astra
 ui/use_colon_colon.astra
 ui/while_as_expression.astra
+
+# ---- M-T4a (2026-10-29): for..in + rangos — parser (statement For,
+# keyword `in`, `..`/`..=`) + typechecker (typecheck_for). Sigue fuera por
+# features adyacentes: loops/for_nil (tipo [T]), arrays/element_assign
+# (expresión-bloque `{...}`), loops/loop_residue_inline (if como expresión).
+loops/break_continue.astra
+loops/for_array.astra
+loops/for_brace_same_line.astra
+loops/for_string.astra
+loops/range_exclusive.astra
+loops/range_inclusive.astra
+enums/mixed_patterns.astra
+loops/iter_height_norm.astra
