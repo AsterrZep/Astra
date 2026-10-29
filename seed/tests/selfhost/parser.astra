@@ -47,6 +47,7 @@ let mut line_start: i64 = 0  // offset del primer byte de la línea actual
 let mut t_col: i64 = 1       // columna (1-based) del token actual
 let mut prev_col: i64 = 1
 let mut prev_len: i64 = 0    // largo en bytes del lexeme anterior
+let mut stmt_had_semi = false  // espejo de last_stmt_semi del seed (parser.c:42)
 
 // ---------- AST en tablas SoA (DEC-032 / M-T1) ----------
 // Un nodo = índice en las cuatro columnas (índice 0 = centinela, nunca un
@@ -60,8 +61,11 @@ struct Ast {
     text: [string]
     first: [i64]
     next: [i64]
+    flg: [i64]        // 1 = expresión final de bloque sin ';' (last_expr)
+    ln: [i64]         // línea del token con el que se creó el nodo
+    co: [i64]         // columna (para la paridad de diagnósticos del typechecker)
 }
-let mut tree = Ast { kind: [0], text: [""], first: [0], next: [0] }
+let mut tree = Ast { kind: [0], text: [""], first: [0], next: [0], flg: [0], ln: [0], co: [0] }
 let mut knames = [""]     // tabla de etiquetas (kind -> nombre)
 
 fn label_of(text: string) -> string {
@@ -94,7 +98,35 @@ fn mk(text: string) -> i64 {
     tree.kind = push(tree.kind, kind_of(text));
     tree.first = push(tree.first, 0);
     tree.next = push(tree.next, 0);
+    tree.flg = push(tree.flg, 0);
+    tree.ln = push(tree.ln, t_line);
+    tree.co = push(tree.co, t_col);
     idx
+}
+
+// mk con la posicin de OTRO nodo (el seed ancla Call al callee, If al 'if', etc.)
+fn mk_like(text: string, src: i64) -> i64 {
+    let n = mk(text);
+    tree.ln[n] = tree.ln[src];
+    tree.co[n] = tree.co[src];
+    n
+}
+
+fn mark_tail(n: i64) {
+    tree.flg[n] = 1;
+}
+
+// Texto con arity conocida al final (ArrayLit/PatternOr): reescribir EL
+// NODO completo — el kind se internó desde el texto provisional ("") y sin
+// esto knames[kind] queda vacío y el typechecker no reconoce la etiqueta.
+fn set_text(n: i64, text: string) {
+    tree.text[n] = text;
+    tree.kind[n] = kind_of(text);
+}
+
+fn set_loc(n: i64, ln: i64, co: i64) {
+    tree.ln[n] = ln;
+    tree.co[n] = co;
 }
 
 fn add_child(parent: i64, child: i64) {
@@ -138,7 +170,7 @@ fn is_word(c: string) -> bool {
 }
 
 fn is_kw(w: string) -> bool {
-    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as"
+    w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var"
 }
 
 // lex_core: escanea UN token en ntk/ntl sin tocar tk/tl (permite peek).
@@ -403,6 +435,7 @@ fn expect_punct_nl(w: string) {
 fn stmt_end() {
     if tk == "PUNCT" && tl == ";" {
         advance();
+        stmt_had_semi = true;
     }
 }
 
@@ -495,6 +528,7 @@ fn parse_expr(min_bp: i64) -> i64 {
         } else if tk == "PUNCT" && tl == "(" {
             advance();
             let calln = mk("Call");
+            set_loc(calln, tree.ln[left], tree.co[left]);
             add_child(calln, left);
             while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
                 let a = parse_expr(1);
@@ -612,8 +646,11 @@ fn parse_primary() -> i64 {
         return inner;
     }
     if tk == "PUNCT" && tl == "[" {
+        let al = t_line;
+        let ac = t_col;
         advance();
         let arr = mk(""); // texto provisional: la aridad se conoce al final
+        set_loc(arr, al, ac);
         let mut count: i64 = 0;
         while !(tk == "PUNCT" && tl == "]") && tk != "EOF" {
             let e = parse_expr(1);
@@ -626,7 +663,7 @@ fn parse_primary() -> i64 {
             }
         }
         expect_punct("]");
-        tree.text[arr] = "ArrayLit(" + to_string(count) + ")";
+        set_text(arr, "ArrayLit(" + to_string(count) + ")");
         return arr;
     }
     perr("unexpected token in expression");
@@ -786,7 +823,7 @@ fn parse_pattern() -> i64 {
         add_child(por, parse_pattern_alt());
         count = count + 1;
     }
-    tree.text[por] = "PatternOr(" + to_string(count) + ")";
+    set_text(por, "PatternOr(" + to_string(count) + ")");
     por
 }
 
@@ -844,12 +881,20 @@ fn parse_block() -> i64 {
     while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
         let s = parse_stmt();
         add_child(blk, s);
+        // DEC-034: última expresión sin ';' = last_expr del seed — sólo
+        // esa marca cambia el TIPO del bloque (void vs tipo de la cola);
+        // el rendering no la muestra, así que el golden no cambia.
+        if !stmt_had_semi {
+            mark_tail(s);
+        }
     }
     expect_punct("}");
     blk
 }
 
 fn parse_if() -> i64 {
+    let ifl = t_line;
+    let ifc = t_col;
     advance();
     let saved_nsl = no_struct_lit;
     no_struct_lit = true;
@@ -857,6 +902,7 @@ fn parse_if() -> i64 {
     no_struct_lit = saved_nsl;
     let thenb = parse_block();
     let ifn = mk("If");
+    set_loc(ifn, ifl, ifc);
     add_child(ifn, cond);
     add_child(ifn, thenb);
     if tk == "KEYWORD" && tl == "else" && t_line == prev_line {
@@ -879,7 +925,10 @@ fn parse_if() -> i64 {
 }
 
 fn parse_stmt() -> i64 {
+    stmt_had_semi = false;
     if tk == "KEYWORD" && tl == "let" {
+        let letl = t_line;
+        let letc = t_col;
         advance();
         let mut is_mut = false;
         if tk == "KEYWORD" && tl == "mut" {
@@ -899,6 +948,7 @@ fn parse_stmt() -> i64 {
         }
         head = head + ")";
         let vd = mk(head);
+        set_loc(vd, letl, letc);
         if tk == "PUNCT" && tl == ":" {
             advance();
             add_child(vd, parse_type());
@@ -928,25 +978,44 @@ fn parse_stmt() -> i64 {
         return wn;
     }
     if tk == "KEYWORD" && tl == "return" {
+        let retl = t_line;
+        let retc = t_col;
         advance();
         if tk == "PUNCT" && tl == ";" {
             advance();
-            return mk("Return");
+            let r0 = mk("Return");
+            set_loc(r0, retl, retc);
+            return r0;
         }
         // DEC-028: `return x` sin ';' termina en '}' o cambio de línea.
         if tk == "EOF" || (tk == "PUNCT" && tl == "}") || t_line != prev_line {
-            return mk("Return");
+            let r1 = mk("Return");
+            set_loc(r1, retl, retc);
+            return r1;
         }
         let e = parse_expr(1);
         stmt_end();
         let rn = mk("Return");
+        set_loc(rn, retl, retc);
         add_child(rn, e);
         return rn;
     }
     if tk == "KEYWORD" && tl == "break" {
         advance();
+        // `break <valor>` — el seed lo rechaza en el parser (parser.c:1832);
+        // mismo texto y posición (token del valor): paridad, no decisión nueva.
+        if tk != "EOF" && !(tk == "PUNCT" && tl == ";") && !(tk == "PUNCT" && tl == "}") && t_line == prev_line {
+            perr("break with a value is not supported in Astra-0");
+            advance();
+            return mk("Break");
+        }
         stmt_end();
         return mk("Break");
+    }
+    if tk == "KEYWORD" && tl == "continue" {
+        advance();
+        stmt_end();
+        return mk("Continue");
     }
     // DEC-030: el destino se parsea como expresión (Ident, campo o índice
     // — el seed permite los tres LValue) y un '=' posterior lo convierte
@@ -963,6 +1032,7 @@ fn parse_stmt() -> i64 {
         let rhs = parse_expr(1);
         stmt_end();
         let an = mk("Assign");
+        set_loc(an, tree.ln[e], tree.co[e]);
         add_child(an, e);
         add_child(an, rhs);
         return an;
@@ -976,6 +1046,8 @@ fn parse_stmt() -> i64 {
 // el ':' del parámetro es opcional (el seed lo exige fuera de trait/impl
 // vía allow_self — superconjunto declarado en DEC-030 §4).
 fn parse_fn(is_pub: bool, sig_only: bool) -> i64 {
+    let fnl = t_line;
+    let fnc = t_col;
     advance(); // fn
     if tk != "IDENT" {
         ef("function name");
@@ -990,6 +1062,7 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> i64 {
     } else {
         fnn = mk("FnDecl(" + nm + ")");
     }
+    set_loc(fnn, fnl, fnc);
     expect_punct("(");
     while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
         if tk != "IDENT" {
@@ -1037,6 +1110,8 @@ fn parse_item() -> i64 {
         return parse_fn(is_pub, false);
     }
     if tk == "KEYWORD" && tl == "const" {
+        let col = t_line;
+        let coc = t_col;
         advance();
         if tk != "IDENT" {
             ef("variable name");
@@ -1050,10 +1125,12 @@ fn parse_item() -> i64 {
         stmt_end();
         if is_pub {
             let cn = mk("PubConstDecl(" + nm + ")");
+            set_loc(cn, col, coc);
             add_child(cn, v);
             return cn;
         }
         let cn = mk("ConstDecl(" + nm + ")");
+        set_loc(cn, col, coc);
         add_child(cn, v);
         return cn;
     }

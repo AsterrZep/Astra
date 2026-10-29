@@ -1,0 +1,1119 @@
+// typechecker.astra — typechecker de Astra-0 auto-hospedado, milestone
+// M-T2 (DEC-032, núcleo ~35 checks + gate diferencial).
+//
+// Se CONCATENA con parser.astra sin su `main` (el gate lo construye):
+//   sed '/^fn main()/,$d' parser.astra > pp.astra
+//   cat pp.astra typechecker.astra > combined.astra
+// Todas las funciones llevan prefijo `tc_` y las globales `tcv_` para que
+// no colisione con las del parser (una colisión de nombre es un
+// `duplicate function` ruidoso del typecheck del seed — DEC-032 §6-2).
+//
+// Verdad semántica: espejo byte a byte de seed/src/typechecker.c (los
+// mensajes, sus argumentos y sus posiciones); las DEC ratificadas ya viven
+// ahí. Alcance M-T2: nombres/funciones/let-const/assign/operadores/índice/
+// llamadas/if-while/tipos primitivos + scopes; struct/enum/match/trait/
+// lambda/impl = M-T3+ (el corpus M-T2 los excluye — lista en el gate).
+
+// ---------- tipos (códigos fijos = type_kind_name del seed) ----------
+// 1 void 2 bool 3 i32 4 i64 5 u32 6 u64 7 f64 8 string 9 nil 10 unknown
+// 11 int_literal 12 array 13 optional 14 fn 15 struct 16 enum 17 error
+struct Tp {
+    kind: [i64]
+    a: [i64]        // hijo: elem de array / inner de optional / primer param de fn
+    nxt: [i64]      // hermano dentro de una lista (cadena de params)
+    ret: [i64]      // tipo de retorno de fn (0 = ninguno)
+    s: [string]     // nombre (struct/enum)
+}
+let mut tcv_tps = Tp { kind: [0], a: [0], nxt: [0], ret: [0], s: [""] }
+
+// ---------- tabla de símbolos: plana + profundidad + generación ----------
+struct Sym {
+    names: [string]
+    types: [i64]
+    muts: [bool]
+    fns: [bool]
+    alive: [bool]
+    depths: [i64]
+    gens: [i64]
+}
+let mut tcv_syms = Sym { names: [""], types: [0], muts: [false], fns: [false], alive: [false], depths: [0], gens: [0] }
+let mut tcv_depth: i64 = 0    // 0 = módulo; +1 por bloque
+let mut tcv_gen: i64 = 0      // generación por fn (los locales de otra fn no se ven)
+let mut tcv_fndepth: i64 = 0   // para `return outside of a function`
+let mut tcv_errors: i64 = 0
+let mut tcv_void: i64 = 0   // índice del tipo void (¡NO confundir con el kind 1!)
+let mut tcv_ret: i64 = 0      // tipo de retorno anotado de la fn actual (0 = sin anotar)
+let mut tcv_contret = false   // el cuerpo actual contiene un `return`
+
+fn tc_kname(k: i64) -> string {
+    if k == 1 { return "void"; }
+    if k == 2 { return "bool"; }
+    if k == 3 { return "i32"; }
+    if k == 4 { return "i64"; }
+    if k == 5 { return "u32"; }
+    if k == 6 { return "u64"; }
+    if k == 7 { return "f64"; }
+    if k == 8 { return "string"; }
+    if k == 9 { return "nil"; }
+    if k == 10 { return "unknown"; }
+    if k == 11 { return "integer literal"; }
+    if k == 12 { return "array"; }
+    if k == 13 { return "optional"; }
+    if k == 14 { return "fn"; }
+    if k == 15 { return "struct"; }
+    if k == 16 { return "enum"; }
+    if k == 17 { return "<error>"; }
+    "<unknown>"
+}
+
+fn tc_mk(kind: i64) -> i64 {
+    tcv_tps.kind = push(tcv_tps.kind, kind);
+    tcv_tps.a = push(tcv_tps.a, 0);
+    tcv_tps.nxt = push(tcv_tps.nxt, 0);
+    tcv_tps.ret = push(tcv_tps.ret, 0);
+    tcv_tps.s = push(tcv_tps.s, "");
+    len(tcv_tps.kind) - 1
+}
+
+fn tc_prim(kind: i64) -> i64 {
+    tc_mk(kind)
+}
+
+fn tc_array(elem: i64) -> i64 {
+    let n = tc_mk(12);
+    tcv_tps.a[n] = elem;
+    n
+}
+
+fn tc_is_error(k: i64) -> bool {
+    k == 17
+}
+
+fn tc_is_integer(k: i64) -> bool {
+    k == 3 || k == 4 || k == 5 || k == 6 || k == 11
+}
+
+fn tc_is_numeric(k: i64) -> bool {
+    tc_is_integer(k) || k == 7
+}
+
+// type_eq del seed (typechecker.c:48-85): unknown casa con todo; nil ≃
+// optional; el literal entero adopta cualquier entero; tipos compuestos
+// recursivos; escalares del mismo kind iguales.
+fn tc_eq(a: i64, b: i64) -> bool {
+    if a == 0 || b == 0 {
+        return a == b;
+    }
+    let ka = tcv_tps.kind[a];
+    let kb = tcv_tps.kind[b];
+    if ka == 10 || kb == 10 {
+        return true;
+    }
+    if (ka == 9 && kb == 13) || (kb == 9 && ka == 13) {
+        return true;
+    }
+    if ka == 11 && kb != 11 {
+        return tc_is_integer(kb);
+    }
+    if kb == 11 && ka != 11 {
+        return tc_is_integer(ka);
+    }
+    if ka != kb {
+        return false;
+    }
+    if ka == 12 {
+        return tc_eq(tcv_tps.a[a], tcv_tps.a[b]);
+    }
+    if ka == 13 {
+        return tc_eq(tcv_tps.a[a], tcv_tps.a[b]);
+    }
+    if ka == 14 {
+        // params cadena por nxt + retorno
+        let mut p1 = tcv_tps.a[a];
+        let mut p2 = tcv_tps.a[b];
+        while p1 != 0 && p2 != 0 {
+            if !tc_eq(p1, p2) {
+                return false;
+            }
+            p1 = tcv_tps.nxt[p1];
+            p2 = tcv_tps.nxt[p2];
+        }
+        if p1 != 0 || p2 != 0 {
+            return false;
+        }
+        let r1 = tcv_tps.ret[a];
+        let r2 = tcv_tps.ret[b];
+        if r1 == 0 && r2 == 0 {
+            return true;
+        }
+        if r1 == 0 || r2 == 0 {
+            return false;
+        }
+        return tc_eq(r1, r2);
+    }
+    if ka == 15 || ka == 16 {
+        return tcv_tps.s[a] == tcv_tps.s[b];
+    }
+    true
+}
+
+// ---------- diagnósticos (mismo formato que tc_error del seed) ----------
+fn tc_err(idx: i64, msg: string) {
+    tcv_errors = tcv_errors + 1;
+    print(file_name + ":" + to_string(tree.ln[idx]) + ":" + to_string(tree.co[idx]) + ": error: " + msg);
+}
+
+// ---------- scopes ----------
+fn tc_lookup(name: string) -> i64 {
+    // hacia atrás: el shadowing natural (la entrada nueva gana)
+    let mut i = len(tcv_syms.names);
+    while i > 0 {
+        i = i - 1;
+        if tcv_syms.alive[i] && tcv_syms.names[i] == name {
+            if tcv_syms.depths[i] == 0 || tcv_syms.gens[i] == tcv_gen {
+                return i;
+            }
+        }
+    }
+    -1
+}
+
+fn tc_declare(name: string, ty: i64, is_mut: bool, is_fn: bool) {
+    tcv_syms.names = push(tcv_syms.names, name);
+    tcv_syms.types = push(tcv_syms.types, ty);
+    tcv_syms.muts = push(tcv_syms.muts, is_mut);
+    tcv_syms.fns = push(tcv_syms.fns, is_fn);
+    tcv_syms.alive = push(tcv_syms.alive, true);
+    tcv_syms.depths = push(tcv_syms.depths, tcv_depth);
+    tcv_syms.gens = push(tcv_syms.gens, tcv_gen);
+}
+
+fn tc_scope_enter() {
+    tcv_depth = tcv_depth + 1;
+}
+
+fn tc_scope_exit() {
+    tcv_depth = tcv_depth - 1;
+    let mut i = len(tcv_syms.names);
+    while i > 0 {
+        i = i - 1;
+        if tcv_syms.depths[i] > tcv_depth && tcv_syms.gens[i] == tcv_gen {
+            tcv_syms.alive[i] = false;
+        }
+    }
+}
+
+// ---------- resolución de tipos desde TypeIdent(...) del parser ----------
+fn tc_prim_from_name(nm: string) -> i64 {
+    if nm == "void" { return 1; }
+    if nm == "bool" { return 2; }
+    if nm == "i32" { return 3; }
+    if nm == "i64" { return 4; }
+    if nm == "u32" { return 5; }
+    if nm == "u64" { return 6; }
+    if nm == "f64" { return 7; }
+    if nm == "string" { return 8; }
+    0
+}
+
+// payload de "TypeIdent(xxx)" -> xxx
+fn tc_payload(text: string) -> string {
+    let mut open: i64 = -1;
+    let mut i: i64 = 0;
+    while i < len(text) {
+        if text[i] == "(" {
+            open = i;
+            i = len(text);
+        } else {
+            i = i + 1;
+        }
+    }
+    if open < 0 {
+        return "";
+    }
+    substr(text, open + 1, len(text) - open - 2)
+}
+
+fn tc_resolve_type(node: i64) -> i64 {
+    // TypeIdent(nombre) -> primitiva; cualquier otro nombre = error (el
+    // corpus M-T2 no tiene structs/enums — M-T3 añade la resolución nominal)
+    let lab = knames[tree.kind[node]];
+    if lab == "TypeIdent" {
+        let nm = tc_payload(tree.text[node]);
+        let k = tc_prim_from_name(nm);
+        if k != 0 {
+            return tc_prim(k);
+        }
+        tc_err(node, "unknown type '" + nm + "'");
+        return tc_prim(17);
+    }
+    tc_err(node, "invalid type expression");
+    tc_prim(17)
+}
+
+// ---------- números de literal (DEC-006) ----------
+fn tc_lit_value(node: i64) -> i64 {
+    // IntLit(n) o UnaryOp(- IntLit(n)) — devuelve el valor; -922... sin
+    // marcar: sólo lo usamos con rangos y defaults.
+    let lab = knames[tree.kind[node]];
+    if lab == "IntLit" {
+        // sólo dígitos (el lexer del parser los produce); fuera de rango i64
+        // viene de ficheros que el lexer del seed rechaza (corpus excluido)
+        return str_to_int(tc_payload(tree.text[node]));
+    }
+    if lab == "UnaryOp" && tree.text[node] == "UnaryOp(-)" {
+        if tree.first[node] != 0 {
+            let inner = tree.first[node];
+            if knames[tree.kind[inner]] == "IntLit" {
+                return -str_to_int(tc_payload(tree.text[inner]));
+            }
+        }
+    }
+    0
+}
+
+fn tc_lit_has_value(node: i64) -> bool {
+    let lab = knames[tree.kind[node]];
+    if lab == "IntLit" {
+        return true;
+    }
+    if lab == "UnaryOp" && tree.text[node] == "UnaryOp(-)" && tree.first[node] != 0 {
+        return knames[tree.kind[tree.first[node]]] == "IntLit";
+    }
+    false
+}
+
+// int_lit_fits del seed (typechecker.c:2823)
+fn tc_fits(v: i64, k: i64) -> bool {
+    if k == 3 {
+        return v >= -2147483648 && v <= 2147483647;
+    }
+    if k == 5 {
+        return v >= 0 && v <= 4294967295;
+    }
+    if k == 4 {
+        return true;
+    }
+    if k == 6 {
+        return v >= 0;
+    }
+    true
+}
+
+// default_int_type (DEC-006): i32, o i64 si no cabe
+fn tc_default_int(init: i64) -> i64 {
+    if tc_lit_has_value(init) {
+        let v = tc_lit_value(init);
+        if !tc_fits(v, 3) {
+            return tc_prim(4);
+        }
+    }
+    tc_prim(3)
+}
+
+// ---------- builtins (registro del seed: arity + retorno + param1) ----------
+// (0 = unknown; el único param tipado es read_file: string)
+fn tc_builtin(name: string) -> bool {
+    name == "print" || name == "len" || name == "to_string" || name == "read_file" || name == "ord" || name == "substr" || name == "push" || name == "str_to_int" || name == "chr" || name == "read_line" || name == "transfer" || name == "copy"
+}
+
+fn tc_builtin_arity(name: string) -> i64 {
+    if name == "push" { return 2; }
+    if name == "substr" { return 3; }
+    if name == "read_line" { return 0; }
+    1
+}
+
+fn tc_builtin_ret(name: string) -> i64 {
+    if name == "print" { return 1; }
+    if name == "len" { return 4; }
+    if name == "to_string" { return 8; }
+    if name == "read_file" { return 8; }
+    if name == "ord" { return 4; }
+    if name == "substr" { return 8; }
+    if name == "str_to_int" { return 4; }
+    if name == "chr" { return 8; }
+    if name == "read_line" { return 8; }
+    17
+}
+
+fn tc_builtin_p1(name: string) -> i64 {
+    if name == "read_file" { return 8; }
+    0   // unknown
+}
+
+// push -> array<unknown>
+fn tc_builtin_ret_node(name: string) -> i64 {
+    if name == "push" {
+        return tc_array(tc_prim(10));
+    }
+    tc_prim(tc_builtin_ret(name))
+}
+
+// ---------- node_contains_return (clone de typechecker.c:3099) ----------
+fn tc_contains_return(node: i64) -> bool {
+    if node == 0 {
+        return false;
+    }
+    let lab = knames[tree.kind[node]];
+    if lab == "Return" {
+        return true;
+    }
+    if lab == "Block" || lab == "If" || lab == "While" || lab == "FnDecl" || lab == "PubFnDecl" {
+        if lab == "FnDecl" || lab == "PubFnDecl" {
+            return false;   // no atraviesa fn anidadas
+        }
+        let mut c = tree.first[node];
+        while c != 0 {
+            if tc_contains_return(c) {
+                return true;
+            }
+            c = tree.next[c];
+        }
+        return false;
+    }
+    false
+}
+
+// ---------- expresiones (clones de typechecker.c §5) ----------
+fn tc_arg_count(fn_t: i64) -> i64 {
+    let mut n: i64 = 0;
+    let mut p = tcv_tps.a[fn_t];
+    while p != 0 {
+        n = n + 1;
+        p = tcv_tps.nxt[p];
+    }
+    n
+}
+
+fn tc_expr(node: i64) -> i64 {
+    let lab = knames[tree.kind[node]];
+
+    if lab == "IntLit" { return tc_prim(11); }
+    if lab == "BoolLit" { return tc_prim(2); }
+    if lab == "StringLit" { return tc_prim(8); }
+
+    if lab == "Ident" {
+        let name = tc_payload(tree.text[node]);
+        let i = tc_lookup(name);
+        if i < 0 {
+            tc_err(node, "undefined variable '" + name + "'");
+            return tc_prim(17);
+        }
+        return tcv_syms.types[i];
+    }
+
+    if lab == "UnaryOp" {
+        // extraer el operador de "UnaryOp(X)" — prefijo = 8 chars
+        let o = substr(tree.text[node], 8, len(tree.text[node]) - 8 - 1);
+        let t = tc_expr(tree.first[node]);
+        if tc_is_error(tcv_tps.kind[t]) { return t; }
+        if o == "-" {
+            if !tc_is_numeric(tcv_tps.kind[t]) {
+                tc_err(node, "negation requires numeric type, got " + tc_kname(tcv_tps.kind[t]));
+                return tc_prim(17);
+            }
+            return t;
+        }
+        if o == "!" {
+            if tcv_tps.kind[t] != 2 {
+                tc_err(node, "logical not requires bool, got " + tc_kname(tcv_tps.kind[t]));
+                return tc_prim(17);
+            }
+            return tc_prim(2);
+        }
+        if o == "~" {
+            if !tc_is_integer(tcv_tps.kind[t]) {
+                tc_err(node, "bitwise not requires integer type, got " + tc_kname(tcv_tps.kind[t]));
+                return tc_prim(17);
+            }
+            return t;
+        }
+        tc_err(node, "operator not supported in Astra-0");
+        return tc_prim(17);
+    }
+
+    if lab == "BinaryOp" {
+        let op = substr(tree.text[node], 9, len(tree.text[node]) - 9 - 1); // BinaryOp(+) -> +, prefijo 9 chars
+        let l = tc_expr(tree.first[node]);
+        let r = tc_expr(tree.next[tree.first[node]]);
+        if tc_is_error(tcv_tps.kind[l]) { return l; }
+        if tc_is_error(tcv_tps.kind[r]) { return r; }
+        let lk = tcv_tps.kind[l];
+        let rk = tcv_tps.kind[r];
+        if op == "&&" || op == "||" {
+            if lk != 2 {
+                tc_err(tree.first[node], "logical operator requires bool, got " + tc_kname(lk));
+                return tc_prim(17);
+            }
+            if rk != 2 {
+                tc_err(tree.next[tree.first[node]], "logical operator requires bool, got " + tc_kname(rk));
+                return tc_prim(17);
+            }
+            return tc_prim(2);
+        }
+        if op == "+" && lk == 8 && rk == 8 {
+            return tc_prim(8);
+        }
+        if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
+            if !tc_is_numeric(lk) {
+                tc_err(tree.first[node], "arithmetic operator requires numeric type, got " + tc_kname(lk));
+                return tc_prim(17);
+            }
+            if !tc_is_numeric(rk) {
+                tc_err(tree.next[tree.first[node]], "arithmetic operator requires numeric type, got " + tc_kname(rk));
+                return tc_prim(17);
+            }
+            if !tc_eq(l, r) {
+                tc_err(node, "type mismatch: cannot apply '" + op + "' to " + tc_kname(lk) + " and " + tc_kname(rk));
+                return tc_prim(17);
+            }
+            // numeric_result_type: si el izq es literal, adopta el der
+            if lk == 11 { return r; }
+            return l;
+        }
+        if op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" {
+            if !tc_eq(l, r) {
+                tc_err(node, "type mismatch: cannot compare " + tc_kname(lk) + " and " + tc_kname(rk));
+                return tc_prim(17);
+            }
+            return tc_prim(2);
+        }
+        if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" {
+            if !tc_is_integer(lk) {
+                tc_err(tree.first[node], "bitwise operator requires integer type, got " + tc_kname(lk));
+                return tc_prim(17);
+            }
+            if !tc_is_integer(rk) {
+                tc_err(tree.next[tree.first[node]], "bitwise operator requires integer type, got " + tc_kname(rk));
+                return tc_prim(17);
+            }
+            if lk == 11 { return r; }
+            return l;
+        }
+        tc_err(node, "operator not supported in Astra-0");
+        return tc_prim(17);
+    }
+
+    if lab == "Call" {
+        // clon de typecheck_call: callee -> arity -> args -> retorno
+        let callee = tree.first[node];
+        let ct = tc_expr(callee);
+        if tc_is_error(tcv_tps.kind[ct]) { return ct; }
+        if tcv_tps.kind[ct] != 14 {
+            tc_err(callee, "cannot call non-function type " + tc_kname(tcv_tps.kind[ct]));
+            return tc_prim(17);
+        }
+        let want = tc_arg_count(ct);
+        // recolectar args (cadena a partir del callee)
+        let mut args: [i64] = [0];
+        let mut n: i64 = 0;
+        let mut c = tree.next[callee];
+        while c != 0 {
+            args = push(args, c);
+            n = n + 1;
+            c = tree.next[c];
+        }
+        if n != want {
+            tc_err(node, "expected " + to_string(want) + " arguments, got " + to_string(n));
+            return tc_prim(17);
+        }
+        let mut p = tcv_tps.a[ct];
+        let mut i: i64 = 0;
+        while i < n {
+            let at = tc_expr(args[i + 1]);
+            if tc_is_error(tcv_tps.kind[at]) { return at; }
+            if !tc_eq(at, p) {
+                tc_err(node, "argument " + to_string(i + 1) + ": expected " + tc_kname(tcv_tps.kind[p]) + ", got " + tc_kname(tcv_tps.kind[at]));
+                return tc_prim(17);
+            }
+            p = tcv_tps.nxt[p];
+            i = i + 1;
+        }
+        let ret = tcv_tps.ret[ct];
+        if ret == 0 { return tc_prim(1); }
+        return ret;
+    }
+
+    if lab == "Index" {
+        let obj = tc_expr(tree.first[node]);
+        if tc_is_error(tcv_tps.kind[obj]) { return obj; }
+        let okk = tcv_tps.kind[obj];
+        if okk != 12 && okk != 8 {
+            tc_err(tree.first[node], "cannot index non-array type " + tc_kname(okk));
+            return tc_prim(17);
+        }
+        let ix = tc_expr(tree.next[tree.first[node]]);
+        if tc_is_error(tcv_tps.kind[ix]) { return ix; }
+        if !tc_is_integer(tcv_tps.kind[ix]) {
+            tc_err(tree.next[tree.first[node]], "array index must be integer type, got " + tc_kname(tcv_tps.kind[ix]));
+            return tc_prim(17);
+        }
+        if okk == 8 { return tc_prim(8); }
+        return tcv_tps.a[obj];
+    }
+
+    if lab == "FieldAccess" {
+        // corpus M-T2 sin structs/enums: receptor no-struct (clon del seed)
+        let obj = tc_expr(tree.first[node]);
+        if tc_is_error(tcv_tps.kind[obj]) { return obj; }
+        tc_err(tree.first[node], "cannot access field on non-struct type " + tc_kname(tcv_tps.kind[obj]));
+        return tc_prim(17);
+    }
+
+    if lab == "ArrayLit" {
+        let mut c = tree.first[node];
+        if c == 0 {
+            return tc_array(tc_prim(10)); // literal vacío: element unknown
+        }
+        let et = tc_expr(c);
+        if tc_is_error(tcv_tps.kind[et]) { return et; }
+        let mut i: i64 = 1;
+        c = tree.next[c];
+        while c != 0 {
+            let t = tc_expr(c);
+            if tc_is_error(tcv_tps.kind[t]) { return t; }
+            if !tc_eq(t, et) {
+                tc_err(c, "array element " + to_string(i + 1) + " has type " + tc_kname(tcv_tps.kind[t]) + ", expected " + tc_kname(tcv_tps.kind[et]));
+                return tc_prim(17);
+            }
+            c = tree.next[c];
+            i = i + 1;
+        }
+        return tc_array(et);
+    }
+
+    if lab == "If" {
+        let cond = tc_expr(tree.first[node]);
+        if tc_is_error(tcv_tps.kind[cond]) { return cond; }
+        if tcv_tps.kind[cond] != 2 && tcv_tps.kind[cond] != 13 {
+            tc_err(tree.first[node], "if condition must be bool, got " + tc_kname(tcv_tps.kind[cond]));
+        }
+        let then_t = tc_block_child(tree.next[tree.first[node]]);
+        let else_child = tree.next[tree.next[tree.first[node]]];
+        if else_child != 0 {
+            let else_t = tc_block_child(else_child);
+            if !tc_eq(then_t, else_t) {
+                tc_err(node, "if branches have different types: " + tc_kname(tcv_tps.kind[then_t]) + " vs " + tc_kname(tcv_tps.kind[else_t]));
+                return tc_prim(17);
+            }
+            return then_t;
+        }
+        return tc_prim(1);
+    }
+
+    if lab == "While" {
+        let cond = tc_expr(tree.first[node]);
+        if tc_is_error(tcv_tps.kind[cond]) { return cond; }
+        if tcv_tps.kind[cond] != 2 {
+            tc_err(tree.first[node], "while condition must be bool, got " + tc_kname(tcv_tps.kind[cond]));
+        }
+        tc_block_child(tree.next[tree.first[node]]);
+        return tc_prim(1);
+    }
+
+    if lab == "Return" {
+        let mut vt: i64 = tcv_void; // void
+        if tree.first[node] != 0 {
+            vt = tc_expr(tree.first[node]);
+            if tc_is_error(tcv_tps.kind[vt]) { return vt; }
+        }
+        if tcv_fndepth == 0 {
+            tc_err(node, "return outside of a function");
+            return tc_prim(17);
+        }
+        if tcv_ret != 0 && !tc_eq(vt, tcv_ret) {
+            tc_err(node, "return type " + tc_kname(tcv_tps.kind[vt]) + " does not match function return type " + tc_kname(tcv_tps.kind[tcv_ret]));
+            return tc_prim(17);
+        }
+        return vt;
+    }
+
+    if lab == "Break" || lab == "Continue" {
+        return tc_prim(1);
+    }
+
+    if lab == "Assign" {
+        return tc_assign(node);
+    }
+
+    if lab == "Block" {
+        return tc_block_child(node);
+    }
+
+    if lab == "Else" {
+        // el nodo Else es transparente para el TIPO: el delimitador con
+        // hijo Block/If (la cadena else-if mete un Block SIN marcar →
+        // void → DEC-033 rechaza; el else con llaves marca la cola del
+        // Block → tipado → acepta — t4 vs t7 verificados).
+        return tc_expr(tree.first[node]);
+    }
+
+    // nodos M-T3+ (struct/enum/match/lambda/impl...) y comodines: unknown
+    // (type_eq lo acepta con todo → sin falsos negativos en el corpus M-T2)
+    if lab == "VarDecl" { return tc_var(node); }
+    if lab == "ConstDecl" { return tc_const(node); }
+    tc_prim(10)
+}
+
+// Bloque como valor (clon de typecheck_block): TODAS las sentencias menos
+// la última se evalúan una vez; la última, si flg==1 (expresión final sin
+// ';'), es la cola y se evalúa UNA sola vez como valor — t1..t7 y DEC-033.
+fn tc_block_child(node: i64) -> i64 {
+    let lab = knames[tree.kind[node]];
+    if lab != "Block" {
+        return tc_expr(node);
+    }
+    tc_scope_enter();
+    // localizar el último hijo
+    let mut last: i64 = 0;
+    let mut c = tree.first[node];
+    while c != 0 {
+        last = c;
+        c = tree.next[c];
+    }
+    // sentencias hasta el penúltimo
+    c = tree.first[node];
+    while c != 0 && c != last {
+        tc_stmt(c);
+        c = tree.next[c];
+    }
+    let mut vt: i64 = tcv_void;
+    if last != 0 {
+        if tree.flg[last] == 1 {
+            vt = tc_expr(last);
+        } else {
+            tc_stmt(last);
+        }
+    }
+    tc_scope_exit();
+    vt
+}
+
+// sentencia sin valor: decls, fn anidadas y todo lo demás como expresión
+fn tc_stmt(node: i64) {
+    let l = knames[tree.kind[node]];
+    if l == "VarDecl" {
+        tc_var(node);
+    } else if l == "ConstDecl" {
+        tc_const(node);
+    } else if l == "FnDecl" || l == "PubFnDecl" {
+        tc_fn_body(node);
+    } else {
+        let ign = tc_expr(node);
+    }
+}
+
+// nombre de declaración: "VarDecl(total, mut)" -> "total"; "FnDecl(add)" -> "add"
+fn tc_decl_name(text: string) -> string {
+    let payload = tc_payload(text);
+    let mut i: i64 = 0;
+    while i < len(payload) {
+        if payload[i] == "," {
+            return substr(payload, 0, i);
+        }
+        i = i + 1;
+    }
+    payload
+}
+
+fn tc_is_mut_decl(text: string) -> bool {
+    // ", mut" dentro del payload
+    let payload = tc_payload(text);
+    let mut i: i64 = 0;
+    while i + 5 <= len(payload) {
+        if substr(payload, i, 5) == ", mut" {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+// primer hijo por etiqueta
+fn tc_child_labeled(node: i64, want: string) -> i64 {
+    let mut c = tree.first[node];
+    while c != 0 {
+        if knames[tree.kind[c]] == want {
+            return c;
+        }
+        c = tree.next[c];
+    }
+    0
+}
+
+// ---------- let / const (clones de typecheck_var_decl / const_decl) ----------
+fn tc_var(node: i64) -> i64 {
+    let nm = tc_decl_name(tree.text[node]);
+    if tc_builtin(nm) {
+        tc_err(node, "'" + nm + "' is a builtin and cannot be redeclared");
+        return 1;
+    }
+    let annot = tc_child_labeled(node, "TypeIdent");
+    let mut decl: i64 = 0;
+    if annot != 0 {
+        decl = tc_resolve_type(annot);
+        if tcv_tps.kind[decl] == 17 { return 1; }
+    }
+    let mut init: i64 = 0;
+    let first_c = tree.first[node];
+    if first_c != 0 {
+        if knames[tree.kind[first_c]] == "TypeIdent" {
+            init = tree.next[first_c];
+        } else {
+            init = first_c;
+        }
+    }
+    let mut vt: i64 = 0;
+    if init != 0 {
+        vt = tc_expr(init);
+        if tc_is_error(tcv_tps.kind[vt]) { return 1; }
+    }
+    if vt != 0 && tcv_tps.kind[vt] == 1 {
+        tc_err(node, "'" + nm + "' cannot be initialized with a void expression: this expression has no value to bind (a block has one only when it ends in an expression, not a statement)");
+        return 1;
+    }
+    let mut final_t: i64 = 0;
+    if decl != 0 && vt != 0 {
+        if !tc_eq(decl, vt) {
+            tc_err(node, "type mismatch: variable '" + nm + "' declared as " + tc_kname(tcv_tps.kind[decl]) + " but initialized with " + tc_kname(tcv_tps.kind[vt]));
+        } else if tc_is_integer(tcv_tps.kind[decl]) && tc_lit_has_value(init) {
+            let litv = tc_lit_value(init);
+            if !tc_fits(litv, tcv_tps.kind[decl]) {
+                tc_err(node, "integer literal " + to_string(litv) + " out of range for " + tc_kname(tcv_tps.kind[decl]));
+            }
+        }
+        final_t = decl;
+    } else if decl != 0 {
+        final_t = decl;
+    } else if vt != 0 {
+        if tcv_tps.kind[vt] == 11 {
+            final_t = tc_default_int(init);
+        } else {
+            final_t = vt;
+        }
+    } else {
+        tc_err(node, "variable '" + nm + "' must have a type annotation or initializer");
+        final_t = tc_prim(17);
+    }
+    tc_declare(nm, final_t, tc_is_mut_decl(tree.text[node]), false);
+    return 1;
+}
+
+fn tc_const(node: i64) -> i64 {
+    let nm = tc_decl_name(tree.text[node]);
+    if tc_builtin(nm) {
+        tc_err(node, "'" + nm + "' is a builtin and cannot be redeclared");
+        return 1;
+    }
+    let annot = tc_child_labeled(node, "TypeIdent");
+    let mut decl: i64 = 0;
+    if annot != 0 {
+        decl = tc_resolve_type(annot);
+        if tcv_tps.kind[decl] == 17 { return 1; }
+    }
+    let mut init: i64 = 0;
+    let first_c = tree.first[node];
+    if first_c != 0 {
+        if knames[tree.kind[first_c]] == "TypeIdent" {
+            init = tree.next[first_c];
+        } else {
+            init = first_c;
+        }
+    }
+    let mut vt: i64 = 0;
+    if init != 0 {
+        vt = tc_expr(init);
+        if tc_is_error(tcv_tps.kind[vt]) { return 1; }
+    }
+    let mut final_t: i64 = 0;
+    if decl != 0 && vt != 0 {
+        if !tc_eq(decl, vt) {
+            tc_err(node, "type mismatch: const '" + nm + "' declared as " + tc_kname(tcv_tps.kind[decl]) + " but initialized with " + tc_kname(tcv_tps.kind[vt]));
+        } else if tc_is_integer(tcv_tps.kind[decl]) && tc_lit_has_value(init) {
+            let litv = tc_lit_value(init);
+            if !tc_fits(litv, tcv_tps.kind[decl]) {
+                tc_err(node, "integer literal " + to_string(litv) + " out of range for " + tc_kname(tcv_tps.kind[decl]));
+            }
+        }
+        final_t = decl;
+    } else if decl != 0 {
+        final_t = decl;
+    } else if vt != 0 {
+        if tcv_tps.kind[vt] == 11 {
+            final_t = tc_default_int(init);
+        } else {
+            final_t = vt;
+        }
+    } else {
+        tc_err(node, "const '" + nm + "' must have a type annotation or initializer");
+        final_t = tc_prim(17);
+    }
+    tc_declare(nm, final_t, false, false);
+    return 1;
+}
+
+// ---------- asignación (clon de typecheck_assign) ----------
+fn tc_assign(node: i64) -> i64 {
+    let target = tree.first[node];
+    let value = tree.next[target];
+    if target == 0 {
+        tc_err(node, "assignment without a target");
+        return tc_prim(17);
+    }
+    // raíz LValue: bajar por FieldAccess/Index hasta el Ident
+    let mut root = target;
+    while true {
+        let l = knames[tree.kind[root]];
+        if l == "FieldAccess" {
+            root = tree.first[root];
+        } else if l == "Index" {
+            root = tree.first[root];
+        } else {
+            break;
+        }
+    }
+    if knames[tree.kind[root]] != "Ident" {
+        tc_err(target, "invalid assignment target");
+        return tc_prim(17);
+    }
+    let name = tc_decl_name(tree.text[root]);
+    let i = tc_lookup(name);
+    if i < 0 {
+        tc_err(root, "undefined variable '" + name + "'");
+        return tc_prim(17);
+    }
+    if tcv_syms.fns[i] {
+        tc_err(root, "cannot reassign function '" + name + "'");
+        return tc_prim(17);
+    }
+    if !tcv_syms.muts[i] {
+        if knames[tree.kind[target]] != "Ident" {
+            tc_err(root, "cannot assign through immutable variable '" + name + "' (declare it with 'let mut')");
+        } else {
+            tc_err(root, "cannot assign to immutable variable '" + name + "'");
+        }
+        return tc_prim(17);
+    }
+    // DEC-013: s[i] = … — receptor string
+    if knames[tree.kind[target]] == "Index" {
+        let objt = tc_expr(tree.first[target]);
+        if tc_is_error(tcv_tps.kind[objt]) { return tc_prim(17); }
+        if tcv_tps.kind[objt] == 8 {
+            tc_err(target, "cannot assign to string element");
+            return tc_prim(17);
+        }
+    }
+    let vt = tc_expr(value);
+    if tc_is_error(tcv_tps.kind[vt]) { return tc_prim(17); }
+    // tipo del destino
+    let mut target_t: i64 = 0;
+    let mut what = "variable";
+    if knames[tree.kind[target]] == "Ident" {
+        target_t = tcv_syms.types[i];
+    } else if knames[tree.kind[target]] == "Index" {
+        let objt = tc_expr(tree.first[target]);
+        if tcv_tps.kind[objt] == 12 {
+            target_t = tcv_tps.a[objt];
+        } else {
+            target_t = tc_prim(10);
+        }
+        what = "array element";
+    } else {
+        // field (M-T3 fuera del corpus): sin comprobación de tipo
+        what = "struct field";
+    }
+    if target_t != 0 && !tc_eq(vt, target_t) {
+        tc_err(node, "type mismatch: cannot assign " + tc_kname(tcv_tps.kind[vt]) + " to " + what + " of type " + tc_kname(tcv_tps.kind[target_t]));
+    }
+    if target_t == 0 { return vt; }
+    return target_t;
+}
+
+// ---------- firma y cuerpo de fn ----------
+fn tc_build_fn_type(node: i64) -> i64 {
+    let fn_t = tc_mk(14);
+    let mut first: i64 = 0;
+    let mut prev: i64 = 0;
+    let mut c = tree.first[node];
+    while c != 0 {
+        if knames[tree.kind[c]] == "Param" {
+            let pt_node = tc_child_labeled(c, "TypeIdent");
+            let mut pt: i64 = 10; // sin anotación -> unknown
+            if pt_node != 0 {
+                pt = tc_resolve_type(pt_node);
+            }
+            if prev == 0 {
+                first = pt;
+            } else {
+                tcv_tps.nxt[prev] = pt;
+            }
+            prev = pt;
+        }
+        c = tree.next[c];
+    }
+    tcv_tps.a[fn_t] = first;
+    let ret_node = tc_child_labeled(node, "ReturnType");
+    if ret_node != 0 {
+        let inner = tc_child_labeled(ret_node, "TypeIdent");
+        if inner != 0 {
+            let rr = tc_resolve_type(inner);
+            tcv_tps.ret[fn_t] = rr;
+            print("DBG rr=" + to_string(rr) + " fn_t=" + to_string(fn_t) + " after=" + to_string(tcv_tps.ret[fn_t]) + " retdim=" + to_string(len(tcv_tps.ret)));
+        }
+    }
+    print("DBG build fn_t=" + to_string(fn_t) + " ret_node=" + to_string(ret_node) + " ret=" + to_string(tcv_tps.ret[fn_t]));
+    fn_t
+}
+
+fn tc_fn_body(node: i64) {
+    let nm = tc_decl_name(tree.text[node]);
+    tcv_gen = tcv_gen + 1;
+    // parámetros: declarados con la generación de ESTA fn
+    let mut c = tree.first[node];
+    while c != 0 {
+        if knames[tree.kind[c]] == "Param" {
+            let pn = tc_decl_name(tree.text[c]);
+            let pt_node = tc_child_labeled(c, "TypeIdent");
+            let mut pt: i64 = 10;
+            if pt_node != 0 {
+                pt = tc_resolve_type(pt_node);
+            }
+            tc_declare(pn, pt, false, false);
+        }
+        c = tree.next[c];
+    }
+    // retorno anotado
+    let ret_node = tc_child_labeled(node, "ReturnType");
+    tcv_ret = 0;
+    if ret_node != 0 {
+        let inner = tc_child_labeled(ret_node, "TypeIdent");
+        if inner != 0 {
+            tcv_ret = tc_resolve_type(inner);
+        }
+    }
+    tcv_fndepth = tcv_fndepth + 1;
+    let body = tc_child_labeled(node, "Block");
+    tcv_contret = false;
+    let mut body_t: i64 = tcv_void;
+    if body != 0 {
+        tcv_contret = tc_contains_return(body);
+        body_t = tc_block_child(body);
+    }
+    // clon de typecheck_fn_body: sólo con retorno anotado real
+    if tcv_ret != 0 && tcv_tps.kind[tcv_ret] != 1 && tcv_tps.kind[tcv_ret] != 17 && tcv_tps.kind[tcv_ret] != 10 {
+        if tcv_tps.kind[body_t] != 1 {
+            if !tc_eq(tcv_ret, body_t) {
+                tc_err(node, "function '" + nm + "' returns " + tc_kname(tcv_tps.kind[tcv_ret]) + " but its body has type " + tc_kname(tcv_tps.kind[body_t]));
+            }
+        } else if !tcv_contret {
+            tc_err(node, "function '" + nm + "' declares that it returns " + tc_kname(tcv_tps.kind[tcv_ret]) + " but its body produces no value: end the body with an expression without a trailing `;`, or add a `return`");
+        }
+    }
+    tcv_fndepth = tcv_fndepth - 1;
+    tcv_gen = tcv_gen - 1;
+}
+
+// ---------- módulo (clones de typecheck_module_pass / _body) ----------
+fn tc_module(root: i64) {
+    // pass 1: firmas de fn (shadow → duplicado → declare)
+    let mut c = tree.first[root];
+    while c != 0 {
+        let l = knames[tree.kind[c]];
+        if l == "FnDecl" || l == "PubFnDecl" {
+            let nm = tc_decl_name(tree.text[c]);
+            if tc_builtin(nm) {
+                tc_err(c, "'" + nm + "' is a builtin and cannot be redeclared");
+            } else {
+                let existing = tc_lookup(nm);
+                if existing >= 0 && tcv_syms.fns[existing] {
+                    tc_err(c, "duplicate function '" + nm + "'");
+                }
+                let fn_t = tc_build_fn_type(c);
+                tc_declare(nm, fn_t, false, true);
+            }
+        }
+        c = tree.next[c];
+    }
+    // pass 2: cuerpos + items + sentencias de módulo en orden de fuente
+    c = tree.first[root];
+    while c != 0 {
+        let l = knames[tree.kind[c]];
+        if l == "FnDecl" || l == "PubFnDecl" {
+            tc_fn_body(c);
+        } else if l == "ConstDecl" || l == "PubConstDecl" {
+            tc_const(c);
+        } else if l == "VarDecl" {
+            tc_var(c);
+        } else if l == "Use" || l == "Import" || l == "From" || l == "ImportItem" {
+            // descartados en single-file (el seed no chequea nada)
+        } else {
+            tc_stmt(c);
+        }
+        c = tree.next[c];
+    }
+}
+
+// ---------- init: builtins del seed (con sus firmas) ----------
+fn tc_declare_builtin(name: string, arity: i64, p1: i64, ret_t: i64) {
+    let fn_t = tc_mk(14);
+    let mut first: i64 = 0;
+    let mut prev: i64 = 0;
+    let mut i: i64 = 0;
+    while i < arity {
+        let pt = tc_mk(p1);
+        if prev == 0 {
+            first = pt;
+        } else {
+            tcv_tps.nxt[prev] = pt;
+        }
+        prev = pt;
+        i = i + 1;
+    }
+    tcv_tps.a[fn_t] = first;
+    tcv_tps.ret[fn_t] = ret_t;
+    tc_declare(name, fn_t, false, true);
+}
+
+fn tc_init() {
+    tcv_void = tc_prim(1);
+    tc_declare_builtin("print", 1, 10, tc_prim(1));
+    tc_declare_builtin("len", 1, 10, tc_prim(4));
+    tc_declare_builtin("to_string", 1, 10, tc_prim(8));
+    tc_declare_builtin("read_file", 1, 8, tc_prim(8));
+    tc_declare_builtin("ord", 1, 10, tc_prim(4));
+    tc_declare_builtin("substr", 3, 10, tc_prim(8));
+    tc_declare_builtin("push", 2, 10, tc_array(tc_prim(10)));
+    tc_declare_builtin("str_to_int", 1, 10, tc_prim(4));
+    tc_declare_builtin("chr", 1, 10, tc_prim(8));
+    tc_declare_builtin("read_line", 0, 10, tc_prim(8));
+    tc_declare_builtin("transfer", 1, 10, tc_prim(1));
+    tc_declare_builtin("copy", 1, 10, tc_prim(10));
+}
+
+// ---------- driver ----------
+fn main() {
+    src = read_file("parser_input.astra");
+    slen = len(src);
+    pos = 0;
+    has_look = false;
+    cur_line = 1;
+    nln = 1;
+    t_line = 1;
+    t_col = 1;
+    prev_line = 1;
+    prev_col = 1;
+    prev_len = 0;
+    line_start = 0;
+    advance();
+    let root = parse_module();
+    if err_count > 0 {
+        print("error: parse failed");
+        return;
+    }
+    tc_init();
+    tc_module(root);
+    if tcv_errors > 0 {
+        print("error: type check failed with " + to_string(tcv_errors) + " error(s)");
+    }
+}
