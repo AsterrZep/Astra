@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034) | 33 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–035) | 34 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
@@ -79,12 +79,12 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-33 informes numerados `001`–`032` y `034`, sin solapamientos: cada uno es un
-dossier autocontenido sobre un tema (gramática, diseño del seed, backend C,
-enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
+34 informes numerados `001`–`032`, `034` y `035`, sin solapamientos: cada uno
+es un dossier autocontenido sobre un tema (gramática, diseño del seed, backend
+C, enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
 concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
-externa, enforcement de seguridad, semántica de runtime, stdlib,
-benchmarks, sistemas de enteros…).
+externa, enforcement de seguridad, semántica de runtime, stdlib, benchmarks,
+sistemas de enteros, punteros…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
   diseño del seed y patrones del backend C.
@@ -107,6 +107,13 @@ benchmarks, sistemas de enteros…).
   Go, C#, JS y Kotlin; el espectro de semánticas de overflow (UB → wrap →
   trap → imposible) y el encaje con DEC-006/007 (incluye probes
   empíricos del seed: sólo `i32/i64/u32/u64` existen hoy).
+- `035` **punteros: modelos y eficiencia**: las seis familias de modelo
+  (dirección cruda, sin aritmética, GC, ownership, handles/offsets,
+  capabilities CHERI), C/C++/Rust/Zig/Go/Swift/Java/C#/Python/JS/Ada/Erlang
+  comparados, la capa hardware (PAC/MTE/MPX-fracasó), y eficiencia
+  **medida** (chase 794.7 ns/nodo vs array 6.71 ns/elem ≈ 118×;
+  `unique_ptr`=8 B, `shared_ptr`=16 B, `?*T`=8 B, `Option<&T>`=8 B por
+  nicho) con el encaje de `Ptr<T>`/unsafe de ARCHITECTURE §8.5.
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
