@@ -3,7 +3,7 @@
 > **Alcance**: libro de usuario estilo *The Rust Programming Language*.
 > **Contenido en evolución** (decisión del 2026-10-28): primero el texto; el
 > build HTML (mdBook o equivalente) llega después. Cada capítulo documenta
-> **solo lo implementado hoy** (Astra-0 + los 8 builtins + las 7 rutas) —
+> **solo lo implementado hoy** (Astra-0 + los 10 builtins + las 7 rutas) —
 > nunca el pitch futuro; lo que existirá se marca con «Aún no existe» y
 > remite a `ARCHITECTURE.md`/`DECISIONES.md`.
 
@@ -36,17 +36,17 @@
 | 02 | `02_variables_tipos.md` — `let`/`let mut`/`val`, tipos (i32/i64/u32/u64/f64/bool/string), defaults DEC-006, wrap DEC-007 | ✅ 2026-10-28 (11) |
 | 03 | `03_control_flujo.md` — `if`/`else`, `while`, `for..in`, `break`/`continue` | ✅ 2026-10-28 (9) |
 | 04 | `04_funciones_closures.md` — funciones, return implícito, recursión, closures (captura por valor DEC-004) | ✅ 2026-10-28 (5) |
-| 05 | `05_arrays_structs.md` — arrays, structs, **el contrato de aliasing** (DEC-001/002: `let` protege el binding, no el objeto) | |
-| 06 | `06_enums_match.md` — enums, construcción calificada DEC-008, match (guards, or-patterns, exhaustividad) | |
-| 07 | `07_option_result.md` — `some`/`none`/`ok`/`err`, `match`, el operador `?` | |
-| 08 | `08_strings_texto.md` — literales, inmutabilidad, los 8 builtins (`len`, `s[i]`, `ord`, `substr`, `to_string`, `read_file`, `push`, `str_to_int`), errores de runtime | |
-| 09 | `09_generics_traits.md` — genéricos monomorfozados, `impl`, traits (lo que existe) | |
-| 10 | `10_modulos_multifichero.md` — `use`, `pub`, rutas `@/`, orden de dependencias | |
-| 11 | `11_memoria_concurrencia.md` — modelo honesto: dónde libera (LLVM/ARC) y dónde no (VMs arena), §2.6 de fibras = especificado NO implementado | |
-| 12 | `12_rutas_ejecucion.md` — las 7 rutas (VM/C/LLVM/JIT/wasm/cross), cuándo usar cada una, gates que las protegen | |
-| 13 | `13_toolchain_cli.md` — comandos reales del día (`astra-zig`, `astra-seed`, `--emit-obj`, `--jit`, gates de selfhost) | |
-| 14 | `14_referencia_builtins.md` — tabla de referencia: 8 builtins + keywords + errores de runtime con sus textos exactos | |
-| 15 | `15_glosario.md` — términos (fibra, ARC/ORC, DEC, gate, Astra-0, seed, paridad…) | |
+| 05 | `05_arrays_structs.md` — arrays, structs, **el contrato de aliasing** (DEC-001/002: `let` protege el binding, no el objeto) | ✅ 2026-10-28 (8) |
+| 06 | `06_enums_match.md` — enums, construcción calificada DEC-008, match (guards, or-patterns, exhaustividad) | ✅ 2026-10-28 (6) |
+| 07 | `07_option_result.md` — `some`/`none`/`ok`/`err`, `match`, el operador `?` | ✅ 2026-10-28 (6) |
+| 08 | `08_strings_texto.md` — literales, inmutabilidad, los 10 builtins (`len`, `s[i]`, `ord`, `substr`, `to_string`, `read_file`, `push`, `str_to_int`, `chr`, `read_line`), errores de runtime | ✅ 2026-10-28 (8) |
+| 09 | `09_generics_traits.md` — genéricos monomorfozados, `impl`, traits (lo que existe) | ✅ 2026-10-28 (8) |
+| 10 | `10_modulos_multifichero.md` — `use`, `pub`, rutas `@/`, orden de dependencias | ✅ 2026-10-28 (13) |
+| 11 | `11_memoria_concurrencia.md` — modelo honesto: dónde libera (LLVM/ARC) y dónde no (VMs arena), §2.6 de fibras = especificado NO implementado | ✅ 2026-10-28 (2) |
+| 12 | `12_rutas_ejecucion.md` — las 7 rutas (VM/C/LLVM/JIT/wasm/cross), cuándo usar cada una, gates que las protegen | ✅ 2026-10-28 (1) |
+| 13 | `13_toolchain_cli.md` — comandos reales del día (`astra-zig`, `astra-seed`, `--emit-obj`, `--jit`, gates de selfhost) | ✅ 2026-10-28 (4) |
+| 14 | `14_referencia_builtins.md` — tabla de referencia: 10 builtins + keywords + errores de runtime con sus textos exactos | ✅ 2026-10-28, actualizado 2026-10-29 (6) |
+| 15 | `15_glosario.md` — términos (fibra, ARC/ORC, DEC, gate, Astra-0, seed, paridad…) | ✅ 2026-10-28 (0) |
 
 ## Puertas (mínimas en v1)
 

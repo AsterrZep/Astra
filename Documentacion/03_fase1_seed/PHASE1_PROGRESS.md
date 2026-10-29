@@ -804,8 +804,28 @@ terminador, sin escapes de string, sin hex.
    Call/Index/Match = loc del ident/keyword base, como parser.c) medidas
    al primer error. Sigue: M-T4 (corpus completo: optionales/`?`,
    lambdas, `for`, límites de profundidad del parser).
+   **M-T4 ✅ (fases 1–3, 2026-10-29)** — el corpus creció gateado en
+   cuatro pasos, cada exclusión con su motivo en `typechecker_corpus.list`:
+   - **141 → 172** (commit `8b65a98`): fix de cadenas de params sin
+     ciclar (`fn f(a: P, b: P)` compartía el nominal y `tc_arg_count`
+     colgaba) + los 31 ficheros cuya semilla y combinado ya coincidían en
+     veredicto + primera línea (medición M-T4 fase 1).
+   - **M-T4a → 180**: `for..in` y rangos (parser `For`/`in`/`..`/`..=`,
+     typechecker `typecheck_for`).
+   - **M-T4b → 184**: lambdas + tipo fn `fn(T)->R` (`parse_type` TypeFn,
+     `tc_lambda`).
+   - **M-T4c → 196**: opcionales — `some`/`none`/`ok`/`err`, `?` como
+     `TryExpr` con el doble check del seed y `TypeOptional`.
+   **Sigue (M-T4+)**: genéricos y ownership/transfer fuera del corpus;
+   las features adyacentes anotadas fichero a fichero en la lista (`[T]`,
+   `if` como expresión en posición de expresión, expresión-bloque `{...}`,
+   mensajes del emitter); los **3 límites de profundidad** del seed siguen
+   excluidos; después, el **emitter en Astra-0** (`research/028` §5:
+   codegen el último).
 
-Hallazgos de lenguaje tocados al construirlo, **sin pinneear** (ambos
-compiladores coinciden, candidatos a DEC futura): `else` en línea aparte del
-`}` se rechaza (`ui` pendiente); `if/else if/else` multilinea como cola de
-fn no tipa («if branches have different types: string vs void»).
+Hallazgos de lenguaje tocados al construirlo, ahora **pinneados por
+DEC-033** (2026-10-29): `else` en línea aparte del `}` →
+`ui/else_newline_rejected.astra`; `if/else if/else` multilinea como cola
+de fn → `ui/elseif_tail_rejected.astra` («if branches have different
+types: string vs void»). Ambos mensajes byte-idénticos seed↔zig
+(`ui_message_parity.sh`).

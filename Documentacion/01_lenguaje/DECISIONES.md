@@ -89,9 +89,12 @@
 - **Estado**: **Aceptada (doc)** — ratificada el 2026-10-28. La Fase 0 está
   completa: `ARCHITECTURE.md` §2.6 escrita (PR #15), invariant 8 en
   `AGENTS.md` y las notas de `§35.5`/`COMPARATIVE_ANALYSIS` añadidas en el
-  PR de ratificación. La **implementación queda pospuesta** al PR «fase E»
-  (constructo + S1/S2/S3 en los 2 frontends + `.copy()` en 4 motores); no
-  existe código hoy (`transfer` no lexea, `grep` → 0 en ambos árboles).
+  PR de ratificación. **Implementación parcial desde el 2026-10-28**:
+  fase E1 (builtin `transfer` + S1/S2 en los 2 frontends + nil-red R4 en
+  los 3 emisores, PR #36) y fase E2 (`.copy()` deep copy en 4 motores,
+  PR #38) ya están y gateados — `grep transfer seed/src zig/src` → 6
+  ficheros; siguen **pendientes S3** (con `spawn`) y **RT1** (con el
+  scheduler, en M4: DEC-023).
 - **Fecha**: 2026-10-27 (dirección); 2026-10-28 (ratificación).
 - **Decisión**: compartir intra-fibra es gratis (DEC-001); **cruzar frontera
   de fibra exige valor único en ese punto** — estático si se prueba, walk de

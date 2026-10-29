@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **M-T4 (a–c): corpus del typechecker self-hosted 141 → 196 (DEC-032)**:
+  - *Fase 1* (commit `8b65a98`): fix de cadenas de params sin ciclar —
+    `fn f(a: P, b: P)` compartía el nominal y `tc_arg_count` colgaba en
+    cualquier walk (el único hang del corpus) — + los 31 ficheros cuya
+    semilla y combinado ya coincidían en veredicto + primera línea:
+    corpus 141 → 172.
+  - **M-T4a** (#84): `for..in` y rangos — parser (`For`, keyword `in`,
+    `..`/`..=`) + typechecker (`typecheck_for`); corpus 172 → 180.
+  - **M-T4b** (#85): lambdas + tipo fn `fn(T)->R` — `parse_type` gana
+    TypeFn, tipos de parámetro de lambda conservados bajo
+    `emit_lambda_types`, `tc_lambda` clona la inferencia de retorno;
+    corpus 180 → 184.
+  - **M-T4c** (#86): opcionales — `some`/`none`/`ok`/`err`
+    (`SomeExpr`/`NoneExpr`/`OkExpr`/`ErrExpr` + `PatternBuiltinVariant`),
+    `?` como `TryExpr` con el doble check del seed y `TypeOptional` en
+    `parse_type`/`tc_resolve_type`; corpus 184 → 196.
+  Las exclusiones restantes quedan atribuidas fichero a fichero en
+  `typechecker_corpus.list` (genéricos, ownership/transfer, `[T]`,
+  `if` como expresión, gaps de parser/lexer, mensajes del emitter).
+  Gate `typechecker_gate.sh`: **196/196** en las 4 rutas.
+
+- **Investigación 035–040**: sistemas de enteros de ancho fijo (035),
+  punteros: modelos y eficiencia medida (036), iteradores y protocolos de
+  iteración (037), strings y Unicode (038), concurrencia
+  (fibers/async/goroutines/actors, 039) y memoria y ownership (040) —
+  cada uno con probes propios del seed y la recomendación que debe
+  abrir su `DEC-NNN`.
+
 - **M-T3: typechecker self-hosted — structs/enums/métodos/traits/match
   (DEC-032)**: `typechecker.astra` crece hasta ~2100 líneas con la verdad
   nominal de `typechecker.c`: pass0 de nombres (`declare_type_decls`),

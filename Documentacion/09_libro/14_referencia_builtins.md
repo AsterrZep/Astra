@@ -1,12 +1,12 @@
 # Capítulo 14 — Referencia: builtins, keywords y errores de runtime
 
-> **Estado de este capítulo** (2026-10-28, actualizado): los **8 builtins**
+> **Estado de este capítulo** (2026-10-29, actualizado): los **10 builtins**
 > están **todos en `main`** — `print`, `len`, `s[i]`, `to_string`,
-> `read_file` (M1) y `ord`, `substr`, `push`, `str_to_int` (M2a/M2b,
-> DEC-018/019) — documentados con sus textos de error **copiados de las
-> ejecuciones reales** (seed VM y zig VM, byte-idénticos; las 4 rutas en los
-> tests de paridad). Las filas de los cuatro nuevos llevan su firma y
-> errores verificados en `main`.
+> `read_file` (M1), `ord`, `substr`, `push`, `str_to_int` (M2a/M2b,
+> DEC-018/019) y `chr`, `read_line` (M3, DEC-020) — documentados con sus
+> textos de error **copiados de las ejecuciones reales** (seed VM y zig VM,
+> byte-idénticos; las 4 rutas en los tests de paridad). Todas las filas
+> llevan su firma y errores verificados en `main`.
 
 Este capítulo no enseña nada nuevo: es la **hoja de referencia** que consultas
 cuando dudas de una firma, de un texto de error o de si una palabra está
@@ -101,7 +101,7 @@ cd Documentacion/09_libro/ejemplos/cap14
 Los errores de runtime salen por stderr con el prefijo
 `<fichero>:<línea>: runtime error: ` y **código de salida 1**, idéntico en
 seed VM, backend C, zig VM y LLVM (la paridad de texto es parte del contrato
-de cada decisión). Los cinco casos, ejecutados hoy:
+de cada decisión). Los casos, ejecutados hoy:
 
 | Caso | Texto del error | Fichero |
 |:-----|:----------------|:--------|
@@ -152,9 +152,27 @@ Los textos de error ya están fijados por los tests del PR de `ord`/`substr`:
 guard de runtime con el receptor y los límites nombrados, paridad de texto en
 las 4 rutas. `ord` y `substr` se suman a la lista reservada de DEC-015.
 
-**«Llegan a main en los próximos PRs; esta tabla se actualizará.»** Cuando lo
-hagan, sus filas dejan de llevar estado y se completan con la evidencia de
-sus gates (conformance + codegen + paridad 4 rutas, el mismo circuito que M1).
+## Los dos últimos: `chr` y `read_line` (M3, DEC-020)
+
+Aterrizaron en `main` con la stdlib M3 (2026-10-28) junto con la sentencia
+`for c in s`:
+
+| Builtin | Firma | Semántica | Decisión |
+|:--------|:------|:----------|:---------|
+| `chr` | `chr(i: i64) -> string` | String de **1 byte** con byte `i` (`[0, 255]`); la inversa de `ord` | DEC-020 |
+| `read_line` | `read_line() -> string` | Una línea de **stdin** sin el `\n` final; EOF sin datos = error de runtime | DEC-020 |
+| `for c in s` | sentencia | Itera un string **byte a byte** con `c: string` de 1 byte | DEC-020 |
+
+Textos de error, ejecutados y fijados por conformance:
+
+| Caso | Texto del error | Fichero |
+|:-----|:----------------|:--------|
+| `chr` fuera de rango | `chr value 256 out of bounds (0..255)` | [`expressions/chr_oob_error.astra`](../../seed/tests/conformance/expressions/chr_oob_error.astra) |
+| `chr` de no-entero | `chr expects an int, got string` | [`expressions/chr_int_arg_error.astra`](../../seed/tests/conformance/expressions/chr_int_arg_error.astra) |
+| `read_line` con stdin vacío | `end of input` | [`expressions/read_line_eof_error.astra`](../../seed/tests/conformance/expressions/read_line_eof_error.astra) |
+
+La ruta wasm sin stdin devuelve el mismo EOF (comportamiento documentado en
+DEC-020), y `chr`/`read_line` se suman a la lista reservada de DEC-015.
 
 ## Keywords reservadas
 
@@ -201,21 +219,22 @@ nombre en `emitCall` *antes* de mirar tablas — un binding llamado `len` se
 ejecutaría como slot en unas rutas y como builtin en otras. El bug observable
 ya existía: `let len = 5` imprimía `<fn>` en el VM seed y `5` en el backend C.
 
-Cuando `ord`/`substr` aterricen, sus nombres se suman a esta lista; lo mismo
-`push`/`str_to_int`. La lista reservada crece con cada builtin, nunca se
-achica.
+La lista reservada crece con cada builtin — `ord`/`substr`, luego
+`push`/`str_to_int`, luego `chr`/`read_line` (y `transfer`, DEC-022, y
+`x.copy()`, DEC-027) —, nunca se achica.
 
 ## Resumen
 
-- Cinco builtins en `main` hoy: `print`, `len`, `s[i]`, `to_string`,
-  `read_file` — firmas en la tabla de arriba, contratos fijados por
-  DEC-010/013/014 y tests.
+- Diez builtins en `main` hoy: `print`, `len`, `s[i]`, `to_string`,
+  `read_file` (M1), `ord`, `substr`, `push`, `str_to_int` (M2) y `chr`,
+  `read_line` (M3) — firmas en las tablas de arriba, contratos fijados por
+  DEC-010/013/014/018/019/020 y tests.
 - `s[i]` da strings de 1 byte, solo lectura (`s[i] = …` no compila);
   `to_string` solo enteros; `read_file` colapsa todo fallo en un error.
 - Los errores de runtime llevan `fichero:línea: runtime error:` y salen con
   código 1 — texto idéntico en las 4 rutas, y esa identidad es gate.
-- `ord`/`substr` (DEC-018) y `push`/`str_to_int` (DEC-019) ya están en
-  `main` — esta referencia cubre los 8.
+- Junto a los builtins, la sentencia `for c in s` itera strings byte a byte
+  (DEC-020).
 - 36 keywords + nombres de builtin reservados (DEC-015): no se pueden
   redeclarar, en ningún ámbito.
 
@@ -224,9 +243,9 @@ achica.
 1. Escribe un programa que lea `saludo.txt` (o cualquier fichero tuyo),
    imprima su `len`, y muestre el primer y último byte con `s[i]`. ¿Qué pasa
    si el fichero está vacío — y cómo lo averiguas sin que el programa tronque?
-2. Implementa `reverse(s)` **sin** `substr`/`ord` (aún no están en main):
-   con `s[i]`, `len` y concatenación, en un `while`. Mide cuánto tarda con un
-   string de 1 000 bytes — y explica por qué crece cuadrático.
+2. Implementa `reverse(s)` **sin** `substr`/`ord`: con `s[i]`, `len` y
+   concatenación, en un `while`. Mide cuánto tarda con un string de 1 000
+   bytes — y explica por qué crece cuadrático.
 3. Prueba los límites de la tabla: `len` de un struct, `to_string` de un
    bool, `read_file` de un path absoluto que no existe. Cada error, ¿te dice
    lo que necesitas para arreglarlo? ¿Cuál sobra y cuál falta?
