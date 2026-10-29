@@ -162,3 +162,8 @@ ui/struct_lit_duplicate_key.astra
 ui/struct_missing_field.astra
 ui/struct_unknown_field.astra
 ui/trait_default_method.astra
+
+# ---- Regresión del fix de cadenas (2026-10-29): `fn f(a: P, b: P)` hacía
+# nxt[P] = P (tipo nominal compartido) y tc_arg_count colgaba en cualquier
+# walk de la cadena; traits/method_dispatch.astra era el único hang del corpus.
+traits/method_dispatch.astra

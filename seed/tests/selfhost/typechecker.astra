@@ -875,6 +875,25 @@ fn tc_child_labeled(node: i64, want: string) -> i64 {
 }
 
 // ---------- M-T3: tablas nominales, métodos, traits, variantes ----------
+// Clon de un tipo para encadenarlo como PARÁMETRO de fn: los tipos
+// nominales (struct/enum) son NODOS COMPARTIDOS (el símbolo los devuelve
+// tal cual), y la cadena de params escribe en nxt[prev] — enlazar dos
+// parámetros del mismo struct haría nxt[P] = P (ciclo) y tc_arg_count
+// colgaba (method_dispatch: `fn f(a: Point, b: Point)`). El seed no puede
+// sufrirlo: sus params son un array, no una lista enlazada.
+fn tc_chain_node(t: i64) -> i64 {
+    if t == 0 { return 0; }
+    let k = tcv_tps.kind[t];
+    if k == 15 || k == 16 || k == 12 || k == 13 || k == 14 {
+        let n = tc_mk(k);
+        tcv_tps.a[n] = tcv_tps.a[t];
+        tcv_tps.ret[n] = tcv_tps.ret[t];
+        tcv_tps.s[n] = tcv_tps.s[t];
+        return n;
+    }
+    t
+}
+
 fn tc_find_fld(sname: string, fname: string) -> i64 {
     let mut k: i64 = 1;
     while k < len(tcv_flds.owners) {
@@ -1450,7 +1469,7 @@ fn tc_collect_trait(node: i64) {
                         let tn = tc_child_labeled(p, "TypeIdent");
                         let mut pt: i64 = 10;
                         if tn != 0 {
-                            pt = tc_resolve_type(tn);
+                            pt = tc_chain_node(tc_resolve_type(tn));
                         }
                         if tc_is_error(tcv_tps.kind[pt]) {
                             bad = true;
@@ -1518,8 +1537,12 @@ fn tc_impl_method(fn_node: i64, recv: i64, tname: string, trname: string) {
         }
     }
     let fn_t = tc_mk(14);
-    tcv_tps.a[fn_t] = recv;
-    let mut prev: i64 = recv;
+    // El clon va en una variable local: `tcv_tps.a[fn_t] = tc_chain_node(..)`
+    // evaluaría la RHS (que hace push y REEMPLAZA el array) con la base del
+    // destino ya capturada — la escritura caería en el array huérfano.
+    let recvc = tc_chain_node(recv);
+    tcv_tps.a[fn_t] = recvc;
+    let mut prev: i64 = recvc;
     let mut seen: i64 = 0;
     let mut bad = false;
     c = tree.first[fn_node];
@@ -1530,7 +1553,7 @@ fn tc_impl_method(fn_node: i64, recv: i64, tname: string, trname: string) {
                 let tn = tc_child_labeled(c, "TypeIdent");
                 let mut pt: i64 = 10;
                 if tn != 0 {
-                    pt = tc_resolve_type(tn);
+                    pt = tc_chain_node(tc_resolve_type(tn));
                 }
                 if tc_is_error(tcv_tps.kind[pt]) {
                     bad = true;
@@ -1877,7 +1900,7 @@ fn tc_build_fn_type(node: i64) -> i64 {
             let pt_node = tc_child_labeled(c, "TypeIdent");
             let mut pt: i64 = 10; // sin anotación -> unknown
             if pt_node != 0 {
-                pt = tc_resolve_type(pt_node);
+                pt = tc_chain_node(tc_resolve_type(pt_node)); // clon si nominal
             }
             if prev == 0 {
                 first = pt;
