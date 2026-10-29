@@ -181,7 +181,7 @@ HTML (mdBook o equivalente) es el siguiente paso — el contenido, no.
 
 | Área | Estado | Gate / cifra |
 |:-----|:-------|:-------------|
-| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **352 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **160 total, 3 skip, 0 fail** + selfhost `io`/`lexer`/`parser_gate` OK (diag 19/19) — con `typechecker_gate` diferencial (**196/196** ×4 rutas, M-T4c) (2026-10-29) |
+| **Fase 1** — compilador semilla (`seed/`) | ✅ Completa | `make test` → **352 passed, 0 failed** (ASan/UBSan/LSan) + `sweep_emit_c` → **160 total, 3 skip, 0 fail** + selfhost `io`/`lexer`/`parser_gate` OK (diag 19/19) — con `typechecker_gate` diferencial (**246/246** ×4 rutas, M-T4e) (2026-10-29) |
 | Registro de constructos | ✅ (índice documental — DEC-002) | `--check-constructs` → **47 constructos, 27 operadores**; hooks = aspiración, no plan de migración |
 | **Fase 2** — compilador Zig (`zig/`) | 🟡 Frontend completo | `zig build test` → **74/74** · `dump_parity.sh` → **209 ficheros, 0 divergentes** + `ui_message_parity` first_fail=0 (146) |
 | Sistema de módulos | ✅ | `pub`, globales mangladas, orden de dependencias, `use`, raíz `@/` |

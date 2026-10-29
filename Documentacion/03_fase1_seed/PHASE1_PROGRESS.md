@@ -804,8 +804,8 @@ terminador, sin escapes de string, sin hex.
    Call/Index/Match = loc del ident/keyword base, como parser.c) medidas
    al primer error. Sigue: M-T4 (corpus completo: optionales/`?`,
    lambdas, `for`, límites de profundidad del parser).
-   **M-T4 ✅ (fases 1–3, 2026-10-29)** — el corpus creció gateado en
-   cuatro pasos, cada exclusión con su motivo en `typechecker_corpus.list`:
+   **M-T4 ✅ (fases 1–e, 2026-10-29)** — el corpus creció gateado en
+   cinco pasos, cada exclusión con su motivo en `typechecker_corpus.list`:
    - **141 → 172** (commit `8b65a98`): fix de cadenas de params sin
      ciclar (`fn f(a: P, b: P)` compartía el nominal y `tc_arg_count`
      colgaba) + los 31 ficheros cuya semilla y combinado ya coincidían en
@@ -816,12 +816,16 @@ terminador, sin escapes de string, sin hex.
      `tc_lambda`).
    - **M-T4c → 196**: opcionales — `some`/`none`/`ok`/`err`, `?` como
      `TryExpr` con el doble check del seed y `TypeOptional`.
-   **Sigue (M-T4+)**: genéricos y ownership/transfer fuera del corpus;
-   las features adyacentes anotadas fichero a fichero en la lista (`[T]`,
-   `if` como expresión en posición de expresión, expresión-bloque `{...}`,
-   mensajes del emitter); los **3 límites de profundidad** del seed siguen
-   excluidos; después, el **emitter en Astra-0** (`research/028` §5:
-   codegen el último).
+   - **M-T4e → 246** (PR #87): ronda de sintaxis que bloqueaba el corpus
+     restante — `if`/`{bloque}` como expresión, tipos `[T]` (+`[T]?`),
+     lvalue-`Index` (`xs[i] = …`), shifts/bitwise, `.copy()` (DEC-027,
+     incl. `copy(x)` pelón → `copy must be called as x.copy()`),
+     comentarios `/* */` anidados, escapes de string y `comptime`.
+   **Sigue (M-T4+)**: **genéricos** y **ownership/transfer** fuera del
+   corpus; los mensajes del **emitter** (`ui/too_many_locals`,
+   `ui/capture_assign` — sin columna, familia ya documentada); los **3
+   límites de profundidad** del seed siguen excluidos; después, el
+   **emitter en Astra-0** (`research/028` §5: codegen el último).
 
 Hallazgos de lenguaje tocados al construirlo, ahora **pinneados por
 DEC-033** (2026-10-29): `else` en línea aparte del `}` →

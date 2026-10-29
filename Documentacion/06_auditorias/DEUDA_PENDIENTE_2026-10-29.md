@@ -6,6 +6,12 @@
 > de roadmap siguen viviendo en `Documentacion/00_indice/INDICE.md` §«Estado
 > del proyecto».
 >
+> **Actualización (mismo día):** mientras el PR que introduce este informe
+> (#88) tenía la CI en verde, aterrizó el PR #87 (M-T4e) y subió el corpus
+> del typechecker self-hosted de 196 a **246** sin tocar docs — las cifras
+> de §0/§2/§6 se re-sincronizaron en el mismo día y el incidente quedó
+> registrado como **DD14** (§4.1).
+>
 > **Método.** Inventario de deuda en seis fuentes, todas leídas en la fecha:
 > `DECISIONES.md` (33 entradas), `PHASE1_PROGRESS.md` §4/§4bis/§7,
 > `PHASE2_PROGRESS.md` §8.3/§9.6/§10.4/§11, `PHASE_LLVM_PROGRESS.md` §7
@@ -26,8 +32,8 @@
 |:-------|:------|:-----------|:-------|
 | **Corrección / seguridad** | **32 issues abiertos** (#49–#80): 10 ALTA · 15 MEDIA · 7 BAJA | `research/034` + `gh issue list` | 🟡 Abiertos (0 cerrados) |
 | **Decisiones de lenguaje** | 1 en `Propuesta` (DEC-021) + **24 puntos sin DEC** (§3: D1–D24) que hoy se están resolviendo «de facto» en código o en informes | §3 de este informe | 🔴 El bloqueo real: sin DEC no hay backend ni feature nueva (regla 5 `AGENTS.md`) |
-| **Funcionalidad** | Self-hosting a ~2/3 (corpus 196/304); Tier 1/2/3 del GAP casi entero (comptime, fibers, ARC/ORC, FFI, macros, paquetes) | §2 | 🟡 |
-| **Documentación** | 13 desincronizaciones objetivas verificadas hoy (10 corregidas en este mismo cambio, 3 pendientes) + 6 DEC sin escribir en `ARCHITECTURE.md` | §4 | 🟡 |
+| **Funcionalidad** | Self-hosting a ~4/5 del paso 5 (corpus **246/306**); Tier 1/2/3 del GAP casi entero (comptime, fibers, ARC/ORC, FFI, macros, paquetes) | §2 | 🟡 |
+| **Documentación** | 14 desincronizaciones objetivas verificadas hoy (11 corregidas en este cambio, 3 pendientes) + 6 DEC sin escribir en `ARCHITECTURE.md` | §4 | 🟡 |
 | **Presupuesto de decisiones** | Ciclo desde 2026-09-16: `CODE = 146`, `DEC = 24` (incluye el commit de este PR) → **16,4 %** (la regla pide ≥ 20 %) | `AGENTS.md` §Commit budget | 🔴 Bajo |
 
 **El hallazgo de fondo:** el proyecto no tiene deuda de *calidad de ejecución*
@@ -117,7 +123,7 @@ entrada · `B6` #79 DEC-026 cita un diagnóstico que el compilador no emite ·
 
 | Qué falta | Estado medido | Fuente |
 |:----------|:-------------|:-------|
-| Corpus del typechecker auto-hospedado completo | **196/304** (M-T4a/b/c cerrados: `for`, lambdas/`fn(T)->R`, opcionales/`?`); fuera: genéricos, ownership/transfer, `if` como expresión en posición de expresión, tipos `[T]`, y ~11 gaps de parser/lexer + 4 mensajes del emitter | `typechecker_corpus.list` |
+| Corpus del typechecker auto-hospedado completo | **246 de 306** ficheros de `conformance/` (M-T4a–e cerrados: `for`, lambdas/`fn(T)->R`, opcionales/`?`, if/bloques-expresión, `[T]`, lvalue-`Index`, shifts, `.copy()`, escapes, `comptime`); fuera: **genéricos**, **ownership/transfer**, 2 mensajes del emitter sin columna y los 3 límites de profundidad | `typechecker_corpus.list` |
 | Límites de profundidad del seed en `parser.astra` | 3 casos siguen excluidos (`deep_elseif`, `expr_chain_deep`, `nesting_too_deep`) | PHASE1 §7 |
 | **Emitter en Astra-0** (codegen el último) | No empezado — prerequisito explícito del orden de `research/028` §5 | `research/028` §5 |
 | Árbol de compilador `src/compiler/` (multi-fichero en Astra) | No empezado — **acoplado a DEC-021** (la CLI es la que compila el árbol; `DEC-032` lo deja explícito) | DEC-032 |
@@ -287,10 +293,10 @@ registradas — 32 aceptadas, 1 en `Propuesta` (DEC-021)**.
 
 | # | Qué decía la doc | Qué hace el código | Estado |
 |:-:|:-----------------|:-------------------|:-------|
-| DD1 | `PHASE1` §7: «Sigue: M-T4 (corpus completo…)» | M-T4a/b/c **cerrados** (corpus 172 → 196, PRs #84–#86) | ✅ **Corregido en este cambio** |
+| DD1 | `PHASE1` §7: «Sigue: M-T4 (corpus completo…)» | M-T4a–e **cerrados** (corpus 172 → **246**: PRs #83–#86 + #87) | ✅ **Corregido en este cambio** (ver DD14: re-sincronizado tras aterrizar #87) |
 | DD2 | `PHASE1` §7 final: dos hallazgos «sin pinneear… candidatos a DEC futura» (`else` en línea aparte, `if/else if` como cola) | Fijados por **DEC-033** con `ui/elseif_tail_rejected.astra` + `ui/else_newline_rejected.astra` | ✅ **Corregido en este cambio** |
-| DD3 | `INDICE.md` fila Fase 1: `typechecker_gate 141/141 ×4 rutas, M-T3` | Gate en verde a **196/196** (§6) | ✅ **Corregido en este cambio** |
-| DD4 | `README.md` línea Status: `typechecker_gate → 141/141 … M-T3` | Ídem 196/196, M-T4c | ✅ **Corregido en este cambio** |
+| DD3 | `INDICE.md` fila Fase 1: `typechecker_gate 141/141 ×4 rutas, M-T3` | Gate en verde a **246/246** (§6; primera pasada 196 → DD14) | ✅ **Corregido en este cambio** |
+| DD4 | `README.md` línea Status: `typechecker_gate → 141/141 … M-T3` | Ídem 246/246, M-T4e (primera pasada 196/M-T4c → DD14) | ✅ **Corregido en este cambio** |
 | DD5 | `CHANGELOG.md` `[Unreleased]`: termina en M-T3 | Faltan M-T4a/b/c y los informes `035`–`040` | ✅ **Corregido en este cambio** |
 | DD6 | `09_libro/README.md`: capítulos 05–15 con la columna Estado **vacía** | Los 16 capítulos existen (155–430 líneas c/u) y los 91 ejemplos están en `ejemplos/` (verificados por muestreo) | ✅ **Corregido en este cambio** |
 | DD7 | `INDICE.md` §9: «8 divergencias halladas quedaron en el backlog» del libro | **No están itemizadas en ningún fichero** del repo ni en issue abierto | ⏳ Pendiente: extraerlas de la sesión de escritura/PR del libro o retirar la afirmación |
@@ -300,6 +306,7 @@ registradas — 32 aceptadas, 1 en `Propuesta` (DEC-021)**.
 | DD11 | `09_libro/14_referencia_builtins.md`: «los **8** builtins», texto futuro caducado («llegan a main en los próximos PRs»), «cuando `ord`/`substr` aterricen» y ejercicio con «aún no están en main» — omitiendo `chr`/`read_line` (M3, DEC-020), que el propio capítulo 8 ya documentaba | Los 10 builtins están en `main` desde M3 | ✅ **Corregido en este cambio** (tablas, errores exactos de conformance y resumen) |
 | DD12 | `README.md` §Roadmap, fila *Concurrency model*: «`grep … spawn/channel/Atomic[` → **0**; **`transfer` → 0**» | `transfer` existe en **6 ficheros** de `seed/src`+`zig/src` (fase E1/E2) y el grep de concurrencia da 1 (un comentario) | ✅ **Corregido en este cambio** (evidencia actualizada con DEC-012/022/026/027 y el estado real de S3/RT1) |
 | DD13 | `DECISIONES.md` §DEC-012: «La implementación queda pospuesta… **no existe código hoy** (`transfer` no lexea, `grep` → 0)» | E1 (PR #36) y E2 (PR #38) cerraron el 2026-10-28; pendientes solo S3 y RT1 | ✅ **Corregido en este cambio** (hecho objetivamente falso, actualizado sin tocar la decisión) |
+| DD14 | **La propia sincronización de este informe se desactualizó en minutos**: las cifras 196/×4 rutas se midieron y publicaron en el PR #88, y **mientras la CI corría** aterrizó el PR #87 (M-T4e), que subió el corpus a **246 sin tocar docs** | El contador vivo (`typechecker_corpus.list`) da 246; el gate se re-ejecuta completo en este segundo pase | ✅ **Corregido en este cambio** (PHASE1, INDICE, README, CHANGELOG y este informe a 246/×4 rutas) — es el ejemplo en vivo de por qué la regla dice «los contadores se verifican, no se recuerdan» |
 
 ### 4.2 Tareas de escritura pendientes (no son bugs, son texto)
 
@@ -312,6 +319,15 @@ registradas — 32 aceptadas, 1 en `Propuesta` (DEC-021)**.
    hoy: `ARCHITECTURE` §41 lleva cabecera «estado en INDICE.md» y `README`
    §Roadmap tiene estados con gate); solo queda el conteo histórico si
    alguna cita obsoleta reaparece.
+5. **Coordinación de los PRs de test que crecen el corpus** — #87 (y #89
+   en vuelo, → 257) suben `typechecker_corpus.list` sin actualizar los
+   cuatro contadores que dependen de él (PHASE1 §7, INDICE, README,
+   CHANGELOG). La regla ya existe (plantilla de PR + «los contadores se
+   verifican, no se recuerdan») pero no la hace nadie en esa dirección:
+   o el checklist de PR lo exige explícitamente cuando cambia
+   `typechecker_corpus.list`, o un gate barato de coherencia (grep de
+   `196|246` vs el contador vivo) lo reclama en CI. DD14 fue la primera
+   consecuencia; sin esto habrá una por cada `M-T4x`.
 
 ---
 
@@ -329,7 +345,7 @@ Orden por dependencia y por «cuánto desbloquea»; cada paso nombra su gate.
    implementando la CLI mínima) y D3/D4 (bytecode + nominalidad). Además
    de desbloquear, es lo que mueve el ratio `DEC*5 ≥ CODE` del ciclo.
 3. **Cerrar el paso 5**: genéricos y ownership en el corpus del typechecker
-   (196 → ~304 excluyendo solo lo documentado) + `parser.astra` con los 3
+   (246 → ~306 excluyendo solo lo documentado) + `parser.astra` con los 3
    límites de profundidad. *Gate: `typechecker_gate.sh` + exclusiones con
    motivo.*
 4. **Emitter en Astra-0** (`research/028` §5 dice «codegen va el último»).
@@ -351,8 +367,9 @@ Orden por dependencia y por «cuánto desbloquea»; cada paso nombra su gate.
 git rev-parse --short HEAD                      # c49ce28 (tras pull de 6)
 cd seed && make test                            # passed: 352   failed: 0
 ./astra-seed --check-constructs                 # 47 constructos, 27 operadores — OK
-./tests/selfhost/typechecker_gate.sh            # corpus 196: rutas en verde (§6.1)
-grep -v -E '^\s*(#|$)' tests/selfhost/typechecker_corpus.list | wc -l   # 196
+./tests/selfhost/typechecker_gate.sh            # corpus 246: 4 rutas en verde (§6.1)
+grep -v -E '^\s*(#|$)' tests/selfhost/typechecker_corpus.list | wc -l   # 246
+find tests/conformance -name '*.astra' | wc -l                          # 306
 gh issue list --state open --limit 100          # 32 issues (#49–#80: 10 A · 15 M · 7 B)
 git log --format=%H --since=2026-09-16 -- seed/src zig/src | sort -u | wc -l   # 146 (CODE)
 git log --format=%H --since=2026-09-16 -- Documentacion/01_lenguaje/DECISIONES.md | sort -u | wc -l   # 24 (DEC → 16,4 %; 22 antes de este PR)
@@ -362,20 +379,22 @@ find Documentacion/09_libro/ejemplos -name '*.astra' | wc -l   # 91
 
 ### 6.1 Salida del gate del typechecker self-hosted
 
-`seed/tests/selfhost/typechecker_gate.sh` → **rc=0**, con las **4 rutas**
-sobre los 196 ficheros del corpus:
+Ejecutado **dos veces** hoy: primero a **196/196 ×4 rutas** (base
+`c49ce28`, PR #88) y, tras aterrizar el PR #87 (M-T4e), de nuevo sobre el
+código actual — la segunda corrida es la que fija las cifras de este
+informe:
 
 ```text
-ok   route C backend: 196/196 corpus
-ok   route zig VM: 196/196 corpus
-ok   route LLVM --jit: 196/196 corpus
-typechecker_gate: 196/196 corpus (verdict + first-error) + routes
+ok   route C backend: 246/246 corpus
+ok   route zig VM: 246/246 corpus
+ok   route LLVM --jit: 246/246 corpus
+typechecker_gate: 246/246 corpus (verdict + first-error) + routes
 ```
 
 (la 1ª ruta, seed VM, es la referencia contra la que comparan las otras
-tres: sus 196 líneas `ok <fichero> (P|R|E)` encabezan la salida; la ruta
+tres: sus 246 líneas `ok <fichero> (P|R|E)` encabezan la salida; la ruta
 `--jit` exige zig construido con `-Dllvm`, presente en este entorno — corrió
-completa, sin skip). Verificado dos veces hoy.
+completa, sin skip).
 
 ---
 

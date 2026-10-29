@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **M-T4e: sintaxis que bloqueaba el corpus — 196 → 246 (DEC-032, PR #87)**:
+  `if` y `{ bloque }` como expresiones en `parse_primary`, tipos `[T]`
+  (+`[T]?`), lvalue-`Index` (el chequeo no matcheaba el nodo `Index` —
+  `xs[i] = …` caía en `invalid assignment target`), shifts/bitwise,
+  `.copy()` (DEC-027: receptores agregados, `copy(x)` pelón →
+  `copy must be called as x.copy()`), comentarios `/* */` anidados,
+  whitelist de escapes + `unterminated string` y la keyword `comptime`.
+  Corpus del gate diferencial **196 → 246**; quedan fuera solo genéricos,
+  ownership/transfer, los 2 mensajes emitter sin columna y los 3 límites
+  de profundidad. Gate: **246/246** en las 4 rutas.
+
 - **M-T4 (a–c): corpus del typechecker self-hosted 141 → 196 (DEC-032)**:
   - *Fase 1* (commit `8b65a98`): fix de cadenas de params sin ciclar —
     `fn f(a: P, b: P)` compartía el nominal y `tc_arg_count` colgaba en
