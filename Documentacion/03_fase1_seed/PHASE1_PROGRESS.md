@@ -740,9 +740,13 @@ int/string/bool, unary, binary, calls, index, arrays), sin NEWLINE como
 terminador, sin escapes de string, sin hex.
 
 **Plan de crecimiento** (cada paso con su `DEC-NNN` y su golden):
-1. NEWLINE como terminador de statement (habilita fixture sin `;`).
-2. `match` con patrones/arms + lambdas.
-3. Capa de items completa (structs/enums/trait/impl, `use`/`import`).
+1. ✅ NEWLINE como terminador de statement (DEC-028 — fixture v2 mezcla
+   con y sin `;`; también la regla del `else` en la misma línea, que el
+   v1 no imponía).
+2. 🟡 `match` con patrones/arms ✅ (DEC-028: comas obligatorias, guardas
+   parseadas-no-emitidas, `PatternVariantBind`/`Bind`, rutas calificadas;
+   items `enum` incluidos) — **lambdas pendientes**.
+3. Capa de items completa (structs/trait/impl, `use`/`import`).
 4. Diagnósticos de error comparados con los del seed (tipo de recovery).
 5. Solo entonces el siguiente componente: typechecker (proyecto aparte —
    `research/002` §6.3, ~4k líneas de C).

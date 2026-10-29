@@ -1,40 +1,68 @@
-// parser_input.astra — fixture for the self-hosted parser gate (DEC-025).
-// Subset of Astra-0 that parser.astra v1 accepts: const, fn with params and
-// return type, let(+mut, optional type annotation), assignment, if/else/else-if,
-// while, return, break, expression statements; expressions with int/string/
-// bool literals, unary -/!, binary ops (seed precedence), calls, index,
-// parens and array literals. Every statement ends with ';' — NEWLINE as a
-// statement terminator is OUT OF SCOPE for parser.astra v1 (see DEC-025).
-// String literals stay plain (no escapes): --dump-ast prints them decoded.
-const LIMIT = 10;
+// parser_input.astra — fixture for the self-hosted parser gate (DEC-025,
+// scope v2 by DEC-028).
+//
+// v2: statements end with NEWLINE — only a few keep ';' (both paths of the
+// seed's optional_semi are covered); enum items; match with negative and
+// or-patterns, a guard (parsed but omitted from the dump — the golden comes
+// from --dump-ast), qualified variants with payload bindings, block arms and
+// a statement-position match. No operators at end of line: the seed cuts
+// the statement at the NEWLINE (DEC-028 §1). Same subset as v1 otherwise
+// (see parser.astra's header for the declared limits).
+const LIMIT = 10
+enum Size {
+    XS
+    S
+    L
+}
 fn add(a: i32, b: i32) -> i32 {
     let mut total: i32 = a + b;
-    total = total * 2 + 1;
-    return total;
+    total = total * 2 + 1
+    return total
+}
+fn classify(n: i32, s: Size) -> i32 {
+    let r = match n {
+        0 => 10,
+        -5 => 15,
+        1 | 2 => 20,
+        _ if n > 90 => 30,
+        _ => 40,
+    };
+    let t = match s {
+        Size.XS => 1,
+        Size.S => 2,
+        Size.L => 3,
+    }
+    match t {
+        0 => { print("zero"); },
+        _ => { print(t); },
+    }
+    return r + t
 }
 fn pick(n: i32) -> i32 {
     if n < 0 {
-        return -n;
+        return -n
     } else if n == 0 {
-        return 0;
+        return 0
     } else {
-        return n;
+        return n
     }
 }
 fn main() {
-    let name = "astra";
-    let flag = true;
-    let arr = [1, 2, 3];
-    let mut v = arr[1];
-    let sum = add(pick(-5), LIMIT);
+    let name = "astra"
+    let flag = true
+    let arr = [1, 2, 3]
+    let mut v = arr[1]
+    let sum = add(pick(-5), LIMIT)
     if sum < 0 && flag || !flag {
-        print(name);
+        print(name)
     } else {
-        print(sum);
+        print(sum)
     }
     while v < LIMIT {
-        v = v + arr[0];
-        if v == 4 { break; }
+        v = v + arr[0]
+        if v == 4 { break }
     }
-    print(v % 2 == 0);
+    let cls = classify(1, Size.S)
+    print(cls)
+    print(v % 2 == 0)
 }

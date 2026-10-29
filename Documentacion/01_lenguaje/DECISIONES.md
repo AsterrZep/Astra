@@ -35,6 +35,7 @@
 | DEC-025 | **`parser.astra` es el segundo componente self-hosting**: parser de Astra-0 (v1) en Astra-0 que lee `parser_input.astra` (subconjunto: items `const`/`fn` con params y retorno, statements con `;` obligatorio, `let`(+mut, tipo opcional), assign, if/else/else-if, while, return, break; exprs con literales int decimal/string plano/bool, unary -/!, precedencia de la tabla de operadores, calls, index, paréntesis, array literals); emite el AST como **s-expresión prefijo de una línea** y se gatea contra `parser.expected`, golden generado por `--dump-ast | normalize_ast.awk` (implementaciones independientes: parser C vs Astra-0) en **7 rutas** + **freshness check** del golden en cada corrida; fuerza `;` en todo statement y no modela NEWLINE-terminador, escapes de string ni literales hex — límites declarados, no accidental | Aceptada (test-pinned) | 2026-10-28 | `seed/tests/selfhost/parser_gate.sh` → 5/5 rutas locales (seed VM, `--emit-c`+gcc, zig VM, `--jit`, `--emit-obj`+link; cross/wasm skip limpio sin toolchain) + freshness `--dump-ast` == golden · CI jobs `seed` y `llvm` · fixture `parser_input.astra` (corre: 31/true) (PR parser-selfhost) |
 | DEC-026 | **Fase E v1 de enforcement — detalles de `transfer` sin fibras**: solo la forma-directa-sentencia `transfer(x);` (1 argumento, variable desnuda); tipos escalar rechazados en compile-time (`transfer expects an aggregate, got i32`); S1/S2 como pasada post-typecheck en los 2 frontends con las semánticas de `research/026` §3.3 (Único/Aliased/Escapado + movidos, alcance por bloques, joins conservadores en if/loops, alias por `let y = x` **sonoro** (ambos → Aliased), escapes por call no-builtin/contenedor/captura, globales usados desde fn = Escapado al transferir); nil-red de R4 en los emisores (`CONST nil; SET` del binding, observable solo en globales entre funciones — S1 es intraprocedural); mensajes nuevos: M1 `transfer must be called directly as transfer(variable)`, M2 `transfer must be its own statement`, S2-escaped `cannot transfer 'x': value has escaped`; S3/`spawn` y `.copy()` quedan fuera (siguiente PR / Phase 2) | Aceptada (test-pinned) | 2026-10-28 | `ui/transfer_{aliased,used_after,captured,escaped,nested,value_use,scalar,bad_form}.astra`, `ui/builtin_shadow_transfer.astra`, `conformance/transfer/transfer_unique.astra`, `conformance/transfer/transfer_global_nil.astra` (EXPECT-RUNTIME-ERROR), `codegen/transfer_unique.astra` (PR fase-E1) |
 | DEC-027 | **`.copy()` — fase E2**: deep copy estructural **solo en forma de método** `x.copy()` (la forma directa `copy(x)` no existe: el nombre no se registra como símbolo → `copy must be called as x.copy()`); nombre **reservado** en kBuiltins/k_builtins (`ui/builtin_shadow_copy`); receptor con el mismo conjunto de tipos que `transfer` (agregados+string+optional+unknown, escalares → `copy expects an aggregate, got i32`); devuelve el **tipo estático del receptor**; `x.copy(args)` → `copy takes no arguments`; semántica: recursivo sobre arrays/structs/enum/optional-caja (parejas: bits+retain), strings **compartidos** (inmutables, retain en LLVM), closures = shell nuevo con env profundo y **markers compartidos** (despacho por identidad de puntero), **depth cap 64** → `copy depth limit exceeded` (ciclos construibles: `n.kid = some(n)`); walker: el receiver de un **método de usuario** pasa a escaparse (S2) pero el de `.copy()` no; el receiver de `.copy()` NO escapa (la fuente queda transferible) | Aceptada (test-pinned) | 2026-10-28 | `ui/builtin_shadow_copy.astra`, `ui/copy_{scalar,extra_args,value_use}.astra`, `ui/transfer_method_escaped.astra`, `conformance/transfer/{transfer_copy,copy_independent,copy_cycle}.astra` (ciclo = EXPECT-RUNTIME-ERROR), `codegen/{transfer_copy,copy_independent}.astra` (PR fase-E2) |
+| DEC-028 | **parser.astra v2 — NEWLINE como terminador + `match` + items `enum`** (paso 1–2 del plan de `PHASE1_PROGRESS` §7): fin de sentencia = `;` **o** cambio de línea **o** `}` **o** EOF (espejo del `optional_semi` del seed, verificado: `fn f() -> i32 { return 5 }` y `let a = 1`\n`let b = 2` sin `;` son válidos); `else` exige **misma línea** que el `}` que cierra el then (el seed rechaza `}\nelse`); expresiones **no** continúan tras NEWLINE en el seed (`let x = 1 +`\n`2` → error) → el fixture evita operadores a fin de línea (límite declarado); `match`: comas **obligatorias** entre brazos (sin coma el seed falla, verificado), trailing opcional, guardas parseadas pero **no emitidas** (el dump del seed omite el guard — mirror lossy de PHASE2 §7); patrones = literal(+`-`)/string/bool/`PatternOr(n)`/`PatternWildcard`/ruta calificada `FieldAccess`/binding `PatternBind`/`PatternVariantBind`+`Bind(name)`; items `enum` con `Variant(name)`+`Field(TypeIdent)`; fixture v2 mezcla sentencias con y sin `;` para cubrir ambos caminos; sin lambdas aún (siguiente paso) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture `parser_input.astra` v2 + `parser.expected` regenerado de `--dump-ast` + freshness en las 7 rutas) (PR parser-v2) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1072,3 +1073,55 @@
 - **Evidencia**: los tests de la fila; gates del PR fase-E2 (seed, sweep,
   zig, ui parity, dump, llvm parity ×2, jit, sanitize).
 - **Spec**: `ARCHITECTURE.md` §2.6 §4 (el escape) + este apéndice.
+
+### DEC-028 — parser.astra v2: NEWLINE, `match` e items `enum`
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR parser-v2
+  (2026-10-29).
+- **Fecha**: 2026-10-29.
+- **Decisión**: segundo incremento de `seed/tests/selfhost/parser.astra`
+  (plan de crecimiento de `PHASE1_PROGRESS` §7, pasos 1–2 sin lambdas):
+  1. **Terminador de sentencia** (espejo del `optional_semi` del seed):
+     `;` **o** cambio de línea (token actual en otra línea que el último
+     consumido) **o** `}` **o** EOF. Verificado empíricamente: el seed
+     acepta `fn f() -> i32 { return 5 }` y sentencias separadas por
+     NEWLINE sin `;`, y **rechaza** expresiones que continúan tras NEWLINE
+     (`let x = 1 +` \n `2` falla en el NEWLINE) — por eso el fixture v2
+     no pone operadores a fin de línea (límite declarado, igual que el de
+     DEC-025 sobre strings/hex). **`else` en línea aparte** del `}` del
+     then: rechazado también por parser.astra (el seed lo rechaza, E1
+     verificado); el v1 era más permisivo — se cierra.
+  2. **`match`** como expresión y como sentencia: coma **obligatoria**
+     entre brazos (sin ella el seed falla — verificado `0 => 1` \n
+     `_ => 2` → `expected '}'`), trailing opcional; **guardas se parsean
+     pero no se emiten** (el dump del seed omite el guard: mirror lossy
+     documentado en PHASE2 §7 — el golden no puede distinguirlas);
+     patrones: literal entero (con `-` → `UnaryOp(-) IntLit`), string,
+     bool, or-patterns (`PatternOr(n)` con aridad), `_` →
+     `PatternWildcard`, ruta calificada `FieldAccess(field) Ident(root)`
+     (la misma forma que la expresión), `Point.Pt(a, b)` →
+     `PatternVariantBind(path Bind(a) Bind(b))` (payload **sin** paréns
+     en el nombre del nodo; sin wildcard por campo — el seed lo rechaza)
+     y binding simple `PatternBind(name)` (un ident suelto siempre es
+     binding: DEC-008 prohíbe la forma pelona de variantes).
+  3. **Items `enum`**: `EnumDecl(name)` + `Variant(v)` con `Field(TypeIdent)`
+     por payload (tipos de payload de un solo ident en v2 — `i32`; límite
+     declarado).
+  4. **Fixture v2** (`parser_input.astra`): reescrito con sentencias en su
+     mayoría **sin `;`** (y unas pocas con `;` — ambos caminos del
+     terminador quedan cubiertos), enum + match (literales, negativos,
+     or-patterns, guarda, variantes calificadas, bindings, brazos-block y
+     match en sentencia) + el resto del subconjunto v1. `parser.expected`
+     se regenera desde `--dump-ast | normalize_ast.awk` (el freshness
+     check del gate los mantiene sincronizados).
+- **Alternativas consideradas**: token NEWLINE explícito en el lexer del
+  parser (descartado: el control de línea por token actual/logrado da la
+  misma semántica sin tocar el lexer ni el flujo de skips); mantener `;`
+  obligatorio (descartado: el objetivo del plan es parsear código real
+  del repo, que es mayoritariamente sin `;`); emitir guardas (imposible:
+  el golden sale del dump del seed, que las omite).
+- **Coste aceptado**: ~120 líneas en `parser.astra` (línea de tokens,
+  `stmt_end`, regla del `else`, `parse_pattern`/`parse_match`, item
+  `enum`) + fixture/golden nuevos; 0 líneas de compilador.
+- **Evidencia**: `parser_gate.sh` (7 rutas + freshness) con el fixture v2
+  — el golden es el AST del parser en C, implementación independiente.
+- **Spec**: alcance y límites en la cabecera de `parser.astra`.
