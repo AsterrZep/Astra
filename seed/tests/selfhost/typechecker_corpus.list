@@ -309,3 +309,21 @@ ui/try_bad_return.astra
 ui/try_toplevel.astra
 ui/unary_requires.astra
 ui/unterminated_string.astra
+
+# ---- PR-F (2026-10-29): lector de números completo — prefijos 0x/0b/0o
+# (con dígitos obligatorios y overflow de i64 reportados en el inicio del
+# token), floats + exponente (`exponent has no digits`), underscores, y
+# normalización al VALOR en los literales: el dump imprime IntLit(%ld) y
+# FloatLit(%g) (driver.c:173/189), así que IntLit("0b1100")->IntLit(12) y
+# FloatLit("2.0")->FloatLit(2) vía g_format (puro string, %g con 6 cifras).
+expressions/arithmetic.astra
+expressions/float_divide_by_zero.astra
+expressions/float_long_literal.astra
+expressions/float_remainder.astra
+expressions/push_elem_error.astra
+expressions/to_string_float_rejected.astra
+types/integer_widths.astra
+ui/array_index_type.astra
+ui/exponent_no_digits.astra
+ui/int_prefix_no_digits.astra
+ui/integer_literal_out_of_range.astra

@@ -177,6 +177,40 @@ fn is_word(c: string) -> bool {
     is_alpha(c) || is_digit(c)
 }
 
+// valor del dígito en la base pedida (-1 = no pertenece) — read_number
+// del lexer.c decide con estas mismas clases de carácter.
+fn lex_dval(ch: string, base: i64) -> i64 {
+    // sin comparaciones ordinales de string: el VM rechaza '<' entre
+    // strings ("cannot compare string and string")
+    let mut v: i64 = -1;
+    if ch == "0" { v = 0; }
+    if ch == "1" { v = 1; }
+    if ch == "2" { v = 2; }
+    if ch == "3" { v = 3; }
+    if ch == "4" { v = 4; }
+    if ch == "5" { v = 5; }
+    if ch == "6" { v = 6; }
+    if ch == "7" { v = 7; }
+    if ch == "8" { v = 8; }
+    if ch == "9" { v = 9; }
+    if ch == "a" { v = 10; }
+    if ch == "b" { v = 11; }
+    if ch == "c" { v = 12; }
+    if ch == "d" { v = 13; }
+    if ch == "e" { v = 14; }
+    if ch == "f" { v = 15; }
+    if ch == "A" { v = 10; }
+    if ch == "B" { v = 11; }
+    if ch == "C" { v = 12; }
+    if ch == "D" { v = 13; }
+    if ch == "E" { v = 14; }
+    if ch == "F" { v = 15; }
+    if v >= 0 && v < base {
+        return v;
+    }
+    -1
+}
+
 fn is_kw(w: string) -> bool {
     w == "fn" || w == "let" || w == "mut" || w == "const" || w == "return" || w == "if" || w == "else" || w == "while" || w == "break" || w == "continue" || w == "true" || w == "false" || w == "match" || w == "enum" || w == "struct" || w == "trait" || w == "impl" || w == "for" || w == "pub" || w == "use" || w == "import" || w == "from" || w == "as" || w == "mod" || w == "var" || w == "in" || w == "some" || w == "none" || w == "ok" || w == "err" || w == "comptime"
 }
@@ -279,11 +313,93 @@ fn lex_core() {
     }
     if is_digit(c) {
         let start = pos;
-        while pos < slen && is_digit(src[pos]) {
+        let start_ln = cur_line;
+        let start_col = pos - line_start + 1;
+        // 0x/0b/0o (read_number del lexer.c): dígitos por base + '_';
+        // sin dígitos o desbordamiento -> "integer literal is out of range
+        // for i64" en el INICIO del token.
+        if c == "0" && pos + 1 < slen {
+            let p2 = src[pos + 1];
+            let mut base: i64 = 0;
+            if p2 == "x" || p2 == "X" { base = 16; }
+            if p2 == "b" || p2 == "B" { base = 2; }
+            if p2 == "o" || p2 == "O" { base = 8; }
+            if base != 0 {
+                pos = pos + 2;
+                let mut val: i64 = 0;
+                let mut digits: i64 = 0;
+                let mut overflow = false;
+                while pos < slen {
+                    let ch = src[pos];
+                    if ch == "_" {
+                        pos = pos + 1;
+                        continue;
+                    }
+                    let d = lex_dval(ch, base);
+                    if d < 0 {
+                        break;
+                    }
+                    digits = digits + 1;
+                    if val > (9223372036854775807 - d) / base {
+                        overflow = true;
+                    } else {
+                        val = val * base + d;
+                    }
+                    pos = pos + 1;
+                }
+                if digits == 0 || overflow {
+                    report_at(start_ln, start_col, "integer literal is out of range for i64");
+                }
+                ntk = "INT";
+                ntl = substr(src, start, pos - start);
+                return;
+            }
+        }
+        // decimal / float: dígitos+'_', '.' + dígito, exponente e/E
+        let mut val: i64 = 0;
+        let mut overflow = false;
+        let mut is_float = false;
+        while pos < slen && (is_digit(src[pos]) || src[pos] == "_") {
+            if src[pos] != "_" {
+                let d = str_to_int(src[pos]);
+                if val > (9223372036854775807 - d) / 10 {
+                    overflow = true;
+                } else {
+                    val = val * 10 + d;
+                }
+            }
             pos = pos + 1;
         }
-        ntk = "INT";
+        if pos + 1 < slen && src[pos] == "." && is_digit(src[pos + 1]) {
+            is_float = true;
+            pos = pos + 1;
+            while pos < slen && (is_digit(src[pos]) || src[pos] == "_") {
+                pos = pos + 1;
+            }
+        }
+        if pos < slen && (src[pos] == "e" || src[pos] == "E") {
+            is_float = true;
+            pos = pos + 1;
+            if pos < slen && (src[pos] == "+" || src[pos] == "-") {
+                pos = pos + 1;
+            }
+            if !(pos < slen && is_digit(src[pos])) {
+                report_at(start_ln, start_col, "exponent has no digits");
+            } else {
+                while pos < slen && is_digit(src[pos]) {
+                    pos = pos + 1;
+                }
+            }
+        }
+        if !is_float && overflow {
+            report_at(start_ln, start_col, "integer literal is out of range for i64");
+        }
         ntl = substr(src, start, pos - start);
+        if is_float {
+            ntk = "FLOAT";
+        } else {
+            ntk = "INT";
+        }
         return;
     }
     if is_alpha(c) {
@@ -435,6 +551,9 @@ fn kind_name() -> string {
     }
     if tk == "INT" {
         return "INT_LIT";
+    }
+    if tk == "FLOAT" {
+        return "FLOAT_LIT";
     }
     if tk == "STRING" {
         return "STRING_LIT";
@@ -751,9 +870,211 @@ fn parse_expr(min_bp: i64) -> i64 {
     left
 }
 
+// normaliza un léxico entero al VALOR decimal (el dump imprime %ld —
+// driver.c:173 — así que 0b1100 debe volverse IntLit(12), no IntLit(0b1100))
+fn norm_int(lex: string) -> string {
+    let mut t = "";
+    let mut i: i64 = 0;
+    while i < len(lex) {
+        if lex[i] != "_" {
+            t = t + lex[i];
+        }
+        i = i + 1;
+    }
+    if len(t) >= 2 && t[0] == "0" && (t[1] == "x" || t[1] == "X" || t[1] == "b" || t[1] == "B" || t[1] == "o" || t[1] == "O") {
+        let mut base: i64 = 10;
+        if t[1] == "x" || t[1] == "X" { base = 16; }
+        if t[1] == "b" || t[1] == "B" { base = 2; }
+        if t[1] == "o" || t[1] == "O" { base = 8; }
+        let mut val: i64 = 0;
+        let mut j: i64 = 2;
+        while j < len(t) {
+            val = val * base + lex_dval(t[j], base);
+            j = j + 1;
+        }
+        return to_string(val);
+    }
+    // wrap definido (DEC-006): el lexer ya reportó el overflow como
+    // diagnóstico — str_to_int rechazaría el léxico en runtime.
+    let mut val: i64 = 0;
+    let mut j: i64 = 0;
+    while j < len(t) {
+        val = val * 10 + lex_dval(t[j], 10);
+        j = j + 1;
+    }
+    to_string(val)
+}
+
+// %g del dump del seed (driver.c:189: printf("FloatLit(%g)")) — formateo
+// sobre el LÉXICO (6 cifras significativas, redondeo, fijo si -4<=E<6,
+// si no notación e±XX de 2 dígitos). Puro string: Astra-0 no tiene
+// to_string(f64) (DEC-030 lo dejó anotado).
+fn g_format(raw: string) -> string {
+    let mut t = "";
+    let mut i: i64 = 0;
+    while i < len(raw) {
+        if raw[i] != "_" {
+            t = t + raw[i];
+        }
+        i = i + 1;
+    }
+    let mut mant = t;
+    let mut expx: i64 = 0;
+    let mut ei: i64 = -1;
+    let mut k: i64 = 0;
+    while k < len(t) {
+        if t[k] == "e" || t[k] == "E" {
+            ei = k;
+            k = len(t);
+        } else {
+            k = k + 1;
+        }
+    }
+    if ei >= 0 {
+        mant = substr(t, 0, ei);
+        let exp_s = substr(t, ei + 1, len(t) - ei - 1);
+        let mut sign: i64 = 1;
+        let mut digits = exp_s;
+        if len(exp_s) > 0 && (exp_s[0] == "+" || exp_s[0] == "-") {
+            if exp_s[0] == "-" { sign = -1; }
+            digits = substr(exp_s, 1, len(exp_s) - 1);
+        }
+        if len(digits) > 0 {
+            expx = sign * str_to_int(digits);
+        }
+    }
+    let mut intp = mant;
+    let mut fracp = "";
+    let mut di: i64 = -1;
+    let mut k2: i64 = 0;
+    while k2 < len(mant) {
+        if mant[k2] == "." {
+            di = k2;
+            k2 = len(mant);
+        } else {
+            k2 = k2 + 1;
+        }
+    }
+    if di >= 0 {
+        intp = substr(mant, 0, di);
+        fracp = substr(mant, di + 1, len(mant) - di - 1);
+    }
+    let mut iz = intp;
+    while len(iz) > 0 && iz[0] == "0" {
+        iz = substr(iz, 1, len(iz) - 1);
+    }
+    let mut sig = "";
+    let mut E: i64 = 0;
+    if len(iz) > 0 {
+        E = len(iz) - 1 + expx;
+        sig = iz + fracp;
+    } else {
+        let mut zk: i64 = 0;
+        while zk < len(fracp) && fracp[zk] == "0" {
+            zk = zk + 1;
+        }
+        E = -zk - 1 + expx;
+        sig = substr(fracp, zk, len(fracp) - zk);
+    }
+    let mut allz = true;
+    let mut z: i64 = 0;
+    while z < len(sig) {
+        if sig[z] != "0" { allz = false; }
+        z = z + 1;
+    }
+    if len(sig) == 0 || allz {
+        return "0";
+    }
+    if len(sig) > 6 {
+        let mut pref = substr(sig, 0, 6);
+        let sev = sig[6];
+        let seven = sev == "5" || sev == "6" || sev == "7" || sev == "8" || sev == "9";
+        if seven {
+            let mut digs: [i64] = [0];
+            let mut d: i64 = 0;
+            while d < 6 {
+                digs = push(digs, str_to_int(pref[d]));
+                d = d + 1;
+            }
+            let mut carry: i64 = 1;
+            d = 5;
+            while d >= 0 && carry == 1 {
+                let v = digs[d + 1] + 1;
+                if v > 9 {
+                    digs[d + 1] = 0;
+                } else {
+                    digs[d + 1] = v;
+                    carry = 0;
+                }
+                d = d - 1;
+            }
+            if carry == 1 {
+                E = E + 1;
+                pref = "100000";
+            } else {
+                let mut np = "";
+                let mut q: i64 = 1;
+                while q <= 6 {
+                    np = np + to_string(digs[q]);
+                    q = q + 1;
+                }
+                pref = np;
+            }
+        }
+        sig = pref;
+        while len(sig) > 1 && sig[len(sig) - 1] == "0" {
+            sig = substr(sig, 0, len(sig) - 1);
+        }
+    }
+    if E >= -4 && E < 6 {
+        if E >= 0 {
+            let mut s2 = sig;
+            while len(s2) < E + 1 {
+                s2 = s2 + "0";
+            }
+            let intpart = substr(s2, 0, E + 1);
+            let fracpart = substr(s2, E + 1, len(s2) - E - 1);
+            if len(fracpart) == 0 {
+                return intpart;
+            }
+            return intpart + "." + fracpart;
+        }
+        let mut out = "0.";
+        let mut n: i64 = 0;
+        while n < -E - 1 {
+            out = out + "0";
+            n = n + 1;
+        }
+        return out + sig;
+    }
+    let mut out = substr(sig, 0, 1);
+    if len(sig) > 1 {
+        out = out + "." + substr(sig, 1, len(sig) - 1);
+    }
+    out = out + "e";
+    let mut ae = E;
+    if E < 0 {
+        out = out + "-";
+        ae = -E;
+    } else {
+        out = out + "+";
+    }
+    if ae < 10 {
+        out = out + "0" + to_string(ae);
+    } else {
+        out = out + to_string(ae);
+    }
+    out
+}
+
 fn parse_primary() -> i64 {
     if tk == "INT" {
-        let t = mk("IntLit(" + tl + ")");
+        let t = mk("IntLit(" + norm_int(tl) + ")");
+        advance();
+        return t;
+    }
+    if tk == "FLOAT" {
+        let t = mk("FloatLit(" + g_format(tl) + ")");
         advance();
         return t;
     }
@@ -958,10 +1279,17 @@ fn parse_pattern_alt() -> i64 {
     if tk == "PUNCT" && tl == "-" {
         advance();
         if tk == "INT" {
-            let n = tl;
+            let n = norm_int(tl);
             advance();
             let un = mk("UnaryOp(-)");
             add_child(un, mk("IntLit(" + n + ")"));
+            return un;
+        }
+        if tk == "FLOAT" {
+            let n = g_format(tl);
+            advance();
+            let un = mk("UnaryOp(-)");
+            add_child(un, mk("FloatLit(" + n + ")"));
             return un;
         }
         perr("expected a numeric literal after '-' in pattern");
@@ -969,7 +1297,12 @@ fn parse_pattern_alt() -> i64 {
         return mk("PARSE-ERROR");
     }
     if tk == "INT" {
-        let t = mk("IntLit(" + tl + ")");
+        let t = mk("IntLit(" + norm_int(tl) + ")");
+        advance();
+        return t;
+    }
+    if tk == "FLOAT" {
+        let t = mk("FloatLit(" + g_format(tl) + ")");
         advance();
         return t;
     }
