@@ -765,6 +765,12 @@ terminador, sin escapes de string, sin hex.
    ambos ya con `ui/`). Sigue: milestone M-T1 (refactor del parser a
    tablas SoA) → M-T2 núcleo → M-T3 methods/trait/match → M-T4 corpus;
    `research/002` §6.3, ~4k líneas de C de referencia.
+   **M-T1 ✅ (2026-10-29)**: `parser.astra` construye el AST en **tablas
+   SoA** (`struct Ast { kind, text, first, next }` + tabla `knames`, índice
+   0 = centinela, primer-hijo/ Hermano-siguiente) y la s-expresión pasó a
+   ser su rendering preorder con el `attach()` de siempre — **golden
+   byte-idéntico a la primera** y las 7 rutas + freshness + diag 16/16
+   intactos; es el vehículo que M-T2 (núcleo de checks) caminará.
 
 Hallazgos de lenguaje tocados al construirlo, **sin pinneear** (ambos
 compiladores coinciden, candidatos a DEC futura): `else` en línea aparte del

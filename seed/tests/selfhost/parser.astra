@@ -1,10 +1,13 @@
-// parser.astra — parser de Astra-0 auto-hospedado, v1 (DEC-025).
+// parser.astra — parser de Astra-0 auto-hospedado (DEC-025..031; tablas SoA
+// desde M-T1/DEC-032: el AST vive en `struct Ast` — kind/text/first/next —
+// y la s-expresión de una línea es su rendering preorder con attach().
 // Lee parser_input.astra (read_file usa path RELATIVO: el gate fija el cwd)
 // y emite UNA línea con el AST en s-expresión prefijo:
 //   Node(kid1 kid2 ...)  ·  hojas con payload  FnDecl(main)  ·  hojas finas  Break
 // El golden es parser.expected, generado con
 //   astra-seed --dump-ast parser_input.astra | awk -f normalize_ast.awk
-// (implementación independiente: el parser en C vs. éste).
+// (implementación independiente: el parser en C vs. éste; el golden sale
+// de --dump-ast | normalize_ast.awk — el freshness check los mantiene).
 //
 // Alcance v2 (DEC-025 + DEC-028): fin de sentencia = ';' O cambio de línea
 // O '}' O EOF (espejo del optional_semi del seed); 'else' exige la misma
@@ -44,6 +47,79 @@ let mut line_start: i64 = 0  // offset del primer byte de la línea actual
 let mut t_col: i64 = 1       // columna (1-based) del token actual
 let mut prev_col: i64 = 1
 let mut prev_len: i64 = 0    // largo en bytes del lexeme anterior
+
+// ---------- AST en tablas SoA (DEC-032 / M-T1) ----------
+// Un nodo = índice en las cuatro columnas (índice 0 = centinela, nunca un
+// nodo real): `text` es el texto actual SIN hijos (p. ej. "FnDecl(main)"),
+// `first`/`next` son la cadena de hijos (first-child + next-sibling) y
+// `kind` indexa `knames` (la etiqueta antes del '('). La s-expresión que
+// imprime main es el rendering preorder con el MISMO `attach` de siempre:
+// el golden byte-idéntico es la red de seguridad del refactor.
+struct Ast {
+    kind: [i64]
+    text: [string]
+    first: [i64]
+    next: [i64]
+}
+let mut tree = Ast { kind: [0], text: [""], first: [0], next: [0] }
+let mut knames = [""]     // tabla de etiquetas (kind -> nombre)
+
+fn label_of(text: string) -> string {
+    let mut i: i64 = 0;
+    while i < len(text) {
+        if text[i] == "(" {
+            return substr(text, 0, i);
+        }
+        i = i + 1;
+    }
+    text
+}
+
+fn kind_of(text: string) -> i64 {
+    let lab = label_of(text);
+    let mut i: i64 = 0;
+    while i < len(knames) {
+        if knames[i] == lab {
+            return i;
+        }
+        i = i + 1;
+    }
+    knames = push(knames, lab);
+    len(knames) - 1
+}
+
+fn mk(text: string) -> i64 {
+    let idx = len(tree.text);
+    tree.text = push(tree.text, text);
+    tree.kind = push(tree.kind, kind_of(text));
+    tree.first = push(tree.first, 0);
+    tree.next = push(tree.next, 0);
+    idx
+}
+
+fn add_child(parent: i64, child: i64) {
+    if tree.first[parent] == 0 {
+        tree.first[parent] = child;
+        return;
+    }
+    let mut cur = tree.first[parent];
+    while tree.next[cur] != 0 {
+        cur = tree.next[cur];
+    }
+    tree.next[cur] = child;
+}
+
+// Rendering preorder: el texto del nodo con los hijos insertados con la
+// MISMA lógica de attach() del parser de strings (antes del último ')').
+fn render(i: i64) -> string {
+    let mut kids = "";
+    let mut c = tree.first[i];
+    while c != 0 {
+        kids = join2(kids, render(c));
+        c = tree.next[c];
+    }
+    attach(tree.text[i], kids)
+}
 
 fn is_space(c: string) -> bool {
     c == " " || c == "\t" || c == "\r" || c == "\n"
@@ -377,23 +453,25 @@ fn parse_path_text() -> string {
     path
 }
 
-fn parse_type() -> string {
+fn parse_type() -> i64 {
     if tk == "IDENT" {
-        let t = "TypeIdent(" + tl + ")";
+        let t = mk("TypeIdent(" + tl + ")");
         advance();
         return t;
     }
     perr("expected type");
     advance();
-    "TypeIdent(?)"
+    mk("TypeIdent(?)")
 }
 
-fn parse_expr(min_bp: i64) -> string {
-    let mut left = "";
+fn parse_expr(min_bp: i64) -> i64 {
+    let mut left: i64 = 0;
     if tk == "PUNCT" && (tl == "-" || tl == "!") {
         let op = tl;
         advance();
-        left = "UnaryOp(" + op + " " + parse_expr(13) + ")";
+        let un = mk("UnaryOp(" + op + ")");
+        add_child(un, parse_expr(13));
+        left = un;
     } else {
         left = parse_primary();
     }
@@ -407,17 +485,20 @@ fn parse_expr(min_bp: i64) -> string {
             if tk != "IDENT" {
                 ef_now("field name");
                 advance();
-                left = "PARSE-ERROR";
+                left = mk("PARSE-ERROR");
             } else {
-                left = attach("FieldAccess(" + tl + ")", left);
+                let fa = mk("FieldAccess(" + tl + ")");
+                add_child(fa, left);
+                left = fa;
                 advance();
             }
         } else if tk == "PUNCT" && tl == "(" {
             advance();
-            let mut args = "";
+            let calln = mk("Call");
+            add_child(calln, left);
             while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
                 let a = parse_expr(1);
-                args = join2(args, a);
+                add_child(calln, a);
                 if tk == "PUNCT" && tl == "," {
                     advance();
                 } else {
@@ -427,12 +508,15 @@ fn parse_expr(min_bp: i64) -> string {
                 }
             }
             expect_punct_nl(")");
-            left = "Call(" + join2(left, args) + ")";
+            left = calln;
         } else if tk == "PUNCT" && tl == "[" {
             advance();
             let idx = parse_expr(1);
             expect_punct("]");
-            left = "Index(" + join2(left, idx) + ")";
+            let ix = mk("Index");
+            add_child(ix, left);
+            add_child(ix, idx);
+            left = ix;
         } else {
             postfixing = false;
         }
@@ -448,24 +532,27 @@ fn parse_expr(min_bp: i64) -> string {
         let op = tl;
         advance();
         let right = parse_expr(bp + 1);
-        left = "BinaryOp(" + op + " " + left + " " + right + ")";
+        let bn = mk("BinaryOp(" + op + ")");
+        add_child(bn, left);
+        add_child(bn, right);
+        left = bn;
     }
     left
 }
 
-fn parse_primary() -> string {
+fn parse_primary() -> i64 {
     if tk == "INT" {
-        let t = "IntLit(" + tl + ")";
+        let t = mk("IntLit(" + tl + ")");
         advance();
         return t;
     }
     if tk == "STRING" {
-        let t = "StringLit(" + tl + ")";
+        let t = mk("StringLit(" + tl + ")");
         advance();
         return t;
     }
     if tk == "KEYWORD" && (tl == "true" || tl == "false") {
-        let t = "BoolLit(" + tl + ")";
+        let t = mk("BoolLit(" + tl + ")");
         advance();
         return t;
     }
@@ -486,18 +573,20 @@ fn parse_primary() -> string {
             let name = tl;
             advance(); // consume el ident; tk ahora es '{'
             advance(); // consume '{'
-            let mut fields = "";
+            let sl = mk("StructLit(" + name + ")");
             while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
                 if tk != "IDENT" {
                     ef_now("field name");
                     advance();
-                    return "PARSE-ERROR";
+                    return mk("PARSE-ERROR");
                 }
                 let fname = tl;
                 advance();
                 expect_punct(":");
                 let val = parse_expr(1);
-                fields = join2(fields, attach("Field(" + fname + ")", val));
+                let fnode = mk("Field(" + fname + ")");
+                add_child(fnode, val);
+                add_child(sl, fnode);
                 if tk == "PUNCT" && tl == "," {
                     advance();
                 } else {
@@ -505,9 +594,9 @@ fn parse_primary() -> string {
                 }
             }
             expect_punct("}");
-            return attach("StructLit(" + name + ")", fields);
+            return sl;
         }
-        let t = "Ident(" + tl + ")";
+        let t = mk("Ident(" + tl + ")");
         advance();
         return t;
     }
@@ -524,11 +613,11 @@ fn parse_primary() -> string {
     }
     if tk == "PUNCT" && tl == "[" {
         advance();
-        let mut elems = "";
+        let arr = mk(""); // texto provisional: la aridad se conoce al final
         let mut count: i64 = 0;
         while !(tk == "PUNCT" && tl == "]") && tk != "EOF" {
             let e = parse_expr(1);
-            elems = join2(elems, e);
+            add_child(arr, e);
             count = count + 1;
             if tk == "PUNCT" && tl == "," {
                 advance();
@@ -537,11 +626,12 @@ fn parse_primary() -> string {
             }
         }
         expect_punct("]");
-        return attach("ArrayLit(" + to_string(count) + ")", elems);
+        tree.text[arr] = "ArrayLit(" + to_string(count) + ")";
+        return arr;
     }
     perr("unexpected token in expression");
     advance();
-    "PARSE-ERROR"
+    mk("PARSE-ERROR")
 }
 
 // DEC-029: lambda — |params| [-> type] { block }. El cuerpo DEBE ser
@@ -551,8 +641,8 @@ fn parse_primary() -> string {
 // es SOLO la anotación de retorno (verificado; los tipos de parámetro no
 // aparecen). Sin parámetros: `||` (token OR_OR, tratado como lista vacía)
 // o `| |` (dos PUNCT) — el mismo loop cubre ambas grafías.
-fn parse_lambda() -> string {
-    let mut params = "";
+fn parse_lambda() -> i64 {
+    let lam = mk("Lambda");
     if tk == "PUNCT" && tl == "||" {
         advance();
     } else {
@@ -561,9 +651,9 @@ fn parse_lambda() -> string {
             if tk != "IDENT" {
                 ef_now("parameter name");
                 advance();
-                return "PARSE-ERROR";
+                return mk("PARSE-ERROR");
             }
-            params = join2(params, "Param(" + tl + ")");
+            add_child(lam, mk("Param(" + tl + ")"));
             advance();
             if tk == "PUNCT" && tl == ":" {
                 advance();
@@ -582,62 +672,67 @@ fn parse_lambda() -> string {
     }
     if tk == "PUNCT" && tl == "->" {
         advance();
-        let rtype = parse_type(); // descartada salvo por el descarte mismo
-        params = join2(params, rtype); // el dump SÍ imprime el ret como TypeIdent
+        let rtype = parse_type(); // el dump SÍ imprime el ret como TypeIdent
+        add_child(lam, rtype);
     }
     if tk != "PUNCT" || tl != "{" {
         ef_now("'{' for lambda body");
-        return "PARSE-ERROR";
+        return mk("PARSE-ERROR");
     }
-    attach("Lambda", join2(params, parse_block()))
+    add_child(lam, parse_block());
+    lam
 }
 
 // DEC-028: una alternativa de patron (sin el '|'). La misma forma que la
 // expresion para las rutas: Size.XS -> FieldAccess(XS Ident(Size)).
-fn parse_pattern_alt() -> string {
+fn parse_pattern_alt() -> i64 {
     if tk == "PUNCT" && tl == "-" {
         advance();
         if tk == "INT" {
             let n = tl;
             advance();
-            return attach("UnaryOp(-)", "IntLit(" + n + ")");
+            let un = mk("UnaryOp(-)");
+            add_child(un, mk("IntLit(" + n + ")"));
+            return un;
         }
         perr("expected a numeric literal after '-' in pattern");
         advance();
-        return "PARSE-ERROR";
+        return mk("PARSE-ERROR");
     }
     if tk == "INT" {
-        let t = "IntLit(" + tl + ")";
+        let t = mk("IntLit(" + tl + ")");
         advance();
         return t;
     }
     if tk == "STRING" {
-        let t = "StringLit(" + tl + ")";
+        let t = mk("StringLit(" + tl + ")");
         advance();
         return t;
     }
     if tk == "KEYWORD" && (tl == "true" || tl == "false") {
-        let t = "BoolLit(" + tl + ")";
+        let t = mk("BoolLit(" + tl + ")");
         advance();
         return t;
     }
     if tk == "IDENT" {
         if tl == "_" {
             advance();
-            return "PatternWildcard";
+            return mk("PatternWildcard");
         }
         let root = tl;
         advance();
-        let mut node = "Ident(" + root + ")";
+        let mut node = mk("Ident(" + root + ")");
         let mut segs: i64 = 1;
         while tk == "PUNCT" && tl == "." {
             advance();
             if tk != "IDENT" {
                 perr("expected a pattern ('_', literal or Enum.Variant)");
                 advance();
-                return "PARSE-ERROR";
+                return mk("PARSE-ERROR");
             }
-            node = attach("FieldAccess(" + tl + ")", node);
+            let fa = mk("FieldAccess(" + tl + ")");
+            add_child(fa, node);
+            node = fa;
             segs = segs + 1;
             advance();
         }
@@ -648,57 +743,58 @@ fn parse_pattern_alt() -> string {
                 perr("enum patterns must be qualified (Enum.Variant)");
             }
             advance();
-            let mut binds = "";
+            let pv = mk("PatternVariantBind");
+            add_child(pv, node);
             while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
                 if tk != "IDENT" {
                     perr("expected binding name");
                     advance();
-                    return "PARSE-ERROR";
+                    return mk("PARSE-ERROR");
                 }
-                binds = join2(binds, "Bind(" + tl + ")");
+                add_child(pv, mk("Bind(" + tl + ")"));
                 advance();
                 if tk == "PUNCT" && tl == "," {
                     advance();
                 }
             }
             expect_punct(")");
-            return attach("PatternVariantBind", join2(node, binds));
+            return pv;
         }
         if segs == 1 {
-            return "PatternBind(" + root + ")";
+            return mk("PatternBind(" + root + ")");
         }
         return node;
     }
     perr("expected a pattern ('_', literal or Enum.Variant)");
     advance();
-    "PARSE-ERROR"
+    mk("PARSE-ERROR")
 }
 
 // Cadena de or-patterns: p1 | p2 | ... -> PatternOr(n kids) si hay mas de uno.
-fn parse_pattern() -> string {
-    let mut alts = "";
-    let mut count: i64 = 0;
-    let mut more = true;
-    while more {
-        alts = join2(alts, parse_pattern_alt());
+fn parse_pattern() -> i64 {
+    let first = parse_pattern_alt();
+    if !(tk == "PUNCT" && tl == "|") {
+        return first;
+    }
+    // or-chain: el número de alternativas sólo se conoce al final — texto
+    // provisional como en ArrayLit.
+    let por = mk("");
+    add_child(por, first);
+    let mut count: i64 = 1;
+    while tk == "PUNCT" && tl == "|" {
+        advance();
+        add_child(por, parse_pattern_alt());
         count = count + 1;
-        if tk == "PUNCT" && tl == "|" {
-            advance();
-        } else {
-            more = false;
-        }
     }
-    if count > 1 {
-        return attach("PatternOr(" + to_string(count) + ")", alts);
-    }
-    alts
+    tree.text[por] = "PatternOr(" + to_string(count) + ")";
+    por
 }
 
 // DEC-028: match como expresion y como sentencia. Comas OBLIGATORIAS entre
 // brazos (el seed sin coma falla — verificado); trailing opcional. Las
 // guardas (if expr) se parsean pero NO se emiten: el dump del seed las
 // omite (mirror lossy, PHASE2_PROGRESS §7) y el golden sale de ahi.
-fn parse_match() -> string {
+fn parse_match() -> i64 {
     advance(); // match
     let saved_nsl = no_struct_lit;
     no_struct_lit = true;
@@ -710,21 +806,25 @@ fn parse_match() -> string {
         ef_now("'{' for match");
         advance();
     }
-    let mut arms = "";
+    let mn = mk("Match");
+    add_child(mn, target);
     while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
         let pat = parse_pattern();
         if tk == "KEYWORD" && tl == "if" {
             advance();
-            let guard_expr = parse_expr(1);
+            let guard_expr = parse_expr(1); // guardas: parseadas, no emitidas
         }
         expect_punct("=>");
-        let mut body = "";
+        let mut body: i64 = 0;
         if tk == "PUNCT" && tl == "{" {
             body = parse_block();
         } else {
             body = parse_expr(1);
         }
-        arms = join2(arms, attach("Arm", join2(pat, body)));
+        let arm = mk("Arm");
+        add_child(arm, pat);
+        add_child(arm, body);
+        add_child(mn, arm);
         if tk == "PUNCT" && tl == "," {
             advance();
         } else if !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
@@ -735,44 +835,50 @@ fn parse_match() -> string {
         }
     }
     expect_punct("}");
-    attach("Match", join2(target, arms))
+    mn
 }
 
-fn parse_block() -> string {
+fn parse_block() -> i64 {
     expect_punct("{");
-    let mut body = "";
+    let blk = mk("Block");
     while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
         let s = parse_stmt();
-        body = join2(body, s);
+        add_child(blk, s);
     }
     expect_punct("}");
-    attach("Block", body)
+    blk
 }
 
-fn parse_if() -> string {
+fn parse_if() -> i64 {
     advance();
     let saved_nsl = no_struct_lit;
     no_struct_lit = true;
     let cond = parse_expr(1);
     no_struct_lit = saved_nsl;
     let thenb = parse_block();
-    let mut kids = join2(cond, thenb);
+    let ifn = mk("If");
+    add_child(ifn, cond);
+    add_child(ifn, thenb);
     if tk == "KEYWORD" && tl == "else" && t_line == prev_line {
         // DEC-031: el 'else' sólo se une al if en la MISMA línea del '}'
         // del then (el seed: el NEWLINE rompe match(ELSE) y el 'else'
         // cae como sentencia → unexpected token in expression, verificado).
         advance();
+        let elsen = mk("Else");
         if tk == "KEYWORD" && tl == "if" {
             // el seed envuelve el if-else-if en un Block: Else(Block(If(...)))
-            kids = join2(kids, "Else(Block(" + parse_if() + "))");
+            let wrapper = mk("Block");
+            add_child(elsen, wrapper);
+            add_child(wrapper, parse_if());
         } else {
-            kids = join2(kids, "Else(" + parse_block() + ")");
+            add_child(elsen, parse_block());
         }
+        add_child(ifn, elsen);
     }
-    "If(" + kids + ")"
+    ifn
 }
 
-fn parse_stmt() -> string {
+fn parse_stmt() -> i64 {
     if tk == "KEYWORD" && tl == "let" {
         advance();
         let mut is_mut = false;
@@ -783,7 +889,7 @@ fn parse_stmt() -> string {
         if tk != "IDENT" {
             ef("variable name");
             advance();
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         let nm = tl;
         advance();
@@ -792,19 +898,19 @@ fn parse_stmt() -> string {
             head = head + ", mut";
         }
         head = head + ")";
-        let mut kids = "";
+        let vd = mk(head);
         if tk == "PUNCT" && tl == ":" {
             advance();
-            kids = join2(kids, parse_type());
+            add_child(vd, parse_type());
         }
         // DEC-031: '=' es OPCIONAL (el seed: `let x 5;` parsea como
         // VarDecl(x) + sentencia 5; — verificado s5).
         if tk == "PUNCT" && tl == "=" {
             advance();
-            kids = join2(kids, parse_expr(1));
+            add_child(vd, parse_expr(1));
         }
         stmt_end();
-        return attach(head, kids);
+        return vd;
     }
     if tk == "KEYWORD" && tl == "if" {
         return parse_if();
@@ -816,26 +922,31 @@ fn parse_stmt() -> string {
         let cond = parse_expr(1);
         no_struct_lit = saved_nsl;
         let body = parse_block();
-        return "While(" + join2(cond, body) + ")";
+        let wn = mk("While");
+        add_child(wn, cond);
+        add_child(wn, body);
+        return wn;
     }
     if tk == "KEYWORD" && tl == "return" {
         advance();
         if tk == "PUNCT" && tl == ";" {
             advance();
-            return "Return";
+            return mk("Return");
         }
         // DEC-028: `return x` sin ';' termina en '}' o cambio de línea.
         if tk == "EOF" || (tk == "PUNCT" && tl == "}") || t_line != prev_line {
-            return "Return";
+            return mk("Return");
         }
         let e = parse_expr(1);
         stmt_end();
-        return "Return(" + e + ")";
+        let rn = mk("Return");
+        add_child(rn, e);
+        return rn;
     }
     if tk == "KEYWORD" && tl == "break" {
         advance();
         stmt_end();
-        return "Break";
+        return mk("Break");
     }
     // DEC-030: el destino se parsea como expresión (Ident, campo o índice
     // — el seed permite los tres LValue) y un '=' posterior lo convierte
@@ -845,12 +956,16 @@ fn parse_stmt() -> string {
         advance();
         // DEC-031: LValue del seed (parser.c:396-398) — el reporte cae en
         // el token DESPUÉS del '=' (verificado: 1 = 2 → en el 2).
-        if !(starts_with(e, "Ident(") || starts_with(e, "FieldAccess(") || starts_with(e, "Index(")) {
+        let et = tree.text[e];
+        if !(starts_with(et, "Ident(") || starts_with(et, "FieldAccess(") || starts_with(et, "Index(")) {
             perr("invalid assignment target");
         }
         let rhs = parse_expr(1);
         stmt_end();
-        return "Assign(" + e + " " + rhs + ")";
+        let an = mk("Assign");
+        add_child(an, e);
+        add_child(an, rhs);
+        return an;
     }
     stmt_end();
     e
@@ -860,31 +975,36 @@ fn parse_stmt() -> string {
 // un trait (firma sin cuerpo → Block vacío, que el seed sintetiza);
 // el ':' del parámetro es opcional (el seed lo exige fuera de trait/impl
 // vía allow_self — superconjunto declarado en DEC-030 §4).
-fn parse_fn(is_pub: bool, sig_only: bool) -> string {
+fn parse_fn(is_pub: bool, sig_only: bool) -> i64 {
     advance(); // fn
     if tk != "IDENT" {
         ef("function name");
         advance();
-        return "PARSE-ERROR";
+        return mk("PARSE-ERROR");
     }
     let nm = tl;
     advance();
+    let mut fnn: i64 = 0;
+    if is_pub {
+        fnn = mk("PubFnDecl(" + nm + ")");
+    } else {
+        fnn = mk("FnDecl(" + nm + ")");
+    }
     expect_punct("(");
-    let mut kids = "";
     while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
         if tk != "IDENT" {
             ef("parameter name");
             advance();
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         let pn = tl;
         advance();
-        let mut pnode = "Param(" + pn + ")";
+        let pnode = mk("Param(" + pn + ")");
         if tk == "PUNCT" && tl == ":" {
             advance();
-            pnode = attach(pnode, parse_type());
+            add_child(pnode, parse_type());
         }
-        kids = join2(kids, pnode);
+        add_child(fnn, pnode);
         if tk == "PUNCT" && tl == "," {
             advance();
         }
@@ -892,23 +1012,22 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> string {
     expect_punct(")");
     if tk == "PUNCT" && tl == "->" {
         advance();
-        kids = join2(kids, attach("ReturnType", parse_type()));
+        let rn = mk("ReturnType");
+        add_child(rn, parse_type());
+        add_child(fnn, rn);
     }
     if tk == "PUNCT" && tl == "{" {
-        kids = join2(kids, parse_block());
+        add_child(fnn, parse_block());
     } else if sig_only {
-        kids = join2(kids, "Block");
+        add_child(fnn, mk("Block"));
     } else {
         ef_now("'{' for function body");
-        return "PARSE-ERROR";
+        return mk("PARSE-ERROR");
     }
-    if is_pub {
-        return attach("PubFnDecl(" + nm + ")", kids);
-    }
-    return attach("FnDecl(" + nm + ")", kids);
+    fnn
 }
 
-fn parse_item() -> string {
+fn parse_item() -> i64 {
     let mut is_pub = false;
     if tk == "KEYWORD" && tl == "pub" {
         is_pub = true;
@@ -922,7 +1041,7 @@ fn parse_item() -> string {
         if tk != "IDENT" {
             ef("variable name");
             advance();
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         let nm = tl;
         advance();
@@ -930,9 +1049,13 @@ fn parse_item() -> string {
         let v = parse_expr(1);
         stmt_end();
         if is_pub {
-            return attach("PubConstDecl(" + nm + ")", v);
+            let cn = mk("PubConstDecl(" + nm + ")");
+            add_child(cn, v);
+            return cn;
         }
-        return attach("ConstDecl(" + nm + ")", v);
+        let cn = mk("ConstDecl(" + nm + ")");
+        add_child(cn, v);
+        return cn;
     }
     if tk == "KEYWORD" && tl == "enum" {
         // DEC-028: EnumDecl(name) + Variant(v) con Field(TypeIdent) por
@@ -941,41 +1064,45 @@ fn parse_item() -> string {
         if tk != "IDENT" {
             ef("enum name");
             advance();
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         let nm = tl;
         advance();
         expect_punct("{");
-        let mut variants = "";
+        let mut en: i64 = 0;
+        if is_pub {
+            en = mk("PubEnumDecl(" + nm + ")");
+        } else {
+            en = mk("EnumDecl(" + nm + ")");
+        }
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if tk != "IDENT" {
                 ef("variant name");
                 advance();
-                return "PARSE-ERROR";
+                return mk("PARSE-ERROR");
             }
             let vn = tl;
             advance();
-            let mut fields = "";
+            let variant = mk("Variant(" + vn + ")");
             if tk == "PUNCT" && tl == "(" {
                 advance();
                 while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
-                    fields = join2(fields, attach("Field", parse_type()));
+                    let fld = mk("Field");
+                    add_child(fld, parse_type());
+                    add_child(variant, fld);
                     if tk == "PUNCT" && tl == "," {
                         advance();
                     }
                 }
                 expect_punct(")");
             }
-            variants = join2(variants, attach("Variant(" + vn + ")", fields));
+            add_child(en, variant);
             if tk == "PUNCT" && tl == "," {
                 advance();
             }
         }
         expect_punct("}");
-        if is_pub {
-            return attach("PubEnumDecl(" + nm + ")", variants);
-        }
-        return attach("EnumDecl(" + nm + ")", variants);
+        return en;
     }
     if tk == "KEYWORD" && tl == "struct" {
         // DEC-030: StructDecl(name) + Field(f) con TypeIdent hijo.
@@ -983,32 +1110,36 @@ fn parse_item() -> string {
         if tk != "IDENT" {
             ef("struct name");
             advance();
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         let nm = tl;
         advance();
         expect_punct("{");
-        let mut fields = "";
+        let mut st: i64 = 0;
+        if is_pub {
+            st = mk("PubStructDecl(" + nm + ")");
+        } else {
+            st = mk("StructDecl(" + nm + ")");
+        }
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if tk != "IDENT" {
                 ef("field name");
                 advance();
-                return "PARSE-ERROR";
+                return mk("PARSE-ERROR");
             }
             let fname = tl;
             advance();
             expect_punct(":");
             let ftype = parse_type();
-            fields = join2(fields, attach("Field(" + fname + ")", ftype));
+            let fld = mk("Field(" + fname + ")");
+            add_child(fld, ftype);
+            add_child(st, fld);
             if tk == "PUNCT" && tl == "," {
                 advance();
             }
         }
         expect_punct("}");
-        if is_pub {
-            return attach("PubStructDecl(" + nm + ")", fields);
-        }
-        return attach("StructDecl(" + nm + ")", fields);
+        return st;
     }
     if tk == "KEYWORD" && tl == "trait" {
         // DEC-030: Trait(name) + firmas fn (sin cuerpo → Block vacío).
@@ -1016,24 +1147,26 @@ fn parse_item() -> string {
         if tk != "IDENT" {
             ef("trait name");
             advance();
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         let nm = tl;
         advance();
         expect_punct("{");
-        let mut items = "";
+        let mut tn: i64 = 0;
+        if is_pub {
+            tn = mk("PubTrait(" + nm + ")");
+        } else {
+            tn = mk("Trait(" + nm + ")");
+        }
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if !(tk == "KEYWORD" && tl == "fn") {
                 perr("only 'fn' items are supported in a trait");
                 break;
             }
-            items = join2(items, parse_fn(false, true));
+            add_child(tn, parse_fn(false, true));
         }
         expect_punct("}");
-        if is_pub {
-            return attach("PubTrait(" + nm + ")", items);
-        }
-        return attach("Trait(" + nm + ")", items);
+        return tn;
     }
     if tk == "KEYWORD" && tl == "impl" {
         // DEC-030: Impl(Area for Punto) / Impl(Punto) — payload de texto
@@ -1045,7 +1178,7 @@ fn parse_item() -> string {
         if tk != "IDENT" {
             ef("type name");
             advance();
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         let t1 = tl;
         advance();
@@ -1055,23 +1188,23 @@ fn parse_item() -> string {
             if tk != "IDENT" {
                 ef("type name");
                 advance();
-                return "PARSE-ERROR";
+                return mk("PARSE-ERROR");
             }
             let t2 = tl;
             advance();
             head = t1 + " for " + t2;
         }
         expect_punct("{");
-        let mut items = "";
+        let imn = mk("Impl(" + head + ")");
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if !(tk == "KEYWORD" && tl == "fn") {
                 perr("only 'fn' items are supported in an impl block");
                 break;
             }
-            items = join2(items, parse_fn(false, false));
+            add_child(imn, parse_fn(false, false));
         }
         expect_punct("}");
-        return attach("Impl(" + head + ")", items);
+        return imn;
     }
     if tk == "KEYWORD" && tl == "use" {
         // DEC-030: el dump del seed imprime `Use` SIN payload (mirror lossy).
@@ -1081,7 +1214,7 @@ fn parse_item() -> string {
         advance();
         let path = parse_path_text();
         stmt_end();
-        return "Use";
+        return mk("Use");
     }
     if tk == "KEYWORD" && tl == "import" {
         // DEC-030: Import(ruta) o Import(ruta as alias) con texto crudo.
@@ -1096,16 +1229,16 @@ fn parse_item() -> string {
             if tk != "IDENT" {
                 ef("alias");
                 advance();
-                return "PARSE-ERROR";
+                return mk("PARSE-ERROR");
             }
             alias = tl;
             advance();
         }
         stmt_end();
         if alias == "" {
-            return "Import(" + path + ")";
+            return mk("Import(" + path + ")");
         }
-        return "Import(" + path + " as " + alias + ")";
+        return mk("Import(" + path + " as " + alias + ")");
     }
     if tk == "KEYWORD" && tl == "from" {
         // DEC-030: From(ruta) + ImportItem(n) / ImportItem(n as a).
@@ -1116,10 +1249,10 @@ fn parse_item() -> string {
         let path = parse_path_text();
         if !(tk == "KEYWORD" && tl == "import") {
             ef("import");
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         advance();
-        let mut items = "";
+        let fn_from = mk("From(" + path + ")");
         let mut done = false;
         while !done {
             if tk != "IDENT" {
@@ -1127,19 +1260,19 @@ fn parse_item() -> string {
             }
             let inm = tl;
             advance();
-            let mut it = "ImportItem(" + inm;
+            let mut itext = "ImportItem(" + inm;
             if tk == "KEYWORD" && tl == "as" {
                 advance();
                 if tk != "IDENT" {
                     ef("alias");
                     advance();
-                    return "PARSE-ERROR";
+                    return mk("PARSE-ERROR");
                 }
-                it = it + " as " + tl;
+                itext = itext + " as " + tl;
                 advance();
             }
-            it = it + ")";
-            items = join2(items, it);
+            itext = itext + ")";
+            add_child(fn_from, mk(itext));
             if tk == "PUNCT" && tl == "," {
                 advance();
                 if tk != "IDENT" {
@@ -1150,12 +1283,12 @@ fn parse_item() -> string {
                 done = true;
             }
         }
-        if items == "" && tk == "EOF" {
+        if tree.first[fn_from] == 0 && tk == "EOF" {
             perr("expected at least one import item");
-            return "PARSE-ERROR";
+            return mk("PARSE-ERROR");
         }
         stmt_end();
-        return attach("From(" + path + ")", items);
+        return fn_from;
     }
     if is_pub {
         perr("'pub' can only precede fn, struct, enum, trait or const");
@@ -1163,22 +1296,22 @@ fn parse_item() -> string {
         perr("unexpected token in expression");
     }
     advance();
-    "PARSE-ERROR"
+    mk("PARSE-ERROR")
 }
 
-fn parse_module() -> string {
-    let mut items = "";
+fn parse_module() -> i64 {
+    let root = mk("Module");
     while tk != "EOF" {
         // DEC-031: el seed acepta sentencias a nivel de módulo (toplevel
         // statements — conformance/module/toplevel_stmts; `foo bar` parsea
         // como dos idents, verificado e7) — no sólo items.
         if tk == "KEYWORD" && (tl == "fn" || tl == "struct" || tl == "const" || tl == "enum" || tl == "trait" || tl == "impl" || tl == "use" || tl == "import" || tl == "from" || tl == "pub") {
-            items = join2(items, parse_item());
+            add_child(root, parse_item());
         } else {
-            items = join2(items, parse_stmt());
+            add_child(root, parse_stmt());
         }
     }
-    attach("Module", items)
+    root
 }
 
 fn main() {
@@ -1195,13 +1328,13 @@ fn main() {
     prev_len = 0;
     line_start = 0;
     advance();
-    let ast = parse_module();
+    let root = parse_module();
     if err_count > 0 {
         // espejo del driver del seed (driver.c:668): sin dump, una línea
         // final `error: parse failed` (el gate de diagnósticos compara
         // salidas, no rc).
         print("error: parse failed");
     } else {
-        print(ast);
+        print(render(root));
     }
 }
