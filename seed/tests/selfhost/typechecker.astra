@@ -1,5 +1,5 @@
 // typechecker.astra — typechecker de Astra-0 auto-hospedado, milestone
-// M-T2 (DEC-032, núcleo ~35 checks + gate diferencial).
+// M-T3 (DEC-032: núcleo M-T2 + structs/enums/métodos/traits/match).
 //
 // Se CONCATENA con parser.astra sin su `main` (el gate lo construye):
 //   sed '/^fn main()/,$d' parser.astra > pp.astra
@@ -10,9 +10,15 @@
 //
 // Verdad semántica: espejo byte a byte de seed/src/typechecker.c (los
 // mensajes, sus argumentos y sus posiciones); las DEC ratificadas ya viven
-// ahí. Alcance M-T2: nombres/funciones/let-const/assign/operadores/índice/
-// llamadas/if-while/tipos primitivos + scopes; struct/enum/match/trait/
-// lambda/impl = M-T3+ (el corpus M-T2 los excluye — lista en el gate).
+// ahí. Alcance M-T3: el núcleo M-T2 + declaraciones nominales
+// (struct/enum), literales y acceso a campos, construcción de variantes
+// (DEC-008), métodos inherent/trait con conformance, y match con patrones,
+// guardas y exhaustividad. Fuera de alcance (corpus excluido): optional/
+// `?`/some/none (el parser no emite PATERN_BUILTIN_VARIANT ni `T?`),
+// lambda (tipado pendiente), `for` (M-T4), genéricos, transfer/copy
+// (ownership, DEC-026). `main` enciende `emit_guards` para que el parser
+// emita la guarda de cada Arm (el route golden la sigue omitiendo: el dump
+// del seed es mirror-lossy, PHASE2 §7).
 
 // ---------- tipos (códigos fijos = type_kind_name del seed) ----------
 // 1 void 2 bool 3 i32 4 i64 5 u32 6 u64 7 f64 8 string 9 nil 10 unknown
@@ -44,6 +50,52 @@ let mut tcv_errors: i64 = 0
 let mut tcv_void: i64 = 0   // índice del tipo void (¡NO confundir con el kind 1!)
 let mut tcv_ret: i64 = 0      // tipo de retorno anotado de la fn actual (0 = sin anotar)
 let mut tcv_contret = false   // el cuerpo actual contiene un `return`
+
+// ---------- tablas M-T3 (clones de declare_type_decls/checker_add_*) ----------
+// Filas con centinela en 0 (como Sym): la fila 0 nunca es real.
+// Campos de struct: owner = nombre nominal del struct.
+struct Fld {
+    owners: [string]
+    names: [string]
+    types: [i64]
+}
+let mut tcv_flds = Fld { owners: [""], names: [""], types: [0] }
+// Variantes: registro plano (checker_add_variant) + índice dentro de su
+// enum + payload (filas contiguas en tcv_pays desde pay0).
+struct Var {
+    enums: [string]
+    names: [string]
+    idxs: [i64]
+    pay0: [i64]
+    payn: [i64]
+}
+let mut tcv_vars = Var { enums: [""], names: [""], idxs: [0], pay0: [0], payn: [0] }
+struct Pay {
+    vars: [i64]     // fila en tcv_vars
+    types: [i64]
+}
+let mut tcv_pays = Pay { vars: [0], types: [0] }
+// Métodos: (tipo, nombre, trait) — trait "" = inherent.
+struct Mth {
+    types: [string]
+    names: [string]
+    traits: [string]
+    fnt: [i64]      // fn type: params[0] = receptor
+    locs: [i64]     // nodo fn (para el error de firma)
+}
+let mut tcv_mths = Mth { types: [""], names: [""], traits: [""], fnt: [0], locs: [0] }
+struct Trt {
+    names: [string]
+}
+let mut tcv_trts = Trt { names: [""] }
+// Métodos requeridos de un trait: fnt SIN receptor (params = argumentos).
+struct TrM {
+    owners: [i64]   // fila en tcv_trts
+    names: [string]
+    fnt: [i64]
+}
+let mut tcv_trms = TrM { owners: [0], names: [""], fnt: [0] }
+let mut tcv_recv: i64 = 0   // tipo receptor en cuerpos de métodos (0 = fn libre)
 
 fn tc_kname(k: i64) -> string {
     if k == 1 { return "void"; }
@@ -235,14 +287,19 @@ fn tc_payload(text: string) -> string {
 }
 
 fn tc_resolve_type(node: i64) -> i64 {
-    // TypeIdent(nombre) -> primitiva; cualquier otro nombre = error (el
-    // corpus M-T2 no tiene structs/enums — M-T3 añade la resolución nominal)
+    // TypeIdent(nombre) -> primitiva; si no, el símbolo nominal que el
+    // pass0 declaró (struct/enum — resolve_type_node del seed: symbol
+    // lookup antes de "unknown type").
     let lab = knames[tree.kind[node]];
     if lab == "TypeIdent" {
         let nm = tc_payload(tree.text[node]);
         let k = tc_prim_from_name(nm);
         if k != 0 {
             return tc_prim(k);
+        }
+        let i = tc_lookup(nm);
+        if i >= 0 {
+            return tcv_syms.types[i];
         }
         tc_err(node, "unknown type '" + nm + "'");
         return tc_prim(17);
@@ -390,6 +447,7 @@ fn tc_expr(node: i64) -> i64 {
     let lab = knames[tree.kind[node]];
 
     if lab == "IntLit" { return tc_prim(11); }
+    if lab == "FloatLit" { return tc_prim(7); }
     if lab == "BoolLit" { return tc_prim(2); }
     if lab == "StringLit" { return tc_prim(8); }
 
@@ -496,8 +554,45 @@ fn tc_expr(node: i64) -> i64 {
     }
 
     if lab == "Call" {
-        // clon de typecheck_call: callee -> arity -> args -> retorno
+        // clon de typecheck_call: variante pelada -> método/construcción ->
+        // genérica -> callee normal.
         let callee = tree.first[node];
+        // DEC-008: `Some2(1)` (variante de USUARIO en forma pelada) se
+        // rechaza con la pista hacia la ortografía calificada.
+        if knames[tree.kind[callee]] == "Ident" {
+            let cname = tc_payload(tree.text[callee]);
+            let vrow = tc_variant_any(cname);
+            if vrow > 0 {
+                let sym = tc_lookup(cname);
+                let mut isfn = false;
+                if sym >= 0 {
+                    isfn = tcv_syms.fns[sym];
+                }
+                if !isfn {
+                    tc_err(node, "use Enum.Variant to construct '" + cname + "'");
+                    return tc_prim(17);
+                }
+            }
+        }
+        // `x.m(args)`: Enum.Variant(args) -> construcción; método -> firma
+        // sin receptor; .copy() -> builtin (sin argumentos, receptor).
+        if knames[tree.kind[callee]] == "FieldAccess" {
+            let obj = tc_expr(tree.first[callee]);
+            if tc_is_error(tcv_tps.kind[obj]) { return obj; }
+            let field = tc_payload(tree.text[callee]);
+            if tcv_tps.kind[obj] == 16 {
+                let vrow = tc_variant_of(tcv_tps.s[obj], field);
+                if vrow > 0 {
+                    return tc_variant_construct(node, obj, vrow, field);
+                }
+            }
+            let mrow = tc_find_method(obj, field);
+            if mrow > 0 {
+                return tc_method_call(node, mrow);
+            }
+            // sin método: cae al camino normal (el objeto ya tipó limpio,
+            // así que su error — p.ej. "has no field" — sale sin duplicar)
+        }
         let ct = tc_expr(callee);
         if tc_is_error(tcv_tps.kind[ct]) { return ct; }
         if tcv_tps.kind[ct] != 14 {
@@ -554,11 +649,44 @@ fn tc_expr(node: i64) -> i64 {
     }
 
     if lab == "FieldAccess" {
-        // corpus M-T2 sin structs/enums: receptor no-struct (clon del seed)
+        // clon de typecheck_field_access: Enum.Variant (valor del enum),
+        // campo de struct, método sin llamar, o error.
         let obj = tc_expr(tree.first[node]);
         if tc_is_error(tcv_tps.kind[obj]) { return obj; }
-        tc_err(tree.first[node], "cannot access field on non-struct type " + tc_kname(tcv_tps.kind[obj]));
+        let field = tc_payload(tree.text[node]);
+        if tcv_tps.kind[obj] == 16 {
+            if tc_variant_of(tcv_tps.s[obj], field) > 0 {
+                return obj;
+            }
+            if tc_find_method(obj, field) > 0 {
+                tc_err(node, "method '" + field + "' of '" + tcv_tps.s[obj] + "' must be called");
+                return tc_prim(17);
+            }
+            tc_err(node, "enum '" + tcv_tps.s[obj] + "' has no variant '" + field + "'");
+            return tc_prim(17);
+        }
+        if tcv_tps.kind[obj] != 15 {
+            tc_err(tree.first[node], "cannot access field on non-struct type " + tc_kname(tcv_tps.kind[obj]));
+            return tc_prim(17);
+        }
+        let ft = tc_find_fld(tcv_tps.s[obj], field);
+        if ft > 0 {
+            return ft;
+        }
+        if tc_find_method(obj, field) > 0 {
+            tc_err(node, "method '" + field + "' of '" + tcv_tps.s[obj] + "' must be called");
+            return tc_prim(17);
+        }
+        tc_err(node, "struct '" + tcv_tps.s[obj] + "' has no field '" + field + "'");
         return tc_prim(17);
+    }
+
+    if lab == "StructLit" {
+        return tc_struct_lit(node);
+    }
+
+    if lab == "Match" {
+        return tc_match(node);
     }
 
     if lab == "ArrayLit" {
@@ -699,6 +827,10 @@ fn tc_stmt(node: i64) {
         tc_const(node);
     } else if l == "FnDecl" || l == "PubFnDecl" {
         tc_fn_body(node);
+    } else if l == "StructDecl" || l == "PubStructDecl" {
+        tc_struct_decl(node);   // decl anidada: tipo fresco (seed)
+    } else if l == "EnumDecl" || l == "PubEnumDecl" {
+        tc_enum_decl(node);
     } else {
         let ign = tc_expr(node);
     }
@@ -740,6 +872,809 @@ fn tc_child_labeled(node: i64, want: string) -> i64 {
         c = tree.next[c];
     }
     0
+}
+
+// ---------- M-T3: tablas nominales, métodos, traits, variantes ----------
+fn tc_find_fld(sname: string, fname: string) -> i64 {
+    let mut k: i64 = 1;
+    while k < len(tcv_flds.owners) {
+        if tcv_flds.owners[k] == sname && tcv_flds.names[k] == fname {
+            return tcv_flds.types[k];
+        }
+        k = k + 1;
+    }
+    0
+}
+
+// fila de la variante V del enum E (calificada), o 0
+fn tc_variant_of(ename: string, vname: string) -> i64 {
+    let mut k: i64 = 1;
+    while k < len(tcv_vars.names) {
+        if tcv_vars.enums[k] == ename && tcv_vars.names[k] == vname {
+            return k;
+        }
+        k = k + 1;
+    }
+    0
+}
+
+// primera fila de la variante V en CUALQUIER enum (registro plano del
+// seed: sólo sirve para rechazar la forma pelona — DEC-008)
+fn tc_variant_any(vname: string) -> i64 {
+    let mut k: i64 = 1;
+    while k < len(tcv_vars.names) {
+        if tcv_vars.names[k] == vname {
+            return k;
+        }
+        k = k + 1;
+    }
+    0
+}
+
+// nombre de la variante de índice vi del enum (para exhaustividad)
+fn tc_variant_name(ename: string, vi: i64) -> string {
+    let mut k: i64 = 1;
+    while k < len(tcv_vars.names) {
+        if tcv_vars.enums[k] == ename && tcv_vars.idxs[k] == vi {
+            return tcv_vars.names[k];
+        }
+        k = k + 1;
+    }
+    "?"
+}
+
+// checker_find_method: inherent gana a trait sin importar el orden; entre
+// traits gana el primero declarado (limitación documentada Phase 2.3).
+fn tc_find_method(recv_t: i64, name: string) -> i64 {
+    if recv_t == 0 { return 0; }
+    let k = tcv_tps.kind[recv_t];
+    if k != 15 && k != 16 { return 0; }
+    let tn = tcv_tps.s[recv_t];
+    let mut trait_row: i64 = 0;
+    let mut i: i64 = 1;
+    while i < len(tcv_mths.names) {
+        if tcv_mths.names[i] == name && tcv_mths.types[i] == tn {
+            if tcv_mths.traits[i] == "" {
+                return i;
+            }
+            if trait_row == 0 {
+                trait_row = i;
+            }
+        }
+        i = i + 1;
+    }
+    trait_row
+}
+
+// checker_find_trait_method: (tipo, nombre, trait) exacto, sin fallback
+fn tc_find_trait_method(tname: string, mname: string, trname: string) -> i64 {
+    let mut i: i64 = 1;
+    while i < len(tcv_mths.names) {
+        if tcv_mths.types[i] == tname && tcv_mths.names[i] == mname && tcv_mths.traits[i] == trname {
+            return i;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// check_variant_construction (typechecker.c:1809): arity + tipos, posición
+//ales; el resultado es el tipo del enum.
+fn tc_variant_construct(node: i64, et: i64, vrow: i64, vname: string) -> i64 {
+    let callee = tree.first[node];
+    let mut n: i64 = 0;
+    let mut c = tree.next[callee];
+    let mut first_arg: i64 = 0;
+    if c != 0 { first_arg = c; }
+    while c != 0 {
+        n = n + 1;
+        c = tree.next[c];
+    }
+    let nf = tcv_vars.payn[vrow];
+    if n != nf {
+        tc_err(node, "variant '" + tcv_tps.s[et] + "." + vname + "' expects " + to_string(nf) + " field(s), got " + to_string(n));
+        return tc_prim(17);
+    }
+    if nf > 0 {
+        let mut i: i64 = 0;
+        let mut c2 = first_arg;
+        while i < n {
+            let at = tc_expr(c2);
+            if tc_is_error(tcv_tps.kind[at]) { return at; }
+            let expected = tcv_pays.types[tcv_vars.pay0[vrow] + i];
+            if expected != 0 && tcv_tps.kind[expected] != 10 && !tc_eq(at, expected) {
+                tc_err(node, "field " + to_string(i + 1) + " of '" + tcv_tps.s[et] + "." + vname + "' expects " + tc_kname(tcv_tps.kind[expected]) + ", got " + tc_kname(tcv_tps.kind[at]));
+                return tc_prim(17);
+            }
+            c2 = tree.next[c2];
+            i = i + 1;
+        }
+    }
+    et
+}
+
+// typecheck_method_call: el receptor no es argumento de origen
+fn tc_method_call(node: i64, mrow: i64) -> i64 {
+    let fn_t = tcv_mths.fnt[mrow];
+    let want = tc_arg_count(fn_t) - 1;
+    let mut n: i64 = 0;
+    let mut c = tree.next[tree.first[node]];
+    let mut first_arg: i64 = 0;
+    if c != 0 { first_arg = c; }
+    while c != 0 {
+        n = n + 1;
+        c = tree.next[c];
+    }
+    if n != want {
+        tc_err(node, "expected " + to_string(want) + " arguments, got " + to_string(n));
+        return tc_prim(17);
+    }
+    let mut p = tcv_tps.nxt[tcv_tps.a[fn_t]];
+    let mut i: i64 = 0;
+    let mut c2 = first_arg;
+    while i < n {
+        let at = tc_expr(c2);
+        if tc_is_error(tcv_tps.kind[at]) { return at; }
+        if !tc_eq(at, p) {
+            tc_err(node, "argument " + to_string(i + 1) + ": expected " + tc_kname(tcv_tps.kind[p]) + ", got " + tc_kname(tcv_tps.kind[at]));
+            return tc_prim(17);
+        }
+        p = tcv_tps.nxt[p];
+        c2 = tree.next[c2];
+        i = i + 1;
+    }
+    let ret = tcv_tps.ret[fn_t];
+    if ret == 0 { return tc_prim(1); }
+    ret
+}
+
+// typecheck_struct_lit: duplicados -> desconocidos -> cada campo declarado
+// exactamente una vez con tipo compatible (typechecker.c:2052).
+fn tc_struct_lit(node: i64) -> i64 {
+    let name = tc_payload(tree.text[node]);
+    let mut st: i64 = 0;
+    let i = tc_lookup(name);
+    if i >= 0 {
+        st = tcv_syms.types[i];
+    }
+    if st == 0 || tcv_tps.kind[st] != 15 {
+        tc_err(node, "unknown struct '" + name + "'");
+        return tc_prim(17);
+    }
+    let mut fnames: [string] = [""];
+    let mut fvals: [i64] = [0];
+    let mut nf: i64 = 0;
+    let mut c = tree.first[node];
+    while c != 0 {
+        fnames = push(fnames, tc_payload(tree.text[c]));
+        fvals = push(fvals, tree.first[c]);
+        nf = nf + 1;
+        c = tree.next[c];
+    }
+    let mut i2: i64 = 1;
+    while i2 <= nf {
+        let fname = fnames[i2];
+        let mut j: i64 = 1;
+        while j < i2 {
+            if fnames[j] == fname {
+                tc_err(node, "duplicate field '" + fname + "' in struct literal");
+                return tc_prim(17);
+            }
+            j = j + 1;
+        }
+        if tc_find_fld(name, fname) == 0 {
+            tc_err(node, "struct '" + name + "' has no field '" + fname + "'");
+            return tc_prim(17);
+        }
+        i2 = i2 + 1;
+    }
+    let mut k: i64 = 1;
+    while k < len(tcv_flds.owners) {
+        if tcv_flds.owners[k] == name {
+            let fname = tcv_flds.names[k];
+            let mut vi: i64 = -1;
+            let mut j: i64 = 1;
+            while j <= nf {
+                if fnames[j] == fname {
+                    vi = j;
+                }
+                j = j + 1;
+            }
+            if vi < 0 {
+                tc_err(node, "missing field '" + fname + "' in '" + name + "' literal");
+                return tc_prim(17);
+            }
+            let vt = tc_expr(fvals[vi]);
+            if tc_is_error(tcv_tps.kind[vt]) { return vt; }
+            let expected = tcv_flds.types[k];
+            if !tc_eq(expected, vt) {
+                tc_err(fvals[vi], "field '" + fname + "' expects " + tc_kname(tcv_tps.kind[expected]) + ", got " + tc_kname(tcv_tps.kind[vt]));
+                return tc_prim(17);
+            }
+        }
+        k = k + 1;
+    }
+    st
+}
+
+// check_pattern (typechecker.c:2357). Devuelve 1 si el patrón es un
+// wildcard (el caller lo traduce en has_wildcard); la cobertura se marca
+// en tcv_covered (global: los parámetros no son mut).
+let mut tcv_covered: [bool] = [false]
+
+fn tc_check_pattern(pat: i64, target: i64, covn: i64, mark: bool) -> i64 {
+    if pat == 0 { return 0; }
+    let lab = knames[tree.kind[pat]];
+    if lab == "PatternWildcard" {
+        return 1;
+    }
+    if lab == "PatternOr" {
+        let mut w: i64 = 0;
+        let mut c = tree.first[pat];
+        while c != 0 {
+            if tc_check_pattern(c, target, covn, mark) == 1 {
+                w = 1;
+            }
+            c = tree.next[c];
+        }
+        return w;
+    }
+    if lab == "FieldAccess" {
+        let obj = tree.first[pat];
+        if obj == 0 || knames[tree.kind[obj]] != "Ident" {
+            tc_err(pat, "pattern must be a literal, `_` or Enum.Variant");
+            return 0;
+        }
+        let et = tc_expr(obj);
+        if tc_is_error(tcv_tps.kind[et]) { return 0; }
+        if tcv_tps.kind[et] != 16 {
+            tc_err(pat, "pattern must be a literal, `_` or Enum.Variant");
+            return 0;
+        }
+        if !tc_eq(et, target) {
+            tc_err(pat, "pattern type " + tc_kname(tcv_tps.kind[et]) + " does not match match target type " + tc_kname(tcv_tps.kind[target]));
+            return 0;
+        }
+        let vname = tc_payload(tree.text[pat]);
+        let vrow = tc_variant_of(tcv_tps.s[et], vname);
+        if vrow == 0 {
+            tc_err(pat, "enum '" + tcv_tps.s[et] + "' has no variant '" + vname + "'");
+            return 0;
+        }
+        if mark && tcv_vars.idxs[vrow] < covn {
+            tcv_covered[tcv_vars.idxs[vrow]] = true;
+        }
+        return 0;
+    }
+    if lab == "IntLit" || lab == "FloatLit" || lab == "StringLit" || lab == "BoolLit" || lab == "UnaryOp" {
+        let pt = tc_expr(pat);
+        if tc_is_error(tcv_tps.kind[pt]) { return 0; }
+        if !tc_eq(pt, target) {
+            tc_err(pat, "pattern type " + tc_kname(tcv_tps.kind[pt]) + " does not match match target type " + tc_kname(tcv_tps.kind[target]));
+            return 0;
+        }
+        if lab == "BoolLit" && mark && tcv_tps.kind[target] == 2 && covn > 1 {
+            if tc_payload(tree.text[pat]) == "true" {
+                tcv_covered[1] = true;
+            } else {
+                tcv_covered[0] = true;
+            }
+        }
+        return 0;
+    }
+    if lab == "PatternBind" {
+        tc_declare(tc_payload(tree.text[pat]), target, false, false);
+        return 0;
+    }
+    if lab == "PatternVariantBind" {
+        let vp = tree.first[pat];
+        if vp == 0 || knames[tree.kind[vp]] != "FieldAccess" {
+            tc_err(pat, "pattern must be a literal, `_` or Enum.Variant");
+            return 0;
+        }
+        let obj = tree.first[vp];
+        if obj == 0 || knames[tree.kind[obj]] != "Ident" {
+            tc_err(pat, "pattern must be a literal, `_` or Enum.Variant");
+            return 0;
+        }
+        let et = tc_expr(obj);
+        if tc_is_error(tcv_tps.kind[et]) { return 0; }
+        if tcv_tps.kind[et] != 16 {
+            tc_err(pat, "pattern must be a literal, `_` or Enum.Variant");
+            return 0;
+        }
+        if !tc_eq(et, target) {
+            tc_err(pat, "pattern type " + tc_kname(tcv_tps.kind[et]) + " does not match match target type " + tc_kname(tcv_tps.kind[target]));
+            return 0;
+        }
+        let vname = tc_payload(tree.text[vp]);
+        let vrow = tc_variant_of(tcv_tps.s[et], vname);
+        if vrow == 0 {
+            tc_err(pat, "enum '" + tcv_tps.s[et] + "' has no variant '" + vname + "'");
+            return 0;
+        }
+        if mark && tcv_vars.idxs[vrow] < covn {
+            tcv_covered[tcv_vars.idxs[vrow]] = true;
+        }
+        let mut binds: [i64] = [0];
+        let mut nb: i64 = 0;
+        let mut c = tree.next[vp];
+        while c != 0 {
+            binds = push(binds, c);
+            nb = nb + 1;
+            c = tree.next[c];
+        }
+        if tcv_vars.payn[vrow] > 0 {
+            if nb != tcv_vars.payn[vrow] {
+                tc_err(pat, "variant '" + vname + "' has " + to_string(tcv_vars.payn[vrow]) + " fields but pattern binds " + to_string(nb));
+                return 0;
+            }
+            let mut i: i64 = 0;
+            while i < nb {
+                tc_declare(tc_payload(tree.text[binds[i + 1]]), tcv_pays.types[tcv_vars.pay0[vrow] + i], false, false);
+                i = i + 1;
+            }
+        } else {
+            if nb > 0 {
+                tc_err(pat, "variant '" + vname + "' has no payload but pattern binds " + to_string(nb));
+                return 0;
+            }
+        }
+        return 0;
+    }
+    tc_err(pat, "unsupported pattern in match arm");
+    0
+}
+
+// typecheck_match (typechecker.c:2522): patrones, guardas, unificación de
+// brazos y exhaustividad (enum/optional/bool/ resto -> '_').
+fn tc_match(node: i64) -> i64 {
+    let target = tc_expr(tree.first[node]);
+    if tc_is_error(tcv_tps.kind[target]) { return target; }
+    let tgt = tcv_tps.kind[target];
+    let mut covn: i64 = 0;
+    if tgt == 16 {
+        covn = tcv_tps.a[target];
+    } else if tgt == 13 || tgt == 2 {
+        covn = 2;
+    }
+    tcv_covered = [false];
+    let mut i: i64 = 1;
+    while i < covn {
+        tcv_covered = push(tcv_covered, false);
+        i = i + 1;
+    }
+    let mut has_wildcard = false;
+    let mut rty: i64 = 0;
+    let mut c = tree.next[tree.first[node]];
+    while c != 0 {
+        tc_scope_enter();
+        let pat = tree.first[c];
+        let mut lastc: i64 = 0;
+        let mut w = tree.first[c];
+        while w != 0 {
+            lastc = w;
+            w = tree.next[w];
+        }
+        let mut guard: i64 = 0;
+        if tree.next[pat] != lastc {
+            guard = tree.next[pat];
+        }
+        // una guarda no satisface cobertura (audit §3.4); un binding sin
+        // guarda cubre todo como `_` (audit §3.4 / bind_catch_all)
+        if guard != 0 {
+            let wc = tc_check_pattern(pat, target, covn, false);
+        } else {
+            let wc = tc_check_pattern(pat, target, covn, true);
+            if wc == 1 {
+                has_wildcard = true;
+            }
+            if knames[tree.kind[pat]] == "PatternBind" {
+                has_wildcard = true;
+            }
+        }
+        if guard != 0 {
+            let g = tc_expr(guard);
+            if !tc_is_error(tcv_tps.kind[g]) && tcv_tps.kind[g] != 2 {
+                tc_err(guard, "match guard must be bool, got " + tc_kname(tcv_tps.kind[g]));
+            }
+        }
+        let arm_t = tc_expr(lastc);
+        if rty == 0 {
+            rty = arm_t;
+        } else if !tc_eq(arm_t, rty) {
+            tc_err(lastc, "match arm type " + tc_kname(tcv_tps.kind[arm_t]) + " does not match previous arm type " + tc_kname(tcv_tps.kind[rty]));
+        }
+        tc_scope_exit();
+        c = tree.next[c];
+    }
+    if !has_wildcard {
+        if tgt == 16 {
+            let mut vi: i64 = 0;
+            while vi < covn {
+                if !tcv_covered[vi] {
+                    tc_err(node, "non-exhaustive match: missing variant '" + tcv_tps.s[target] + "." + tc_variant_name(tcv_tps.s[target], vi) + "'");
+                }
+                vi = vi + 1;
+            }
+        } else if tgt == 13 {
+            if !tcv_covered[0] {
+                tc_err(node, "non-exhaustive match: missing payload arm (some/ok/err)");
+            }
+            if covn > 1 && !tcv_covered[1] {
+                tc_err(node, "non-exhaustive match: missing 'none' arm");
+            }
+        } else if tgt == 2 {
+            if !tcv_covered[0] {
+                tc_err(node, "non-exhaustive match: missing 'false' arm");
+            }
+            if covn > 1 && !tcv_covered[1] {
+                tc_err(node, "non-exhaustive match: missing 'true' arm");
+            }
+        } else if !tc_is_error(tgt) {
+            tc_err(node, "non-exhaustive match: missing '_' arm");
+        }
+    }
+    if rty == 0 {
+        return tc_prim(1);
+    }
+    rty
+}
+
+// typecheck_struct_decl (typechecker.c:3204): rellena los campos del tipo
+// nominal que el pass0 declaró (o crea uno fresco si es anidado).
+fn tc_struct_decl(node: i64) {
+    let name = tc_payload(tree.text[node]);
+    let mut st: i64 = 0;
+    let i = tc_lookup(name);
+    if i >= 0 && tcv_tps.kind[tcv_syms.types[i]] == 15 {
+        st = tcv_syms.types[i];
+    } else {
+        st = tc_mk(15);
+        tcv_tps.s[st] = name;
+        tc_declare(name, st, false, false);
+    }
+    let mut c = tree.first[node];
+    while c != 0 {
+        if knames[tree.kind[c]] == "Field" {
+            let fname = tc_payload(tree.text[c]);
+            let mut k: i64 = 1;
+            while k < len(tcv_flds.owners) {
+                if tcv_flds.owners[k] == name && tcv_flds.names[k] == fname {
+                    tc_err(node, "duplicate field '" + fname + "' in struct '" + name + "'");
+                    break;
+                }
+                k = k + 1;
+            }
+            let tnode = tc_child_labeled(c, "TypeIdent");
+            let mut ft: i64 = 10;
+            if tnode != 0 {
+                ft = tc_resolve_type(tnode);
+            }
+            if tc_is_error(tcv_tps.kind[ft]) {
+                return;
+            }
+            tcv_flds.owners = push(tcv_flds.owners, name);
+            tcv_flds.names = push(tcv_flds.names, fname);
+            tcv_flds.types = push(tcv_flds.types, ft);
+        }
+        c = tree.next[c];
+    }
+}
+
+// typecheck_enum_decl (typechecker.c:3280): variantes + payloads + el
+// registro plano que rechaza la construcción pelada (DEC-008).
+fn tc_enum_decl(node: i64) {
+    let name = tc_payload(tree.text[node]);
+    let mut en: i64 = 0;
+    let i = tc_lookup(name);
+    if i >= 0 && tcv_tps.kind[tcv_syms.types[i]] == 16 {
+        en = tcv_syms.types[i];
+    } else {
+        en = tc_mk(16);
+        tcv_tps.s[en] = name;
+        tc_declare(name, en, false, false);
+    }
+    let mut vi: i64 = 0;
+    let mut c = tree.first[node];
+    while c != 0 {
+        if knames[tree.kind[c]] == "Variant" {
+            let vn = tc_payload(tree.text[c]);
+            let mut k: i64 = 1;
+            let mut dup = false;
+            while k < len(tcv_vars.names) {
+                if tcv_vars.enums[k] == name && tcv_vars.names[k] == vn {
+                    dup = true;
+                }
+                k = k + 1;
+            }
+            if dup {
+                tc_err(node, "duplicate variant '" + vn + "' in enum '" + name + "'");
+            }
+            tcv_vars.enums = push(tcv_vars.enums, name);
+            tcv_vars.names = push(tcv_vars.names, vn);
+            tcv_vars.idxs = push(tcv_vars.idxs, vi);
+            let pay0 = len(tcv_pays.types);
+            tcv_vars.pay0 = push(tcv_vars.pay0, pay0);
+            let mut pn: i64 = 0;
+            let mut f = tree.first[c];
+            while f != 0 {
+                if knames[tree.kind[f]] == "Field" {
+                    let tn = tc_child_labeled(f, "TypeIdent");
+                    let mut pt: i64 = 10;
+                    if tn != 0 {
+                        pt = tc_resolve_type(tn);
+                    }
+                    if tc_is_error(tcv_tps.kind[pt]) {
+                        return;
+                    }
+                    tcv_pays.vars = push(tcv_pays.vars, len(tcv_vars.names) - 1);
+                    tcv_pays.types = push(tcv_pays.types, pt);
+                    pn = pn + 1;
+                }
+                f = tree.next[f];
+            }
+            tcv_vars.payn = push(tcv_vars.payn, pn);
+            vi = vi + 1;
+        }
+        c = tree.next[c];
+    }
+    tcv_tps.a[en] = vi;   // variant_count (sólo meaningful para kind 16)
+}
+
+// collect_trait_decls (typechecker.c:3419): firmas requeridas; un cuerpo
+// es un default method (rechazado).
+fn tc_collect_trait(node: i64) {
+    let name = tc_payload(tree.text[node]);
+    tcv_trts.names = push(tcv_trts.names, name);
+    let tri = len(tcv_trts.names) - 1;
+    let mut c = tree.first[node];
+    while c != 0 {
+        let l = knames[tree.kind[c]];
+        if l == "FnDecl" || l == "PubFnDecl" {
+            let body = tc_child_labeled(c, "Block");
+            if body != 0 && tree.first[body] != 0 {
+                tc_err(c, "default trait methods are not yet supported");
+            }
+            let mname = tc_decl_name(tree.text[c]);
+            let fn_t = tc_mk(14);
+            let mut first: i64 = 0;
+            let mut prev: i64 = 0;
+            let mut seen: i64 = 0;
+            let mut bad = false;
+            let mut p = tree.first[c];
+            while p != 0 && !bad {
+                if knames[tree.kind[p]] == "Param" {
+                    seen = seen + 1;
+                    if seen > 1 {
+                        let tn = tc_child_labeled(p, "TypeIdent");
+                        let mut pt: i64 = 10;
+                        if tn != 0 {
+                            pt = tc_resolve_type(tn);
+                        }
+                        if tc_is_error(tcv_tps.kind[pt]) {
+                            bad = true;
+                        }
+                        if prev == 0 {
+                            first = pt;
+                        } else {
+                            tcv_tps.nxt[prev] = pt;
+                        }
+                        prev = pt;
+                    }
+                }
+                p = tree.next[p];
+            }
+            tcv_tps.a[fn_t] = first;
+            let ret_node = tc_child_labeled(c, "ReturnType");
+            if ret_node != 0 {
+                let inner = tc_child_labeled(ret_node, "TypeIdent");
+                if inner != 0 {
+                    let rr = tc_resolve_type(inner);
+                    if tc_is_error(tcv_tps.kind[rr]) {
+                        bad = true;
+                    }
+                    tcv_tps.ret[fn_t] = rr;
+                }
+            }
+            if !bad {
+                tcv_trms.owners = push(tcv_trms.owners, tri);
+                tcv_trms.names = push(tcv_trms.names, mname);
+                tcv_trms.fnt = push(tcv_trms.fnt, fn_t);
+            }
+        }
+        c = tree.next[c];
+    }
+}
+
+// receptor de un impl: nodo y tipo (para el pass2 de los cuerpos)
+let mut tcv_implnodes: [i64] = [0]
+let mut tcv_implrecvs: [i64] = [0]
+
+// typecheck de UN método del impl: self anotado == receptor; firma con
+// params[0] = receptor; registro con duplicado (typechecker.c:3560).
+fn tc_impl_method(fn_node: i64, recv: i64, tname: string, trname: string) {
+    let nm = tc_decl_name(tree.text[fn_node]);
+    let mut firstp: i64 = 0;
+    let mut nparams: i64 = 0;
+    let mut c = tree.first[fn_node];
+    while c != 0 {
+        if knames[tree.kind[c]] == "Param" {
+            if firstp == 0 {
+                firstp = c;
+            }
+            nparams = nparams + 1;
+        }
+        c = tree.next[c];
+    }
+    if firstp == 0 || nparams == 0 {
+        return;   // el parser ya reportó
+    }
+    let self_ann = tc_child_labeled(firstp, "TypeIdent");
+    if self_ann != 0 {
+        let ann = tc_resolve_type(self_ann);
+        if !tc_is_error(tcv_tps.kind[ann]) && !tc_eq(ann, recv) {
+            tc_err(fn_node, "type of 'self' must be '" + tname + "'");
+        }
+    }
+    let fn_t = tc_mk(14);
+    tcv_tps.a[fn_t] = recv;
+    let mut prev: i64 = recv;
+    let mut seen: i64 = 0;
+    let mut bad = false;
+    c = tree.first[fn_node];
+    while c != 0 && !bad {
+        if knames[tree.kind[c]] == "Param" {
+            seen = seen + 1;
+            if seen > 1 {
+                let tn = tc_child_labeled(c, "TypeIdent");
+                let mut pt: i64 = 10;
+                if tn != 0 {
+                    pt = tc_resolve_type(tn);
+                }
+                if tc_is_error(tcv_tps.kind[pt]) {
+                    bad = true;
+                }
+                tcv_tps.nxt[prev] = pt;
+                prev = pt;
+            }
+        }
+        c = tree.next[c];
+    }
+    let ret_node = tc_child_labeled(fn_node, "ReturnType");
+    if ret_node != 0 {
+        let inner = tc_child_labeled(ret_node, "TypeIdent");
+        if inner != 0 {
+            let rr = tc_resolve_type(inner);
+            if tc_is_error(tcv_tps.kind[rr]) {
+                bad = true;
+            }
+            tcv_tps.ret[fn_t] = rr;
+        }
+    }
+    if bad {
+        return;
+    }
+    let mut i: i64 = 1;
+    while i < len(tcv_mths.names) {
+        if tcv_mths.types[i] == tname && tcv_mths.names[i] == nm && tcv_mths.traits[i] == trname {
+            tc_err(fn_node, "method '" + nm + "' is already defined for type '" + tname + "'");
+            return;
+        }
+        i = i + 1;
+    }
+    tcv_mths.types = push(tcv_mths.types, tname);
+    tcv_mths.names = push(tcv_mths.names, nm);
+    tcv_mths.traits = push(tcv_mths.traits, trname);
+    tcv_mths.fnt = push(tcv_mths.fnt, fn_t);
+    tcv_mths.locs = push(tcv_mths.locs, fn_node);
+}
+
+// typecheck_module_pass / impl (typechecker.c:3500-3700): receptor, pasada
+// de métodos y conformance trait.
+fn tc_impl(node: i64) {
+    let head = tc_payload(tree.text[node]);
+    let mut tname = head;
+    let mut trname = "";
+    let mut sp: i64 = -1;
+    let mut i: i64 = 0;
+    while i + 5 <= len(head) {
+        if substr(head, i, 5) == " for " {
+            sp = i;
+            i = len(head);
+        } else {
+            i = i + 1;
+        }
+    }
+    if sp >= 0 {
+        trname = substr(head, 0, sp);
+        tname = substr(head, sp + 5, len(head) - sp - 5);
+    }
+    let mut recv: i64 = 0;
+    let k = tc_prim_from_name(tname);
+    if k != 0 {
+        recv = tc_prim(k);
+    } else {
+        let si = tc_lookup(tname);
+        if si >= 0 {
+            recv = tcv_syms.types[si];
+        }
+    }
+    if recv == 0 {
+        tc_err(node, "unknown type '" + tname + "'");
+        return;
+    }
+    if tcv_tps.kind[recv] != 15 && tcv_tps.kind[recv] != 16 {
+        tc_err(node, "impl requires a struct or enum type, got " + tc_kname(tcv_tps.kind[recv]));
+        return;
+    }
+    tcv_implnodes = push(tcv_implnodes, node);
+    tcv_implrecvs = push(tcv_implrecvs, recv);
+    let mut c = tree.first[node];
+    while c != 0 {
+        let l = knames[tree.kind[c]];
+        if l == "FnDecl" || l == "PubFnDecl" {
+            tc_impl_method(c, recv, tname, trname);
+        }
+        c = tree.next[c];
+    }
+    if trname != "" {
+        let mut tri: i64 = 0;
+        let mut t: i64 = 1;
+        while t < len(tcv_trts.names) {
+            if tcv_trts.names[t] == trname {
+                tri = t;
+            }
+            t = t + 1;
+        }
+        if tri == 0 {
+            tc_err(node, "unknown trait '" + trname + "'");
+            return;
+        }
+        let mut m: i64 = 1;
+        while m < len(tcv_trms.owners) {
+            if tcv_trms.owners[m] == tri {
+                let mname = tcv_trms.names[m];
+                let mrow = tc_find_trait_method(tname, mname, trname);
+                if mrow == 0 {
+                    tc_err(node, "type '" + tname + "' does not implement trait '" + trname + "': missing method '" + mname + "'");
+                } else {
+                    let mt = tcv_mths.fnt[mrow];
+                    let tt = tcv_trms.fnt[m];
+                    let mut sig_ok = tc_arg_count(mt) == tc_arg_count(tt) + 1;
+                    let mut p1 = tcv_tps.a[tt];
+                    let mut p2 = tcv_tps.nxt[tcv_tps.a[mt]];
+                    while sig_ok && p1 != 0 && p2 != 0 {
+                        if !tc_eq(p1, p2) {
+                            sig_ok = false;
+                        }
+                        p1 = tcv_tps.nxt[p1];
+                        p2 = tcv_tps.nxt[p2];
+                    }
+                    if sig_ok && (p1 != 0 || p2 != 0) {
+                        sig_ok = false;
+                    }
+                    if sig_ok {
+                        let mut ivt: i64 = tcv_void;
+                        if tcv_tps.ret[mt] != 0 {
+                            ivt = tcv_tps.ret[mt];
+                        }
+                        let mut trt: i64 = tcv_void;
+                        if tcv_tps.ret[tt] != 0 {
+                            trt = tcv_tps.ret[tt];
+                        }
+                        if !tc_eq(ivt, trt) {
+                            sig_ok = false;
+                        }
+                    }
+                    if !sig_ok {
+                        tc_err(tcv_mths.locs[mrow], "signature of method '" + mname + "' of '" + tname + "' does not match trait '" + trname + "'");
+                    }
+                }
+            }
+            m = m + 1;
+        }
+    }
 }
 
 // ---------- let / const (clones de typecheck_var_decl / const_decl) ----------
@@ -861,6 +1796,16 @@ fn tc_assign(node: i64) -> i64 {
         tc_err(node, "assignment without a target");
         return tc_prim(17);
     }
+    // `Color.Rojo = x` se parsea como acceso de campo sobre el nombre del
+    // tipo: se rechaza ANTES de que el acceso lo tome por un valor válido
+    if knames[tree.kind[target]] == "FieldAccess" {
+        let obj = tc_expr(tree.first[target]);
+        if tc_is_error(tcv_tps.kind[obj]) { return obj; }
+        if tcv_tps.kind[obj] == 16 {
+            tc_err(target, "cannot assign to enum variant '" + tcv_tps.s[obj] + "." + tc_payload(tree.text[target]) + "'");
+            return tc_prim(17);
+        }
+    }
     // raíz LValue: bajar por FieldAccess/Index hasta el Ident
     let mut root = target;
     while true {
@@ -904,30 +1849,21 @@ fn tc_assign(node: i64) -> i64 {
             return tc_prim(17);
         }
     }
+    // tipo del lugar escrito (antes que el valor: orden del seed)
+    let target_t = tc_expr(target);
+    if tc_is_error(tcv_tps.kind[target_t]) { return tc_prim(17); }
     let vt = tc_expr(value);
     if tc_is_error(tcv_tps.kind[vt]) { return tc_prim(17); }
-    // tipo del destino
-    let mut target_t: i64 = 0;
-    let mut what = "variable";
-    if knames[tree.kind[target]] == "Ident" {
-        target_t = tcv_syms.types[i];
-    } else if knames[tree.kind[target]] == "Index" {
-        let objt = tc_expr(tree.first[target]);
-        if tcv_tps.kind[objt] == 12 {
-            target_t = tcv_tps.a[objt];
-        } else {
-            target_t = tc_prim(10);
+    if !tc_eq(vt, target_t) {
+        let mut what = "variable";
+        if knames[tree.kind[target]] == "Index" {
+            what = "array element";
+        } else if knames[tree.kind[target]] == "FieldAccess" {
+            what = "struct field";
         }
-        what = "array element";
-    } else {
-        // field (M-T3 fuera del corpus): sin comprobación de tipo
-        what = "struct field";
-    }
-    if target_t != 0 && !tc_eq(vt, target_t) {
         tc_err(node, "type mismatch: cannot assign " + tc_kname(tcv_tps.kind[vt]) + " to " + what + " of type " + tc_kname(tcv_tps.kind[target_t]));
     }
-    if target_t == 0 { return vt; }
-    return target_t;
+    target_t
 }
 
 // ---------- firma y cuerpo de fn ----------
@@ -959,17 +1895,17 @@ fn tc_build_fn_type(node: i64) -> i64 {
         if inner != 0 {
             let rr = tc_resolve_type(inner);
             tcv_tps.ret[fn_t] = rr;
-            print("DBG rr=" + to_string(rr) + " fn_t=" + to_string(fn_t) + " after=" + to_string(tcv_tps.ret[fn_t]) + " retdim=" + to_string(len(tcv_tps.ret)));
         }
     }
-    print("DBG build fn_t=" + to_string(fn_t) + " ret_node=" + to_string(ret_node) + " ret=" + to_string(tcv_tps.ret[fn_t]));
     fn_t
 }
 
 fn tc_fn_body(node: i64) {
     let nm = tc_decl_name(tree.text[node]);
     tcv_gen = tcv_gen + 1;
-    // parámetros: declarados con la generación de ESTA fn
+    // parámetros: declarados con la generación de ESTA fn; un `self` sin
+    // anotación en un método toma el tipo receptor (el seed sintetiza el
+    // TypeIdent en el pass1 del impl — typechecker.c:3582)
     let mut c = tree.first[node];
     while c != 0 {
         if knames[tree.kind[c]] == "Param" {
@@ -978,6 +1914,8 @@ fn tc_fn_body(node: i64) {
             let mut pt: i64 = 10;
             if pt_node != 0 {
                 pt = tc_resolve_type(pt_node);
+            } else if pn == "self" && tcv_recv != 0 {
+                pt = tcv_recv;
             }
             tc_declare(pn, pt, false, false);
         }
@@ -1016,8 +1954,35 @@ fn tc_fn_body(node: i64) {
 
 // ---------- módulo (clones de typecheck_module_pass / _body) ----------
 fn tc_module(root: i64) {
-    // pass 1: firmas de fn (shadow → duplicado → declare)
+    // pass 0a: nombres nominales (declare_type_decls) — los campos y
+    // firmas pueden referenciarse en cualquier orden
     let mut c = tree.first[root];
+    while c != 0 {
+        let l = knames[tree.kind[c]];
+        if l == "StructDecl" || l == "PubStructDecl" {
+            let nm = tc_payload(tree.text[c]);
+            let st = tc_mk(15);
+            tcv_tps.s[st] = nm;
+            tc_declare(nm, st, false, false);
+        } else if l == "EnumDecl" || l == "PubEnumDecl" {
+            let nm = tc_payload(tree.text[c]);
+            let en = tc_mk(16);
+            tcv_tps.s[en] = nm;
+            tc_declare(nm, en, false, false);
+        }
+        c = tree.next[c];
+    }
+    // pass 0b: firmas de traits (collect_trait_decls), antes de los impls
+    c = tree.first[root];
+    while c != 0 {
+        let l = knames[tree.kind[c]];
+        if l == "Trait" || l == "PubTrait" {
+            tc_collect_trait(c);
+        }
+        c = tree.next[c];
+    }
+    // pass 1: firmas de fn + fills nominales + impls, en orden de fuente
+    c = tree.first[root];
     while c != 0 {
         let l = knames[tree.kind[c]];
         if l == "FnDecl" || l == "PubFnDecl" {
@@ -1032,6 +1997,12 @@ fn tc_module(root: i64) {
                 let fn_t = tc_build_fn_type(c);
                 tc_declare(nm, fn_t, false, true);
             }
+        } else if l == "StructDecl" || l == "PubStructDecl" {
+            tc_struct_decl(c);
+        } else if l == "EnumDecl" || l == "PubEnumDecl" {
+            tc_enum_decl(c);
+        } else if l == "Impl" {
+            tc_impl(c);
         }
         c = tree.next[c];
     }
@@ -1045,6 +2016,30 @@ fn tc_module(root: i64) {
             tc_const(c);
         } else if l == "VarDecl" {
             tc_var(c);
+        } else if l == "Impl" {
+            // cuerpos de los métodos ya registrados (typecheck_module_body)
+            let mut recv: i64 = 0;
+            let mut r: i64 = 1;
+            while r < len(tcv_implnodes) {
+                if tcv_implnodes[r] == c {
+                    recv = tcv_implrecvs[r];
+                }
+                r = r + 1;
+            }
+            let saved_recv = tcv_recv;
+            tcv_recv = recv;
+            let mut m = tree.first[c];
+            while m != 0 {
+                let lm = knames[tree.kind[m]];
+                if (lm == "FnDecl" || lm == "PubFnDecl") && tc_child_labeled(m, "Block") != 0 {
+                    tc_fn_body(m);
+                }
+                m = tree.next[m];
+            }
+            tcv_recv = saved_recv;
+        } else if l == "StructDecl" || l == "PubStructDecl" || l == "EnumDecl" || l == "PubEnumDecl" {
+            // ya chequeados en el pass1 (re-los duplicaría cada
+            // diagnóstico — audit §3.5)
         } else if l == "Use" || l == "Import" || l == "From" || l == "ImportItem" {
             // descartados en single-file (el seed no chequea nada)
         } else {
@@ -1105,6 +2100,7 @@ fn main() {
     prev_col = 1;
     prev_len = 0;
     line_start = 0;
+    emit_guards = true;   // el checker necesita la guarda de cada Arm
     advance();
     let root = parse_module();
     if err_count > 0 {

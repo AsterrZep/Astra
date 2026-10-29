@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **M-T3: typechecker self-hosted — structs/enums/métodos/traits/match
+  (DEC-032)**: `typechecker.astra` crece hasta ~2100 líneas con la verdad
+  nominal de `typechecker.c`: pass0 de nombres (`declare_type_decls`),
+  fill de campos/variantes con sus mensajes (`duplicate field/variant`,
+  literal dup/desconocido/faltante/tipo), construcción `Enum.Variant`
+  (DEC-008: `Some2(1)` → `use Enum.Variant to construct`), acceso a campo
+  y unidad `Enum.Variant`, **métodos** con registro (tipo, nombre, trait) —
+  inherent gana a trait sin importar orden, `method ... must be called`,
+  arity/firmas —, `impl` (receptor: `unknown type` / `impl requires a
+  struct or enum type` / `type of 'self' must be`), **conformance de
+  traits** (`unknown trait`, `missing method`, `signature ... does not
+  match`) y **match** completo (patrones literal/ruta/bind/or/payload,
+  guardas, `match arm type`/`match guard must be bool`, exhaustividad
+  enum/bool/`_`). Paridades de parser necesarias, golden byte-idéntico:
+  `self` sólo en trait/impl (las 3 reglas del seed), coma prohibida en
+  cuerpos de struct/enum (2 ficheros `ui/` + 3 fixtures en
+  `parser_errors/`) y guardas de `match` emitibles tras un flag que sólo
+  enciende el typechecker (el dump del seed no las imprime). Gate
+  `typechecker_gate.sh`: **141/141** (89 + 52 nuevos; exclusiones con
+  motivo en `typechecker_corpus.list`, ninguna en silencio) × **4 rutas**
+  (VM seed, C, VM zig, LLVM `--jit`); `parser_diag_parity` **19/19**;
+  cableado en `parser_gate.sh` (todas las rutas verdes).
+
 - **M-T2: typechecker de Astra-0 + gate diferencial (DEC-032)**: el
   núcleo self-hosteado del typechecker (~35 checks clonados byte a byte
   de `typechecker.c` — type_eq con unknown/nil-optional/adopción de

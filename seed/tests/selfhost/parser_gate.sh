@@ -239,8 +239,8 @@ if ! "$here/parser_diag_parity.sh"; then
     fail=1
 fi
 
-# Typechecker differential gate (DEC-032/M-T2): combined = parser (sin su
-# main) + typechecker.astra; veredicto + primer error sobre 89 ficheros.
+# Typechecker differential gate (DEC-032): combined = parser (sin su
+# main) + typechecker.astra; veredicto + primer error sobre 141 ficheros.
 if ! "$here/typechecker_gate.sh"; then
     fail=1
 fi

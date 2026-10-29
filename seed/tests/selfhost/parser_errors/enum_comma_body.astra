@@ -1,0 +1,5 @@
+enum E {
+    Rojo,
+    Verde
+}
+fn main() { print(1) }

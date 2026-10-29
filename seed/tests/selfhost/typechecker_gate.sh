@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# typechecker_gate.sh — DEC-032/M-T2: differential gate for the self-hosted
+# typechecker_gate.sh — DEC-032: differential gate for the self-hosted
 # typechecker (seed/tests/selfhost/typechecker.astra).
 #
 # Builds the combined program (parser.astra WITHOUT its main + typechecker.astra
 # — the concat discipline of DEC-032 §6-2) and runs it over
-# typechecker_corpus.list (87 files: verdict + FIRST-error-line parity vs the
+# typechecker_corpus.list (141 files: verdict + FIRST-error-line parity vs the
 # seed, path-normalized). First-error only — cascades beyond it are out of
-# scope for M-T2, exactly like parser_diag_parity (DEC-031 §3).
+# scope, exactly like parser_diag_parity (DEC-031 §3).
 #
 #   ./seed/tests/selfhost/typechecker_gate.sh        # from anywhere
 #

@@ -778,8 +778,32 @@ terminador, sin escapes de string, sin hex.
    primer error — en **4 rutas** (VM seed, C, VM zig, LLVM `--jit`),
    cableado en `parser_gate.sh`. Exclusiones documentadas en
    `typechecker_corpus.list` (11 gaps de parser/lexer + 4 del emitter);
-   los 3 límites de profundidad del seed siguen excluidos. Sigue: M-T3
-   (methods/trait/match/exhaustividad + corpus creciente) → M-T4.
+   los 3 límites de profundidad del seed siguen excluidos.
+   **M-T3 ✅ (2026-10-29)**: mismas líneas `typechecker.astra`
+   (~2100 líneas ahora) ampliadas con la verdad nominal: declaraciones
+   struct/enum (pass0 de nombres + fill de campos/variantes en pass1, tal
+   como `declare_type_decls`/`typecheck_struct_decl`), literales de struct
+   (dup → desconocido → cada campo con su tipo), acceso a campo y
+   `Enum.Variant` (unidad y construcción con payload, DEC-008: la forma
+   pelada → `use Enum.Variant to construct`), **métodos** con la tabla
+   (tipo, nombre, trait) — inherent gana a trait sin importar orden —
+   `impl` con receptor (`unknown type`/`impl requires a struct or enum`/
+   `type of 'self'`), **conformance de traits** (missing/signature) y
+   **match** completo: patrones (literal/ruta/bind/or/payload con conteo de
+   bindings), guardas, unificación de brazos y exhaustividad
+   (enum/`bool`/`_`). El parser ganó las paridades necesarias sin tocar el
+   golden: `self` sólo en trait/impl con las 3 reglas del seed
+   (`self_outside_impl` ahora parsea y comprueba), coma prohibida entre
+   campos/variantes (`{ui/enum_comma_body,ui/struct_comma_body}` +
+   3 fixtures nuevas en `parser_errors/`) y **guardas emitibles** tras un
+   flag `emit_guards` que sólo enciende `main` del typechecker (el route
+   golden sigue sin imprimirlas: el dump del seed es mirror-lossy, PHASE2
+   §7). Gate: **141/141** (89 + 52 nuevos; `transfer_method_escaped`
+   queda excluido por ownership, DEC-026 §8b) ×4 rutas, parser_diag
+   **19/19**; paridades de ubicación de nodos (StructLit/FieldAccess/
+   Call/Index/Match = loc del ident/keyword base, como parser.c) medidas
+   al primer error. Sigue: M-T4 (corpus completo: optionales/`?`,
+   lambdas, `for`, límites de profundidad del parser).
 
 Hallazgos de lenguaje tocados al construirlo, **sin pinneear** (ambos
 compiladores coinciden, candidatos a DEC futura): `else` en línea aparte del
