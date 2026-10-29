@@ -39,6 +39,8 @@
 | DEC-029 | **parser.astra v2.1 — lambdas** (paso 2 de `PHASE1_PROGRESS` §7, cerrado): `|params| [-> type] { block }` — el cuerpo **exige bloque** (el seed rechaza `|y| y * 2`, verificado); sin parámetros: `||` es el token OR_OR y el seed lo rechaza, `| |` (espaciado) sí parsea y typecheckea con `-> T` — el parser acepta ambas grafías vía el mismo loop; **tipos de parámetro y `-> ret` se parsean y se descartan del dump**: el dump del seed imprime `Lambda [Param(name)]* [TypeIdent(ret)] Block` — el TypeIdent es SOLO la anotación de retorno (verificado: `|x: i32| -> i32` imprime TypeIdent, `|a: i32, b: i32|` sin `->` no imprime ninguno); sin tipos fn en anotaciones (parse_type v2 sigue con ident simple); fixture con 4 lambdas (tipada+ret, identidad sin tipar, multi-tipada, `| | -> i32`) + llamadas, todas terminadas por NEWLINE | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture v2.1 + golden regenerado + freshness, 7 rutas) (PR parser-lambdas) |
 | DEC-030 | **parser.astra v2.2 — capa de items** (paso 3 de `PHASE1_PROGRESS` §7): `struct` (fields `nombre: Tipo` → `Field(name)+TypeIdent`), `trait` (solo firmas `fn` sin cuerpo → `Block` vacío — el seed sintetiza el bloque; métodos-default = rechazo del typecheck, no del parser), `impl [Trait for] Type` (`Impl(Area for Punto)` / `Impl(Punto)`, payload = texto crudo) y `pub` delante de fn/struct/const/enum/trait (`Pub*Decl`, nombres verificados: PubFnDecl/PubStructDecl/PubConstDecl/PubEnumDecl/PubTrait); `use`/`import`/`import … as`/`from … import …` con rutas punteadas — el dump de `use` va **sin payload** (mirror lossy) y `Import(path as alias)`/`ImportItem(n as a)` llevan el texto crudo; **struct literals** con la misma regla del flag `no_struct_lit` del seed (parser.c:1894): `IDENT {` = literal salvo en condiciones de `if`/`while` y target de `match` (el flag se pone en esas 4 contextos y se restablece dentro de paréntesis — verificado en parser.c:649/704/730/910); `Punto {}` vacío aceptado; parámetros con `:` opcional (`self` tipado-less solo en trait/impl en el seed — el parser v2.2 lo admite en cualquier fn, límite declarado); sin genéricos en items; sin `pub` antes de impl/use/import; sin literales float en el fixture (el dump usa %g y `to_string` es solo-enteros) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_gate.sh` (fixture v2.2 + golden regenerado + freshness, 7 rutas) (PR parser-items) |
 | DEC-031 | **parser.astra v2.3 — diagnósticos de error con paridad de primer error** (paso 4 de `PHASE1_PROGRESS` §7): formato del seed `file:line:col: error: msg` (parser.c:78/133) con las dos formas — expect `expected <msg>, got <kind>` (got = token_kind_name: keywords en minúscula, IDENT/INT_LIT/STRING_LIT/EOF en mayúscula, `_` es token propio) y parser_error `<msg>` sin got; síntesis de NEWLINE donde el seed la vería (call `)` sin skip_newlines: `print(1\n}` → `expected *')', got NEWLINE` en fin-de-línea); `error: parse failed` final + supresión del AST con errores (driver.c:668); **correcciones de comportamiento verificadas contra el seed**: el separador NUNCA es obligatorio (`print(1) print(2)` parsea — corrige el modelo de DEC-028 §1), `=` opcional en `let` (`let x 5;` = VarDecl+sentencia), sentencias a nivel de módulo (`foo bar` = dos idents), la coma faltante de `match` NO se reporta (rompe y el `}` esperado choca: `expected *'}', got <kind>`), `else` en línea aparte cae como sentencia (`unexpected token in expression`), `invalid assignment target` para no-LValue; gate `parser_diag_parity.sh` = paridad del PRIMER error + línea final sobre 16 fixtures rotos (la cascada posterior DIFEREE y queda fuera de alcance — recuperación completa = paso siguiente) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_diag_parity.sh` → 16/16 (primer error + parse-failed byte-idénticos, rutas dentro de `parser_gate.sh`) (PR parser-diag) |
+| DEC-032 | **Typechecker en Astra-0 — alcance v1** (paso 5 de PHASE1 §7; criterio: filosofía §«Todo está permitido siempre que mejore Astra» + «simplicidad como estrategia»): **7 rutas** (patrón lexer/parser, sin regalar rigor); **AST = tablas SoA** en `parser.astra` — `struct { kind: [i64], a: [i64], b: [i64], s: [string] }` — con la s-expresión pasando a *rendering* de esas tablas (los gates existentes quedan byte-idénticos) y **concatenación en el gate** (`parser.astra` sin su `main` + `typechecker.astra`, colisiones de nombre delatadas ruidosamente por el typecheck del seed); corpus ≈176 ficheros medidos con **lista de exclusión explícita** (5 `ui/` emitter-owned + 12 `transfer_*` de §8b — capas ajenas al typechecker, como `llvm_parity` EXCLUDE con comentario, nunca silencio); **espejo byte a byte de `typechecker.c`** como verdad (doctrina dump-parity: los 102 mensajes son la referencia; divergir exige DEC primero — sin forks silenciosos de semántica); `some/none/ok/err` pasan a emitirse en las formas del seed (prerequisito del port; la sintaxis `T?`/`[T]` queda en el backlog medido del parser); **single-file** `selfhost/typechecker.astra` (LLVM no compila multi-fichero; el árbol `src/compiler/` viene en Step 4 con la CLI — DEC-021 intacta); presupuesto: **sin techo nuevo** — los 256 globales del VM son la guarda automática (fallo ruidoso) y el combinado parser+typechecker se diseña ≤200; orden: typechecker → emitter (028 §5 «codegen va el último»); milestones M-T1 (SoA) → M-T2 (núcleo ~35 checks + gate diferencial) → M-T3 (methods/trait/match/exhaustividad) → M-T4 (corpus completo), ~10–15 d/h en 4–5 PRs | Aceptada (doc) | 2026-10-29 | `research/032` (inventario de ~55 checks, corpus 189/304 medido, restricciones LLVM con citas, shape del gate) + DEC-033 (los dos pines previos) |
+| DEC-033 | **Dos formas de control-flow que AMBOS compiladores rechazan (pines previos al typechecker)**: (a) `if/else if/else` como **última expresión de un `fn`** → `if branches have different types: <T> vs void` (el if-cadena anidado tipea void en la cola; un `if/else` simple SÍ funciona — verificado en seed y zig con salida idéntica, 2 errores); (b) `}` NEWLINE `else` → `unexpected token in expression` en el `else` (el NEWLINE rompe el binding del else — verificado; primeras líneas byte-idénticas seed↔zig, el zig cascade extra es informativo); ambos se **pinnean como están** (test-pinned = registrar, no re-litigar — regla 2); el parser.astra ya impone (b) por su regla de misma línea y (a) es de fase de tipos; corregirlos en el futuro = PR propio con DEC que superscriba, nunca fork silencioso | Aceptada (test-pinned) | 2026-10-29 | `ui/elseif_tail_rejected.astra` (EXPECTED-ERROR `if branches have different types` + FIRST `2:5`), `ui/else_newline_rejected.astra` (EXPECTED-ERROR `unexpected token in expression` + FIRST en el `else`) — primera línea idéntica en seed y zig (`ui_message_parity.sh`) (PR DEC-032/033) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1276,3 +1278,124 @@
 - **Evidencia**: `parser_diag_parity.sh` → 16/16; el gate de rutas y el
   freshness siguen en verde con el fixture v2.2 sin cambios de salida.
 - **Spec**: cabecera de `parser.astra` + esta sección.
+
+### DEC-032 — Typechecker en Astra-0: alcance y forma de v1
+- **Estado**: **Aceptada (doc)** — el comportamiento que fija (los dos
+  pines de control-flow) llega con DEC-033 + sus tests; esta entrada
+  gobierna los PRs de implementación que abren el milestone M-T1.
+- **Fecha**: 2026-10-29.
+- **Decisión** (las 10 preguntas de `research/032` §6, resueltas con el
+  criterio de `PHILOSOPHY.md` — *«todo está permitido siempre que mejore
+  Astra»* y *simplicidad como estrategia*; nada de adorno ni de prisa
+  que baje el listón):
+  1. **Rutas: 7** (patrón lexer/parser con skip limpio). El typechecker
+     es componente self-host de la misma clase: cómputo puro sobre un
+     fixture; aceptar 4 sería regalar rigor sin ganar nada.
+  2. **Entrada: tablas SoA construidas por `parser.astra`** —
+     `struct Ast { kind: [i64], a: [i64], b: [i64], s: [string] }`
+     (hijos = índices en la misma arena; nombres en `s`). Es la única
+     disciplina 100 % soportada en lectura y escritura en la ruta LLVM
+     (campo→índice; `a[i][j]` está muerto salvo copia-anotada). La
+     s-expresión actual pasa a ser un **rendering** de esas tablas: los
+     gates de rutas/freshness/diagnósticos siguen byte-idénticos y no
+     hay segundo IR ni re-parseo (una sola verdad — el axioma de
+     simplicidad). La símbolos = tablas planas + pila de marcas de
+     scope (mismo argumento LLVM; lookup por escaneo lineal con `==`,
+     probado). **Concatenación en el gate**: el programa combinado es
+     `parser.astra` (sin su `main`, que es su última función) +
+     `typechecker.astra` (su `main` llama a `parse_module()` y chequea
+     las tablas); disciplina de nombres sin colisión — si colisionan,
+     el typecheck del seed las delata con `duplicate function` (fallo
+     ruidoso, no silencioso). Se descarta el re-parseo del string
+     s-expresión (parserar un parse) y el formato máquina aparte (otro
+     IR que mantener).
+  3. **Corpus v1 ≈176 ficheros** (medido: 189/304 parsean hoy) con
+     **lista de exclusión explícita y comentada** en el gate (patrón
+     `llvm_parity` EXCLUDE): los 5 `ui/` de mensajes *emitter-owned*
+     (`break/continue outside loop`, `loop_nesting_deep`,
+     `capture_assign`, `too_many_locals` — el seed los rechaza en una
+     capa POSTERIOR: implementarlos en el typechecker sería capa
+     equivocada) y los 12 `transfer_*` (§8b ownership = fase posterior).
+     Ningún fichero se excluye en silencio.
+  4. **Verdad semántica: espejo byte a byte de `typechecker.c`**
+     (doctrina dump-parity; los 102 mensajes ya son la referencia de
+     facto y las DEC 006/008/015/022/026 están ya implementadas allí).
+     Los dos quirks (retorno de `fn` sin anotar no se chequea; la
+     anotación de retorno de una lambda no se compara con el tail) se
+     **clonan** y se registran como candidatos a corrección — corregir
+     exige su propio PR con DEC (nada de forks silenciosos: la
+     semántica vive en un solo sitio).
+  5. **`some/none/ok/err`**: el parser pasa a emitir las formas del
+     seed (nodos propios, no `Call(Ident)`) en expresiones y patrones —
+     prerequisito de que el typechecker pueda tipear opcionales; la
+     sintaxis de tipo `T?`/`[T]` queda en el backlog *medido* de
+     extensiones del parser (research/032 §2), no en este ciclo.
+  6. **Single-file `seed/tests/selfhost/typechecker.astra`** — el LLVM
+     no compila multi-fichero y el patrón de 7 rutas exige un fichero;
+     el árbol `src/compiler/` de Step 4 llega con la CLI (DEC-021 sigue
+     `Propuesta` y no se adelanta).
+  7. **Presupuesto: sin techo nuevo** — los 256 globales del VM (cada
+     `fn` de módulo cuenta) y los 256 de profundidad son la guarda
+     automática que ya falla ruidoso; diseño: combinado ≤ 200 globales
+     (parser: 38 fns; typechecker: objetivo ≤ 80 fns con helpers `tc_`
+     compactos). RSS sin techo extra: el gate corre fichero a fichero
+     como el resto de selfhost.
+  8. **Orden**: typechecker → **emitter** (028 §5: «el codegen va el
+     último»); migración al árbol + CLI en Step 4.
+  9. **Hallazgos sin pinnear**: se cierran ANTES del primer código de
+     este plan, con DEC-033 + tests (regla: decisiones antes que
+     código) — el typechecker tocaría esos comportamientos el día uno.
+  10. **Milestones**: M-T1 refactor SoA (gates existentes verdes) →
+      M-T2 núcleo (~35 checks + gate diferencial) → M-T3
+      methods/trait/match/exhaustividad → M-T4 corpus completo.
+      Estimación ~10–15 d/h en 4–5 PRs con la forma DEC-gated de la
+      serie DEC-025..031.
+- **Alternativas consideradas**: rutas 4 (regala rigor, sin beneficio);
+  re-parseo del s-expresión (parserar un parse, dos formas de verdad);
+  formato máquina nuevo (segundo IR que mantener); corpus completo sin
+  exclusiones (haría rojo por capas ajenas — la misma lección de
+  `llvm_parity` que convirtió los skips en fallos **documentados**);
+  corregir los quirks dentro del port (fork de semántica sin DEC);
+  árbol multi-fichero desde ya (el LLVM no puede y la CLI aún no existe).
+- **Coste aceptado**: refactor de `parser.astra` a tablas (los gates
+  existentes son la red de seguridad) + ~55 checks + gate diferencial.
+- **Evidencia**: `research/032` (todo medido: 189/304, 20 experimentos de
+  ruta, inventario de mensajes) — los PRs de M-T1..M-T4 la convierten en
+  `test-pinned` progresivamente.
+- **Spec**: `research/032` §4–§5 + esta sección.
+
+### DEC-033 — Pines: if/else-if como cola de fn y else en línea aparte
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR DEC-032/033
+  (2026-10-29).
+- **Fecha**: 2026-10-29.
+- **Decisión**: registrar (no re-litigar — regla 2) los dos
+  comportamientos que los hallazgos de la fase E1/`PHASE1` §7 dejaron sin
+  pinnear, **antes** de que el typechecker en Astra (DEC-032) los
+  reproduzca:
+  1. **`if/else if/else` como última expresión de un `fn`** es error en
+     ambos compiladores con la misma primera línea:
+     `file:2:5: error: if branches have different types: <T> vs void`
+     (y la segunda `function 'j' returns <T> but its body has type
+     <error>`); un `if/else` simple como cola **sí** typechea
+     (verificado) — la asimetría es el bug latente; se pinnea la
+     superficie de HOY.
+  2. **`}` \n `else`**: el `else` no se une al `if` y cae como
+     sentencia → `unexpected token in expression` en el `else`
+     (primeras líneas idénticas seed↔zig; el zig reporta además una
+     cascada — `ui_message_parity` sólo compara la primera). `} else`
+     en la MISMA línea sí funciona, y el cuerpo del else puede empezar
+     en la línea siguiente (`} else\n{` — verificado).
+- **Por qué ahora**: DEC-032 obliga a decisiones «antes que código» y
+  ambos son semanticamente de dominio del typechecker/validación que el
+  port va a tocar el día uno; dejarlos sin pin = comportamiento
+  contractual nadie vigilaba.
+- **Corrección futura**: si se arreglan (p. ej. tipar la cola if-cadena),
+  el PR trae un DEC que superscriba esta entrada y reescribe los tests
+  — el pin existe para que el cambio sea explícito, no para congelar
+  bugs para siempre.
+- **Evidencia**: los dos `ui/` con primera línea byte-idéntica
+  seed↔zig (`ui_message_parity.sh`) + salida conjunta verificada en los
+  dos binarios (2 errores idénticos en (a); 1 vs 2 líneas en (b) con la
+  primera igual).
+- **Spec**: esta sección; el parser de `parser.astra` ya implementa (b)
+  (DEC-031 §2).
