@@ -1,0 +1,4 @@
+fn free_fn(self) {
+    print(1)
+}
+fn main() { print(2) }

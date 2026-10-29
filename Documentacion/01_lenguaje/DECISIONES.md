@@ -1204,9 +1204,17 @@
      cualquier otro sitio es literal (los argumentos de llamada heredan
      el flag, igual que el seed). `Punto {}` vacío → `StructLit(Punto)`
      (verificado).
-  4. **Parámetros**: `:` opcional en cualquier `fn` (el seed restringe
-     `self` tipado-less a trait/impl con `allow_self` — el parser v2.2 lo
-     admite en todas partes: superconjunto, declaración como límite).
+  4. **Parámetros**: `:` opcional en cualquier `fn` — el seed restringe
+     `self` sin anotación a trait/impl (`allow_self`, `parser.c:1097`);
+     **cerrado 2026-10-29 (M-T3, paridad, sin nuevo comportamiento)**:
+     parser.astra implementa las tres reglas del seed — `'self' parameter
+     outside a trait or impl`, `'self' must be the first parameter`,
+     `'self' is required as the first parameter of a method` — así que el
+     superconjunto del parser v2.2 sobre `self` ya no existe
+     (test-pinned: `ui/self_outside_impl.astra`, gate `parser_diag_parity`
+     19/19). Igual para la coma entre campos/variantes de struct/enum
+     (`ui/{struct,enum}_comma_body.astra`): antes se aceptaban en
+     silencio, ahora se rechazan como el seed.
 - **Límites declarados**: sin genéricos en items (`struct Box<T>`,…),
   sin `pub` antes de impl/use/import, rutas de impl sólo con ident
   simple, **sin literales float en el fixture** (el dump los formatea con

@@ -1,5 +1,5 @@
 # typechecker_corpus.list — corpus del gate diferencial del typechecker
-# self-hosteado (M-T2, DEC-032). Clasificación medida 2026-10-29: de los
+# self-hosteado (M-T2+M-T3, DEC-032). Clasificación medida 2026-10-29: de los
 # 304 ficheros de conformance/, 186 parsean con parser.astra y 98 de ellos
 # usan sólo features del núcleo (sin match/struct/enum/trait/impl/lambda).
 # Directiva: (E) = EXPECT-ERROR → veredicto REJECT + paridad de la primera
@@ -103,3 +103,62 @@ ui/type_mismatch.astra
 ui/while_condition.astra
 ui/break_value.astra
 ui/var_keyword_rejected.astra
+
+# ---- M-T3 (DEC-032): structs/enums/métodos/traits/match. Añadidos
+# 2026-10-29: los 53 ficheros parseables que usan exclusivamente features
+# de M-T3 (medición con la misma criba: match|struct|enum|trait|impl y sin
+# lambda|for|opcional|genérico). Se excluye de ellos:
+#   ui/transfer_method_escaped -> exige el pase de ownership (DEC-026 §8b),
+#                                 no el typechecker (queda en los 44 fuera)
+arrays/alias_let_visibility.astra
+enums/bind_catch_all.astra
+enums/enum_print.astra
+enums/guard_with_binding.astra
+enums/match_block_arm.astra
+enums/match_guard.astra
+enums/match_guard_fallthrough.astra
+enums/match_statement.astra
+enums/match_variants.astra
+enums/nested_pattern_bind.astra
+enums/pattern_bind.astra
+enums/qualified_construction.astra
+enums/result_match.astra
+expressions/match_inline_after_statement.astra
+expressions/match_inline_call.astra
+expressions/match_scalar.astra
+module/pub_decls.astra
+module/toplevel_aggregates.astra
+structs/field_order.astra
+structs/literal_fields.astra
+structs/nil_field.astra
+structs/nil_field_assign.astra
+structs/struct_in_function.astra
+types/nil_string.astra
+ui/bool_match_missing_arm.astra
+ui/enum_bare_construction_rejected.astra
+ui/enum_comma_body.astra
+ui/enum_duplicate_variant.astra
+ui/enum_unknown_variant.astra
+ui/enum_variant_assign.astra
+ui/immutable_field_assign.astra
+ui/impl_unknown_self.astra
+ui/match_arm_type.astra
+ui/match_guard_type.astra
+ui/match_guarded_variant.astra
+ui/match_non_exhaustive.astra
+ui/match_pattern_type.astra
+ui/method_arg_count.astra
+ui/method_bare_access.astra
+ui/method_duplicate.astra
+ui/method_unknown.astra
+ui/pattern_bind_wrong_type.astra
+ui/return_type_mismatch.astra
+ui/scalar_match_missing_wildcard.astra
+ui/self_outside_impl.astra
+ui/struct_comma_body.astra
+ui/struct_duplicate_field.astra
+ui/struct_field_type.astra
+ui/struct_lit_duplicate_key.astra
+ui/struct_missing_field.astra
+ui/struct_unknown_field.astra
+ui/trait_default_method.astra

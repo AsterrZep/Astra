@@ -48,6 +48,11 @@ let mut t_col: i64 = 1       // columna (1-based) del token actual
 let mut prev_col: i64 = 1
 let mut prev_len: i64 = 0    // largo en bytes del lexeme anterior
 let mut stmt_had_semi = false  // espejo de last_stmt_semi del seed (parser.c:42)
+let mut emit_guards = false   // M-T3: las guardas SÍ se emiten (el dump del
+                              // seed las omite: mirror lossy, PHASE2 §7; el
+                              // route golden corre con false y no cambia)
+let mut allow_self = false    // espejo de p->allow_self (parser.c:1097):
+                              // receptor válido sólo dentro de trait/impl
 
 // ---------- AST en tablas SoA (DEC-032 / M-T1) ----------
 // Un nodo = índice en las cuatro columnas (índice 0 = centinela, nunca un
@@ -521,6 +526,7 @@ fn parse_expr(min_bp: i64) -> i64 {
                 left = mk("PARSE-ERROR");
             } else {
                 let fa = mk("FieldAccess(" + tl + ")");
+                set_loc(fa, tree.ln[left], tree.co[left]); // loc del seed: left->loc
                 add_child(fa, left);
                 left = fa;
                 advance();
@@ -548,6 +554,7 @@ fn parse_expr(min_bp: i64) -> i64 {
             let idx = parse_expr(1);
             expect_punct("]");
             let ix = mk("Index");
+            set_loc(ix, tree.ln[left], tree.co[left]); // loc del seed: left->loc
             add_child(ix, left);
             add_child(ix, idx);
             left = ix;
@@ -605,9 +612,12 @@ fn parse_primary() -> i64 {
         // de llamada heredan el flag igual que en el seed.
         if !no_struct_lit && peek_kind() == "PUNCT" && peek_lex() == "{" {
             let name = tl;
+            let idl = t_line;
+            let idc = t_col;   // el seed: loc = id.loc (el ident, no el '{')
             advance(); // consume el ident; tk ahora es '{'
             advance(); // consume '{'
             let sl = mk("StructLit(" + name + ")");
+            set_loc(sl, idl, idc);
             while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
                 if tk != "IDENT" {
                     ef_now("field name");
@@ -757,8 +767,11 @@ fn parse_pattern_alt() -> i64 {
             return mk("PatternWildcard");
         }
         let root = tl;
+        let rln = t_line;   // loc raíz: el seed ata Ident/FieldAccess/PVB
+        let rco = t_col;    // al ident de la raíz (id.loc)
         advance();
         let mut node = mk("Ident(" + root + ")");
+        set_loc(node, rln, rco);
         let mut segs: i64 = 1;
         while tk == "PUNCT" && tl == "." {
             advance();
@@ -768,6 +781,7 @@ fn parse_pattern_alt() -> i64 {
                 return mk("PARSE-ERROR");
             }
             let fa = mk("FieldAccess(" + tl + ")");
+            set_loc(fa, rln, rco);
             add_child(fa, node);
             node = fa;
             segs = segs + 1;
@@ -781,6 +795,7 @@ fn parse_pattern_alt() -> i64 {
             }
             advance();
             let pv = mk("PatternVariantBind");
+            set_loc(pv, rln, rco);
             add_child(pv, node);
             while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
                 if tk != "IDENT" {
@@ -832,6 +847,8 @@ fn parse_pattern() -> i64 {
 // guardas (if expr) se parsean pero NO se emiten: el dump del seed las
 // omite (mirror lossy, PHASE2_PROGRESS §7) y el golden sale de ahi.
 fn parse_match() -> i64 {
+    let mln = t_line;
+    let mco = t_col;   // el seed: loc = p->previous.loc (la keyword match)
     advance(); // match
     let saved_nsl = no_struct_lit;
     no_struct_lit = true;
@@ -844,12 +861,21 @@ fn parse_match() -> i64 {
         advance();
     }
     let mn = mk("Match");
+    set_loc(mn, mln, mco);
     add_child(mn, target);
     while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
         let pat = parse_pattern();
+        let arm = mk("Arm");
+        add_child(arm, pat);
         if tk == "KEYWORD" && tl == "if" {
             advance();
-            let guard_expr = parse_expr(1); // guardas: parseadas, no emitidas
+            let guard_expr = parse_expr(1); // guardas: parseadas siempre
+            if emit_guards {
+                // M-T3: el typechecker auto-hospedado necesita la guarda
+                // (tipo + exclusión de cobertura). El dump del seed no la
+                // imprime, así que el route golden la sigue omitiendo.
+                add_child(arm, guard_expr);
+            }
         }
         expect_punct("=>");
         let mut body: i64 = 0;
@@ -858,8 +884,6 @@ fn parse_match() -> i64 {
         } else {
             body = parse_expr(1);
         }
-        let arm = mk("Arm");
-        add_child(arm, pat);
         add_child(arm, body);
         add_child(mn, arm);
         if tk == "PUNCT" && tl == "," {
@@ -1064,6 +1088,8 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> i64 {
     }
     set_loc(fnn, fnl, fnc);
     expect_punct("(");
+    let mut nparams: i64 = 0;   // para las reglas de `self` (parser.c:1097)
+    let mut self_err = false;
     while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
         if tk != "IDENT" {
             ef("parameter name");
@@ -1076,13 +1102,40 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> i64 {
         if tk == "PUNCT" && tl == ":" {
             advance();
             add_child(pnode, parse_type());
+        } else if pn == "self" {
+            // `self` sin anotación es el receptor: fuera de trait/impl o
+            // llegando tarde es error, pero el parámetro se añade igual
+            // (seed: fn_add_param tras parser_error).
+            if !allow_self {
+                perr("'self' parameter outside a trait or impl");
+                self_err = true;
+            } else if nparams > 0 {
+                perr("'self' must be the first parameter");
+                self_err = true;
+            }
         }
         add_child(fnn, pnode);
+        nparams = nparams + 1;
         if tk == "PUNCT" && tl == "," {
             advance();
         }
     }
     expect_punct(")");
+    if allow_self {
+        // Un item de trait/impl es un método: sin receptor sería una
+        // función estática sin sintaxis de llamada (parser.c:1130).
+        let mut has_self = false;
+        if nparams > 0 {
+            let p0 = tree.first[fnn];
+            // "Param(self)" -> "self" (el payload del Param)
+            if p0 != 0 && substr(tree.text[p0], 6, len(tree.text[p0]) - 7) == "self" {
+                has_self = true;
+            }
+        }
+        if !has_self && !self_err {
+            perr("'self' is required as the first parameter of a method");
+        }
+    }
     if tk == "PUNCT" && tl == "->" {
         advance();
         let rn = mk("ReturnType");
@@ -1092,6 +1145,9 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> i64 {
     if tk == "PUNCT" && tl == "{" {
         add_child(fnn, parse_block());
     } else if sig_only {
+        if tk == "PUNCT" && tl == ";" {
+            advance(); // terminador opcional: `fn show(self);` (parser.c:1158)
+        }
         add_child(fnn, mk("Block"));
     } else {
         ef_now("'{' for function body");
@@ -1137,6 +1193,8 @@ fn parse_item() -> i64 {
     if tk == "KEYWORD" && tl == "enum" {
         // DEC-028: EnumDecl(name) + Variant(v) con Field(TypeIdent) por
         // payload (tipo de payload de un solo ident en v2 — limite declarado).
+        let kln = t_line;
+        let klc = t_col;   // loc del nodo = la keyword (p->previous.loc)
         advance();
         if tk != "IDENT" {
             ef("enum name");
@@ -1152,6 +1210,7 @@ fn parse_item() -> i64 {
         } else {
             en = mk("EnumDecl(" + nm + ")");
         }
+        set_loc(en, kln, klc);
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if tk != "IDENT" {
                 ef("variant name");
@@ -1174,15 +1233,16 @@ fn parse_item() -> i64 {
                 expect_punct(")");
             }
             add_child(en, variant);
-            if tk == "PUNCT" && tl == "," {
-                advance();
-            }
+            // Sin coma entre variantes: el seed las rechaza (ui/enum_comma_body
+            // — DEC-028 sólo permite el separador por nueva línea).
         }
         expect_punct("}");
         return en;
     }
     if tk == "KEYWORD" && tl == "struct" {
         // DEC-030: StructDecl(name) + Field(f) con TypeIdent hijo.
+        let kln = t_line;
+        let klc = t_col;   // loc del nodo = la keyword (p->previous.loc)
         advance();
         if tk != "IDENT" {
             ef("struct name");
@@ -1198,6 +1258,7 @@ fn parse_item() -> i64 {
         } else {
             st = mk("StructDecl(" + nm + ")");
         }
+        set_loc(st, kln, klc);
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if tk != "IDENT" {
                 ef("field name");
@@ -1211,15 +1272,15 @@ fn parse_item() -> i64 {
             let fld = mk("Field(" + fname + ")");
             add_child(fld, ftype);
             add_child(st, fld);
-            if tk == "PUNCT" && tl == "," {
-                advance();
-            }
+            // Sin coma entre campos: el seed la rechaza (ui/struct_comma_body).
         }
         expect_punct("}");
         return st;
     }
     if tk == "KEYWORD" && tl == "trait" {
         // DEC-030: Trait(name) + firmas fn (sin cuerpo → Block vacío).
+        let kln = t_line;
+        let klc = t_col;   // loc del nodo = la keyword (p->previous.loc)
         advance();
         if tk != "IDENT" {
             ef("trait name");
@@ -1235,12 +1296,17 @@ fn parse_item() -> i64 {
         } else {
             tn = mk("Trait(" + nm + ")");
         }
+        set_loc(tn, kln, klc);
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if !(tk == "KEYWORD" && tl == "fn") {
                 perr("only 'fn' items are supported in a trait");
                 break;
             }
-            add_child(tn, parse_fn(false, true));
+            let saved_self = allow_self;
+            allow_self = true;
+            let item = parse_fn(false, true);
+            allow_self = saved_self;
+            add_child(tn, item);
         }
         expect_punct("}");
         return tn;
@@ -1248,6 +1314,8 @@ fn parse_item() -> i64 {
     if tk == "KEYWORD" && tl == "impl" {
         // DEC-030: Impl(Area for Punto) / Impl(Punto) — payload de texto
         // crudo; métodos con cuerpo (sig_only = false).
+        let kln = t_line;
+        let klc = t_col;   // loc del nodo = la keyword impl (p->previous.loc)
         if is_pub {
             perr("'pub' can only precede fn, struct, enum, trait or const");
         }
@@ -1273,12 +1341,17 @@ fn parse_item() -> i64 {
         }
         expect_punct("{");
         let imn = mk("Impl(" + head + ")");
+        set_loc(imn, kln, klc);
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if !(tk == "KEYWORD" && tl == "fn") {
                 perr("only 'fn' items are supported in an impl block");
                 break;
             }
-            add_child(imn, parse_fn(false, false));
+            let saved_self = allow_self;
+            allow_self = true;
+            let item = parse_fn(false, false);
+            allow_self = saved_self;
+            add_child(imn, item);
         }
         expect_punct("}");
         return imn;
