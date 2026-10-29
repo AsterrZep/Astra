@@ -53,6 +53,9 @@ let mut emit_guards = false   // M-T3: las guardas SÍ se emiten (el dump del
                               // route golden corre con false y no cambia)
 let mut allow_self = false    // espejo de p->allow_self (parser.c:1097):
                               // receptor válido sólo dentro de trait/impl
+let mut emit_lambda_types = false  // M-T4b: los tipos de PARÁMETRO de
+                              // lambda SÍ se emiten (el dump del seed los
+                              // omite — DEC-029; route golden: false)
 
 // ---------- AST en tablas SoA (DEC-032 / M-T1) ----------
 // Un nodo = índice en las cuatro columnas (índice 0 = centinela, nunca un
@@ -508,6 +511,37 @@ fn parse_type() -> i64 {
         advance();
         return t;
     }
+    if tk == "KEYWORD" && tl == "fn" {
+        // parse_type_impl del seed (parser.c, rama TOKEN_FN): fn(T,...) -> R.
+        // Los hijos van en orden params..., retorno — el retorno se marca
+        // con flg=2 para distinguirlo de `fn(T)` sin anotación (el dump
+        // imprime ambos como hijos planos: TypeFn TypeIdent...).
+        let fln = t_line;
+        let flc = t_col;
+        advance();
+        let tn = mk("TypeFn");
+        set_loc(tn, fln, flc);
+        expect_punct("(");
+        if !(tk == "PUNCT" && tl == ")") {
+            let mut go = true;
+            while go {
+                add_child(tn, parse_type());
+                if tk == "PUNCT" && tl == "," {
+                    advance();
+                } else {
+                    go = false;
+                }
+            }
+        }
+        expect_punct(")");
+        if tk == "PUNCT" && tl == "->" {
+            advance();
+            let rt = parse_type();
+            tree.flg[rt] = 2;   // marca: hijo = retorno, no parámetro
+            add_child(tn, rt);
+        }
+        return tn;
+    }
     perr("expected type");
     advance();
     mk("TypeIdent(?)")
@@ -728,12 +762,16 @@ fn parse_lambda() -> i64 {
                 advance();
                 return mk("PARSE-ERROR");
             }
-            add_child(lam, mk("Param(" + tl + ")"));
+            let pn = mk("Param(" + tl + ")");
             advance();
             if tk == "PUNCT" && tl == ":" {
                 advance();
-                let ptype = parse_type(); // descartada: el dump no la imprime
+                let ptype = parse_type(); // el dump del seed NO la imprime
+                if emit_lambda_types {
+                    add_child(pn, ptype); // el typechecker sí la necesita
+                }
             }
+            add_child(lam, pn);
             if tk == "PUNCT" && tl == "," {
                 advance();
             }

@@ -304,6 +304,32 @@ fn tc_resolve_type(node: i64) -> i64 {
         tc_err(node, "unknown type '" + nm + "'");
         return tc_prim(17);
     }
+    if lab == "TypeFn" {
+        // fn(T1,…) -> R: hijos params… + retorno (flg==2). Los params van
+        // clonados (tc_chain_node) como en las firmas de fn.
+        let fn_t = tc_mk(14);
+        let mut first: i64 = 0;
+        let mut prev: i64 = 0;
+        let mut ret: i64 = 0;
+        let mut c = tree.first[node];
+        while c != 0 {
+            if tree.flg[c] == 2 {
+                ret = tc_resolve_type(c);
+            } else {
+                let pt = tc_chain_node(tc_resolve_type(c));
+                if prev == 0 {
+                    first = pt;
+                } else {
+                    tcv_tps.nxt[prev] = pt;
+                }
+                prev = pt;
+            }
+            c = tree.next[c];
+        }
+        tcv_tps.a[fn_t] = first;
+        tcv_tps.ret[fn_t] = ret;
+        return fn_t;
+    }
     tc_err(node, "invalid type expression");
     tc_prim(17)
 }
@@ -698,6 +724,10 @@ fn tc_expr(node: i64) -> i64 {
         return tc_prim(17);
     }
 
+    if lab == "Lambda" {
+        return tc_lambda(node);
+    }
+
     if lab == "ArrayLit" {
         let mut c = tree.first[node];
         if c == 0 {
@@ -869,6 +899,19 @@ fn tc_is_mut_decl(text: string) -> bool {
         i = i + 1;
     }
     false
+}
+
+// hijo de TIPO (TypeIdent, TypeFn, …): las anotaciones no son siempre
+// TypeIdent (fn(i32)->i32 lo es como TypeFn — audit del M-T4b).
+fn tc_type_child(node: i64) -> i64 {
+    let mut c = tree.first[node];
+    while c != 0 {
+        if starts_with(knames[tree.kind[c]], "Type") {
+            return c;
+        }
+        c = tree.next[c];
+    }
+    0
 }
 
 // primer hijo por etiqueta
@@ -1374,7 +1417,7 @@ fn tc_struct_decl(node: i64) {
                 }
                 k = k + 1;
             }
-            let tnode = tc_child_labeled(c, "TypeIdent");
+            let tnode = tc_type_child(c);
             let mut ft: i64 = 10;
             if tnode != 0 {
                 ft = tc_resolve_type(tnode);
@@ -1428,7 +1471,7 @@ fn tc_enum_decl(node: i64) {
             let mut f = tree.first[c];
             while f != 0 {
                 if knames[tree.kind[f]] == "Field" {
-                    let tn = tc_child_labeled(f, "TypeIdent");
+                    let tn = tc_type_child(f);
                     let mut pt: i64 = 10;
                     if tn != 0 {
                         pt = tc_resolve_type(tn);
@@ -1475,7 +1518,7 @@ fn tc_collect_trait(node: i64) {
                 if knames[tree.kind[p]] == "Param" {
                     seen = seen + 1;
                     if seen > 1 {
-                        let tn = tc_child_labeled(p, "TypeIdent");
+                        let tn = tc_type_child(p);
                         let mut pt: i64 = 10;
                         if tn != 0 {
                             pt = tc_chain_node(tc_resolve_type(tn));
@@ -1496,7 +1539,7 @@ fn tc_collect_trait(node: i64) {
             tcv_tps.a[fn_t] = first;
             let ret_node = tc_child_labeled(c, "ReturnType");
             if ret_node != 0 {
-                let inner = tc_child_labeled(ret_node, "TypeIdent");
+                let inner = tc_type_child(ret_node);
                 if inner != 0 {
                     let rr = tc_resolve_type(inner);
                     if tc_is_error(tcv_tps.kind[rr]) {
@@ -1538,7 +1581,7 @@ fn tc_impl_method(fn_node: i64, recv: i64, tname: string, trname: string) {
     if firstp == 0 || nparams == 0 {
         return;   // el parser ya reportó
     }
-    let self_ann = tc_child_labeled(firstp, "TypeIdent");
+    let self_ann = tc_type_child(firstp);
     if self_ann != 0 {
         let ann = tc_resolve_type(self_ann);
         if !tc_is_error(tcv_tps.kind[ann]) && !tc_eq(ann, recv) {
@@ -1559,7 +1602,7 @@ fn tc_impl_method(fn_node: i64, recv: i64, tname: string, trname: string) {
         if knames[tree.kind[c]] == "Param" {
             seen = seen + 1;
             if seen > 1 {
-                let tn = tc_child_labeled(c, "TypeIdent");
+                let tn = tc_type_child(c);
                 let mut pt: i64 = 10;
                 if tn != 0 {
                     pt = tc_chain_node(tc_resolve_type(tn));
@@ -1575,7 +1618,7 @@ fn tc_impl_method(fn_node: i64, recv: i64, tname: string, trname: string) {
     }
     let ret_node = tc_child_labeled(fn_node, "ReturnType");
     if ret_node != 0 {
-        let inner = tc_child_labeled(ret_node, "TypeIdent");
+        let inner = tc_type_child(ret_node);
         if inner != 0 {
             let rr = tc_resolve_type(inner);
             if tc_is_error(tcv_tps.kind[rr]) {
@@ -1709,6 +1752,89 @@ fn tc_impl(node: i64) {
     }
 }
 
+// typecheck_lambda (typechecker.c:3839): params (sin anotación ->
+// unknown), scope propio, retorno anotado o inferido del cuerpo — cuerpo
+// void sin anotación es error —, y el resultado es un tipo fn.
+fn tc_lambda(node: i64) -> i64 {
+    // hijos: Param*(con TypeIdent opcional bajo emit_lambda_types) +
+    // TypeIdent(ret, flg=2, opcional) + Block
+    let mut ptypes: [i64] = [0];
+    let mut pn: [string] = [""];
+    let mut nparams: i64 = 0;
+    let mut ret_node: i64 = 0;
+    let mut body: i64 = 0;
+    let mut c = tree.first[node];
+    while c != 0 {
+        let l = knames[tree.kind[c]];
+        if l == "Param" {
+            pn = push(pn, tc_decl_name(tree.text[c]));
+            let tn = tc_type_child(c);
+            let mut pt: i64 = 10;
+            if tn != 0 {
+                pt = tc_resolve_type(tn);
+                if tc_is_error(tcv_tps.kind[pt]) { return tcv_void; }
+            }
+            ptypes = push(ptypes, pt);
+            nparams = nparams + 1;
+        } else if l == "TypeIdent" {
+            ret_node = c;
+        } else if l == "Block" {
+            body = c;
+        }
+        c = tree.next[c];
+    }
+    let mut ret: i64 = 0;
+    if ret_node != 0 {
+        ret = tc_resolve_type(ret_node);
+        if tc_is_error(tcv_tps.kind[ret]) { return tcv_void; }
+    }
+    tc_scope_enter();
+    let mut i: i64 = 1;
+    while i <= nparams {
+        tc_declare(pn[i], ptypes[i], false, false);
+        i = i + 1;
+    }
+    let saved_ret = tcv_ret;
+    tcv_ret = ret;
+    tcv_fndepth = tcv_fndepth + 1;
+    let mut body_t: i64 = tcv_void;
+    if body != 0 {
+        body_t = tc_block_child(body);
+    }
+    tcv_ret = saved_ret;
+    tcv_fndepth = tcv_fndepth - 1;
+    tc_scope_exit();
+    if ret == 0 {
+        if body != 0 {
+            if tcv_tps.kind[body_t] != 1 {
+                ret = body_t;
+            } else {
+                tc_err(node, "lambda requires explicit return type annotation");
+                return tc_prim(17);
+            }
+        } else {
+            ret = tcv_void;
+        }
+    }
+    let fn_t = tc_mk(14);
+    let mut first: i64 = 0;
+    let mut prev: i64 = 0;
+    let mut j: i64 = 1;
+    while j <= nparams {
+        let pt = tc_chain_node(ptypes[j]); // clon: p.ej. |a: P, b: P|
+        if prev == 0 {
+            first = pt;
+        } else {
+            tcv_tps.nxt[prev] = pt;
+        }
+        prev = pt;
+        j = j + 1;
+    }
+    tcv_tps.a[fn_t] = first;
+    tcv_tps.ret[fn_t] = ret;
+    fn_t
+}
+
 // typecheck_for (typechecker.c:2255): rangos con bounds enteros (fin
 // abierto rechazado) o iterador array/string; la variable vive en su
 // propio scope.
@@ -1763,7 +1889,7 @@ fn tc_var(node: i64) -> i64 {
         tc_err(node, "'" + nm + "' is a builtin and cannot be redeclared");
         return 1;
     }
-    let annot = tc_child_labeled(node, "TypeIdent");
+    let annot = tc_type_child(node);
     let mut decl: i64 = 0;
     if annot != 0 {
         decl = tc_resolve_type(annot);
@@ -1772,7 +1898,7 @@ fn tc_var(node: i64) -> i64 {
     let mut init: i64 = 0;
     let first_c = tree.first[node];
     if first_c != 0 {
-        if knames[tree.kind[first_c]] == "TypeIdent" {
+        if starts_with(knames[tree.kind[first_c]], "Type") {
             init = tree.next[first_c];
         } else {
             init = first_c;
@@ -1820,7 +1946,7 @@ fn tc_const(node: i64) -> i64 {
         tc_err(node, "'" + nm + "' is a builtin and cannot be redeclared");
         return 1;
     }
-    let annot = tc_child_labeled(node, "TypeIdent");
+    let annot = tc_type_child(node);
     let mut decl: i64 = 0;
     if annot != 0 {
         decl = tc_resolve_type(annot);
@@ -1829,7 +1955,7 @@ fn tc_const(node: i64) -> i64 {
     let mut init: i64 = 0;
     let first_c = tree.first[node];
     if first_c != 0 {
-        if knames[tree.kind[first_c]] == "TypeIdent" {
+        if starts_with(knames[tree.kind[first_c]], "Type") {
             init = tree.next[first_c];
         } else {
             init = first_c;
@@ -1953,7 +2079,7 @@ fn tc_build_fn_type(node: i64) -> i64 {
     let mut c = tree.first[node];
     while c != 0 {
         if knames[tree.kind[c]] == "Param" {
-            let pt_node = tc_child_labeled(c, "TypeIdent");
+            let pt_node = tc_type_child(c);
             let mut pt: i64 = 10; // sin anotación -> unknown
             if pt_node != 0 {
                 pt = tc_chain_node(tc_resolve_type(pt_node)); // clon si nominal
@@ -1970,7 +2096,7 @@ fn tc_build_fn_type(node: i64) -> i64 {
     tcv_tps.a[fn_t] = first;
     let ret_node = tc_child_labeled(node, "ReturnType");
     if ret_node != 0 {
-        let inner = tc_child_labeled(ret_node, "TypeIdent");
+        let inner = tc_type_child(ret_node);
         if inner != 0 {
             let rr = tc_resolve_type(inner);
             tcv_tps.ret[fn_t] = rr;
@@ -1989,7 +2115,7 @@ fn tc_fn_body(node: i64) {
     while c != 0 {
         if knames[tree.kind[c]] == "Param" {
             let pn = tc_decl_name(tree.text[c]);
-            let pt_node = tc_child_labeled(c, "TypeIdent");
+            let pt_node = tc_type_child(c);
             let mut pt: i64 = 10;
             if pt_node != 0 {
                 pt = tc_resolve_type(pt_node);
@@ -2004,7 +2130,7 @@ fn tc_fn_body(node: i64) {
     let ret_node = tc_child_labeled(node, "ReturnType");
     tcv_ret = 0;
     if ret_node != 0 {
-        let inner = tc_child_labeled(ret_node, "TypeIdent");
+        let inner = tc_type_child(ret_node);
         if inner != 0 {
             tcv_ret = tc_resolve_type(inner);
         }
@@ -2180,6 +2306,7 @@ fn main() {
     prev_len = 0;
     line_start = 0;
     emit_guards = true;   // el checker necesita la guarda de cada Arm
+    emit_lambda_types = true; // …y los tipos de parámetro de los lambdas
     advance();
     let root = parse_module();
     if err_count > 0 {
