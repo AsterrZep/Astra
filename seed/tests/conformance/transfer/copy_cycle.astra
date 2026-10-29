@@ -1,0 +1,12 @@
+// DEC-027 §2 — cycles are constructible in Astra-0 (`n.kid = some(n)`,
+// verified on the 4 routes) and an unguarded deep walk would diverge: the
+// depth cap (64) turns it into a runtime error with one byte-identical
+// message.
+// EXPECT-RUNTIME-ERROR: copy depth limit exceeded
+struct N { kid: N? }
+fn main() {
+    let mut n = N { kid: none };
+    n.kid = some(n);
+    let c = n.copy();
+    print("unreachable");
+}

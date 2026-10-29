@@ -524,6 +524,7 @@ pub const Emitter = struct {
     // (`push expects an array, got <tipo>`, `push element has type <X>,
     // expected <Y>`, `str_to_int: invalid integer literal '<s>'`).
     r_push: c.LLVMValueRef,
+    r_copy: c.LLVMValueRef,
     r_push_fail: c.LLVMValueRef,
     r_push_elem_fail: c.LLVMValueRef,
     r_str_to_int: c.LLVMValueRef,
@@ -670,6 +671,7 @@ pub const Emitter = struct {
             .r_substr_str_fail = undefined,
             .r_substr_int_fail = undefined,
             .r_push = undefined,
+            .r_copy = undefined,
             .r_push_fail = undefined,
             .r_push_elem_fail = undefined,
             .r_str_to_int = undefined,
@@ -758,6 +760,9 @@ pub const Emitter = struct {
         // de 8 bytes) y decimal → i64; los tres fallos nombran el valor como
         // type_name del VM.
         self.r_push = self.declRet(self.t_ptr, "astra_llvm_array_push", &.{ self.t_i32, self.t_ptr, self.t_ptr });
+        // `copy` (DEC-027): deep copy dirigido por el kind del header; la
+        // profundidad y los fallos viven dentro del runtime C.
+        self.r_copy = self.declRet(self.t_ptr, "astra_llvm_copy", &.{ self.t_i32, self.t_ptr });
         self.r_push_fail = self.declVoid("astra_llvm_push_fail", &.{ self.t_i32, self.t_ptr });
         self.r_push_elem_fail = self.declVoid("astra_llvm_push_elem_fail", &.{ self.t_i32, self.t_ptr, self.t_ptr, self.t_i32 });
         self.r_str_to_int = self.declRet(self.t_i64, "astra_llvm_str_to_int", &.{ self.t_i32, self.t_ptr });
@@ -795,7 +800,8 @@ pub const Emitter = struct {
             self.r_to_string,      self.r_to_string_fail,
             self.r_read_file,      self.r_read_file_fail,
             self.r_ord,            self.r_substr,
-            self.r_push,          self.r_str_to_int,
+            self.r_push,          self.r_copy,
+            self.r_str_to_int,
             self.r_chr,           self.r_read_line,
         };
         for (helpers) |h| self.addFnAttr(h, "nounwind");
@@ -3190,6 +3196,16 @@ pub const Emitter = struct {
         if (std.meta.activeTag(callee_node) == .field_access and callee_node.field_access.method.len > 0) {
             return self.emitMethodCall(idx, callee_node.field_access.method, callee_node.field_access.object);
         }
+        // DEC-027 (fase E2): `x.copy()` — the receiver is the callee's
+        // object (never in call.args). Sits before the variant/dynamic
+        // paths, which would lower it as a field READ and fail.
+        if (std.meta.activeTag(callee_node) == .field_access and
+            callee_node.field_access.method.len == 0 and
+            callee_node.field_access.field.len == 4 and
+            std.mem.eql(u8, callee_node.field_access.field, "copy"))
+        {
+            return self.emitCopy(idx);
+        }
         switch (callee_node) {
             .identifier => |name0| {
                 // Phase 2.4 step 2b: dentro del cuerpo de una instancia, el
@@ -4019,6 +4035,44 @@ pub const Emitter = struct {
     /// elemento contra el tipo del array (rompería la adopción de literales,
     /// DEC-006), así que un desajuste es guard — estático cuando los dos
     /// ptypes son estáticos, dinámico cuando hay una caja de por medio.
+    /// DEC-027 (fase E2): `x.copy()` — deep structural copy. Heap receivers
+    /// go to the runtime's kind-driven walk (fresh objects at rc=1, interior
+    /// nodes parent-owned — NO extra retains, unlike push which shares its
+    /// elements with the old array). Pairs carry the payload inline: the copy
+    /// is the same bits plus a retain of the payload pointer (rcRef),
+    /// registered as a temp so the statement boundary balances it. Strings
+    /// cross the runtime as kind STR (retain + same pointer, immutable).
+    fn emitCopy(self: *Emitter, idx: u32) ?Val {
+        const call = self.tree.node(idx).call_expr;
+        if (call.args.len != 0) {
+            // El typechecker exige 0 argumentos explícitos (DEC-027).
+            self.unsupported(idx, "copy takes no arguments");
+            return null;
+        }
+        const fa = self.tree.node(call.callee).field_access;
+        const line = self.tree.loc(idx).line;
+        const rv = self.emitExpr(fa.object) orelse return null;
+        switch (rv.ty) {
+            .i64_, .bool_, .f64_ => {
+                // Inalcanzable: el typechecker rechaza el receptor escalar.
+                self.unsupported(idx, "copy of a scalar value");
+                return null;
+            },
+            .pair_ => {
+                if (self.rcRef(rv.ref, .pair_, rv.payload_ty)) |o| {
+                    self.emitRetainRef(o);
+                    self.emitTmpPush(o);
+                }
+                return rv;
+            },
+            else => {},
+        }
+        var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), rv.ref };
+        const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_copy), self.r_copy, &fargs, 2, "");
+        self.emitTmpPush(rp);
+        return .{ .ref = rp, .ty = rv.ty, .payload_ty = rv.payload_ty, .sname = rv.sname };
+    }
+
     fn emitPush(self: *Emitter, idx: u32) ?Val {
         const call = self.tree.node(idx).call_expr;
         const args = self.tree.extraSlice(call.args);
@@ -5201,7 +5255,11 @@ pub const Emitter = struct {
                 // valor es de tipo enum, igual que la forma pelón vía
                 // variant_map (sin esto, `let x = Tag.Num(7)` a nivel de
                 // módulo no infiere y toplevel_aggregates cae a skip).
-                .field_access => {
+                .field_access => |fc| {
+                    // DEC-027: `x.copy()` tiene el tipo estático del receptor
+                    // (el initializador global de `let g = a.copy()` lo necesita).
+                    if (fc.field.len == 4 and std.mem.eql(u8, fc.field, "copy"))
+                        return self.inferStaticTy(fc.object);
                     if (self.resolveVariantPath(call.callee)) |_| return .enum_;
                     return null;
                 },

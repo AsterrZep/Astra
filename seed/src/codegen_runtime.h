@@ -955,6 +955,93 @@ static inline AstraValue astra_builtin_push(AstraValue *args, uint8_t argc) {
     return astra_array_take(buf, a->len + 1);
 }
 
+/* ---------- Built-in: copy (DEC-027, fase E2) ----------
+ *
+ * Deep structural copy, mirror of vm.c's value_copy: arrays/structs/
+ * enums/wrapped optionals recurse, strings and unit variants are shared,
+ * stateless fns are shared and closures clone the shell with a deep env.
+ * Builtin fns (`code == NULL`) are shared by pointer — CALL dispatch is
+ * by identity. Depth-capped because cycles are constructible
+ * (`n.kid = some(n)`); wording mirrors vm.c byte for byte so
+ * sweep_emit_c.sh stays equal. */
+#define ASTRA_COPY_MAX_DEPTH 64
+
+static AstraValue astra_value_copy(AstraValue v, int depth); /* fwd */
+
+static inline AstraValue astra_value_copy_wrapped(AstraValue v, int depth) {
+    AstraValue inner = astra_value_copy(*v.as.wrapped, depth + 1);
+    AstraValue r;
+    r.tag = v.tag;
+    r.as.wrapped = (AstraValue *)malloc(sizeof(AstraValue));
+    if (!r.as.wrapped)
+        astra_errorf("out of memory copying value");
+    *r.as.wrapped = inner;
+    return r;
+}
+
+static AstraValue astra_value_copy(AstraValue v, int depth) {
+    if (depth > ASTRA_COPY_MAX_DEPTH)
+        astra_errorf("copy depth limit exceeded");
+    switch (v.tag) {
+    case AST_ARRAY: {
+        AstraArray *a = v.as.array_val;
+        if (!a) return v;
+        AstraValue *buf = (AstraValue *)malloc(((size_t)a->len > 0 ? (size_t)a->len : 1) * sizeof(AstraValue));
+        if (!buf)
+            astra_errorf("out of memory copying value");
+        for (int64_t i = 0; i < a->len; i++) buf[i] = astra_value_copy(a->elems[i], depth + 1);
+        return astra_array_take(buf, a->len);
+    }
+    case AST_STRUCT: {
+        AstraStruct *st = (AstraStruct *)v.as.struct_val;
+        if (!st) return v;
+        AstraStruct *ns = astra_struct_new(st->def);
+        if (!ns)
+            astra_errorf("out of memory copying value");
+        for (size_t i = 0; i < st->def->field_count; i++)
+            ns->fields[i] = astra_value_copy(st->fields[i], depth + 1);
+        return (AstraValue){ .tag = AST_STRUCT, .as = { .struct_val = ns } };
+    }
+    case AST_ENUM_DATA: {
+        AstraEnumObj *eo = (AstraEnumObj *)v.as.enum_obj;
+        if (!eo) return v;
+        AstraEnumObj *ne = (AstraEnumObj *)malloc(sizeof(AstraEnumObj));
+        if (!ne)
+            astra_errorf("out of memory copying value");
+        *ne = *eo;
+        ne->fields = (AstraValue *)malloc((eo->field_count > 0 ? eo->field_count : 1) * sizeof(AstraValue));
+        if (!ne->fields)
+            astra_errorf("out of memory copying value");
+        for (size_t i = 0; i < eo->field_count; i++)
+            ne->fields[i] = astra_value_copy(eo->fields[i], depth + 1);
+        return (AstraValue){ .tag = AST_ENUM_DATA, .as = { .enum_obj = ne } };
+    }
+    case AST_FN: {
+        AstraFn *f = v.as.fn_val;
+        /* Builtin markers (code == NULL) and stateless fns: share. */
+        if (!f || f->env == NULL || f->env_len == 0) return v;
+        AstraValue *env = (AstraValue *)malloc(sizeof(AstraValue) * f->env_len);
+        if (!env)
+            astra_errorf("out of memory copying value");
+        for (uint8_t i = 0; i < f->env_len; i++) env[i] = astra_value_copy(f->env[i], depth + 1);
+        AstraValue r = astra_closure_new(f->fun, f->param_count, env, f->env_len);
+        free(env); /* closure_new clones the env; ours is the scratch */
+        return r;
+    }
+    case AST_OK: case AST_ERR: case AST_SOME:
+        return astra_value_copy_wrapped(v, depth);
+    default:
+        /* scalars, strings, unit variants, defs, nil: values or immutable */
+        return v;
+    }
+}
+
+static inline AstraValue astra_builtin_copy(AstraValue *args, uint8_t argc) {
+    if (argc != 1)
+        astra_errorf("expected 1 arguments but got %u", (unsigned)argc);
+    return astra_value_copy(args[0], 0);
+}
+
 /* ---------- Built-in: str_to_int (DEC-019, research/028 M2b) ----------
  *
  * str_to_int(string) -> i64: the decimal rendering to_string produces —

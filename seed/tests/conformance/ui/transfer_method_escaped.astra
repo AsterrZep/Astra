@@ -1,0 +1,12 @@
+// DEC-027 §3 (walker): a user method receives `self` as argument 0, so the
+// receiver escapes — the E1 hole where `p.get()` left p transferable.
+// EXPECT-ERROR: cannot transfer 'p': value has escaped
+struct P { v: i32 }
+impl P {
+    fn get(self) -> i32 { self.v }
+}
+fn main() {
+    let mut p = P { v: 1 };
+    let x = p.get();
+    transfer(p);
+}

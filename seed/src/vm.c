@@ -683,6 +683,130 @@ static bool builtin_push(VM *vm, Value *args, uint8_t argc, uint32_t line, Value
     return true;
 }
 
+/* ---------- builtin: copy (DEC-027, fase E2) ----------
+ *
+ * Deep structural copy: arrays/structs/enums/wrapped optionals recurse,
+ * strings and unit variants are shared (immutable), plain fns are shared
+ * (no state) and closures clone the shell with a deep env (the
+ * OPCODE_CLOSURE template shares code/constants). Builtin markers are
+ * shared BY POINTER — OPCODE_CALL dispatches them by identity
+ * (`param_count == 255 && code == NULL`), so cloning one would make it
+ * undispatchable. The walk is depth-capped: cycles are constructible
+ * (`n.kid = some(n)`, DEC-027) and an unguarded walk would diverge. */
+#define COPY_MAX_DEPTH 64
+
+/* Returns 0 ok, 1 depth limit, 2 out of memory. */
+static int value_copy(VM *vm, Value v, Value *out, int depth) {
+    if (depth > COPY_MAX_DEPTH) return 1;
+    switch (v.kind) {
+    case VAL_ARRAY: {
+        ArrayObj *a = v.as.array_val;
+        if (!a) { *out = v; return 0; }
+        ArrayObj *na = array_obj_new(vm->arena, a->len);
+        if (!na) return 2;
+        for (size_t i = 0; i < a->len; i++) {
+            int rc = value_copy(vm, a->elems[i], &na->elems[i], depth + 1);
+            if (rc) return rc;
+        }
+        *out = value_array(na);
+        return 0;
+    }
+    case VAL_STRUCT: {
+        StructObj *st = v.as.struct_val;
+        if (!st) { *out = v; return 0; }
+        StructObj *ns = struct_obj_new(vm->arena, st->def);
+        if (!ns) return 2;
+        size_t n = st->def ? st->def->field_count : 0;
+        for (size_t i = 0; i < n; i++) {
+            int rc = value_copy(vm, st->fields[i], &ns->fields[i], depth + 1);
+            if (rc) return rc;
+        }
+        *out = value_struct(ns);
+        return 0;
+    }
+    case VAL_ENUM_DATA: {
+        EnumObj *eo = v.as.enum_obj;
+        if (!eo) { *out = v; return 0; }
+        EnumObj *ne = enum_obj_new(vm->arena, eo->def, eo->variant, eo->fields);
+        if (!ne) return 2;
+        size_t n = (eo->def && eo->variant < eo->def->variant_count)
+                 ? eo->def->variants[eo->variant].field_count : 0;
+        for (size_t i = 0; i < n; i++) {
+            int rc = value_copy(vm, eo->fields[i], &ne->fields[i], depth + 1);
+            if (rc) return rc;
+        }
+        *out = (Value){ .kind = VAL_ENUM_DATA, .as = { .enum_obj = ne } };
+        return 0;
+    }
+    case VAL_FN: {
+        FnObj *f = v.as.fn_val;
+        /* Builtin markers (code == NULL) and stateless fns: share. */
+        if (!f || f->env == NULL || f->env_len == 0) { *out = v; return 0; }
+        FnObj *clos = arena_alloc_zero(vm->arena, sizeof(FnObj), _Alignof(FnObj));
+        if (!clos) return 2;
+        clos->code = f->code;
+        clos->code_len = f->code_len;
+        clos->constants = f->constants;
+        clos->const_len = f->const_len;
+        clos->param_count = f->param_count;
+        clos->local_count = f->local_count;
+        clos->env_len = f->env_len;
+        clos->env = arena_new_array(vm->arena, Value, f->env_len);
+        if (!clos->env) return 2;
+        for (uint8_t i = 0; i < f->env_len; i++) {
+            int rc = value_copy(vm, f->env[i], &clos->env[i], depth + 1);
+            if (rc) return rc;
+        }
+        *out = value_fn(clos);
+        return 0;
+    }
+    case VAL_OK: {
+        Value inner;
+        int rc = value_copy(vm, *v.as.ok_val.inner, &inner, depth + 1);
+        if (rc) return rc;
+        *out = value_ok(vm->arena, inner);
+        return 0;
+    }
+    case VAL_ERR: {
+        Value inner;
+        int rc = value_copy(vm, *v.as.err_val.inner, &inner, depth + 1);
+        if (rc) return rc;
+        *out = value_err(vm->arena, inner);
+        return 0;
+    }
+    case VAL_SOME: {
+        Value inner;
+        int rc = value_copy(vm, *v.as.some_val.inner, &inner, depth + 1);
+        if (rc) return rc;
+        *out = value_some(vm->arena, inner);
+        return 0;
+    }
+    default:
+        /* scalars, strings, unit variants, defs, nil: values or immutable */
+        *out = v;
+        return 0;
+    }
+}
+
+/* `copy(x) -> x` — only reachable as the method `x.copy()` (DEC-027):
+ * typecheck rejects every scalar receiver and the bare form. */
+static bool builtin_copy(VM *vm, Value *args, uint8_t argc, uint32_t line, Value *out) {
+    if (argc != 1) {
+        vm_runtime_error(vm, line, "expected 1 arguments but got %u", (unsigned)argc);
+        return false;
+    }
+    int rc = value_copy(vm, args[0], out, 0);
+    if (rc == 1) {
+        vm_runtime_error(vm, line, "copy depth limit exceeded");
+        return false;
+    }
+    if (rc == 2) {
+        vm_runtime_error(vm, line, "out of memory copying value");
+        return false;
+    }
+    return true;
+}
+
 /* Builtin `str_to_int(s) -> i64` (DEC-019, research/028 M2b): the decimal
  * rendering `to_string` produces, round-tripping `str_to_int(to_string(n))`
  * for every int the language can name. A leading `-` is part of that
@@ -1053,6 +1177,8 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 if (!vm_push(vm, value_fn(vm->builtin_chr_fn))) return VM_RUNTIME_ERROR;
             } else if (name && strcmp(name, "read_line") == 0) {
                 if (!vm_push(vm, value_fn(vm->builtin_read_line_fn))) return VM_RUNTIME_ERROR;
+            } else if (name && strcmp(name, "copy") == 0) {
+                if (!vm_push(vm, value_fn(vm->builtin_copy_fn))) return VM_RUNTIME_ERROR;
             } else {
                 /* Look up in globals table */
                 bool found = false;
@@ -1819,6 +1945,9 @@ VMResult vm_run(VM *vm, const Instruction *code, size_t code_len,
                 } else if (fn == vm->builtin_read_line_fn) {
                     if (!builtin_read_line(vm, &vm->stack[fn_idx + 1], argc, line, &result))
                         return VM_RUNTIME_ERROR;
+                } else if (fn == vm->builtin_copy_fn) {
+                    if (!builtin_copy(vm, &vm->stack[fn_idx + 1], argc, line, &result))
+                        return VM_RUNTIME_ERROR;
                 } else {
                     result = builtin_print(&vm->stack[fn_idx + 1], argc);
                 }
@@ -2216,6 +2345,14 @@ VM *vm_create(Arena *arena) {
     rl_fn->param_count = 255;
     rl_fn->local_count = 0;
     vm->builtin_read_line_fn = rl_fn;
+    FnObj *copy_fn = arena_alloc_zero(arena, sizeof(FnObj), _Alignof(FnObj));
+    copy_fn->code = NULL;
+    copy_fn->code_len = 0;
+    copy_fn->constants = NULL;
+    copy_fn->const_len = 0;
+    copy_fn->param_count = 255;
+    copy_fn->local_count = 0;
+    vm->builtin_copy_fn = copy_fn;
     return vm;
 }
 

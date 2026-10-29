@@ -1,0 +1,28 @@
+// DEC-027 §2 — deep structural copy: mutating a field ARRAY through the copy
+// must not touch the source (deep), the top-level shell must not share
+// (shell), and strings are shared by content (immutable, DEC-013).
+// C round-trip for the deep structural copy (DEC-027 §2): malloc
+// clones of struct/array with recursive fields — byte-identical output
+// to the VM.
+//
+// EXPECT: 1
+// EXPECT: 9
+// EXPECT: 1
+// EXPECT: 7
+// EXPECT: astra
+struct Box { xs: [i32] }
+fn main() {
+    let b = Box { xs: [1, 2] };
+    let mut c = b.copy();
+    c.xs[0] = 9;
+    print(b.xs[0]);
+    print(c.xs[0]);
+    let arr = [1, 2];
+    let mut arr2 = arr.copy();
+    arr2[0] = 7;
+    print(arr[0]);
+    print(arr2[0]);
+    let name = "astra";
+    let name2 = name.copy();
+    print(name2);
+}

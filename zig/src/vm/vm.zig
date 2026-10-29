@@ -314,6 +314,7 @@ pub const VM = struct {
     builtin_str_to_int_fn: *FnObj = undefined,
     builtin_chr_fn: *FnObj = undefined,
     builtin_read_line_fn: *FnObj = undefined,
+    builtin_copy_fn: *FnObj = undefined,
     /// stdin line buffer for read_line (DEC-020): one allocator buffer grown
     /// across consecutive calls, so a lexer reads the source line by line
     /// without a block-read consuming the next line's bytes.
@@ -382,6 +383,9 @@ pub const VM = struct {
         const rline = try a.create(FnObj);
         rline.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
         vm.builtin_read_line_fn = rline;
+        const copyf = try a.create(FnObj);
+        copyf.* = .{ .code = &.{}, .constants = &.{}, .param_count = 255, .local_count = 0 };
+        vm.builtin_copy_fn = copyf;
         return vm;
     }
 
@@ -876,6 +880,8 @@ pub const VM = struct {
                         if (!self.push(bc.vFn(self.builtin_chr_fn))) return .runtime_error;
                     } else if (std.mem.eql(u8, name, "read_line")) {
                         if (!self.push(bc.vFn(self.builtin_read_line_fn))) return .runtime_error;
+                    } else if (std.mem.eql(u8, name, "copy")) {
+                        if (!self.push(bc.vFn(self.builtin_copy_fn))) return .runtime_error;
                     } else {
                         var found = false;
                         var i: usize = 0;
@@ -1311,6 +1317,8 @@ pub const VM = struct {
                             (self.builtinChr(args, line) orelse return .runtime_error)
                         else if (fn_obj == self.builtin_read_line_fn)
                             (self.builtinReadLine(args, line) orelse return .runtime_error)
+                        else if (fn_obj == self.builtin_copy_fn)
+                            (self.builtinCopy(args, line) orelse return .runtime_error)
                         else
                             try self.builtinPrint(args);
                         self.sp = fn_idx;
@@ -1673,6 +1681,109 @@ pub const VM = struct {
         for (a.elems, 0..) |e, i| na.elems[i] = e;
         na.elems[a.len] = v;
         return .{ .array = na };
+    }
+
+    /// DEC-027 deep structural copy (fase E2) — mirror of seed vm.c's
+    /// value_copy: arrays/structs/enums/wrapped optionals recurse, strings
+    /// and unit variants are shared, stateless fns are shared and closures
+    /// clone the shell with a deep env (the OPCODE_CLOSURE template shares
+    /// code/constants). Builtin markers (empty env) are shared BY POINTER —
+    /// CALL dispatch is by identity. Depth-capped: cycles are constructible
+    /// (`n.kid = some(n)`) and an unguarded walk would diverge.
+    fn valueCopy(self: *VM, v: Value, depth: i32, line: u32) ?Value {
+        if (depth > 64) {
+            _ = self.rt(line, "copy depth limit exceeded", .{});
+            return null;
+        }
+        switch (v) {
+            .array => |arr| {
+                const na = self.newArray(arr.len) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+                for (arr.elems, 0..) |e, i| {
+                    na.elems[i] = self.valueCopy(e, depth + 1, line) orelse return null;
+                }
+                return .{ .array = na };
+            },
+            .struct_ => |st| {
+                const def = st.def orelse return v; // no def: nothing to recurse into
+                const nst = self.newStruct(def) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+                for (0..nst.fields.len) |i| {
+                    nst.fields[i] = self.valueCopy(st.fields[i], depth + 1, line) orelse return null;
+                }
+                return .{ .struct_ = nst };
+            },
+            .enum_data => |eo| {
+                const edef = eo.def orelse return v; // no def: nothing to recurse into
+                const ne = self.newEnum(edef, eo.variant, eo.fields) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+                for (0..ne.fields.len) |i| {
+                    ne.fields[i] = self.valueCopy(eo.fields[i], depth + 1, line) orelse return null;
+                }
+                return .{ .enum_data = ne };
+            },
+            .fn_ => |f| {
+                // Builtin markers and stateless fns: share.
+                if (f.env.len == 0) return v;
+                const clos = self.a.create(bc.FnObj) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+                const env = self.a.alloc(bc.Value, f.env.len) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+                clos.* = .{
+                    .code = f.code,
+                    .constants = f.constants,
+                    .param_count = f.param_count,
+                    .local_count = f.local_count,
+                    .env = env,
+                };
+                for (f.env, 0..) |e, i| {
+                    env[i] = self.valueCopy(e, depth + 1, line) orelse return null;
+                }
+                return .{ .fn_ = clos };
+            },
+            .ok => |p| {
+                const inner = self.valueCopy(p.*, depth + 1, line) orelse return null;
+                return self.wrap(inner, .ok) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+            },
+            .err => |p| {
+                const inner = self.valueCopy(p.*, depth + 1, line) orelse return null;
+                return self.wrap(inner, .err) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+            },
+            .some => |p| {
+                const inner = self.valueCopy(p.*, depth + 1, line) orelse return null;
+                return self.wrap(inner, .some) catch {
+                    _ = self.rt(line, "out of memory copying value", .{});
+                    return null;
+                };
+            },
+            else => return v,
+        }
+    }
+
+    /// `copy` — only reachable as the method `x.copy()` (DEC-027):
+    /// typecheck rejects every scalar receiver and the bare form.
+    fn builtinCopy(self: *VM, args: []const Value, line: u32) ?Value {
+        if (args.len != 1) {
+            _ = self.rt(line, "expected 1 arguments but got {d}", .{args.len});
+            return null;
+        }
+        return self.valueCopy(args[0], 0, line);
     }
 
     /// Builtin `str_to_int(s) -> i64` (DEC-019, research/028 M2b): the

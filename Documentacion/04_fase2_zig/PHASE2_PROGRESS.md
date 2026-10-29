@@ -813,13 +813,17 @@ invariante 8 de AGENTS:
   `tests/codegen/` — 4 rutas.
 - ⏭️ `ui/spawn_global_atomic.astra` (S3) — **pospuesto con `spawn`**
   (`research/026` §3.6 «y spawn cuando entre»; DEC-026 §5).
-- ⏭️ `transfer_copy.astra`/`.copy()` — PR fase-E2.
+- ✅ `transfer_copy.astra` + `.copy()` — **fase E2 cerrada (2026-10-28)**:
+  deep copy estructural en los 4 motores (DEC-027 `test-pinned`) +
+  `copy_independent` (profundidad), `copy_cycle` (depth cap 64,
+  `copy depth limit exceeded`) y receiver-escape de métodos de usuario
+  (`ui/transfer_method_escaped`).
 - RT1 (`rc==1` en el cruce): **no** en esta fase — gate del primer
   scheduler/send, en M4 (DEC-023); su pin vive en la suite Phase 2.
 - ✅ `--check-constructs` sigue en 47/27 (DEC-022: sin keyword nueva).
 
-**Gates fase-E1 (2026-10-28)**: seed `make test` **340/0** · sweep
-**157 total, 0 fail** · zig `build test` **74/74** · `ui_message_parity`
-first_fail=0 (139) · `dump_parity` **204/0** · `llvm_parity` **216/216**
-(plain y `ASTRA_LLVM_OPT=2`) · `llvm_jit` 216/216 · `llvm_sanitize`
+**Gates fase-E1 + E2 (2026-10-28)**: seed `make test` **350/0** · sweep
+**160 total, 0 fail** · zig `build test` **74/74** · `ui_message_parity`
+first_fail=0 (144) · `dump_parity` **209/0** · `llvm_parity` **221/221**
+(plain y `ASTRA_LLVM_OPT=2`) · `llvm_jit` 221/221 · `llvm_sanitize`
 ASan+LSan ok · `llvm_mem` techo ok · lexer/io/parser gates ok.

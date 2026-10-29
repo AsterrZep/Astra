@@ -34,6 +34,7 @@
 | DEC-024 | Stdlib post-M3 en **Astra puro** (no builtins, plan de `research/028` §1.2): funciones `contains(s, sub) -> bool` (aguja vacía = `true`), `index_of(s, sub) -> i64?` (ocurrencia más a la izquierda; ausente = `none`; aguja vacía = `some(0)`), y `split(s, sep) -> [string]` (campos se preservan, sep al inicio/final da campo vacío, sin sep = `[s]`, **`sep` vacío = array de bytes de `s`** — caso especial tipo JS; nunca error, porque el código de usuario no puede lanzar errores de runtime) — cada test define sus helpers en línea (no existe stdlib compartida: el seed compila un fichero y `std/…` está rechazado) y los nombres **no** se reservan (libres para el usuario y para un futuro `Array.contains` de `research/015`) | Aceptada (test-pinned) | 2026-10-28 | `conformance/stdlib/{contains_basic,index_of_basic,split_basic,split_fields,split_chars_empty_sep}.astra`, `codegen/{contains,split}_roundtrip.astra`, `codegen/split_fields.astra` (4 rutas verificadas) (PR stdlib-postM3) |
 | DEC-025 | **`parser.astra` es el segundo componente self-hosting**: parser de Astra-0 (v1) en Astra-0 que lee `parser_input.astra` (subconjunto: items `const`/`fn` con params y retorno, statements con `;` obligatorio, `let`(+mut, tipo opcional), assign, if/else/else-if, while, return, break; exprs con literales int decimal/string plano/bool, unary -/!, precedencia de la tabla de operadores, calls, index, paréntesis, array literals); emite el AST como **s-expresión prefijo de una línea** y se gatea contra `parser.expected`, golden generado por `--dump-ast | normalize_ast.awk` (implementaciones independientes: parser C vs Astra-0) en **7 rutas** + **freshness check** del golden en cada corrida; fuerza `;` en todo statement y no modela NEWLINE-terminador, escapes de string ni literales hex — límites declarados, no accidental | Aceptada (test-pinned) | 2026-10-28 | `seed/tests/selfhost/parser_gate.sh` → 5/5 rutas locales (seed VM, `--emit-c`+gcc, zig VM, `--jit`, `--emit-obj`+link; cross/wasm skip limpio sin toolchain) + freshness `--dump-ast` == golden · CI jobs `seed` y `llvm` · fixture `parser_input.astra` (corre: 31/true) (PR parser-selfhost) |
 | DEC-026 | **Fase E v1 de enforcement — detalles de `transfer` sin fibras**: solo la forma-directa-sentencia `transfer(x);` (1 argumento, variable desnuda); tipos escalar rechazados en compile-time (`transfer expects an aggregate, got i32`); S1/S2 como pasada post-typecheck en los 2 frontends con las semánticas de `research/026` §3.3 (Único/Aliased/Escapado + movidos, alcance por bloques, joins conservadores en if/loops, alias por `let y = x` **sonoro** (ambos → Aliased), escapes por call no-builtin/contenedor/captura, globales usados desde fn = Escapado al transferir); nil-red de R4 en los emisores (`CONST nil; SET` del binding, observable solo en globales entre funciones — S1 es intraprocedural); mensajes nuevos: M1 `transfer must be called directly as transfer(variable)`, M2 `transfer must be its own statement`, S2-escaped `cannot transfer 'x': value has escaped`; S3/`spawn` y `.copy()` quedan fuera (siguiente PR / Phase 2) | Aceptada (test-pinned) | 2026-10-28 | `ui/transfer_{aliased,used_after,captured,escaped,nested,value_use,scalar,bad_form}.astra`, `ui/builtin_shadow_transfer.astra`, `conformance/transfer/transfer_unique.astra`, `conformance/transfer/transfer_global_nil.astra` (EXPECT-RUNTIME-ERROR), `codegen/transfer_unique.astra` (PR fase-E1) |
+| DEC-027 | **`.copy()` — fase E2**: deep copy estructural **solo en forma de método** `x.copy()` (la forma directa `copy(x)` no existe: el nombre no se registra como símbolo → `copy must be called as x.copy()`); nombre **reservado** en kBuiltins/k_builtins (`ui/builtin_shadow_copy`); receptor con el mismo conjunto de tipos que `transfer` (agregados+string+optional+unknown, escalares → `copy expects an aggregate, got i32`); devuelve el **tipo estático del receptor**; `x.copy(args)` → `copy takes no arguments`; semántica: recursivo sobre arrays/structs/enum/optional-caja (parejas: bits+retain), strings **compartidos** (inmutables, retain en LLVM), closures = shell nuevo con env profundo y **markers compartidos** (despacho por identidad de puntero), **depth cap 64** → `copy depth limit exceeded` (ciclos construibles: `n.kid = some(n)`); walker: el receiver de un **método de usuario** pasa a escaparse (S2) pero el de `.copy()` no; el receiver de `.copy()` NO escapa (la fuente queda transferible) | Aceptada (test-pinned) | 2026-10-28 | `ui/builtin_shadow_copy.astra`, `ui/copy_{scalar,extra_args,value_use}.astra`, `ui/transfer_method_escaped.astra`, `conformance/transfer/{transfer_copy,copy_independent,copy_cycle}.astra` (ciclo = EXPECT-RUNTIME-ERROR), `codegen/{transfer_copy,copy_independent}.astra` (PR fase-E2) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1010,3 +1011,64 @@
   fase-E1 en las 4 rutas; `ui_message_parity.sh` con primera línea
   byte-idéntica; `--check-constructs` sigue 47/27 (DEC-022: sin keyword).
 - **Spec**: `ARCHITECTURE.md` §2.6 (regla) + este apéndice (detalles v1).
+
+### DEC-027 — Fase E2: `.copy()` (deep copy estructural)
+- **Estado**: **Aceptada (test-pinned)** — fijada en el PR fase-E2
+  (2026-10-28).
+- **Fecha**: 2026-10-28.
+- **Decisión**: el escape legal de S2 (`research/026` R3(c),
+  `ARCHITECTURE.md` §2.6 §4):
+  1. **Forma**: solo método `x.copy()`. El fallback vive en el path
+     `FIELD_ACCESS` de `typecheck_call`/`checkCall`, **después** de la
+     tabla de métodos (un método de usuario llamado `copy` gana) y antes
+     del fall-through a field-read: chequea el receiver (mismo conjunto de
+     tipos que `transfer`: array/struct/enum/fn/string/optional/unknown;
+     escalares → `copy expects an aggregate, got <tipo>`, loc = nodo del
+     receptor como los errores de field actuales), exige 0 argumentos
+     explícitos (`copy takes no arguments`) y **devuelve el tipo del
+     receptor** — no `unknown`: así `let c = a.copy(); c[0]` tipa sin
+     anotación (el pitfall del registro genérico que hizo furor en el
+     research). La forma directa `copy(x)` **no existe**: `copy` no se
+     registra como símbolo, así que `typecheck_ident` la rechaza con
+     `copy must be called as x.copy()` (M1 de transfer, traducido).
+     El nombre **sí** se reserva en `kBuiltins`/`k_builtins` (DEC-015):
+     el emisor del form método emite `GET_GLOBAL "copy"` y la
+     resolución por nombre debe ser inequívoca en las 4 rutas.
+  2. **Semántica — deep copy estructural** recursivo (prof. cap 64):
+     arrays (shell + elementos recursivos), structs (campos recursivos),
+     enums con datos (payload recursivo), optional **caja** (contenido
+     recursivo) y **pareja** (bits + retain del payload puntero),
+     strings **compartidos** (inmutables — en LLVM `retain` del mismo
+     puntero), closures = shell nuevo que comparte `code`/`constants`
+     (plantilla de `OPCODE_CLOSURE`) con **env copiado en profundidad**;
+     los **markers de builtin se comparten** (nunca se clonan: el
+     despacho de `OPCODE_CALL` es por identidad de puntero —
+     `param_count == 255 && code == NULL`). Escalares no llegan
+     (rechazo en compile-time). **Depth cap 64** → error de runtime
+     `copy depth limit exceeded`: los ciclos son construibles hoy
+     (`struct N { kid: N? }; n.kid = some(n)` — verificado en las 4
+     rutas) y un copy sin tapa divergiría (la fuga de ciclo de rc que
+     `astra_runtime_llvm.c:41` documenta como «la única que este modelo
+     no puede colectar»).
+  3. **Walker (S1/S2)**: el receiver de una llamada a **método de
+     usuario** ahora **escapa** (el callee no-builtin recibe `self` como
+     argumento 0 — hueco de sonido de la fase E1, pinneado por
+     `ui/transfer_method_escaped.astra`); el receiver de `.copy()` **no**
+     escapa (copy sólo lee la fuente — `let c = a.copy(); transfer(a)`
+     sigue legal si `a` era único) y sus (vacíos) argumentos tampoco.
+- **Alternativas consideradas**: forma directa `copy(x)` como
+  primitives — descartada de v1 (026 sólo especifica `.copy()`; añade un
+  early-path y tests por mensaje); registro como `fn(unknown) -> unknown`
+  — descartado: `let b = copy(a); b[0]` muere con «cannot index
+  non-array type unknown» (research §5.5) y el form método ya devuelve el
+  tipo real; `copy` sin reservar — descartado: `GET_GLOBAL "copy"` por
+  nombre ambiguo con un binding de usuario (divergencia de rutas, la
+  misma razón de DEC-015); deep copy de strings — descartado (inmutables,
+  DEC-013: compartir es la semántica); share-shallow de env de closures —
+  descartado: el env es el estado que el copy debe independizar.
+- **Coste aceptado**: 8–9 ficheros por el patrón builtin (seed vm +
+  codegen + runtime; zig vm; LLVM emitter + runtime) + los 3 typecheckers
+  de fallback/forma + los 2 walkers, sin opcode nuevo.
+- **Evidencia**: los tests de la fila; gates del PR fase-E2 (seed, sweep,
+  zig, ui parity, dump, llvm parity ×2, jit, sanitize).
+- **Spec**: `ARCHITECTURE.md` §2.6 §4 (el escape) + este apéndice.

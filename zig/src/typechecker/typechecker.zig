@@ -176,7 +176,7 @@ const ImplRecord = struct { type_name: []const u8, trait_name: []const u8 };
 
 /// DEC-015/022: reserved builtin names — byte-identical to seed's
 /// `kBuiltins` (builtin_redeclare_error + the ownership pass share it).
-const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int", "chr", "read_line", "transfer" };
+const k_builtins = [_][]const u8{ "print", "len", "to_string", "read_file", "ord", "substr", "push", "str_to_int", "chr", "read_line", "transfer", "copy" };
 
 fn ownIsBuiltinName(name: []const u8) bool {
     for (k_builtins) |b| {
@@ -772,6 +772,11 @@ pub const TypeChecker = struct {
         // handled in checkCall before the callee reaches here.
         if (std.mem.eql(u8, name, "transfer")) {
             return self.errorType(loc, "transfer must be called directly as transfer(variable)", .{});
+        }
+        // DEC-027: `copy` exists only as the method `x.copy()` — reserved
+        // (k_builtins) but never registered as a value.
+        if (std.mem.eql(u8, name, "copy")) {
+            return self.errorType(loc, "copy must be called as x.copy()", .{});
         }
         if (self.lookup(name)) |sym| {
             if (sym.module_exports != null) {
@@ -1395,6 +1400,19 @@ pub const TypeChecker = struct {
                         }
                     }
                     return m.fn_type.ret orelse self.newType(.void);
+                }
+                // DEC-027 (fase E2): `x.copy()` — the deep-copy builtin method.
+                // After the method table (a user `copy` method wins) and before
+                // the field-read fall-through. Returns the RECEIVER's type so
+                // `let c = a.copy(); c[0]` types without an annotation.
+                if (fa.field.len == 4 and std.mem.eql(u8, fa.field, "copy")) {
+                    if (arg_slice.len != 0) {
+                        return self.errorType(loc, "copy takes no arguments", .{});
+                    }
+                    switch (obj.kind) {
+                        .array, .struct_, .enum_, .fn_type, .string, .optional, .unknown => return obj,
+                        else => return self.errorType(self.tree.loc(fa.object), "copy expects an aggregate, got {s}", .{obj.kind.name()}),
+                    }
                 }
                 // No method: fall through — the object re-typechecks below,
                 // but it was clean (an error type returned above), so no
@@ -2980,7 +2998,19 @@ pub const TypeChecker = struct {
                 }
                 self.ownVisit(w, c.callee, false);
                 const cal = self.tree.node(c.callee);
-                const esc = if (isTag(cal, .identifier)) !ownIsBuiltinName(cal.identifier) else true;
+                var esc = if (isTag(cal, .identifier)) !ownIsBuiltinName(cal.identifier) else true;
+                if (std.meta.activeTag(cal) == .field_access) {
+                    // DEC-027: a user method receives `self` as argument 0, so
+                    // the receiver escapes (E1 soundness hole closed in E2);
+                    // `.copy()` only reads its receiver — it must NOT escape.
+                    const is_copy = cal.field_access.field.len == 4 and
+                        std.mem.eql(u8, cal.field_access.field, "copy");
+                    if (is_copy) {
+                        esc = false;
+                    } else {
+                        self.ownEscapeRoot(w, cal.field_access.object);
+                    }
+                }
                 for (self.tree.extraSlice(c.args)) |arg| {
                     self.ownVisit(w, arg, false);
                     if (esc) self.ownEscapeRoot(w, arg);

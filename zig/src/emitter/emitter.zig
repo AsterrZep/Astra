@@ -1470,6 +1470,24 @@ pub const Emitter = struct {
                     self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
                     return;
                 }
+                // DEC-027 (fase E2): `x.copy()` — the receiver travels as the
+                // single argument of the builtin: get_global "copy" + receiver +
+                // CALL 1. The typechecker left method empty (no mangling), so
+                // this must run before the variant/generic paths, which would
+                // lower it as a field READ and drop the receiver (argc = 0).
+                if (std.meta.activeTag(callee) == .field_access and
+                    callee.field_access.method.len == 0 and
+                    callee.field_access.field.len == 4 and
+                    std.mem.eql(u8, callee.field_access.field, "copy"))
+                {
+                    const name_idx = self.addConstant(bc.vString(self.globalName(callee.field_access.field)));
+                    self.emitInstIndex(.get_global, name_idx, ln);
+                    self.emitExpr(callee.field_access.object);
+                    self.emitInst(.call, ln);
+                    self.spSetArgcount(self.code.items.len - 1, 1);
+                    self.spCheck(idx, sp_before, self.nodeValueEffect(idx), "expression");
+                    return;
+                }
                 // Static method dispatch (Phase 2.3 step 4): the checker
                 // annotated the callee with its mangled global, so push that
                 // function, then the receiver (argument 0), then the source
