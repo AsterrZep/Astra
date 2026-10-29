@@ -356,6 +356,11 @@ fn parse_primary() -> string {
     if tk == "KEYWORD" && tl == "match" {
         return parse_match();
     }
+    if tk == "PUNCT" && (tl == "|" || tl == "||") {
+        // DEC-029: en posición de expresión un '|' inicial SOLO puede ser
+        // lambda (el '|' binario nunca abre expresión; el seed es igual).
+        return parse_lambda();
+    }
     if tk == "IDENT" {
         let t = "Ident(" + tl + ")";
         advance();
@@ -385,6 +390,49 @@ fn parse_primary() -> string {
     report_err("expected expression");
     advance();
     "PARSE-ERROR"
+}
+
+// DEC-029: lambda — |params| [-> type] { block }. El cuerpo DEBE ser
+// bloque (el seed rechaza el cuerpo sin llaves). Los tipos de parámetro y
+// la anotación -> type se parsean pero NO se emiten: el dump del seed
+// imprime `Lambda [Param(name)]* [TypeIdent(ret)] Block` — el TypeIdent
+// es SOLO la anotación de retorno (verificado; los tipos de parámetro no
+// aparecen). Sin parámetros: `||` (token OR_OR, tratado como lista vacía)
+// o `| |` (dos PUNCT) — el mismo loop cubre ambas grafías.
+fn parse_lambda() -> string {
+    let mut params = "";
+    if tk == "PUNCT" && tl == "||" {
+        advance();
+    } else {
+        advance(); // abre '|'
+        while !(tk == "PUNCT" && tl == "|") && tk != "EOF" {
+            if tk != "IDENT" {
+                report_err("expected lambda parameter");
+                advance();
+                return "PARSE-ERROR";
+            }
+            params = join2(params, "Param(" + tl + ")");
+            advance();
+            if tk == "PUNCT" && tl == ":" {
+                advance();
+                let ptype = parse_type(); // descartada: el dump no la imprime
+            }
+            if tk == "PUNCT" && tl == "," {
+                advance();
+            }
+        }
+        expect_punct("|");
+    }
+    if tk == "PUNCT" && tl == "->" {
+        advance();
+        let rtype = parse_type(); // descartada salvo por el descarte mismo
+        params = join2(params, rtype); // el dump SÍ imprime el ret como TypeIdent
+    }
+    if !(tk == "PUNCT" && tl == "{") {
+        report_err("expected '{' for lambda body");
+        return "PARSE-ERROR";
+    }
+    attach("Lambda", join2(params, parse_block()))
 }
 
 // DEC-028: una alternativa de patron (sin el '|'). La misma forma que la

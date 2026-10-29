@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **parser.astra v2.1 — lambdas (DEC-029)**: tercer incremento del parser
+  self-hosted, cierre del paso 2 de `PHASE1_PROGRESS` §7 (match +
+  lambdas). Forma `|params| [-> type] { block }` — el cuerpo **exige
+  bloque** (el seed rechaza `|y| y * 2`, verificado); tipos de parámetro y
+  `-> ret` parseados pero descartados del dump (el dump del seed imprime
+  `Lambda [Param]* [TypeIdent(ret)] Block`: el TypeIdent es SOLO la
+  anotación de retorno — verificado empíricamente); sin parámetros vía
+  `||` (token OR_OR, igual que el seed lo rechaza) o `| |` espaciado. El
+  fixture v2.1 añade las cuatro formas aceptadas + llamadas (42/7/42/7
+  ejecutados). Gate: parser_gate 5 rutas + freshness, resto de gates sin
+  cambios (350/0 · 74/74 · 209 · 221/221).
+
 - **parser.astra v2 — NEWLINE, `match` e items `enum` (DEC-028)**: segundo
   incremento del parser self-hosteado (plan de `PHASE1_PROGRESS` §7,
   pasos 1–2 sin lambdas). Fin de sentencia = `;` **o** cambio de línea
