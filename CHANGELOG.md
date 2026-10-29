@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Fase E2 — `.copy()` deep copy + receiver-escape (DEC-027)**: el escape
+  legal de S2 en los 4 motores — método `x.copy()` (fallback tras la tabla
+  de métodos; devuelve el tipo del receptor; `copy` reservado; sin forma
+  directa), deep copy recursivo (arrays/structs/enum/optionals; strings
+  compartidos+retain; closures shell+env profundo; markers compartidos por
+  identidad de puntero) con **depth cap 64** → `copy depth limit exceeded`
+  (ciclos construibles: `n.kid = some(n)`, pinneado en las 4 rutas), y
+  cierre del hueco de sonido de E1: el **receiver de un método de usuario
+  ahora escapa** (S2), mientras `.copy()` no (la fuente queda transferible).
+  Tests: `ui/{builtin_shadow_copy,copy_scalar,copy_extra_args,copy_value_use,
+  transfer_method_escaped}` + `conformance/transfer/{transfer_copy,
+  copy_independent,copy_cycle}` + twins C. Gates: seed **350/0**, sweep
+  160/0fail, zig 74/74, ui parity 144/0, dump 209/0, llvm_parity
+  **221/221** ×2, jit 221, sanitize ASan+LSan sin fugas, mem techo ok.
+
 - **Fase E1 — enforcement entre fibras v1 (DEC-012/022 `test-pinned`,
   DEC-026)**: `transfer(x)` como builtin de forma-sentencia (sin keyword;
   `--check-constructs` sigue 47/27) con los checks estáticos **S1/S2** en

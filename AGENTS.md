@@ -140,7 +140,7 @@ arrays/structs/enums, `for..in`/`break`/`continue`, monomorphized generics,
 traits/impls, unannotated returns and pointer-typed `let` without initializer
 — straight from the typed AST (no bytecode/VM) to a native object via
 TargetMachine (`--emit-obj`, M2.e). `zig/tests/llvm_parity.sh` gates it
-against the zig VM: **216 cases — 216 ok, 0 skip, 0 excl, 0 fail** (a skip
+against the zig VM: **221 cases — 221 ok, 0 skip, 0 excl, 0 fail** (a skip
 now fails the gate: silent coverage loss hid the DEC-008 regression once).
 `zig/tests/llvm_filecheck.sh` pins the IR shapes of the guards/match/depth/`?`/opt-pair/debug/fast-math
 fixtures in `zig/tests/llvm/`, and `zig/tests/llvm_fuzz.sh` (generator:
@@ -151,11 +151,11 @@ seed's inert-import semantics for the `module/` fixtures. M4 (quality) is
 closed: `--opt-level=N` runs the new-PM pipeline (`default<O2>` + LICM /
 simple-loop-unswitch / IRCE for N=2), `--debug-info` emits source-mapped DWARF
 (verified via `tests/llvm_dwarf_test.sh` under `lldb`), and the parity gate is
-run both plain and with `ASTRA_LLVM_OPT=2` (216/216 in both); `zig/tests/llvm_bench.sh`
+run both plain and with `ASTRA_LLVM_OPT=2` (221/221 in both); `zig/tests/llvm_bench.sh`
 publishes VM/C/LLVM timings. `--sanitize=address` marks functions and runs the
 new-PM `asan` pass before the optimizer; `zig/tests/llvm_sanitize.sh` proves
 the artifacts are instrumented, that a plain link fails without
-`-fsanitize=address`, runs the whole 216-case suite under ASan at `-O0` and
+`-fsanitize=address`, runs the whole 221-case suite under ASan at `-O0` and
 `-O2`, and closes with an LSan step (`detect_leaks=1`) on
 `zig/tests/llvm/leaks.astra`. UBSan is not offered because LLVM 19..23 does
 not register a `ubsan` new-PM pass (`opt-19 --print-passes`); see
@@ -170,11 +170,11 @@ whose env reaches the closure). Derived element metadata is still not carried
 module carries the target's triple and datalayout, and `src/llvm/target.zig`
 registers every target (`LLVMInitializeAllTargets`) — and
 `zig/tests/llvm_cross.sh` gates it by cross-linking with `<triple>-gcc` and
-cross-running under `qemu-<arch>-static`: **216/216**, byte-identical to the
+cross-running under `qemu-<arch>-static`: **221/221**, byte-identical to the
 native VM (CI job `llvm-cross`). The wasm route (progress §13.4) is likewise
 formal: `zig/tests/llvm_wasm.sh` compiles every fixture with `--emit-obj
 --target=wasm32-wasi`, links with `wasm-ld` + wasi-libc (crt1) and runs it
-under Node's WASI — **216/216**, plain and `-O2` (CI job `llvm-wasm`; needs
+under Node's WASI — **221/221**, plain and `-O2` (CI job `llvm-wasm`; needs
 `lld`, a wasi-libc sysroot and Node >= 22). The sysroot must ship a modern
 `<setjmp.h>` (the runtime TU includes `codegen_runtime.h`, which includes
 it): **Ubuntu's apt `wasi-libc` predates EH setjmp and ships none**, so CI
@@ -185,7 +185,7 @@ works, no driver patches). M6.a
 **in-process** via ORC/LLJIT (no cc/link step — the runtime TU is linked into
 the `astra-zig` binary with `-rdynamic` so LLJIT's process-symbol generator
 resolves `astra_llvm_*`+libc); `zig/tests/llvm_jit.sh` gates it against the VM
-with the same 216 cases (216/216, plain and `-O2`) — the foundation for a
+with the same 221 cases (221/221, plain and `-O2`) — the foundation for a
 future REPL/eval. M6.b (`--fast-math`, progress §15) marks all FP arithmetic
 (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`/`fneg`) with the seven fast-math flags —
 strictly opt-in: without the flag the IR is byte-identical — and leaves the
