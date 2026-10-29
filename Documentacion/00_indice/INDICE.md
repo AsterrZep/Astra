@@ -22,7 +22,7 @@ implementación, al final las auditorías y el material de investigación.
 | [`04_fase2_zig/`](../04_fase2_zig/) | Fase 2: compilador auto-hospedado en Zig | 6 |
 | [`05_fase_llvm/`](../05_fase_llvm/) | Fase LLVM: backend nativo | 2 |
 | [`06_auditorias/`](../06_auditorias/) | Auditorías ejecutadas contra el código | 2 |
-| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–038) | 37 |
+| [`07_investigacion/`](../07_investigacion/) | Informes de investigación (001–032, 034–039) | 38 |
 | [`08_originales/`](../08_originales/) | PDFs originales de diseño | 2 |
 | [`09_libro/`](../09_libro/) | Guía de usuario estilo libro (16 capítulos + 91 ejemplos ejecutados) | 17 |
 
@@ -79,12 +79,13 @@ implementación, al final las auditorías y el material de investigación.
 
 ## 7. `07_investigacion/` — Informes de investigación
 
-37 informes numerados `001`–`032`, `034`–`038`, sin solapamientos: cada uno
+38 informes numerados `001`–`032`, `034`–`039`, sin solapamientos: cada uno
 es un dossier autocontenido sobre un tema (gramática, diseño del seed, backend
 C, enums y pattern matching, arquitectura de rustc/cpython/go/julia, testing,
 concurrency, comptime, stdlib, paquete, ABI, Android, Apple, LLVM, crítica
 externa, enforcement de seguridad, semántica de runtime, stdlib, benchmarks,
-sistemas de enteros, punteros, iteradores, strings/Unicode, concurrencia…).
+sistemas de enteros, punteros, iteradores, strings/Unicode, concurrencia,
+memoria…).
 
 - `001`–`003` son los que fijan el **comportamiento de referencia**: gramática,
   diseño del seed y patrones del backend C.
@@ -135,6 +136,15 @@ sistemas de enteros, punteros, iteradores, strings/Unicode, concurrencia…).
   probes (`spawn` no existe aún; `transfer` ya invalida) — recomendación:
   spawn scoped, canales por defecto con RT1 en send/recv, cancelación por
   scope.
+- `039` **memoria y ownership**: las 5 familias (tracing GC, RC+ciclo
+  colector, ARC, ownership compile-time, arenas/manual) con precedentes
+  verificados — ZGC JEP 439 (pausas <1 ms, Cassandra ¼ heap/4×), pacer
+  de Go, CPython umbral `(2000,10,10)` medido, PHP Bacon–Rajan,
+  mimalloc 0,2 % — y los gates de Astra: tabla de las 4 rutas
+  (seed 404 MB / zig 721 MB / C 489 MB / LLVM 77 MB acotado) + probes
+  propios (RSS lineal con arrays, plano con strings ⇒ el hueco está en
+  el handler de arrays) con recomendación para Rec3: gate RSS por
+  backend + ciclo-colector opcional en Fase 2, sin tracing GC.
 
 **Convención de citación:** los documentos (y el código) citan estos informes
 por su corto `` `research/001` `` + sección, p. ej. `` `research/001` §12.1 ``.
