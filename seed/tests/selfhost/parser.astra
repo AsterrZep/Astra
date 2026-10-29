@@ -35,7 +35,15 @@ let mut nln: i64 = 1        // línea del token recién leído (lex_core)
 let mut t_line: i64 = 1     // línea del token actual
 let mut prev_line: i64 = 1  // línea del último token consumido
 let mut look_line: i64 = 1
+let mut ncol: i64 = 1       // columna del token recién leído
+let mut look_col: i64 = 1
 let mut no_struct_lit = false  // DEC-030: espejo del flag del seed (parser.c:1894)
+let mut file_name = "parser_input.astra"
+let mut err_count: i64 = 0
+let mut line_start: i64 = 0  // offset del primer byte de la línea actual
+let mut t_col: i64 = 1       // columna (1-based) del token actual
+let mut prev_col: i64 = 1
+let mut prev_len: i64 = 0    // largo en bytes del lexeme anterior
 
 fn is_space(c: string) -> bool {
     c == " " || c == "\t" || c == "\r" || c == "\n"
@@ -64,9 +72,11 @@ fn lex_core() {
         let c = src[pos];
         if c == "\n" {
             // DEC-028: los NEWLINE se cuentan ANTES de saltarlos — la línea
-            // del token es la que decide el fin de sentencia (stmt_end).
+            // del token es la que decide el fin de sentencia (stmt_end) y
+            // las posiciones de error (DEC-031).
             cur_line = cur_line + 1;
             pos = pos + 1;
+            line_start = pos;
         } else if c == " " || c == "\t" || c == "\r" {
             pos = pos + 1;
         } else if c == "/" && pos + 1 < slen && src[pos + 1] == "/" {
@@ -78,6 +88,7 @@ fn lex_core() {
         }
     }
     nln = cur_line;
+    ncol = pos - line_start + 1;
     if pos >= slen {
         ntk = "EOF";
         ntl = "";
@@ -141,17 +152,23 @@ fn lex_core() {
 fn advance() {
     if has_look {
         prev_line = t_line;
+        prev_col = t_col;
+        prev_len = len(tl);
         tk = look_tk;
         tl = look_tl;
         t_line = look_line;
+        t_col = look_col;
         has_look = false;
         return;
     }
     lex_core();
     prev_line = t_line;
+    prev_col = t_col;
+    prev_len = len(tl);
     tk = ntk;
     tl = ntl;
     t_line = nln;
+    t_col = ncol;
 }
 
 fn peek_kind() -> string {
@@ -160,6 +177,7 @@ fn peek_kind() -> string {
         look_tk = ntk;
         look_tl = ntl;
         look_line = nln;
+        look_col = ncol;
         has_look = true;
     }
     look_tk
@@ -171,6 +189,7 @@ fn peek_lex() -> string {
         look_tk = ntk;
         look_tl = ntl;
         look_line = nln;
+        look_col = ncol;
         has_look = true;
     }
     look_tl
@@ -187,6 +206,21 @@ fn join2(a: string, b: string) -> string {
         return a;
     }
     a + " " + b
+}
+
+fn starts_with(s: string, p: string) -> bool {
+    let n = len(p);
+    if len(s) < n {
+        return false;
+    }
+    let mut i: i64 = 0;
+    while i < n {
+        if s[i] != p[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
 }
 
 // attach("FnDecl(main)", "Param(a ...) Block(...)") inserta los kids antes
@@ -211,8 +245,59 @@ fn attach(text: string, kids: string) -> string {
     return substr(text, 0, p) + " " + kids + substr(text, p, len(text) - p);
 }
 
-fn report_err(msg: string) {
-    print("PARSE-ERROR: " + msg + " got '" + tl + "'");
+// ---------- diagnósticos (DEC-031) ----------
+// Formato del seed: file:line:col: error: <msg> (parser.c:78-79/133-134),
+// got = token_kind_name (driver.c:7-93). Las dos formas:
+//   expect-style: `expected <msg>, got <kind>` (expect())
+//   perr-style:   `<msg>` sin got (parser_error())
+fn kind_name() -> string {
+    if tk == "IDENT" && tl == "_" {
+        // El seed lexea '_' como token WILDCARD propio (got _ en los
+        // expect) — verificado con match_no_comma.
+        return "_";
+    }
+    if tk == "IDENT" {
+        return "IDENT";
+    }
+    if tk == "INT" {
+        return "INT_LIT";
+    }
+    if tk == "STRING" {
+        return "STRING_LIT";
+    }
+    if tk == "EOF" {
+        return "EOF";
+    }
+    tl
+}
+
+fn report_at(line: i64, col: i64, msg: string) {
+    err_count = err_count + 1;
+    print(file_name + ":" + to_string(line) + ":" + to_string(col) + ": error: " + msg);
+}
+
+// parser_error: se reporta SIEMPRE en el token actual (sin got).
+fn perr(msg: string) {
+    report_at(t_line, t_col, msg);
+}
+
+// expect(): `expected <msg>, got <kind>`. Si un NEWLINE separa el último
+// token consumido del actual, el seed (que tiene tokens NEWLINE) habría
+// fallado EN el NEWLINE: se sintetiza la posición fin-de-línea y got
+// NEWLINE (verificado: print(1\n} → expected ')', got NEWLINE).
+fn ef(msg: string) {
+    if t_line != prev_line {
+        report_at(prev_line, prev_col + prev_len, "expected " + msg + ", got NEWLINE");
+    } else {
+        report_at(t_line, t_col, "expected " + msg + ", got " + kind_name());
+    }
+}
+
+// Igual que ef pero SIN síntesis de NEWLINE: para los expects que en el
+// seed van precedidos de skip_newlines (p. ej. el '}' de un match) o
+// donde el token actual es el que se reporta (verificado por fixture).
+fn ef_now(msg: string) {
+    report_at(t_line, t_col, "expected " + msg + ", got " + kind_name());
 }
 
 fn expect_punct(w: string) {
@@ -220,26 +305,29 @@ fn expect_punct(w: string) {
         advance();
         return;
     }
-    report_err("expected '" + w + "'");
+    ef_now("'" + w + "'");
     advance();
 }
 
-// DEC-028: fin de sentencia como el optional_semi del seed — ';' O cambio
-// de línea O '}' O EOF. El token actual (t_line) contra el último
-// consumido (prev_line) decide si hubo NEWLINE entre medias.
-fn stmt_end() {
-    if tk == "PUNCT" && tl == ";" {
+// Cierre de expresión con síntesis de NEWLINE (call ')' — verificado e2).
+fn expect_punct_nl(w: string) {
+    if tk == "PUNCT" && tl == w {
         advance();
         return;
     }
-    if tk == "EOF" || (tk == "PUNCT" && tl == "}") {
-        return;
-    }
-    if t_line != prev_line {
-        return;
-    }
-    report_err("expected ';' or newline");
+    ef("'" + w + "'");
     advance();
+}
+
+// DEC-031 (corrige el modelo de DEC-028 §1): el seed NUNCA exige
+// separador — optional_semi consume ';' si está, pero `print(1) print(2)`
+// y `let x = 1 let y = 2` en una misma línea parsean y corren (verificado
+// s1/s2/s4/s5). stmt_end sólo consume el ';' opcional; elNEWLINE sólo
+// importa para el binding del 'else' y para la síntesis de posiciones.
+fn stmt_end() {
+    if tk == "PUNCT" && tl == ";" {
+        advance();
+    }
 }
 
 // ---------- precedencia (tabla de --dump-operators) ----------
@@ -270,7 +358,7 @@ fn bp_of(op: string) -> i64 {
 // palabra clave tras el punto es error, espejo de ui/import_keyword_segment).
 fn parse_path_text() -> string {
     if tk != "IDENT" {
-        report_err("expected module path");
+        ef("module path");
         advance();
         return "?";
     }
@@ -279,7 +367,7 @@ fn parse_path_text() -> string {
     while tk == "PUNCT" && tl == "." {
         advance();
         if tk != "IDENT" {
-            report_err("expected module path segment");
+            ef("module path segment");
             advance();
             return path + ".?";
         }
@@ -295,7 +383,7 @@ fn parse_type() -> string {
         advance();
         return t;
     }
-    report_err("expected type");
+    perr("expected type");
     advance();
     "TypeIdent(?)"
 }
@@ -317,7 +405,7 @@ fn parse_expr(min_bp: i64) -> string {
         if tk == "PUNCT" && tl == "." {
             advance();
             if tk != "IDENT" {
-                report_err("expected field name after '.'");
+                ef_now("field name");
                 advance();
                 left = "PARSE-ERROR";
             } else {
@@ -332,9 +420,13 @@ fn parse_expr(min_bp: i64) -> string {
                 args = join2(args, a);
                 if tk == "PUNCT" && tl == "," {
                     advance();
+                } else {
+                    // DEC-031: sin coma se SALE — el expect de ')' reporta
+                    // el primer error (verificado: expected ')', got NEWLINE).
+                    break;
                 }
             }
-            expect_punct(")");
+            expect_punct_nl(")");
             left = "Call(" + join2(left, args) + ")";
         } else if tk == "PUNCT" && tl == "[" {
             advance();
@@ -397,7 +489,7 @@ fn parse_primary() -> string {
             let mut fields = "";
             while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
                 if tk != "IDENT" {
-                    report_err("expected field name");
+                    ef_now("field name");
                     advance();
                     return "PARSE-ERROR";
                 }
@@ -408,6 +500,8 @@ fn parse_primary() -> string {
                 fields = join2(fields, attach("Field(" + fname + ")", val));
                 if tk == "PUNCT" && tl == "," {
                     advance();
+                } else {
+                    break;
                 }
             }
             expect_punct("}");
@@ -438,12 +532,14 @@ fn parse_primary() -> string {
             count = count + 1;
             if tk == "PUNCT" && tl == "," {
                 advance();
+            } else {
+                break;
             }
         }
         expect_punct("]");
         return attach("ArrayLit(" + to_string(count) + ")", elems);
     }
-    report_err("expected expression");
+    perr("unexpected token in expression");
     advance();
     "PARSE-ERROR"
 }
@@ -463,7 +559,7 @@ fn parse_lambda() -> string {
         advance(); // abre '|'
         while !(tk == "PUNCT" && tl == "|") && tk != "EOF" {
             if tk != "IDENT" {
-                report_err("expected lambda parameter");
+                ef_now("parameter name");
                 advance();
                 return "PARSE-ERROR";
             }
@@ -477,15 +573,20 @@ fn parse_lambda() -> string {
                 advance();
             }
         }
-        expect_punct("|");
+        if tk == "PUNCT" && tl == "|" {
+            advance();
+        } else {
+            ef_now("'|' after lambda parameters");
+            advance();
+        }
     }
     if tk == "PUNCT" && tl == "->" {
         advance();
         let rtype = parse_type(); // descartada salvo por el descarte mismo
         params = join2(params, rtype); // el dump SÍ imprime el ret como TypeIdent
     }
-    if !(tk == "PUNCT" && tl == "{") {
-        report_err("expected '{' for lambda body");
+    if tk != "PUNCT" || tl != "{" {
+        ef_now("'{' for lambda body");
         return "PARSE-ERROR";
     }
     attach("Lambda", join2(params, parse_block()))
@@ -501,7 +602,7 @@ fn parse_pattern_alt() -> string {
             advance();
             return attach("UnaryOp(-)", "IntLit(" + n + ")");
         }
-        report_err("expected number after '-' in pattern");
+        perr("expected a numeric literal after '-' in pattern");
         advance();
         return "PARSE-ERROR";
     }
@@ -532,7 +633,7 @@ fn parse_pattern_alt() -> string {
         while tk == "PUNCT" && tl == "." {
             advance();
             if tk != "IDENT" {
-                report_err("expected name after '.' in pattern");
+                perr("expected a pattern ('_', literal or Enum.Variant)");
                 advance();
                 return "PARSE-ERROR";
             }
@@ -544,13 +645,13 @@ fn parse_pattern_alt() -> string {
             // payload de variante: Point.Pt(a, b) — DEC-008 exige la ruta
             // calificada; sin wildcard por campo (el seed lo rechaza).
             if segs < 2 {
-                report_err("enum patterns must be qualified (Enum.Variant)");
+                perr("enum patterns must be qualified (Enum.Variant)");
             }
             advance();
             let mut binds = "";
             while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
                 if tk != "IDENT" {
-                    report_err("expected binding name");
+                    perr("expected binding name");
                     advance();
                     return "PARSE-ERROR";
                 }
@@ -568,7 +669,7 @@ fn parse_pattern_alt() -> string {
         }
         return node;
     }
-    report_err("expected pattern");
+    perr("expected a pattern ('_', literal or Enum.Variant)");
     advance();
     "PARSE-ERROR"
 }
@@ -603,7 +704,12 @@ fn parse_match() -> string {
     no_struct_lit = true;
     let target = parse_expr(1);
     no_struct_lit = saved_nsl;
-    expect_punct("{");
+    if tk == "PUNCT" && tl == "{" {
+        advance();
+    } else {
+        ef_now("'{' for match");
+        advance();
+    }
     let mut arms = "";
     while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
         let pat = parse_pattern();
@@ -622,7 +728,9 @@ fn parse_match() -> string {
         if tk == "PUNCT" && tl == "," {
             advance();
         } else if !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
-            report_err("expected ',' between match arms");
+            // DEC-031: el seed NO reporta la coma: rompe el bucle y el '}'
+            // esperado choca con el primer token del siguiente brazo
+            // (verificado: expected '}', got INT_LIT).
             break;
         }
     }
@@ -649,20 +757,16 @@ fn parse_if() -> string {
     no_struct_lit = saved_nsl;
     let thenb = parse_block();
     let mut kids = join2(cond, thenb);
-    if tk == "KEYWORD" && tl == "else" {
-        // DEC-028: el seed rechaza '}' NEWLINE 'else' — el else debe
-        // cerrar en la misma linea que el '}' del then (E1 verificado;
-        // el v1 de este parser era mas permisivo).
-        if t_line != prev_line {
-            report_err("'else' must close on the same line as '}'");
+    if tk == "KEYWORD" && tl == "else" && t_line == prev_line {
+        // DEC-031: el 'else' sólo se une al if en la MISMA línea del '}'
+        // del then (el seed: el NEWLINE rompe match(ELSE) y el 'else'
+        // cae como sentencia → unexpected token in expression, verificado).
+        advance();
+        if tk == "KEYWORD" && tl == "if" {
+            // el seed envuelve el if-else-if en un Block: Else(Block(If(...)))
+            kids = join2(kids, "Else(Block(" + parse_if() + "))");
         } else {
-            advance();
-            if tk == "KEYWORD" && tl == "if" {
-                // el seed envuelve el if-else-if en un Block: Else(Block(If(...)))
-                kids = join2(kids, "Else(Block(" + parse_if() + "))");
-            } else {
-                kids = join2(kids, "Else(" + parse_block() + ")");
-            }
+            kids = join2(kids, "Else(" + parse_block() + ")");
         }
     }
     "If(" + kids + ")"
@@ -677,7 +781,7 @@ fn parse_stmt() -> string {
             advance();
         }
         if tk != "IDENT" {
-            report_err("expected variable name");
+            ef("variable name");
             advance();
             return "PARSE-ERROR";
         }
@@ -693,8 +797,12 @@ fn parse_stmt() -> string {
             advance();
             kids = join2(kids, parse_type());
         }
-        expect_punct("=");
-        kids = join2(kids, parse_expr(1));
+        // DEC-031: '=' es OPCIONAL (el seed: `let x 5;` parsea como
+        // VarDecl(x) + sentencia 5; — verificado s5).
+        if tk == "PUNCT" && tl == "=" {
+            advance();
+            kids = join2(kids, parse_expr(1));
+        }
         stmt_end();
         return attach(head, kids);
     }
@@ -735,6 +843,11 @@ fn parse_stmt() -> string {
     let e = parse_expr(1);
     if tk == "PUNCT" && tl == "=" {
         advance();
+        // DEC-031: LValue del seed (parser.c:396-398) — el reporte cae en
+        // el token DESPUÉS del '=' (verificado: 1 = 2 → en el 2).
+        if !(starts_with(e, "Ident(") || starts_with(e, "FieldAccess(") || starts_with(e, "Index(")) {
+            perr("invalid assignment target");
+        }
         let rhs = parse_expr(1);
         stmt_end();
         return "Assign(" + e + " " + rhs + ")";
@@ -750,7 +863,7 @@ fn parse_stmt() -> string {
 fn parse_fn(is_pub: bool, sig_only: bool) -> string {
     advance(); // fn
     if tk != "IDENT" {
-        report_err("expected function name");
+        ef("function name");
         advance();
         return "PARSE-ERROR";
     }
@@ -760,7 +873,7 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> string {
     let mut kids = "";
     while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
         if tk != "IDENT" {
-            report_err("expected parameter name");
+            ef("parameter name");
             advance();
             return "PARSE-ERROR";
         }
@@ -786,7 +899,7 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> string {
     } else if sig_only {
         kids = join2(kids, "Block");
     } else {
-        report_err("expected '{' for function body");
+        ef_now("'{' for function body");
         return "PARSE-ERROR";
     }
     if is_pub {
@@ -807,7 +920,7 @@ fn parse_item() -> string {
     if tk == "KEYWORD" && tl == "const" {
         advance();
         if tk != "IDENT" {
-            report_err("expected const name");
+            ef("variable name");
             advance();
             return "PARSE-ERROR";
         }
@@ -826,7 +939,7 @@ fn parse_item() -> string {
         // payload (tipo de payload de un solo ident en v2 — limite declarado).
         advance();
         if tk != "IDENT" {
-            report_err("expected enum name");
+            ef("enum name");
             advance();
             return "PARSE-ERROR";
         }
@@ -836,7 +949,7 @@ fn parse_item() -> string {
         let mut variants = "";
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if tk != "IDENT" {
-                report_err("expected variant name");
+                ef("variant name");
                 advance();
                 return "PARSE-ERROR";
             }
@@ -868,7 +981,7 @@ fn parse_item() -> string {
         // DEC-030: StructDecl(name) + Field(f) con TypeIdent hijo.
         advance();
         if tk != "IDENT" {
-            report_err("expected struct name");
+            ef("struct name");
             advance();
             return "PARSE-ERROR";
         }
@@ -878,7 +991,7 @@ fn parse_item() -> string {
         let mut fields = "";
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if tk != "IDENT" {
-                report_err("expected field name");
+                ef("field name");
                 advance();
                 return "PARSE-ERROR";
             }
@@ -901,7 +1014,7 @@ fn parse_item() -> string {
         // DEC-030: Trait(name) + firmas fn (sin cuerpo → Block vacío).
         advance();
         if tk != "IDENT" {
-            report_err("expected trait name");
+            ef("trait name");
             advance();
             return "PARSE-ERROR";
         }
@@ -911,7 +1024,7 @@ fn parse_item() -> string {
         let mut items = "";
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if !(tk == "KEYWORD" && tl == "fn") {
-                report_err("only 'fn' items are supported in a trait");
+                perr("only 'fn' items are supported in a trait");
                 break;
             }
             items = join2(items, parse_fn(false, true));
@@ -926,21 +1039,33 @@ fn parse_item() -> string {
         // DEC-030: Impl(Area for Punto) / Impl(Punto) — payload de texto
         // crudo; métodos con cuerpo (sig_only = false).
         if is_pub {
-            report_err("'pub' is not supported before impl");
+            perr("'pub' can only precede fn, struct, enum, trait or const");
         }
         advance();
-        let t1 = parse_path_text();
+        if tk != "IDENT" {
+            ef("type name");
+            advance();
+            return "PARSE-ERROR";
+        }
+        let t1 = tl;
+        advance();
         let mut head = t1;
         if tk == "KEYWORD" && tl == "for" {
             advance();
-            let t2 = parse_path_text();
+            if tk != "IDENT" {
+                ef("type name");
+                advance();
+                return "PARSE-ERROR";
+            }
+            let t2 = tl;
+            advance();
             head = t1 + " for " + t2;
         }
         expect_punct("{");
         let mut items = "";
         while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
             if !(tk == "KEYWORD" && tl == "fn") {
-                report_err("only 'fn' items are supported in an impl");
+                perr("only 'fn' items are supported in an impl block");
                 break;
             }
             items = join2(items, parse_fn(false, false));
@@ -951,7 +1076,7 @@ fn parse_item() -> string {
     if tk == "KEYWORD" && tl == "use" {
         // DEC-030: el dump del seed imprime `Use` SIN payload (mirror lossy).
         if is_pub {
-            report_err("'pub' is not supported before use");
+            perr("'pub' can only precede fn, struct, enum, trait or const");
         }
         advance();
         let path = parse_path_text();
@@ -961,7 +1086,7 @@ fn parse_item() -> string {
     if tk == "KEYWORD" && tl == "import" {
         // DEC-030: Import(ruta) o Import(ruta as alias) con texto crudo.
         if is_pub {
-            report_err("'pub' is not supported before import");
+            perr("'pub' can only precede fn, struct, enum, trait or const");
         }
         advance();
         let path = parse_path_text();
@@ -969,7 +1094,7 @@ fn parse_item() -> string {
         if tk == "KEYWORD" && tl == "as" {
             advance();
             if tk != "IDENT" {
-                report_err("expected alias name");
+                ef("alias");
                 advance();
                 return "PARSE-ERROR";
             }
@@ -985,12 +1110,12 @@ fn parse_item() -> string {
     if tk == "KEYWORD" && tl == "from" {
         // DEC-030: From(ruta) + ImportItem(n) / ImportItem(n as a).
         if is_pub {
-            report_err("'pub' is not supported before from");
+            perr("'pub' can only precede fn, struct, enum, trait or const");
         }
         advance();
         let path = parse_path_text();
         if !(tk == "KEYWORD" && tl == "import") {
-            report_err("expected 'import' after module path");
+            ef("import");
             return "PARSE-ERROR";
         }
         advance();
@@ -1006,7 +1131,7 @@ fn parse_item() -> string {
             if tk == "KEYWORD" && tl == "as" {
                 advance();
                 if tk != "IDENT" {
-                    report_err("expected alias name");
+                    ef("alias");
                     advance();
                     return "PARSE-ERROR";
                 }
@@ -1017,17 +1142,25 @@ fn parse_item() -> string {
             items = join2(items, it);
             if tk == "PUNCT" && tl == "," {
                 advance();
+                if tk != "IDENT" {
+                    ef("import item");
+                    done = true;
+                }
             } else {
                 done = true;
             }
+        }
+        if items == "" && tk == "EOF" {
+            perr("expected at least one import item");
+            return "PARSE-ERROR";
         }
         stmt_end();
         return attach("From(" + path + ")", items);
     }
     if is_pub {
-        report_err("unexpected item after 'pub'");
+        perr("'pub' can only precede fn, struct, enum, trait or const");
     } else {
-        report_err("expected item (fn/struct/const/enum/trait/impl/use/import/from)");
+        perr("unexpected token in expression");
     }
     advance();
     "PARSE-ERROR"
@@ -1036,7 +1169,14 @@ fn parse_item() -> string {
 fn parse_module() -> string {
     let mut items = "";
     while tk != "EOF" {
-        items = join2(items, parse_item());
+        // DEC-031: el seed acepta sentencias a nivel de módulo (toplevel
+        // statements — conformance/module/toplevel_stmts; `foo bar` parsea
+        // como dos idents, verificado e7) — no sólo items.
+        if tk == "KEYWORD" && (tl == "fn" || tl == "struct" || tl == "const" || tl == "enum" || tl == "trait" || tl == "impl" || tl == "use" || tl == "import" || tl == "from" || tl == "pub") {
+            items = join2(items, parse_item());
+        } else {
+            items = join2(items, parse_stmt());
+        }
     }
     attach("Module", items)
 }
@@ -1049,7 +1189,19 @@ fn main() {
     cur_line = 1;
     nln = 1;
     t_line = 1;
+    t_col = 1;
     prev_line = 1;
+    prev_col = 1;
+    prev_len = 0;
+    line_start = 0;
     advance();
-    print(parse_module());
+    let ast = parse_module();
+    if err_count > 0 {
+        // espejo del driver del seed (driver.c:668): sin dump, una línea
+        // final `error: parse failed` (el gate de diagnósticos compara
+        // salidas, no rc).
+        print("error: parse failed");
+    } else {
+        print(ast);
+    }
 }
