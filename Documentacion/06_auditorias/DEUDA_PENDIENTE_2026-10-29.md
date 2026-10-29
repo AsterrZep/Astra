@@ -319,6 +319,15 @@ registradas — 32 aceptadas, 1 en `Propuesta` (DEC-021)**.
    hoy: `ARCHITECTURE` §41 lleva cabecera «estado en INDICE.md» y `README`
    §Roadmap tiene estados con gate); solo queda el conteo histórico si
    alguna cita obsoleta reaparece.
+5. **Coordinación de los PRs de test que crecen el corpus** — #87 (y #89
+   en vuelo, → 257) suben `typechecker_corpus.list` sin actualizar los
+   cuatro contadores que dependen de él (PHASE1 §7, INDICE, README,
+   CHANGELOG). La regla ya existe (plantilla de PR + «los contadores se
+   verifican, no se recuerdan») pero no la hace nadie en esa dirección:
+   o el checklist de PR lo exige explícitamente cuando cambia
+   `typechecker_corpus.list`, o un gate barato de coherencia (grep de
+   `196|246` vs el contador vivo) lo reclama en CI. DD14 fue la primera
+   consecuencia; sin esto habrá una por cada `M-T4x`.
 
 ---
 
