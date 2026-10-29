@@ -1,0 +1,10 @@
+// DEC-033(b): '}' NEWLINE 'else' does not bind to the if — the else falls
+// through as a statement and dies as an expression (both compilers; parser
+//.astra imposes the same-line rule since DEC-031).
+// EXPECT-ERROR: unexpected token in expression
+// EXPECT-ERROR-FIRST: 9:5: error: unexpected token in expression
+fn main() {
+    if true { print(1)
+    }
+    else { print(2) }
+}
