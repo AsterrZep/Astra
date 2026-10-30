@@ -76,7 +76,12 @@ fn isPairPayload(ty: Ty) bool {
 /// los literales de array de structs y las lambdas con retorno struct anotado
 /// sólo propagan el `Ty` (sin nombre), así que el acceso a campo sobre ellos
 /// se rechaza honestamente.
-const Val = struct { ref: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
+/// `payload_inner` es el metadata de elemento del payload (M13): cuando un
+/// `boxed_`/`pair_` transporta un array como payload, `payload_ty` es
+/// `.arr_` y `payload_inner` el tipo de sus elementos — es lo que el binding
+/// de `match some(x)` y `?` necesitan para que `x[0]` funcione. Sólo se
+/// propaga UNA capa (a[0][1] sigue rechazado, como documenta AGENTS.md).
+const Val = struct { ref: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null };
 
 const FnInfo = struct {
     val: c.LLVMValueRef,
@@ -87,6 +92,10 @@ const FnInfo = struct {
     ret_ty: ?Ty,
     /// Payload del retorno `T?` (el `T`), para `?` y match sobre su resultado.
     ret_payload: ?Ty = null,
+    /// Elemento del retorno cuando el payload es un array (M13): el binding
+    /// de `match some(x)`/`?` sobre el resultado de la llamada lo necesita
+    /// para `x[0]`.
+    ret_payload_inner: ?Ty = null,
     /// Nombre de struct si el retorno es `struct_` (resultado de una
     /// llamada dinámica vía `fn_` conserva su forma para el acceso a campo).
     ret_sname: ?[]const u8 = null,
@@ -96,10 +105,10 @@ const FnInfo = struct {
     params: []const ParamInfo = &.{},
 };
 
-const ParamInfo = struct { ty: Ty, payload: ?Ty = null };
+const ParamInfo = struct { ty: Ty, payload: ?Ty = null, payload_inner: ?Ty = null };
 
-const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
-const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null };
+const GlobalInfo = struct { val: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null };
+const Local = struct { alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null };
 /// Local con dueño (parámetro, `let`, binding de match o variable de `for`):
 /// su alloca guarda una referencia y el frame la libera al salir. Las allocas
 /// se crean una vez por emisión; en bucles el store libera el valor anterior.
@@ -110,8 +119,8 @@ const OwnedSlot = struct { alloca: c.LLVMValueRef, ty: Ty, payload: ?Ty = null }
 /// declareFn corre antes de emitir el cuerpo, así que los `let` de dentro no
 /// están en el scope real. Se resuelven aquí solo para tipos (nunca para
 /// valores), con la última declaración ganando (conservador).
-const InferBinding = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
-const InferredRet = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
+const InferBinding = struct { ty: Ty, payload: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null };
+const InferredRet = struct { ty: Ty, payload: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null };
 const RetScan = struct { ty: ?Ty = null, node: ?u32 = null, conflict: bool = false, bare: bool = false };
 
 /// Una llamada de un cuerpo genérico renombrada a su instancia (Phase 2.4
@@ -139,11 +148,11 @@ pub const StructInstance = struct {
 /// snapshota los valores actuales en un array heap que sobrevive al frame
 /// que los produjo — ni el reasignar la variable después alcanza al closure,
 /// ni la salida del frame rompe el env.
-const CapSlot = struct { name: []const u8, ty: Ty, payload_ty: ?Ty = null, sname: ?[]const u8 = null, index: u32 = 0 };
+const CapSlot = struct { name: []const u8, ty: Ty, payload_ty: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null, index: u32 = 0 };
 const CaptureScope = std.ArrayListUnmanaged(CapSlot);
 
 /// Un campo en el layout de un struct.
-const StructField = struct { name: []const u8, ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
+const StructField = struct { name: []const u8, ty: Ty, payload: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null };
 
 /// Layout de un struct (M2.b): campos en ORDEN DE DECLARACIÓN, cada uno en un
 /// slot de 8 bytes desde offset 8 — offset 0 del objeto = puntero al
@@ -219,14 +228,17 @@ const FreeVars = struct {
         const em = fv.em;
         var ty: ?Ty = null;
         var pty: ?Ty = null;
+        var pin: ?Ty = null;
         var sn: ?[]const u8 = null;
         if (em.lookupLocal(name)) |l| {
             ty = l.ty;
             pty = l.payload_ty;
+            pin = l.payload_inner;
             sn = l.sname;
         } else if (em.lookupCapture(name)) |cp| {
             ty = cp.ty;
             pty = cp.payload_ty;
+            pin = cp.payload_inner;
             sn = cp.sname;
         } else return;
         for (fv.caps.items) |cp2| {
@@ -236,7 +248,7 @@ const FreeVars = struct {
             fv.overflow = true;
             return;
         }
-        fv.caps.append(em.a, .{ .name = name, .ty = ty.?, .payload_ty = pty, .sname = sn }) catch @panic("OOM");
+        fv.caps.append(em.a, .{ .name = name, .ty = ty.?, .payload_ty = pty, .payload_inner = pin, .sname = sn }) catch @panic("OOM");
     }
 
     fn walk(fv: *FreeVars, idx: u32) void {
@@ -1056,11 +1068,12 @@ pub const Emitter = struct {
             // La forma declarada viaja al sitio de llamada (M6.c): un `T?`
             // de par (escalar o string, c.2) entra como par y una caja
             // cargada se desempaqueta.
-            panns[i] = .{ .ty = at.ty, .payload = at.payload };
+            panns[i] = .{ .ty = at.ty, .payload = at.payload, .payload_inner = at.payload_inner };
         }
         var ret_ty: c.LLVMTypeRef = self.t_void;
         var ret_m0: ?Ty = null;
         var ret_payload: ?Ty = null;
+        var ret_payload_inner: ?Ty = null;
         var ret_sname: ?[]const u8 = null;
         if (fd.ret) |ri| {
             const at = self.annotTy(ri) orelse
@@ -1068,6 +1081,7 @@ pub const Emitter = struct {
             ret_ty = self.llvmTy(at.ty);
             ret_m0 = at.ty;
             ret_payload = at.payload;
+            ret_payload_inner = at.payload_inner;
             ret_sname = at.sname;
         } else if (self.inferFnRet(fd)) |inf| {
             // El checker tipa void un `fn` sin `->`, pero el VM devuelve el
@@ -1076,12 +1090,13 @@ pub const Emitter = struct {
             ret_ty = self.llvmTy(inf.ty);
             ret_m0 = inf.ty;
             ret_payload = inf.payload;
+            ret_payload_inner = inf.payload_inner;
             ret_sname = inf.sname;
         }
         const fty = c.LLVMFunctionType(ret_ty, &pbuf, @intCast(param_items.len + 1), 0);
         const mangled = std.fmt.allocPrintSentinel(self.a, "astra_fn_{s}", .{fd.name}, 0) catch @panic("OOM");
         const fnv = c.LLVMAddFunction(self.mod, mangled, fty);
-        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload, .ret_sname = ret_sname, .params = panns }) catch @panic("OOM");
+        self.fns.put(fd.name, .{ .val = fnv, .fty = fty, .returns_value = ret_m0 != null, .ret_ty = ret_m0, .ret_payload = ret_payload, .ret_payload_inner = ret_payload_inner, .ret_sname = ret_sname, .params = panns }) catch @panic("OOM");
     }
 
     fn declareGlobal(self: *Emitter, idx: u32) void {
@@ -1092,11 +1107,12 @@ pub const Emitter = struct {
         else
             return self.unsupported(idx, "top-level binding without an initializer");
         const payload: ?Ty = if (ann) |at| at.payload else if (vd.value) |vi| self.inferBoxPayload(vi) else null;
+        const payload_inner: ?Ty = if (ann) |at| at.payload_inner else if (vd.value) |vi| self.inferBoxPayloadInner(vi) else null;
         const sname: ?[]const u8 = if (ann) |at| at.sname else if (vd.value) |vi| self.inferStaticSName(vi) else null;
         const gname = std.fmt.allocPrintSentinel(self.a, "astra_g_{s}", .{vd.name}, 0) catch @panic("OOM");
         const gv = c.LLVMAddGlobal(self.mod, self.llvmTy(ty), gname);
         c.LLVMSetInitializer(gv, self.zeroInit(ty));
-        self.globals.put(vd.name, .{ .val = gv, .ty = ty, .payload_ty = payload, .sname = sname }) catch @panic("OOM");
+        self.globals.put(vd.name, .{ .val = gv, .ty = ty, .payload_ty = payload, .payload_inner = payload_inner, .sname = sname }) catch @panic("OOM");
     }
 
     fn emitFn(self: *Emitter, idx: u32) void {
@@ -1118,7 +1134,7 @@ pub const Emitter = struct {
         // Forma del retorno (M6.c): `return`, la cola y la propagación de `?`
         // coaccionan a par o caja según la firma declarada/inferida.
         self.cur_ret = if (info.returns_value)
-            .{ .ty = info.ret_ty.?, .payload = info.ret_payload, .sname = info.ret_sname }
+            .{ .ty = info.ret_ty.?, .payload = info.ret_payload, .payload_inner = info.ret_payload_inner, .sname = info.ret_sname }
         else
             null;
         const entry = c.LLVMAppendBasicBlockInContext(self.ctx, info.val, "entry");
@@ -1146,7 +1162,7 @@ pub const Emitter = struct {
             // (c.2) la referencia poseída es la de su payload.
             if (self.rcRef(parg, at.ty, at.payload)) |pr| self.emitRetainRef(pr);
             self.trackOwned(alloca, at.ty, at.payload);
-            self.addLocal(p.name, alloca, at.ty, at.payload, at.sname);
+            self.addLocal(p.name, alloca, at.ty, at.payload, at.payload_inner, at.sname);
         }
         const body_val = self.emitBlockValue(fd.body);
         if (!self.isTerminated()) {
@@ -1296,7 +1312,7 @@ pub const Emitter = struct {
             _ = c.LLVMBuildStore(self.builder, parg, alloca);
             if (self.rcRef(parg, at.ty, at.payload)) |pr| self.emitRetainRef(pr);
             self.trackOwned(alloca, at.ty, at.payload);
-            self.addLocal(p.name, alloca, at.ty, at.payload, at.sname);
+            self.addLocal(p.name, alloca, at.ty, at.payload, at.payload_inner, at.sname);
         }
         const body_val = self.emitBlockValue(l.body);
         if (!self.isTerminated()) {
@@ -1369,11 +1385,11 @@ pub const Emitter = struct {
     /// frame (alloca) o un slot del env de la lambda que lo contiene.
     fn captureValue(self: *Emitter, cap: CapSlot, idx: u32) ?Val {
         if (self.lookupLocal(cap.name)) |l|
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty, .sname = l.sname };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty, .payload_inner = l.payload_inner, .sname = l.sname };
         if (self.lookupCapture(cap.name)) |cp| {
             const env = c.LLVMGetParam(self.cur_fn, 0);
             const bits = self.loadEnvSlot(env, cp.index);
-            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty, .sname = cp.sname };
+            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty, .payload_inner = cp.payload_inner, .sname = cp.sname };
         }
         self.unsupported(idx, "capture of a variable that no longer resolves");
         return null;
@@ -2043,7 +2059,7 @@ pub const Emitter = struct {
             // `let x: T?` sin valor: caja NULL / par `none` — el nil del VM.
             _ = c.LLVMBuildStore(self.builder, self.zeroInit(ann.ty), alloca);
             self.trackOwned(alloca, ann.ty, ann.payload);
-            self.addLocal(vd.name, alloca, ann.ty, ann.payload, ann.sname);
+            self.addLocal(vd.name, alloca, ann.ty, ann.payload, ann.payload_inner, ann.sname);
             return;
         }
         const vi = vd.value.?;
@@ -2052,10 +2068,12 @@ pub const Emitter = struct {
             return;
         };
         // La anotación `T?` fija el tipo y su payload; sin anotación, el del
-        // valor inferido (un `some(x)` lleva el tipo de x).
+        // valor inferido (un `some(x)` lleva el tipo de x). El elemento del
+        // payload (arrays, M13) viaja igual.
         const ann = self.annotTy(vd.type_node);
         const ty = if (ann) |at| at.ty else val0.ty;
         const payload = if (ann) |at| (at.payload orelse val0.payload_ty) else val0.payload_ty;
+        const payload_inner = if (ann) |at| (at.payload_inner orelse val0.payload_inner) else val0.payload_inner;
         const sname = if (ann) |at| (at.sname orelse val0.sname) else val0.sname;
         const alloca = self.buildAlloca(self.llvmTy(ty));
         // M6.c: `let x: i32? = none` (caja NULL) y `let x: i32? = arr[0]`
@@ -2064,7 +2082,7 @@ pub const Emitter = struct {
         const val = self.coerceVal(val0, ty, payload, idx) orelse return;
         self.emitStoreOwned(alloca, val);
         self.trackOwned(alloca, ty, payload);
-        self.addLocal(vd.name, alloca, ty, payload, sname);
+        self.addLocal(vd.name, alloca, ty, payload, payload_inner, sname);
     }
 
     fn emitReturn(self: *Emitter, idx: u32) void {
@@ -2207,7 +2225,7 @@ pub const Emitter = struct {
         const var_alloca = self.buildAlloca(self.llvmTy(elem_ty));
         self.emitStoreOwned(var_alloca, .{ .ref = cur, .ty = elem_ty });
         self.trackOwned(var_alloca, elem_ty, null);
-        self.addLocal(fe.var_name, var_alloca, elem_ty, null, null);
+        self.addLocal(fe.var_name, var_alloca, elem_ty, null, null, null);
         self.loops.append(self.a, .{ .break_bb = exit_bb, .continue_bb = cont_bb }) catch @panic("OOM");
         _ = self.emitBlockValue(fe.body);
         _ = self.loops.pop();
@@ -2281,9 +2299,11 @@ pub const Emitter = struct {
                     // el par a caja.
                     if (tv.ty == .boxed_) {
                         if (tv.payload_ty == null) tv.payload_ty = ev.payload_ty;
+                        if (tv.payload_inner == null) tv.payload_inner = ev.payload_inner;
                         conv_t = if (tv.payload_ty) |pty| (if (isPairPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
                     } else {
                         if (ev.payload_ty == null) ev.payload_ty = tv.payload_ty;
+                        if (ev.payload_inner == null) ev.payload_inner = tv.payload_inner;
                         conv_e = if (ev.payload_ty) |pty| (if (isPairPayload(pty)) .box_to_pair else .pair_to_box) else .pair_to_box;
                     }
                 } else {
@@ -2324,7 +2344,7 @@ pub const Emitter = struct {
             // El phi hereda el payload (y el sname) del brazo fijado: sin él,
             // un `let c = if … { some(1) } else { none }` guarda un par sin
             // payload estático y su print ulterior revienta en coerceToBox.
-            return .{ .ref = phi, .ty = tv.ty, .payload_ty = tv.payload_ty, .sname = tv.sname };
+            return .{ .ref = phi, .ty = tv.ty, .payload_ty = tv.payload_ty, .payload_inner = tv.payload_inner, .sname = tv.sname };
         }
         return null;
     }
@@ -2433,7 +2453,7 @@ pub const Emitter = struct {
             if (!self.propagateTry(v, idx)) return null;
             c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
             const bits = c.LLVMBuildExtractValue(self.builder, v.ref, 1, "");
-            return .{ .ref = self.fromBits(bits, pty), .ty = pty, .payload_ty = null, .sname = v.sname };
+            return .{ .ref = self.fromBits(bits, pty), .ty = pty, .payload_ty = v.payload_inner, .sname = v.sname };
         }
         const tag_bb = c.LLVMAppendBasicBlockInContext(self.ctx, self.cur_fn, "try_tag");
         const isnull = c.LLVMBuildICmp(self.builder, c.LLVMIntEQ, v.ref, c.LLVMConstPointerNull(self.t_ptr), "");
@@ -2451,7 +2471,7 @@ pub const Emitter = struct {
         if (!self.propagateTry(v, idx)) return null;
 
         c.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
-        return .{ .ref = self.loadBoxPayload(v.ref, pty), .ty = pty, .payload_ty = null, .sname = v.sname };
+        return .{ .ref = self.loadBoxPayload(v.ref, pty), .ty = pty, .payload_ty = v.payload_inner, .sname = v.sname };
     }
 
     /// Camino de propagación de `?` (abierto en `err_bb`): coacciona el valor
@@ -2607,7 +2627,7 @@ pub const Emitter = struct {
                 c.LLVMAddIncoming(phi, &end_vals, &end_bbs, @intCast(n_ends));
                 // Mismo contrato que el phi de emitIf: el resultado del match
                 // conserva payload/sname del brazo que fijó la forma.
-                return .{ .ref = phi, .ty = vt, .payload_ty = first_val.?.payload_ty, .sname = first_val.?.sname };
+                return .{ .ref = phi, .ty = vt, .payload_ty = first_val.?.payload_ty, .payload_inner = first_val.?.payload_inner, .sname = first_val.?.sname };
             }
         }
         return null;
@@ -2623,7 +2643,7 @@ pub const Emitter = struct {
                 const alloca = self.buildAlloca(self.llvmTy(tv.ty));
                 self.emitStoreOwned(alloca, tv);
                 self.trackOwned(alloca, tv.ty, tv.payload_ty);
-                self.addLocal(name, alloca, tv.ty, tv.payload_ty, tv.sname);
+                self.addLocal(name, alloca, tv.ty, tv.payload_ty, tv.payload_inner, tv.sname);
             },
             .pattern_wildcard => {},
             .pattern_builtin_variant => |bv| {
@@ -2641,14 +2661,16 @@ pub const Emitter = struct {
                         };
                         // Par (M6.c): el payload sale del extractvalue; caja:
                         // load del slot 8 — sólo en el camino coincidente.
+                        // M13: el elemento del payload (arrays) viaja en
+                        // tv.payload_inner — es lo que `x[0]` necesita.
                         const pv: Val = if (tv.ty == .pair_)
-                            .{ .ref = self.fromBits(c.LLVMBuildExtractValue(self.builder, tv.ref, 1, ""), pty), .ty = pty }
+                            .{ .ref = self.fromBits(c.LLVMBuildExtractValue(self.builder, tv.ref, 1, ""), pty), .ty = pty, .payload_ty = tv.payload_inner }
                         else
-                            .{ .ref = self.loadBoxPayload(tv.ref, pty), .ty = pty };
+                            .{ .ref = self.loadBoxPayload(tv.ref, pty), .ty = pty, .payload_ty = tv.payload_inner };
                         const alloca = self.buildAlloca(self.llvmTy(pty));
                         self.emitStoreOwned(alloca, pv);
                         self.trackOwned(alloca, pty, null);
-                        self.addLocal(name, alloca, pty, null, tv.sname);
+                        self.addLocal(name, alloca, pty, tv.payload_inner, null, tv.sname);
                     },
                     // Literal (`some(1)`): no vincula nada — el test ya
                     // comparó el payload. Anidados siguen sin soporte.
@@ -2683,7 +2705,7 @@ pub const Emitter = struct {
                             const alloca = self.buildAlloca(self.llvmTy(ft));
                             self.emitStoreOwned(alloca, .{ .ref = pv, .ty = ft });
                             self.trackOwned(alloca, ft, vl.fields[i].payload);
-                            self.addLocal(name, alloca, ft, vl.fields[i].payload, vl.fields[i].sname);
+                            self.addLocal(name, alloca, ft, vl.fields[i].payload, vl.fields[i].payload_inner, vl.fields[i].sname);
                         },
                         else => {
                             self.unsupported(bn, "nested payload pattern");
@@ -2888,17 +2910,17 @@ pub const Emitter = struct {
     }
     fn emitIdent(self: *Emitter, idx: u32, name: []const u8) ?Val {
         if (self.lookupLocal(name)) |l| {
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty, .sname = l.sname };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(l.ty), l.alloca, ""), .ty = l.ty, .payload_ty = l.payload_ty, .payload_inner = l.payload_inner, .sname = l.sname };
         }
         // Captura de closure: los parámetros siempre sombrean (el scope de
         // locales se busca primero), luego la pila de envs de las lambdas.
         if (self.lookupCapture(name)) |cp| {
             const env = c.LLVMGetParam(self.cur_fn, 0);
             const bits = self.loadEnvSlot(env, cp.index);
-            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty, .sname = cp.sname };
+            return .{ .ref = self.fromBits(bits, cp.ty), .ty = cp.ty, .payload_ty = cp.payload_ty, .payload_inner = cp.payload_inner, .sname = cp.sname };
         }
         if (self.globals.get(name)) |g| {
-            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, ""), .ty = g.ty, .payload_ty = g.payload_ty, .sname = g.sname };
+            return .{ .ref = c.LLVMBuildLoad2(self.builder, self.llvmTy(g.ty), g.val, ""), .ty = g.ty, .payload_ty = g.payload_ty, .payload_inner = g.payload_inner, .sname = g.sname };
         }
         // Función nombrada usada como valor (argumento, asignación…): se
         // empaqueta en el mismo objeto { code, env = NULL } que una lambda.
@@ -3259,7 +3281,7 @@ pub const Emitter = struct {
                 self.emitDepthPop();
                 if (info.returns_value) {
                     if (self.rcRef(rv, info.ret_ty.?, info.ret_payload)) |tr| self.emitTmpPush(tr);
-                    return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
+                    return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .payload_inner = info.ret_payload_inner, .sname = info.ret_sname };
                 }
                 return null;
             },
@@ -3352,7 +3374,7 @@ pub const Emitter = struct {
         self.emitDepthPop();
         if (info.returns_value) {
             if (self.rcRef(rv, info.ret_ty.?, info.ret_payload)) |tr| self.emitTmpPush(tr);
-            return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .sname = info.ret_sname };
+            return .{ .ref = rv, .ty = info.ret_ty.?, .payload_ty = info.ret_payload, .payload_inner = info.ret_payload_inner, .sname = info.ret_sname };
         }
         return null;
     }
@@ -4059,18 +4081,24 @@ pub const Emitter = struct {
                 return null;
             },
             .pair_ => {
-                if (self.rcRef(rv.ref, .pair_, rv.payload_ty)) |o| {
-                    self.emitRetainRef(o);
-                    self.emitTmpPush(o);
-                }
-                return rv;
+                // M13 (issue #71): `.copy()` de una pareja es DEEP (DEC-027
+                // §2) como en el VM, la ruta C y el VM zig — no un share. El
+                // par vive en SSA (M6.c): baja a caja y el runtime la copia
+                // en profundidad (KIND_BOX con payload ptype 4–9 y tope de
+                // ciclos ASTRA_LLVM_COPY_MAX_DEPTH; la caja NULL de `none`
+                // copia como NULL — el nil del VM).
+                const bv = self.coerceToBox(rv, idx) orelse return null;
+                var fargs2 = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), bv.ref };
+                const rp2 = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_copy), self.r_copy, &fargs2, 2, "");
+                self.emitTmpPush(rp2);
+                return .{ .ref = rp2, .ty = .boxed_, .payload_ty = rv.payload_ty, .payload_inner = rv.payload_inner, .sname = rv.sname };
             },
             else => {},
         }
         var fargs = [_]c.LLVMValueRef{ c.LLVMConstInt(self.t_i32, line, 0), rv.ref };
         const rp = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_copy), self.r_copy, &fargs, 2, "");
         self.emitTmpPush(rp);
-        return .{ .ref = rp, .ty = rv.ty, .payload_ty = rv.payload_ty, .sname = rv.sname };
+        return .{ .ref = rp, .ty = rv.ty, .payload_ty = rv.payload_ty, .payload_inner = rv.payload_inner, .sname = rv.sname };
     }
 
     fn emitPush(self: *Emitter, idx: u32) ?Val {
@@ -4664,8 +4692,8 @@ pub const Emitter = struct {
         return null;
     }
 
-    fn addLocal(self: *Emitter, name: []const u8, alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty, sname: ?[]const u8) void {
-        self.scopes.items[self.scopes.items.len - 1].put(name, .{ .alloca = alloca, .ty = ty, .payload_ty = payload_ty, .sname = sname }) catch @panic("OOM");
+    fn addLocal(self: *Emitter, name: []const u8, alloca: c.LLVMValueRef, ty: Ty, payload_ty: ?Ty, payload_inner: ?Ty, sname: ?[]const u8) void {
+        self.scopes.items[self.scopes.items.len - 1].put(name, .{ .alloca = alloca, .ty = ty, .payload_ty = payload_ty, .payload_inner = payload_inner, .sname = sname }) catch @panic("OOM");
     }
 
     fn varDeclOf(self: *Emitter, idx: u32) ast.VarDecl {
@@ -4800,7 +4828,7 @@ pub const Emitter = struct {
         };
         const r = c.LLVMBuildCall2(self.builder, c.LLVMGlobalGetValueType(self.r_wrap), self.r_wrap, &args, 4, "");
         self.emitTmpPush(r);
-        return .{ .ref = r, .ty = .boxed_, .payload_ty = iv.ty, .sname = iv.sname };
+        return .{ .ref = r, .ty = .boxed_, .payload_ty = iv.ty, .payload_inner = iv.payload_ty, .sname = iv.sname };
     }
 
     /// Construye el par `T?`/`Result<T, E>` sin heap: `{ tag, bits }`.
@@ -4849,7 +4877,7 @@ pub const Emitter = struct {
         var vals = [_]c.LLVMValueRef{ c.LLVMConstPointerNull(self.t_ptr), r };
         var bbs = [_]c.LLVMBasicBlockRef{ none_bb, wrap_bb };
         c.LLVMAddIncoming(phi, &vals, &bbs, 2);
-        return .{ .ref = phi, .ty = .boxed_, .payload_ty = v.payload_ty, .sname = v.sname };
+        return .{ .ref = phi, .ty = .boxed_, .payload_ty = v.payload_ty, .payload_inner = v.payload_inner, .sname = v.sname };
     }
 
     /// Caja → par en la entrada de una firma con par: la caja NULL (none) es
@@ -4891,7 +4919,7 @@ pub const Emitter = struct {
         };
         var bbs = [_]c.LLVMBasicBlockRef{ none_bb, load_bb };
         c.LLVMAddIncoming(phi, &vals, &bbs, 2);
-        return .{ .ref = phi, .ty = .pair_, .payload_ty = pty, .sname = v.sname };
+        return .{ .ref = phi, .ty = .pair_, .payload_ty = pty, .payload_inner = v.payload_inner, .sname = v.sname };
     }
 
     /// Lleva un valor a la forma que su destino espera (param/ret/slot de
@@ -4933,6 +4961,7 @@ pub const Emitter = struct {
         if (fixed.ty == .pair_ and other.ty == .boxed_) {
             var o = other;
             if (o.payload_ty == null) o.payload_ty = fixed.payload_ty;
+            if (o.payload_inner == null) o.payload_inner = fixed.payload_inner;
             return self.coerceToPair(o, idx);
         }
         return other; // no es su problema (otro tipo): el caller rechaza
@@ -4958,7 +4987,7 @@ pub const Emitter = struct {
         }
     }
 
-    const Annot = struct { ty: Ty, payload: ?Ty = null, sname: ?[]const u8 = null };
+    const Annot = struct { ty: Ty, payload: ?Ty = null, payload_inner: ?Ty = null, sname: ?[]const u8 = null };
 
     /// Anotación de un opcional `T?` (M6.c): payload de par (escalares y
     /// string, c.2) → par en SSA (`pair_`, sin heap); el resto de payloads
@@ -4974,7 +5003,7 @@ pub const Emitter = struct {
                     return .{ .ty = if (isPairPayload(t)) .pair_ else .boxed_, .payload = t };
                 }
                 const ia = self.annotTy(inner) orelse return null;
-                return .{ .ty = .boxed_, .payload = ia.ty, .sname = ia.sname };
+                return .{ .ty = .boxed_, .payload = ia.ty, .payload_inner = ia.payload, .sname = ia.sname };
             },
             else => return null,
         }
@@ -4985,7 +5014,7 @@ pub const Emitter = struct {
     /// opcionales viven como caja — un par sólo cabe en params/rets/lets de
     /// funciones nombradas.
     fn boxForm(at: Annot) Annot {
-        return if (at.ty == .pair_) .{ .ty = .boxed_, .payload = at.payload, .sname = at.sname } else at;
+        return if (at.ty == .pair_) .{ .ty = .boxed_, .payload = at.payload, .payload_inner = at.payload_inner, .sname = at.sname } else at;
     }
 
     /// Anotación de parámetro/retorno/let: escalar, `T?`, `fn(T, ...) -> T`,
@@ -5073,6 +5102,7 @@ pub const Emitter = struct {
             return .{
                 .ty = rt,
                 .payload = if (rt == .boxed_) self.inferBoxPayload(src) else null,
+                .payload_inner = if (rt == .boxed_) self.inferBoxPayloadInner(src) else null,
                 .sname = if (rt == .struct_) self.inferStaticSName(src) else null,
             };
         }
@@ -5081,6 +5111,7 @@ pub const Emitter = struct {
             return .{
                 .ty = tt,
                 .payload = if (tt == .boxed_) self.inferBoxPayload(src) else null,
+                .payload_inner = if (tt == .boxed_) self.inferBoxPayloadInner(src) else null,
                 .sname = if (tt == .struct_) self.inferStaticSName(src) else null,
             };
         }
@@ -5096,12 +5127,13 @@ pub const Emitter = struct {
             },
             .var_decl => |vd| {
                 const b: InferBinding = if (self.annotTy(vd.type_node)) |at|
-                    .{ .ty = at.ty, .payload = at.payload, .sname = at.sname }
+                    .{ .ty = at.ty, .payload = at.payload, .payload_inner = at.payload_inner, .sname = at.sname }
                 else if (vd.value) |vi| blk: {
                     const t = self.inferStaticTy(vi) orelse return;
                     break :blk .{
                         .ty = t,
                         .payload = if (t == .boxed_ or t == .arr_) self.inferBoxPayload(vi) else null,
+                        .payload_inner = if (t == .boxed_) self.inferBoxPayloadInner(vi) else null,
                         .sname = if (t == .struct_) self.inferStaticSName(vi) else null,
                     };
                 } else return;
@@ -5205,6 +5237,28 @@ pub const Emitter = struct {
 
     /// Inferencia de tipo M0 para inicializadores de globales (donde aún no hay
     /// valor emitido del cual leer el tipo). Suficiente para el subconjunto M0.
+    /// Elemento del payload de un `boxed_` inferido (M13): la capa interior
+    /// de `inferBoxPayload` — para `some([1, 2])` el payload es `.arr_` y su
+    /// elemento es lo que `x[0]` sobre el binding de `match` necesita.
+    fn inferBoxPayloadInner(self: *Emitter, idx: u32) ?Ty {
+        switch (self.tree.node(idx)) {
+            .some_expr, .ok_expr, .err_expr => |inner| return self.inferBoxPayload(inner),
+            .identifier => |name| {
+                if (self.globals.get(name)) |g| return g.payload_inner;
+                if (self.tmpBinding(name)) |b| return b.payload_inner;
+                return null;
+            },
+            .call_expr => |call| switch (self.tree.node(call.callee)) {
+                .identifier => |nm| {
+                    if (self.fns.get(nm)) |fi| return fi.ret_payload_inner;
+                },
+                else => {},
+            },
+            else => {},
+        }
+        return null;
+    }
+
     fn inferStaticTy(self: *Emitter, idx: u32) ?Ty {
         switch (self.tree.node(idx)) {
             .int_literal => return .i64_,
@@ -5399,7 +5453,7 @@ pub const Emitter = struct {
                     self.unsupported(fi, "struct field without a supported type");
                     return;
                 });
-                fields[i] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .sname = at.sname };
+                fields[i] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .payload_inner = at.payload_inner, .sname = at.sname };
                 ptypes[i] = boxPTy(at.ty) orelse PTY_BOOL; // inalcanzable: fn ya rechazó el checker
                 off += 8; // slots de 8 bytes: el bool vive como i8 en el inicio del slot
             }
@@ -5426,7 +5480,7 @@ pub const Emitter = struct {
                     self.unsupported(inst.decl, "generic struct field without a supported type");
                     return;
                 };
-                fields[i] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .sname = at.sname };
+                fields[i] = .{ .name = f.name, .ty = at.ty, .payload = at.payload, .payload_inner = at.payload_inner, .sname = at.sname };
                 ptypes[i] = boxPTy(at.ty) orelse PTY_BOOL;
                 off += 8;
             }
@@ -5449,7 +5503,7 @@ pub const Emitter = struct {
             .string => .{ .ty = .str_ },
             .optional => blk: {
                 const inner = self.tyFromType(t.inner orelse return null) orelse return null;
-                break :blk .{ .ty = .boxed_, .payload = inner.ty };
+                break :blk .{ .ty = .boxed_, .payload = inner.ty, .payload_inner = inner.payload };
             },
             .array => blk: {
                 const el = self.tyFromType(t.elem orelse return null) orelse return null;
