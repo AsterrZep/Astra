@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Decisiones DEC-034/035/036 — cierre del bloque D3/D4 del inventario**:
+  el valor de un bloque es su última expresión sin `;` (DEC-034, registro
+  test-pinned del `last_expr`); el bytecode plano sigue interno y se
+  versiona cuando exista un consumidor persistente (DEC-035, App. B #1);
+  structs/enums son **nominales por nombre** — dos structs isomorfos son
+  tipos distintos, pin nuevo `ui/struct_nominal_rejected.astra` (DEC-036,
+  corrige GAP §7.3 que decía «estructural»).
 - **M-T4f: PARSER_MAX_DEPTH — corpus 257 → 258 (DEC-032)**: guard
   `penter`/`pleave` (max 256) en los 5 entry points del seed
   (`parse_type`/`parse_expr`/`parse_pattern`/`parse_block`/`parse_if`),

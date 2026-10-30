@@ -41,6 +41,9 @@
 | DEC-031 | **parser.astra v2.3 — diagnósticos de error con paridad de primer error** (paso 4 de `PHASE1_PROGRESS` §7): formato del seed `file:line:col: error: msg` (parser.c:78/133) con las dos formas — expect `expected <msg>, got <kind>` (got = token_kind_name: keywords en minúscula, IDENT/INT_LIT/STRING_LIT/EOF en mayúscula, `_` es token propio) y parser_error `<msg>` sin got; síntesis de NEWLINE donde el seed la vería (call `)` sin skip_newlines: `print(1\n}` → `expected *')', got NEWLINE` en fin-de-línea); `error: parse failed` final + supresión del AST con errores (driver.c:668); **correcciones de comportamiento verificadas contra el seed**: el separador NUNCA es obligatorio (`print(1) print(2)` parsea — corrige el modelo de DEC-028 §1), `=` opcional en `let` (`let x 5;` = VarDecl+sentencia), sentencias a nivel de módulo (`foo bar` = dos idents), la coma faltante de `match` NO se reporta (rompe y el `}` esperado choca: `expected *'}', got <kind>`), `else` en línea aparte cae como sentencia (`unexpected token in expression`), `invalid assignment target` para no-LValue; gate `parser_diag_parity.sh` = paridad del PRIMER error + línea final sobre 16 fixtures rotos (la cascada posterior DIFEREE y queda fuera de alcance — recuperación completa = paso siguiente) | Aceptada (test-pinned) | 2026-10-29 | `seed/tests/selfhost/parser_diag_parity.sh` → 16/16 (primer error + parse-failed byte-idénticos, rutas dentro de `parser_gate.sh`) (PR parser-diag) |
 | DEC-032 | **Typechecker en Astra-0 — alcance v1** (paso 5 de PHASE1 §7; criterio: filosofía §«Todo está permitido siempre que mejore Astra» + «simplicidad como estrategia»): **7 rutas** (patrón lexer/parser, sin regalar rigor); **AST = tablas SoA** en `parser.astra` — `struct { kind: [i64], a: [i64], b: [i64], s: [string] }` — con la s-expresión pasando a *rendering* de esas tablas (los gates existentes quedan byte-idénticos) y **concatenación en el gate** (`parser.astra` sin su `main` + `typechecker.astra`, colisiones de nombre delatadas ruidosamente por el typecheck del seed); corpus ≈176 ficheros medidos con **lista de exclusión explícita** (5 `ui/` emitter-owned + 12 `transfer_*` de §8b — capas ajenas al typechecker, como `llvm_parity` EXCLUDE con comentario, nunca silencio); **espejo byte a byte de `typechecker.c`** como verdad (doctrina dump-parity: los 102 mensajes son la referencia; divergir exige DEC primero — sin forks silenciosos de semántica); `some/none/ok/err` pasan a emitirse en las formas del seed (prerequisito del port; la sintaxis `T?`/`[T]` queda en el backlog medido del parser); **single-file** `selfhost/typechecker.astra` (LLVM no compila multi-fichero; el árbol `src/compiler/` viene en Step 4 con la CLI — DEC-021 intacta); presupuesto: **sin techo nuevo** — los 256 globales del VM son la guarda automática (fallo ruidoso) y el combinado parser+typechecker se diseña ≤200; orden: typechecker → emitter (028 §5 «codegen va el último»); milestones M-T1 (SoA) → M-T2 (núcleo ~35 checks + gate diferencial) → M-T3 (methods/trait/match/exhaustividad) → M-T4 (corpus completo), ~10–15 d/h en 4–5 PRs | Aceptada (doc) | 2026-10-29 | `research/032` (inventario de ~55 checks, corpus 189/304 medido, restricciones LLVM con citas, shape del gate) + DEC-033 (los dos pines previos) |
 | DEC-033 | **Dos formas de control-flow que AMBOS compiladores rechazan (pines previos al typechecker)**: (a) `if/else if/else` como **última expresión de un `fn`** → `if branches have different types: <T> vs void` (el if-cadena anidado tipea void en la cola; un `if/else` simple SÍ funciona — verificado en seed y zig con salida idéntica, 2 errores); (b) `}` NEWLINE `else` → `unexpected token in expression` en el `else` (el NEWLINE rompe el binding del else — verificado; primeras líneas byte-idénticas seed↔zig, el zig cascade extra es informativo); ambos se **pinnean como están** (test-pinned = registrar, no re-litigar — regla 2); el parser.astra ya impone (b) por su regla de misma línea y (a) es de fase de tipos; corregirlos en el futuro = PR propio con DEC que superscriba, nunca fork silencioso | Aceptada (test-pinned) | 2026-10-29 | `ui/elseif_tail_rejected.astra` (EXPECTED-ERROR `if branches have different types` + FIRST `2:5`), `ui/else_newline_rejected.astra` (EXPECTED-ERROR `unexpected token in expression` + FIRST en el `else`) — primera línea idéntica en seed y zig (`ui_message_parity.sh`) (PR DEC-032/033) |
+| DEC-034 | **El valor de un bloque es su última expresión SIN `;`** (`last_expr`); si la última sentencia lleva `;` (o el bloque está vacío), el bloque vale `void` — registro del comportamiento ya pineado que el flg[1] de `parser.astra` citaba como «DEC-034»; la DEC-033 (`if branches have different types`) depende de esta regla | Aceptada (test-pinned) | 2026-10-30 | `blocks/tail_expression.astra` (EXPECT 3/12/101), `blocks/tail_compound_multiline.astra`, `ui/elseif_tail_rejected.astra` (DEC-033), corpus M-T4d (bloques como expresión) |
+| DEC-035 | **Formato de bytecode** (App. B #1): el formato plano actual sigue siendo el formato **interno** (emitter→VM, nunca serializado); cuando exista un consumidor persistente (debugger §12.5-3, Fase 3, serialización), se adopta la estructura de GAP §6.3 (magic/version/endianness + constant pool + tabla de funciones + line table + globales) **de una vez y versionada desde el día 1** — no se persiste el dump plano ni se rediseña a medias | Aceptada (doc) | 2026-10-30 | GAP §6.2/§6.3 + App. B #1 (cerrada); `AGENTS.md` invariantes 1–2 (el formato en memoria no cambia) |
+| DEC-036 | **Los structs y enums son NOMINALES por nombre** (no estructurales): `type_eq` del seed compara `string_eq(nombre)` y `typeEq` del zig el puntero internado — dos structs con los mismos campos y nombres distintos son tipos distintos; el híbrido del GAP §7.3 se resuelve así: nominalidad **por nombre declarado** para struct/enum/alias/trait (los traits ya lo eran: `impl` por nombre), estructuralidad **solo** para tipos anónimos/composiciones (`[T]`, `T?`, `fn`); los literales de enteros siguen adoptando el tipo que encuentran (DEC-006) | Aceptada (test-pinned) | 2026-10-30 | `ui/struct_nominal_rejected.astra` (dos structs isomorfos, asignación rechazada — primera línea idéntica seed↔zig); traits: `ui/bound_not_satisfied*.astra`; GAP §7.3 y App. B #2 corregidas (decían «estructural», obsoleto) |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1410,3 +1413,87 @@
   primera igual).
 - **Spec**: esta sección; el parser de `parser.astra` ya implementa (b)
   (DEC-031 §2).
+
+### DEC-034 — El valor de un bloque es su última expresión sin `;`
+- **Estado**: Aceptada (test-pinned) — registro del comportamiento ya
+  pineado (regla 2); la referencia «DEC-034» que `parser.astra` lleva en el
+  `flg[]` (línea 72) y en `parse_block_raw` queda resuelta por esta entrada.
+- **Fecha**: 2026-10-30.
+- **Decisión**: la última sentencia de un bloque **sin** `;` es la
+  *expresión* cuyo valor entrega el bloque (`last_expr`); si lleva `;`, el
+  valor del bloque es `void` (y un bloque vacío vale `void`). Es la regla
+  sobre la que descansan las expresiones-bloque (`{ … }` como valor,
+  M-T4d), los if-cadena (DEC-033) y la forma «cola de función» del
+  multi-retorno.
+- **Alternativas consideradas**: valor = última sentencia con o sin `;`
+  (rompería el estilo statement de `print(1);` — los bloques mutarían su
+  tipo con la puntuación, ambigüedad Python-like); sólo-expresión-explícita
+  (sintaxis nueva — coste de gramática sin ganancia).
+- **Coste aceptado**: ninguno nuevo — ambos typecheckers y los emisores ya
+  implementan exactamente esto (el flg del seed y su espejo en
+  `parser.astra`); la entrada registra y nombra la regla.
+- **Evidencia**: `blocks/tail_expression.astra` (EXPECT 3/12/101: `{ 1+2 }`
+  = 3, cola con `;` = void, `if/else` como valor), `blocks/tail_compound_
+  multiline.astra`, `ui/elseif_tail_rejected.astra` (DEC-033: el error
+  «if branches have different types» es consecuencia directa) y el corpus
+  M-T4d de bloques como expresión.
+- **Spec**: pendiente de escribir en `ARCHITECTURE.md` §6 (bloques).
+
+### DEC-035 — Formato de bytecode: plano interno hoy, versionado cuando se persista
+- **Estado**: Aceptada (doc) — cierra la pregunta abierta App. B #1 del GAP.
+- **Fecha**: 2026-10-30.
+- **Decisión**: el formato de bytecode **plano** (opcodes + operandos, sin
+  metadatos — GAP §6.2) se mantiene como representación **interna**
+  emitter→VM: hoy nada lo serializa (no existe consumidor persistente), así
+  que un rediseño «temprano» no tiene nada que comprar. Cuando aparezca el
+  primer consumidor persistente (debugger persistente §12.5-3, Fase 3 de
+  doble compilación, serialización para herramientas), el formato se adopta
+  **de una vez** con la estructura de GAP §6.3 — header magic/version/
+  endianness, constant pool con prefijos de longitud, tabla de funciones con
+  nombre/params/locals + rango de código + **line table** (PC → fuente),
+  globales con tipo + inicializador, entry point — **versionado desde el
+  día 1** (nunca un dump plano crudo como artefacto).
+- **Alternativas consideradas**: rediseñar ya (coste sin consumidor;
+  el formato interno es privado y barato de cambiar); persistir el plano
+  tal cual (corrupción silenciosa sin boundaries, sin line table — GAP
+  §6.2 limitaciones 1–4).
+- **Coste aceptado**: un paso de conversión cuando llegue la persistencia
+  (los tests Phase 1/2 se importan con el converter); ninguna pérdida hoy —
+  el formato interno y sus invariantes (AGENTS.md 1–2: balance de pila,
+  offsets de salto) no cambian.
+- **Evidencia**: GAP §6.2 (limitaciones) y §6.3 (estructura propuesta);
+  App. B #1 marcada como resuelta citando esta DEC; `--dump-bytecode` sigue
+  siendo el contrato observacional entre seed y zig (`dump_parity.sh`).
+- **Spec**: pendiente de escribir en `ARCHITECTURE.md` §12.5-3.
+
+### DEC-036 — Structs y enums son nominales por nombre (corrige GAP §7.3)
+- **Estado**: Aceptada (test-pinned) — registro del comportamiento ya
+  pineado (regla 2) + un pin nuevo que lo fija explícitamente.
+- **Fecha**: 2026-10-30.
+- **Decisión**: dos structs (o enums) con los **mismos campos** y **nombres
+  distintos** son **tipos distintos**: la igualdad de tipos es **nominal por
+  nombre declarado** — `type_eq` del seed compara `string_eq(nombre)`
+  (`typechecker.c:78-80`) y `typeEq` del zig el puntero internado (mismo
+  nombre = mismo puntero; `types.zig`). El «híbrido» de GAP §7.3 queda
+  resuelto así: **nominales** los tipos con nombre (struct, enum, alias
+  `type_alias` cuando aterrice, traits — que ya eran nominales: `impl Trait
+  for X` une por nombre); **estructurales** las composiciones anónimas
+  (`[T]`, `T?`, `fn(...)`, los literales de enteros que adoptan el tipo que
+  encuentran — DEC-006). Los genéricos monomorfizados heredan la
+  nominalidad de su declaración (una instancia `Box<i32>` es nominal a su
+  decl).
+- **Alternativas consideradas**: estructural puro (dos structs isomorfos
+  compatibles — la ergonomía TypeScript que GAP §7.3 atribuía a Phase 1,
+  pero **ningún compilador lo implementa así hoy**: el texto del GAP estaba
+  obsoleto); híbrido por contexto (reglas de compatibilidad distintas según
+  el uso — ambigüedad sin ganancia).
+- **Coste aceptado**: la compatibilidad por forma entre structs isomorfos
+  no existe (y no existía): los programas que la asumieran ya fallaban en
+  ambos compiladores; el pin nuevo lo hace explícito e inmutable.
+- **Evidencia**: `ui/struct_nominal_rejected.astra` (nuevo: `struct A` y
+  `struct B` isomorfos, `let b: B = a` rechazado con `type mismatch:
+  variable 'b' declared as struct but initialized with struct` — primera
+  línea byte-idéntica seed↔zig); traits por nombre: `ui/bound_not_
+  satisfied.astra`, `ui/bound_not_satisfied_struct.astra`.
+- **Spec**: GAP §7.3 y App. B #2 corregidas en este PR (decían
+  «estructural», obsoleto); pendiente de escribir en `ARCHITECTURE.md` §6.

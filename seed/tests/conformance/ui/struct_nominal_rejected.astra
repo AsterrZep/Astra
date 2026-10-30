@@ -1,0 +1,14 @@
+// Nominalidad (DEC-036): dos structs con los MISMOS campos y nombres
+// distintos son tipos DISTINTOS — la igualdad de tipos de structs/enums es
+// por NOMBRE (type_eq del seed: string_eq del nombre; typeEq del zig: mismo
+// puntero internado), no por forma. La asignación entre A y B se rechaza
+// aunque sus campos coincidan.
+// EXPECT-ERROR: type mismatch: variable 'b' declared as struct but initialized with struct
+struct A { x: i32 }
+struct B { x: i32 }
+
+fn main() {
+    let a = A { x: 1 }
+    let b: B = a
+    print(b)
+}
