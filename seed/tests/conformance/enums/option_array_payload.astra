@@ -1,0 +1,18 @@
+// Un array dentro de un opcional conserva su tipo de elemento al salir del
+// par: el binding de `match some(x)` y el payload de `?` deben indexarse
+// (`x[0]`) en las cuatro rutas. La ruta LLVM rechazaba ambos con
+// "array without an element type" — issue #71 (research/034 §M13).
+// EXPECT: 1
+// EXPECT: 9
+fn f(o: [i32]?) -> [i32]? {
+    let mut v = o?;
+    v[0] = 9;
+    some(v)
+}
+
+fn main() {
+    let o = some([1, 2]);
+    match o { some(x) => { print(x[0]) }, none => { print(0) } }
+    let r = f(o);
+    match r { some(x) => { print(x[0]) }, none => { print(0) } }
+}

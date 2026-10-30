@@ -1,0 +1,13 @@
+// `.copy()` de una pareja es DEEP (DEC-027 §2): copia el payload, no lo
+// comparte — mutar el array de la copia deja intacto el original. La ruta
+// LLVM hacía un share (retain) y el programa legal divergía solo ahí —
+// issue #71 (research/034 §M13).
+// EXPECT: 1
+// EXPECT: 9
+fn main() {
+    let o = some([1, 2])
+    let c = o.copy()
+    match c { some(x) => { let mut y = x; y[0] = 9; }, none => {} }
+    match o { some(x) => { print(x[0]) }, none => { print(0) } }
+    match c { some(x) => { print(x[0]) }, none => { print(0) } }
+}
