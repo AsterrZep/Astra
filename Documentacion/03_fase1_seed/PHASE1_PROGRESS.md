@@ -804,8 +804,8 @@ terminador, sin escapes de string, sin hex.
    Call/Index/Match = loc del ident/keyword base, como parser.c) medidas
    al primer error. Sigue: M-T4 (corpus completo: optionales/`?`,
    lambdas, `for`, límites de profundidad del parser).
-   **M-T4 ✅ (fases 1–e, 2026-10-29)** — el corpus creció gateado en
-   cinco pasos, cada exclusión con su motivo en `typechecker_corpus.list`:
+   **M-T4 ✅ (fases 1–f, 2026-10-29)** — el corpus creció gateado en
+   siete pasos, cada exclusión con su motivo en `typechecker_corpus.list`:
    - **141 → 172** (commit `8b65a98`): fix de cadenas de params sin
      ciclar (`fn f(a: P, b: P)` compartía el nominal y `tc_arg_count`
      colgaba) + los 31 ficheros cuya semilla y combinado ya coincidían en
@@ -816,16 +816,28 @@ terminador, sin escapes de string, sin hex.
      `tc_lambda`).
    - **M-T4c → 196**: opcionales — `some`/`none`/`ok`/`err`, `?` como
      `TryExpr` con el doble check del seed y `TypeOptional`.
-   - **M-T4e → 246** (PR #87): ronda de sintaxis que bloqueaba el corpus
+   - **M-T4d → 246** (PR #87): ronda de sintaxis que bloqueaba el corpus
      restante — `if`/`{bloque}` como expresión, tipos `[T]` (+`[T]?`),
      lvalue-`Index` (`xs[i] = …`), shifts/bitwise, `.copy()` (DEC-027,
      incl. `copy(x)` pelón → `copy must be called as x.copy()`),
      comentarios `/* */` anidados, escapes de string y `comptime`.
+   - **M-T4e → 257** (PR #89): lector de números — `0x`/`0b`/`0o`,
+     floats con exponente, overflow en literales — y literales
+     normalizados al valor (`%ld`/`%g`).
+   - **M-T4f → 258**: **PARSER_MAX_DEPTH** — guard `penter`/`pleave`
+     (max 256) en los 5 entry points del seed, `chain_len` en la cadena
+     infix (espejo de `parser.c:2046`) y sello `parse_aborted` en todos
+     los bucles de consumo de tokens; `ui/expr_chain_deep` entra al
+     corpus con primer error idéntico (`7:524`).
    **Sigue (M-T4+)**: **genéricos** y **ownership/transfer** fuera del
    corpus; los mensajes del **emitter** (`ui/too_many_locals`,
-   `ui/capture_assign` — sin columna, familia ya documentada); los **3
-   límites de profundidad** del seed siguen excluidos; después, el
-   **emitter en Astra-0** (`research/028` §5: codegen el último).
+   `ui/capture_assign` — sin columna, familia ya documentada); los **2
+   límites de profundidad recursivos** (`ui/deep_elseif`,
+   `ui/nesting_too_deep`) siguen excluidos — la ruta VM no puede recurrir
+   256 niveles con `VM_STACK_SIZE=1024`/`VM_CALL_DEPTH=256` pineados por
+   conformance (empírico: ~50 enlaces else-if, ~100 paréntesis; issue
+   #91: DEC de límites del VM); después, el **emitter en Astra-0**
+   (`research/028` §5: codegen el último).
 
 Hallazgos de lenguaje tocados al construirlo, ahora **pinneados por
 DEC-033** (2026-10-29): `else` en línea aparte del `}` →

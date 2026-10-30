@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **M-T4f: PARSER_MAX_DEPTH — corpus 257 → 258 (DEC-032)**: guard
+  `penter`/`pleave` (max 256) en los 5 entry points del seed
+  (`parse_type`/`parse_expr`/`parse_pattern`/`parse_block`/`parse_if`),
+  `chain_len` en la cadena infix (espejo de `parser.c:2046`) y sello
+  `parse_aborted` en todos los bucles de consumo de tokens (sin él, la
+  violación colgaba el programa). `ui/expr_chain_deep` entra al corpus
+  con primer error idéntico (`7:524`). Los 2 casos de profundidad
+  recursiva (`deep_elseif`, `nesting_too_deep`) siguen excluidos: la
+  ruta VM no puede recurrir 256 niveles con `VM_STACK_SIZE=1024`/
+  `VM_CALL_DEPTH=256` pineados por conformance — DEC de límites del VM,
+  issue #91. Gate: **258/258** en las 4 rutas.
+- **M-T4e: lector de números — 246 → 257 (DEC-032, PR #89)**:
+  literales `0x`/`0b`/`0o`, floats con exponente y overflow, normalizados
+  al valor (`%ld`/`%g`) como el dump del seed. Corpus **246 → 257**.
 - **M-T4e: sintaxis que bloqueaba el corpus — 196 → 246 (DEC-032, PR #87)**:
   `if` y `{ bloque }` como expresiones en `parse_primary`, tipos `[T]`
   (+`[T]?`), lvalue-`Index` (el chequeo no matcheaba el nodo `Index` —
