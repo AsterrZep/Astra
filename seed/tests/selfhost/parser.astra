@@ -53,6 +53,8 @@ let mut emit_guards = false   // M-T3: las guardas SÍ se emiten (el dump del
                               // route golden corre con false y no cambia)
 let mut allow_self = false    // espejo de p->allow_self (parser.c:1097):
                               // receptor válido sólo dentro de trait/impl
+let mut pdepth: i64 = 0        // PARSER_MAX_DEPTH del seed (256)
+let mut parse_aborted = false  // sello tras la primera violación (parser.c:95)
 let mut emit_lambda_types = false  // M-T4b: los tipos de PARÁMETRO de
                               // lambda SÍ se emiten (el dump del seed los
                               // omite — DEC-029; route golden: false)
@@ -565,8 +567,43 @@ fn kind_name() -> string {
 }
 
 fn report_at(line: i64, col: i64, msg: string) {
+    // sello del seed: tras la violación de profundidad, parser_error es
+    // silencioso (reporta UNA sola vez) — parser.c:88
+    if parse_aborted {
+        return;
+    }
     err_count = err_count + 1;
     print(file_name + ":" + to_string(line) + ":" + to_string(col) + ": error: " + msg);
+}
+
+// parser_enter/leave del seed: la violación se reporta en el token
+// actual, se sella el parse y la función SIN recursión devuelve 0.
+// En la ruta VM este guard no llega a disparar para los 2 casos de
+// profundidad recursiva del corpus (ui/deep_elseif, ui/nesting_too_deep):
+// VM_STACK_SIZE=1024 y VM_CALL_DEPTH=256 (pineados por recursion_depth_
+// limit/stack_overflow_limit) desbordan antes (empírico: ~50 enlaces
+// else-if, ~100 niveles de paréntesis). En las rutas nativas (C, LLVM)
+// SÍ protege, que es el propósito del audit §2.2. Los 2 casos entran al
+// corpus cuando la DEC de límites del VM los desbloquee (issue #91).
+// La cadena plana de operadores es iterativa y se capa con chain_len en
+// parse_expr_raw (ui/expr_chain_deep ya está en el corpus).
+fn penter() -> bool {
+    if parse_aborted {
+        return false;
+    }
+    if pdepth >= 256 {
+        perr("nesting too deep (max 256)");
+        parse_aborted = true;
+        return false;
+    }
+    pdepth = pdepth + 1;
+    return true;
+}
+
+fn pleave() {
+    if pdepth > 0 {
+        pdepth = pdepth - 1;
+    }
 }
 
 // parser_error: se reporta SIEMPRE en el token actual (sin got).
@@ -686,7 +723,7 @@ fn parse_path_text() -> string {
     path
 }
 
-fn parse_type() -> i64 {
+fn parse_type_raw() -> i64 {
     if tk == "IDENT" {
         let t = mk("TypeIdent(" + tl + ")");
         advance();
@@ -764,9 +801,18 @@ fn parse_type() -> i64 {
     advance();
     mk("TypeIdent(?)")
 }
+fn parse_type() -> i64 {
+    if !penter() {
+        return 0;
+    }
+    let r = parse_type_raw();
+    pleave();
+    r
+}
 
-fn parse_expr(min_bp: i64) -> i64 {
+fn parse_expr_raw(min_bp: i64) -> i64 {
     let mut left: i64 = 0;
+    let mut chain: i64 = 0;  // chain_len del seed (parser.c:2041)
     if tk == "PUNCT" && (tl == "-" || tl == "!") {
         let op = tl;
         advance();
@@ -799,7 +845,7 @@ fn parse_expr(min_bp: i64) -> i64 {
             let calln = mk("Call");
             set_loc(calln, tree.ln[left], tree.co[left]);
             add_child(calln, left);
-            while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
+            while !(tk == "PUNCT" && tl == ")") && tk != "EOF" && !parse_aborted {
                 let a = parse_expr(1);
                 add_child(calln, a);
                 if tk == "PUNCT" && tl == "," {
@@ -835,12 +881,28 @@ fn parse_expr(min_bp: i64) -> i64 {
         }
     }
     while true {
+        if parse_aborted {
+            // sello del seed (led loop, parser.c:2042): tras la violación
+            // no se consume ningún token más.
+            break;
+        }
         if tk != "PUNCT" {
             break;
         }
         let bp = bp_of(tl);
         if bp == 0 || bp < min_bp {
             break;
+        }
+        // chain_len del seed (parser.c:2046): la cadena plana es iterativa
+        // para el parser pero recursiva aguas abajo (typechecker/emitter),
+        // que desbordaban su pila en ~300 términos (audit §4.6). El cap se
+        // cuenta por OPERADOR consumido en este nivel (las llamadas
+        // anidadas tienen su propio contador, como en el seed).
+        chain = chain + 1;
+        if chain > 256 {
+            perr("expression chain too deep (max 256)");
+            parse_aborted = true;
+            return 0;
         }
         let op = tl;
         advance();
@@ -868,6 +930,14 @@ fn parse_expr(min_bp: i64) -> i64 {
         }
     }
     left
+}
+fn parse_expr(min_bp: i64) -> i64 {
+    if !penter() {
+        return 0;
+    }
+    let r = parse_expr_raw(min_bp);
+    pleave();
+    r
 }
 
 // normaliza un léxico entero al VALOR decimal (el dump imprime %ld —
@@ -1157,7 +1227,7 @@ fn parse_primary() -> i64 {
             advance(); // consume '{'
             let sl = mk("StructLit(" + name + ")");
             set_loc(sl, idl, idc);
-            while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+            while !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
                 if tk != "IDENT" {
                     ef_now("field name");
                     advance();
@@ -1201,7 +1271,7 @@ fn parse_primary() -> i64 {
         let arr = mk(""); // texto provisional: la aridad se conoce al final
         set_loc(arr, al, ac);
         let mut count: i64 = 0;
-        while !(tk == "PUNCT" && tl == "]") && tk != "EOF" {
+        while !(tk == "PUNCT" && tl == "]") && tk != "EOF" && !parse_aborted {
             let e = parse_expr(1);
             add_child(arr, e);
             count = count + 1;
@@ -1233,7 +1303,7 @@ fn parse_lambda() -> i64 {
         advance();
     } else {
         advance(); // abre '|'
-        while !(tk == "PUNCT" && tl == "|") && tk != "EOF" {
+        while !(tk == "PUNCT" && tl == "|") && tk != "EOF" && !parse_aborted {
             if tk != "IDENT" {
                 ef_now("parameter name");
                 advance();
@@ -1382,7 +1452,7 @@ fn parse_pattern_alt() -> i64 {
             let pv = mk("PatternVariantBind");
             set_loc(pv, rln, rco);
             add_child(pv, node);
-            while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
+            while !(tk == "PUNCT" && tl == ")") && tk != "EOF" && !parse_aborted {
                 if tk != "IDENT" {
                     perr("expected binding name");
                     advance();
@@ -1408,7 +1478,7 @@ fn parse_pattern_alt() -> i64 {
 }
 
 // Cadena de or-patterns: p1 | p2 | ... -> PatternOr(n kids) si hay mas de uno.
-fn parse_pattern() -> i64 {
+fn parse_pattern_raw() -> i64 {
     let first = parse_pattern_alt();
     if !(tk == "PUNCT" && tl == "|") {
         return first;
@@ -1425,6 +1495,14 @@ fn parse_pattern() -> i64 {
     }
     set_text(por, "PatternOr(" + to_string(count) + ")");
     por
+}
+fn parse_pattern() -> i64 {
+    if !penter() {
+        return 0;
+    }
+    let r = parse_pattern_raw();
+    pleave();
+    r
 }
 
 // DEC-028: match como expresion y como sentencia. Comas OBLIGATORIAS entre
@@ -1448,7 +1526,7 @@ fn parse_match() -> i64 {
     let mn = mk("Match");
     set_loc(mn, mln, mco);
     add_child(mn, target);
-    while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+    while !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
         let pat = parse_pattern();
         let arm = mk("Arm");
         add_child(arm, pat);
@@ -1473,7 +1551,7 @@ fn parse_match() -> i64 {
         add_child(mn, arm);
         if tk == "PUNCT" && tl == "," {
             advance();
-        } else if !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+        } else if !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
             // DEC-031: el seed NO reporta la coma: rompe el bucle y el '}'
             // esperado choca con el primer token del siguiente brazo
             // (verificado: expected '}', got INT_LIT).
@@ -1484,10 +1562,10 @@ fn parse_match() -> i64 {
     mn
 }
 
-fn parse_block() -> i64 {
+fn parse_block_raw() -> i64 {
     expect_punct("{");
     let blk = mk("Block");
-    while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+    while !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
         let s = parse_stmt();
         add_child(blk, s);
         // DEC-034: última expresión sin ';' = last_expr del seed — sólo
@@ -1500,8 +1578,16 @@ fn parse_block() -> i64 {
     expect_punct("}");
     blk
 }
+fn parse_block() -> i64 {
+    if !penter() {
+        return 0;
+    }
+    let r = parse_block_raw();
+    pleave();
+    r
+}
 
-fn parse_if() -> i64 {
+fn parse_if_raw() -> i64 {
     let ifl = t_line;
     let ifc = t_col;
     advance();
@@ -1532,8 +1618,21 @@ fn parse_if() -> i64 {
     }
     ifn
 }
+fn parse_if() -> i64 {
+    if !penter() {
+        return 0;
+    }
+    let r = parse_if_raw();
+    pleave();
+    r
+}
 
 fn parse_stmt() -> i64 {
+    // sello del seed (parse_statement, parser.c:1778): tras la violación
+    // las sentencias no se analizan ni avanzan tokens.
+    if parse_aborted {
+        return 0;
+    }
     stmt_had_semi = false;
     if tk == "KEYWORD" && tl == "let" {
         let letl = t_line;
@@ -1714,7 +1813,7 @@ fn parse_fn(is_pub: bool, sig_only: bool) -> i64 {
     expect_punct("(");
     let mut nparams: i64 = 0;   // para las reglas de `self` (parser.c:1097)
     let mut self_err = false;
-    while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
+    while !(tk == "PUNCT" && tl == ")") && tk != "EOF" && !parse_aborted {
         if tk != "IDENT" {
             ef("parameter name");
             advance();
@@ -1862,7 +1961,7 @@ fn parse_item() -> i64 {
             en = mk("EnumDecl(" + nm + ")");
         }
         set_loc(en, kln, klc);
-        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
             if tk != "IDENT" {
                 ef("variant name");
                 advance();
@@ -1873,7 +1972,7 @@ fn parse_item() -> i64 {
             let variant = mk("Variant(" + vn + ")");
             if tk == "PUNCT" && tl == "(" {
                 advance();
-                while !(tk == "PUNCT" && tl == ")") && tk != "EOF" {
+                while !(tk == "PUNCT" && tl == ")") && tk != "EOF" && !parse_aborted {
                     let fld = mk("Field");
                     add_child(fld, parse_type());
                     add_child(variant, fld);
@@ -1910,7 +2009,7 @@ fn parse_item() -> i64 {
             st = mk("StructDecl(" + nm + ")");
         }
         set_loc(st, kln, klc);
-        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
             if tk != "IDENT" {
                 ef("field name");
                 advance();
@@ -1948,7 +2047,7 @@ fn parse_item() -> i64 {
             tn = mk("Trait(" + nm + ")");
         }
         set_loc(tn, kln, klc);
-        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
             if !(tk == "KEYWORD" && tl == "fn") {
                 perr("only 'fn' items are supported in a trait");
                 break;
@@ -1993,7 +2092,7 @@ fn parse_item() -> i64 {
         expect_punct("{");
         let imn = mk("Impl(" + head + ")");
         set_loc(imn, kln, klc);
-        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" {
+        while !(tk == "PUNCT" && tl == "}") && tk != "EOF" && !parse_aborted {
             if !(tk == "KEYWORD" && tl == "fn") {
                 perr("only 'fn' items are supported in an impl block");
                 break;
@@ -2102,7 +2201,7 @@ fn parse_item() -> i64 {
 
 fn parse_module() -> i64 {
     let root = mk("Module");
-    while tk != "EOF" {
+    while tk != "EOF" && !parse_aborted {
         // DEC-031: el seed acepta sentencias a nivel de módulo (toplevel
         // statements — conformance/module/toplevel_stmts; `foo bar` parsea
         // como dos idents, verificado e7) — no sólo items.
