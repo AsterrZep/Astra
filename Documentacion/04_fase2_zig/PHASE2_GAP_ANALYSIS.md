@@ -336,12 +336,23 @@ Optional(T), Tuple(...), Unknown, IntLiteral, NilLiteral
 
 ### 7.3 Structural vs. Nominal Typing
 
-Phase 1 uses **structural typing** for structs and enums (two structs with the same fields are compatible). The architecture spec (`ARCHITECTURE §6`) implies **nominal typing** for traits and generics. Phase 2 must decide:
+**Resuelto (2026-10-30, DEC-036):** structs y enums son **nominales por
+nombre** — `type_eq` del seed compara el nombre (`typechecker.c:78-80`) y
+`typeEq` del zig el puntero internado (mismo nombre = mismo puntero), así
+que dos structs con los mismos campos y nombres distintos son tipos
+distintos. El texto anterior de esta sección («Phase 1 uses structural
+typing… two structs with the same fields are compatible») estaba
+**obsoleto**: ningún compilador implementó nunca la compatibilidad por
+forma. El híbrido queda así:
 
-- **Keep structural** for plain structs (ergonomic, TypeScript-like).
-- **Use nominal** for trait implementations (a struct implements a trait by name, not by shape).
+- **Nominales** (por nombre declarado): structs, enums, `type_alias`
+  (cuando aterrice, D19) y traits — `impl Trait for X` une por nombre.
+  Los genéricos monomorfizados heredan la nominalidad de su declaración.
+- **Estructurales** (composiciones anónimas): `[T]`, `T?`, `fn(...)`, y
+  los literales de enteros que adoptan el tipo que encuentran (DEC-006).
 
-This hybrid approach requires the type checker to distinguish "structural types" (plain structs) from "nominal types" (traits, interfaces).
+Pin: `ui/struct_nominal_rejected.astra` (dos structs isomorfos, asignación
+rechazada, primera línea idéntica seed↔zig).
 
 ---
 
@@ -771,8 +782,19 @@ Because the toolchain is ours, debugging can go further than C++:
 
 ## Appendix B: Open Questions
 
-1. **Bytecode format:** Design new format first, or port flat format and redesign later?
-2. **Structural vs. nominal typing:** Hybrid approach — when exactly does a type become nominal?
+1. **Bytecode format:** ~~Design new format first, or port flat format and redesign later?~~
+   **Resolved (2026-10-30, DEC-035):** el formato plano se queda como
+   representación **interna** (emitter→VM — hoy nada lo serializa); cuando
+   exista un consumidor persistente (debugger §12.5-3, Fase 3,
+   serialización), se adopta la estructura de §6.3 **de una vez y
+   versionada desde el día 1** (magic/version/endianness + constant pool +
+   tabla de funciones + line table + globales) — nunca un dump plano crudo
+   como artefacto.
+2. **Structural vs. nominal typing:** ~~Hybrid approach — when exactly does a type become nominal?~~
+   **Resolved (2026-10-30, DEC-036):** nominales por **nombre declarado**
+   (struct, enum, `type_alias`, traits — que ya lo eran); estructurales las
+   composiciones anónimas (`[T]`, `T?`, `fn(...)`). Pin:
+   `ui/struct_nominal_rejected.astra`. Véase §7.3 (texto corregido).
 3. **Generics implementation:** Monomorphization (C++-style) or type erasure (Go-style)?
 4. **Async model:** Stackful fibers (Go-style) or stackless (Rust-style)?
 5. **C backend retention:** Keep as bootstrap tool, or replace once native backend works?
