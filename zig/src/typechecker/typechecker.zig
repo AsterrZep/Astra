@@ -720,6 +720,11 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, name, "i64")) break :blk self.newType(.int64);
                 if (std.mem.eql(u8, name, "u32")) break :blk self.newType(.uint32);
                 if (std.mem.eql(u8, name, "u64")) break :blk self.newType(.uint64);
+                // DEC-040: anchos 8/16 — contratos de tipo, runtime i64.
+                if (std.mem.eql(u8, name, "i8")) break :blk self.newType(.int8);
+                if (std.mem.eql(u8, name, "i16")) break :blk self.newType(.int16);
+                if (std.mem.eql(u8, name, "u8")) break :blk self.newType(.uint8);
+                if (std.mem.eql(u8, name, "u16")) break :blk self.newType(.uint16);
                 if (std.mem.eql(u8, name, "f64")) break :blk self.newType(.float);
                 if (std.mem.eql(u8, name, "string")) break :blk self.newType(.string);
                 // `Name<args...>` in type position (Phase 2.4 step 3b):
@@ -896,6 +901,10 @@ pub const TypeChecker = struct {
             .int64 => .{ .type_ident = .{ .name = "i64" } },
             .uint32 => .{ .type_ident = .{ .name = "u32" } },
             .uint64 => .{ .type_ident = .{ .name = "u64" } },
+            .int8 => .{ .type_ident = .{ .name = "i8" } },
+            .int16 => .{ .type_ident = .{ .name = "i16" } },
+            .uint8 => .{ .type_ident = .{ .name = "u8" } },
+            .uint16 => .{ .type_ident = .{ .name = "u16" } },
             .float => .{ .type_ident = .{ .name = "f64" } },
             .string => .{ .type_ident = .{ .name = "string" } },
             .struct_, .enum_ => .{ .type_ident = .{ .name = t.name } },
@@ -2042,12 +2051,18 @@ pub const TypeChecker = struct {
             .uint32 => v >= 0 and v <= @as(i64, std.math.maxInt(u32)),
             .int64 => true,
             .uint64 => v >= 0,
+            // DEC-040: rango del contrato 8/16, igual que i32.
+            .int8 => v >= std.math.minInt(i8) and v <= std.math.maxInt(i8),
+            .int16 => v >= std.math.minInt(i16) and v <= std.math.maxInt(i16),
+            .uint8 => v >= 0 and v <= @as(i64, std.math.maxInt(u8)),
+            .uint16 => v >= 0 and v <= @as(i64, std.math.maxInt(u16)),
             else => true,
         };
     }
 
     fn isIntegerKind(k: Kind) bool {
-        return k == .int or k == .int64 or k == .uint32 or k == .uint64;
+        return k == .int or k == .int64 or k == .uint32 or k == .uint64 or
+            k == .int8 or k == .int16 or k == .uint8 or k == .uint16;
     }
 
     // DEC-015 (research/028 PR2): a builtin name is a reserved global. The VM
@@ -3240,6 +3255,10 @@ fn mangleTypeStr(t: *Type, buf: []u8, pos0: usize) ?usize {
         .int64 => if (!bufPut(buf, &pos, "i64")) return null,
         .uint32 => if (!bufPut(buf, &pos, "u32")) return null,
         .uint64 => if (!bufPut(buf, &pos, "u64")) return null,
+        .int8 => if (!bufPut(buf, &pos, "i8")) return null,
+        .int16 => if (!bufPut(buf, &pos, "i16")) return null,
+        .uint8 => if (!bufPut(buf, &pos, "u8")) return null,
+        .uint16 => if (!bufPut(buf, &pos, "u16")) return null,
         .float => if (!bufPut(buf, &pos, "f64")) return null,
         .string => if (!bufPut(buf, &pos, "string")) return null,
         .nil => if (!bufPut(buf, &pos, "nil")) return null,

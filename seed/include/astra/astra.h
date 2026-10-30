@@ -690,6 +690,14 @@ typedef enum {
     TYPE_INT64,
     TYPE_UINT32,
     TYPE_UINT64,
+    /* DEC-040: i8/i16/u8/u16 son CONTRATOS de tipo (surface + chequeo), no
+     * representaciones: el runtime sigue siendo i64 con wrap de dos
+     * complementos en las cuatro rutas (igual que i32 hoy, que tampoco
+     * envuelve a 32 bits — research/035 §13.2). */
+    TYPE_INT8,
+    TYPE_INT16,
+    TYPE_UINT8,
+    TYPE_UINT16,
     /* An integer literal that has not been given a type yet.
      *
      * Integer literals are polymorphic (ARCHITECTURE.md §5.1): `5` has no type

@@ -1,0 +1,7 @@
+// DEC-040: el rango del contrato 8/16 se comprueba en compile-time, igual
+// que i32 (DEC-006) — un literal fuera del rango anotado es error.
+// EXPECT-ERROR: integer literal 200 out of range for i8
+fn main() {
+    let x: i8 = 200
+    print(x)
+}

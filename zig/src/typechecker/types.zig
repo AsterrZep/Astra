@@ -32,6 +32,12 @@ pub const Kind = enum {
     int64,
     uint32,
     uint64,
+    // DEC-040: contratos de tipo 8/16 bits — el runtime sigue i64
+    // (research/035 §13.2), igual que i32 no envuelve a 32 bits.
+    int8,
+    int16,
+    uint8,
+    uint16,
     int_literal, // polymorphic integer literal (no width yet)
     float, // f64
     string,
@@ -56,6 +62,10 @@ pub const Kind = enum {
             .int64 => "i64",
             .uint32 => "u32",
             .uint64 => "u64",
+            .int8 => "i8",
+            .int16 => "i16",
+            .uint8 => "u8",
+            .uint16 => "u16",
             .float => "f64",
             .string => "string",
             .optional => "optional",
@@ -98,7 +108,7 @@ pub const Type = struct {
 
 pub fn isInteger(t: *const Type) bool {
     return switch (t.kind) {
-        .int, .int64, .uint32, .uint64, .int_literal => true,
+        .int, .int64, .uint32, .uint64, .int8, .int16, .uint8, .uint16, .int_literal => true,
         else => false,
     };
 }

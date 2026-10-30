@@ -1,0 +1,7 @@
+// DEC-040: un literal negativo no cabe en un ancho sin signo — mismo
+// mensaje DEC-006 que i32.
+// EXPECT-ERROR: integer literal -1 out of range for u8
+fn main() {
+    let x: u8 = -1
+    print(x)
+}

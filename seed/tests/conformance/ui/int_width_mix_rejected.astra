@@ -1,0 +1,8 @@
+// DEC-040: los anchos son contratos distintos — sin promoción mixta, igual
+// que i32 vs i64 (research/035 §13.1).
+// EXPECT-ERROR: type mismatch: cannot apply '+' to i8 and i16
+fn main() {
+    let a: i8 = 1
+    let b: i16 = 2
+    print(a + b)
+}
