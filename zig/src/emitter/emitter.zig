@@ -609,13 +609,16 @@ pub const Emitter = struct {
                     // The target is treated as a read so that assigning to a
                     // captured name still lands in the capture set, where
                     // emission reports "cannot assign to captured variable".
-                    const tgt = fv.em.tree.node(asn.target);
-                    if (std.meta.activeTag(tgt) == .identifier) fv.ref(tgt.identifier);
+                    // Composite targets (a[0] = ..., s.v = ...) must WALK the
+                    // target chain so the root identifier is captured too:
+                    // only the root binding crosses the lambda boundary, and
+                    // without it emission fell to GET_GLOBAL (undefined
+                    // global variable 'a') — issue #70 (034 §M12).
+                    fv.walk(asn.target);
                     fv.walk(asn.value);
                 },
                 .compound_assignment => |ca| {
-                    const tgt = fv.em.tree.node(ca.target);
-                    if (std.meta.activeTag(tgt) == .identifier) fv.ref(tgt.identifier);
+                    fv.walk(ca.target);
                     fv.walk(ca.value);
                 },
                 .binary_expr => |b| {
