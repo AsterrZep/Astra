@@ -398,6 +398,49 @@ completa, sin skip).
 
 ---
 
+## 7. Actualización — 2026-10-30 (cierre del primer ciclo post-informe)
+
+Apéndice fechado **~14 h después** de §0–§6, medido en `main` @ `9ac44bd`
+(PR #98). §0–§6 siguen siendo el inventario de partida del 2026-10-29;
+esto registra qué se cobró de él.
+
+**Agenda de decisiones (§3) — pagada en 7 de 24:**
+
+| D | DEC | PR |
+|:-:|:----|:--:|
+| D2 | DEC-041 — alcance de la Fase 3 (emitter single-file, doble compilación con la CLI) | #98 |
+| D3 | DEC-035 — bytecode: el formato plano queda como **interno** (nunca serializado) | #95 |
+| D4 | DEC-036 — structs y enums **nominales** por nombre | #95 |
+| D5 | DEC-039 — RSS por backend (techo plano en LLVM) | #96 |
+| D6 | DEC-038 — `spawn` scoped + canales por defecto | #96 |
+| D8 | DEC-037 — strings = bytes como semántica primaria | #96 |
+| D10 | DEC-040 — `i8`/`i16`/`u8`/`u16` como contratos de tipo | #97 |
+
+(+ DEC-034 en #95, que fija el valor de bloque que DEC-033 solo pineaba
+como rechazo.) **41 DEC registradas; única en `Propuesta`: DEC-021** (D1).
+
+**Corrección (§1):** cerrados **M12** (#70, PR #93) y **M13** (#71,
+PR #94) — los dos hallazgos que violaban la regla de paridad, justo los
+primeros de la priorización §1.4. Quedan **31 abiertos**: los 30
+originales restantes (10 ALTA intactos · 13 MEDIA · 7 BAJA) + uno nuevo,
+**#91** (M-T4f: `VM_STACK_SIZE`/`VM_CALL_DEPTH` impiden la paridad de
+`PARSER_MAX_DEPTH` en la ruta VM).
+
+**Self-hosting (§2.1):** M-T4e (#89, lector de números) y M-T4f (#92,
+`PARSER_MAX_DEPTH`) — corpus **258 de 314**. Los contadores
+(PHASE1/INDICE/README/CHANGELOG) se actualizaron **en el mismo PR** esta
+vez: DD14 no se repitió.
+
+**Presupuesto (§3.5):** `CODE = 149`, `DEC = 28` → **18,8 %** (era
+16,4 %); faltan 2 commits DEC para el ≥ 20 %.
+
+**Siguen sin DEC de la §3:** D1, D7 (gate de S3), D9 (iteradores),
+D11 (punteros), D12 (operator overloading), D13 (retención del backend
+C), D14 (`--emit-asm`/debug), D15 (FFI), D16–D18 (módulos) y D19–D24.
+Las tareas de §4.2 (DD7–DD9) siguen abiertas.
+
+---
+
 *Registro datado — actualizar con un informe nuevo, no reescribir este.
 La fuente de verdad del estado del proyecto sigue siendo
 `Documentacion/00_indice/INDICE.md`.*
