@@ -1,0 +1,22 @@
+// Captured composite targets: `a[0] = …` and `s.v = …` mutate the CAPTURED
+// container — the binding is read (the handle), the write lands in the
+// array/struct it points to — so both are legal and must behave on every
+// route. The zig emitter once dropped these roots from the capture set and
+// fell to GET_GLOBAL (`undefined global variable 'a'`) — issue #70
+// (research/034 §M12).
+// EXPECT: 9
+// EXPECT: 42
+struct S { v: i32 }
+
+fn main() {
+    let mut a = [1]
+    let mut s = S { v: 1 }
+    let f = |i: i32| -> i32 {
+        a[0] = 9
+        s.v = 42
+        i
+    }
+    f(0)
+    print(a[0])
+    print(s.v)
+}
