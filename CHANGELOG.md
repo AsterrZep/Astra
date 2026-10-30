@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **DEC-041: alcance de la Fase 3** — los componentes self-hosted siguen
+  single-file hasta el emitter inclusive (el siguiente y último, «codegen
+  va el último»); árbol `src/compiler/` + doble compilación con la CLI
+  (D1); la retención del seed tras la doble compilación es D13.
 - **DEC-040: `i8`/`i16`/`u8`/`u16` como contratos de tipo** — los cuatro
   anchos se añaden al surface y a los dos typecheckers con las reglas de
   `i32`: runtime i64 (`u8`+1 = 256), literal fuera de rango = error

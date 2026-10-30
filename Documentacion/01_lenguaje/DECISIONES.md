@@ -48,6 +48,7 @@
 | DEC-038 | **Concurrencia: `spawn` scoped + canales por defecto** (S3): `spawn` como sentencia con scope (bloque con join implícito al salir — modelo nursery/JEP 505, no «go libre»); cruzar fibras = **canales** (transportan ownership → el walk RT1 de DEC-023 se ejecuta en `send`/`recv`, no en cada acceso); cancelación por scope **idempotente** (falla una tarea → cancelar hermanos y esperar a todos); `transfer` sigue move-sin-copia con `.copy()`/`Atomic[T]` como escape (DEC-012/026); M:N con pilas dinámicas ~2 KB y **sin async/await** (plan ARCHITECTURE §3, targets spawn <150 ns / switch <100 ns) | Aceptada (doc) | 2026-10-30 | `research/039` §14; DEC-012/022/023/026; `ui/spawn_global_atomic.astra` queda para el PR de S3 (DEC-026 §5) |
 | DEC-039 | **RSS por backend** (D5, `research/040` Rec3): la ruta LLVM mantiene **techo plano** (`llvm_mem.sh` con dos fases: loop_reuse 64 MB + sonda de strings 128 MB); seed/zig/C siguen con arena **divergencia medida y documentada** (404/721/489 MB — cifra en la DEC, no gate falsamente rojo); **RC puro como contrato, ciclos documentados como bug del programador** (`weak` explícito cuando exista); Fase 2 opcional: colector de ciclos incremental (trial deletion, `gc_collect()` explícito — la cabecera `{rc,kind}` ya lo anticipa); **sin tracing GC**; arenas solo donde ya están (compilador, invariante 5) | Aceptada (gate) | 2026-10-30 | `zig/tests/llvm_mem.sh` (fase strings 128 MB) + `research/040` §11; enmienda el techo de DEC-009 solo en la cifra, no en el criterio |
 | DEC-040 | **`i8`/`i16`/`u8`/`u16` como contratos de tipo** (D10, `research/035` §13.2): se añaden al *surface* y a los dos typecheckers con las mismas reglas que `i32` — el runtime sigue siendo **i64 con wrap de dos complementos** en las 4 rutas (`u8`+1 = 256, no 0), literal fuera del rango anotado = **error compile-time** (DEC-006, rangos i8 [-128,127] · i16 · u8 [0,255] · u16), **sin promoción mixta** entre anchos; el techo de literales `u64` en `i64::MAX` queda como artefacto documentado del parser (candidato a DEC futura) | Aceptada (test-pinned) | 2026-10-30 | `types/int_width_8_16.astra` (EXPECT 256/-5/65536/300), `ui/int8_literal_range.astra`, `ui/uint8_literal_range.astra`, `ui/int_width_mix_rejected.astra` — primeras líneas idénticas seed↔zig |
+| DEC-041 | **Alcance de la Fase 3** (D2): los componentes self-hosted siguen **single-file** hasta el emitter inclusive (lexer ✅ → parser ✅ → typechecker ✅ → **emitter en Astra-0 es el siguiente y último** — «codegen va el último», `research/028` §5); el árbol multi-fichero `src/compiler/` y la doble compilación llegan **con la CLI** (Step 4 de DEC-032, D1/DEC-021); la Fase 3 se gatilla con: emitter gateado por paridad de bytecode contra el seed + `std/…` real + árbol — entonces astra-zig compila el compilador Astra y ese binario se compila a sí mismo (doble compilación, `COMPILER_STRATEGY` §6.3); la retención del seed tras la primera doble compilación es D13, no esta DEC | Aceptada (doc) | 2026-10-30 | `research/028` §5; DEC-032 (Step 4 con la CLI); `COMPILER_STRATEGY` §6 |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1631,3 +1632,40 @@
   (`ui_message_parity.sh`).
 - **Spec**: pendiente de escribir en `ARCHITECTURE.md` §8 (enteros); DEC-006
   (rango) y DEC-007 (wrap) cubren las reglas heredadas.
+
+### DEC-041 — Alcance de la Fase 3: emitter single-file, doble compilación con la CLI
+- **Estado**: Aceptada (doc) — cierra D2 del inventario; fija el orden del
+  resto del paso 5 y el punto de entrada de la Fase 3.
+- **Fecha**: 2026-10-30.
+- **Decisión**:
+  1. Los componentes self-hosted siguen **single-file** hasta el emitter
+     inclusive — `lexer.astra` ✅, `parser.astra` ✅, `typechecker.astra` ✅
+     (disciplina de concatenación del gate, DEC-032 §6-2). El **emitter en
+     Astra-0 es el siguiente y el último** componente single-file:
+     «codegen va el último» (`research/028` §5 — el patrón de C/Rust/Zig/
+     Nim: primero el front-end, el codegen al final).
+  2. El árbol multi-fichero `src/compiler/` y la **doble compilación**
+     llegan **con la CLI** — Step 4 de DEC-032, bloqueado por D1/DEC-021
+     (la CLI es la que compila el árbol; hoy LLVM es single-file y el
+     `--single-file` reproduce al seed).
+  3. La **Fase 3 se gatilla** cuando se cumplan las tres precondiciones:
+     (a) emitter en Astra-0 **gateado por paridad de bytecode** contra el
+     seed (patrón `typechecker_gate.sh`: salida diferencial contra
+     `--dump-bytecode`); (b) `std/…` real (hoy rechazado — DEC-024 obliga
+     helpers en cada test); (c) árbol `src/compiler/`. Entonces
+     astra-zig compila el compilador Astra → ese binario se compila a sí
+     mismo (doble compilación, `COMPILER_STRATEGY` §6.2-6.3) y el seed C
+     deja de ser el anfitrión del bootstrap.
+  4. La **retención del seed** después de la primera doble compilación
+     (¿verificación de bootstrap indefinida?) es **D13** (App. B #5), no
+     esta DEC.
+- **Alternativas consideradas**: árbol multi-fichero antes del emitter
+  (contradice el orden medido de la literatura y DEC-032); doble
+  compilación sin CLI (imposible: el árbol la necesita, DEC-021).
+- **Coste aceptado**: la Fase 3 espera a D1; el paso 5 cierra antes con el
+  emitter single-file gateado.
+- **Evidencia**: `research/028` §5; DEC-032 (Step 4 con la CLI);
+  `COMPILER_STRATEGY` §6; el patrón cross-lenguaje de `research/028`
+  §5 (C/Rust/Go/Zig/Nim).
+- **Spec**: pendiente de escribir en `ARCHITECTURE.md` §41 (roadmap) /
+  `COMPILER_STRATEGY` §6 (Fase 3).
