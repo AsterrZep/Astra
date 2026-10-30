@@ -44,6 +44,9 @@
 | DEC-034 | **El valor de un bloque es su última expresión SIN `;`** (`last_expr`); si la última sentencia lleva `;` (o el bloque está vacío), el bloque vale `void` — registro del comportamiento ya pineado que el flg[1] de `parser.astra` citaba como «DEC-034»; la DEC-033 (`if branches have different types`) depende de esta regla | Aceptada (test-pinned) | 2026-10-30 | `blocks/tail_expression.astra` (EXPECT 3/12/101), `blocks/tail_compound_multiline.astra`, `ui/elseif_tail_rejected.astra` (DEC-033), corpus M-T4d (bloques como expresión) |
 | DEC-035 | **Formato de bytecode** (App. B #1): el formato plano actual sigue siendo el formato **interno** (emitter→VM, nunca serializado); cuando exista un consumidor persistente (debugger §12.5-3, Fase 3, serialización), se adopta la estructura de GAP §6.3 (magic/version/endianness + constant pool + tabla de funciones + line table + globales) **de una vez y versionada desde el día 1** — no se persiste el dump plano ni se rediseña a medias | Aceptada (doc) | 2026-10-30 | GAP §6.2/§6.3 + App. B #1 (cerrada); `AGENTS.md` invariantes 1–2 (el formato en memoria no cambia) |
 | DEC-036 | **Los structs y enums son NOMINALES por nombre** (no estructurales): `type_eq` del seed compara `string_eq(nombre)` y `typeEq` del zig el puntero internado — dos structs con los mismos campos y nombres distintos son tipos distintos; el híbrido del GAP §7.3 se resuelve así: nominalidad **por nombre declarado** para struct/enum/alias/trait (los traits ya lo eran: `impl` por nombre), estructuralidad **solo** para tipos anónimos/composiciones (`[T]`, `T?`, `fn`); los literales de enteros siguen adoptando el tipo que encuentran (DEC-006) | Aceptada (test-pinned) | 2026-10-30 | `ui/struct_nominal_rejected.astra` (dos structs isomorfos, asignación rechazada — primera línea idéntica seed↔zig); traits: `ui/bound_not_satisfied*.astra`; GAP §7.3 y App. B #2 corregidas (decían «estructural», obsoleto) |
+| DEC-037 | **Strings = bytes como semántica primaria** (`len`/`s[i]`/`ord`/`chr`/`substr` miden bytes — reafirma DEC-013/018/020, no se reabren); las capas Unicode llegan **por fases en stdlib, no en el tipo**: `code_points(s)`/`graphemes(s)` como iteradores (UAX#29, protocolo del DEC de iteradores), `normalize(s, form)` opcional, `==` por bytes documentado + collation en librería, validación UTF-8 explícita (Result, no pánico) en la frontera de decodificación/FFI, anti-spoofing UTS#39 fuera del runtime; escapes `\u{...}` = candidato a DEC futura (hueco documentado) | Aceptada (doc) | 2026-10-30 | `research/038` §13; DEC-013/018/020 |
+| DEC-038 | **Concurrencia: `spawn` scoped + canales por defecto** (S3): `spawn` como sentencia con scope (bloque con join implícito al salir — modelo nursery/JEP 505, no «go libre»); cruzar fibras = **canales** (transportan ownership → el walk RT1 de DEC-023 se ejecuta en `send`/`recv`, no en cada acceso); cancelación por scope **idempotente** (falla una tarea → cancelar hermanos y esperar a todos); `transfer` sigue move-sin-copia con `.copy()`/`Atomic[T]` como escape (DEC-012/026); M:N con pilas dinámicas ~2 KB y **sin async/await** (plan ARCHITECTURE §3, targets spawn <150 ns / switch <100 ns) | Aceptada (doc) | 2026-10-30 | `research/039` §14; DEC-012/022/023/026; `ui/spawn_global_atomic.astra` queda para el PR de S3 (DEC-026 §5) |
+| DEC-039 | **RSS por backend** (D5, `research/040` Rec3): la ruta LLVM mantiene **techo plano** (`llvm_mem.sh` con dos fases: loop_reuse 64 MB + sonda de strings 128 MB); seed/zig/C siguen con arena **divergencia medida y documentada** (404/721/489 MB — cifra en la DEC, no gate falsamente rojo); **RC puro como contrato, ciclos documentados como bug del programador** (`weak` explícito cuando exista); Fase 2 opcional: colector de ciclos incremental (trial deletion, `gc_collect()` explícito — la cabecera `{rc,kind}` ya lo anticipa); **sin tracing GC**; arenas solo donde ya están (compilador, invariante 5) | Aceptada (gate) | 2026-10-30 | `zig/tests/llvm_mem.sh` (fase strings 128 MB) + `research/040` §11; enmienda el techo de DEC-009 solo en la cifra, no en el criterio |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1497,3 +1500,96 @@
   satisfied.astra`, `ui/bound_not_satisfied_struct.astra`.
 - **Spec**: GAP §7.3 y App. B #2 corregidas en este PR (decían
   «estructural», obsoleto); pendiente de escribir en `ARCHITECTURE.md` §6.
+
+### DEC-037 — Strings: bytes como semántica primaria, capas Unicode en stdlib
+- **Estado**: Aceptada (doc) — cierra D8 del inventario; ninguna de las
+  capas siguientes se implementa aquí (cada una exigirá su propia DEC con
+  test en el mismo PR, regla 1).
+- **Fecha**: 2026-10-30.
+- **Decisión**: `len`, `s[i]`, `ord`, `chr` y `substr` **miden bytes** —
+  reafirma DEC-013/018/020 y no se reabren: romperlo arruinaría el coste
+  O(1) de `s[i]` (`research/038` §5). Las capas Unicode llegan **por fases
+  y en stdlib, nunca en el tipo**:
+  1. `code_points(s)` y `graphemes(s)` como **iteradores** (UAX#29 para
+     graphemes) — dependen del protocolo Iterator del futuro DEC de
+     iteradores (`research/037`);
+  2. `normalize(s, form)` opcional (referencia `unicode-normalization`);
+  3. comparación `==` por bytes **documentada**; collation/`compare_ci` en
+     librería (ICU detrás, patrón PostgreSQL);
+  4. validación UTF-8 explícita estilo Rust (`Result`, no pánico) en la
+     frontera de decodificación/FFI (`research/036` §5);
+  5. anti-spoofing UTS#39 en la capa de red/DNS, jamás en el runtime.
+- **Hueco documentado**: no existe `"\u{1F600}"` ni `\xFF` con escape
+  (solo crudo o `\0`) — candidato a DEC propia cuando se necesite escribir
+  code points sin fichero UTF-8.
+- **Alternativas consideradas**: strings como secuencia de code points
+  (reabre DEC-013, pierde O(1) en `s[i]`, coste en las 4 rutas); Unicode
+  completo en el runtime (tamaño y latencia que Astra no quiere pagar).
+- **Coste aceptado**: los programas que iteran graphemes esperarán a la
+  capa stdlib; `len` en bytes confundirá a quien asuma UTF-16/UTF-32 — la
+  doc del libro lo documenta (DEC-013).
+- **Evidencia**: `research/038` §13; DEC-013/018/020 (pines existentes).
+- **Spec**: pendiente de escribir en `ARCHITECTURE.md` §8 (strings).
+
+### DEC-038 — Concurrencia S3: `spawn` scoped, canales por defecto, cancelación por scope
+- **Estado**: Aceptada (doc) — cierra D6 y fija el diseño de S3/`spawn`
+  (el código del scheduler y sus tests llegan en su PR, DEC-026 §5).
+- **Fecha**: 2026-10-30.
+- **Decisión**:
+  1. **`spawn` scoped, no «go libre»**: sentencia con scope — bloque con
+     join implícito al salir (modelo nursery/JEP 505); el único punto
+     donde se aplican unicidad/transfer y timeouts por scope. El
+     «Future suelto» que Java está arreglando desde 2022 es el
+     anti-modelo que no se repite.
+  2. **Canales por defecto para cruzar fibras**: un canal transporta
+     ownership explícito → el walk RT1 de DEC-023 se ejecuta en
+     `send`/`recv` (barato y localizable), no en cada acceso; memoria
+     compartida solo vía `Atomic[T]`/locks (gratuitos intra-fibra).
+  3. **Cancelación por scope, idempotente**: al fallar una tarea se
+     cancelan las hermanas y se espera a todas antes de salir del bloque
+     (precedente `Future.cancel()` idempotente de Zig).
+  4. `transfer` sigue move-sin-copia con `.copy()`/`Atomic[T]` como
+     escape (DEC-012/026); el modelo M:N con pilas dinámicas ~2 KB y
+     **sin `async/await`** (funciones de un solo color) sigue el plan de
+     ARCHITECTURE §3 (spawn <150 ns, switch <100 ns — targets coherentes
+     con `research/039` §9/§12, a medir cuando exista el scheduler).
+- **Alternativas consideradas**: goroutine libre (join manual = leaks y
+  lifetime bugs); async/await (dos colores); RT1 en cada acceso (caro).
+- **Coste aceptado**: el scheduler completo (M:N, pilas, channels) es
+  trabajo de su PR; esta DEC lo desbloquea y fija su forma.
+- **Evidencia**: `research/039` §14; DEC-012/022/023/026;
+  `ui/spawn_global_atomic.astra` pendiente de crear en el PR de S3.
+- **Spec**: pendiente de escribir en `ARCHITECTURE.md` §3/§2.6.
+
+### DEC-039 — Memoria: gate RSS por backend, RC puro con ciclos documentados
+- **Estado**: Aceptada (gate) — cierra D5; el gate `llvm_mem.sh` gana la
+  fase de strings con techo 128 MB en este PR.
+- **Fecha**: 2026-10-30.
+- **Decisión** (opción 3A de `research/040` Rec3):
+  1. **Gate RSS por backend, no global**: la ruta LLVM mantiene el techo
+     plano — `llvm_mem.sh` con dos fases: `memory/loop_reuse.astra`
+     (64 MB, DEC-009) y una sonda de 300 k allocs de strings (128 MB;
+     `research/040` midió 77 MB de pico en la suite de hoy, 1,2 MB en
+     loop_reuse). seed/zig/C siguen con arena: **divergencia medida y
+     documentada** (404/721/489 MB, `research/040` §12) — no gate
+     falsamente rojo, mismo criterio «divergencia medida, no
+     garantizada» que la aritmética C.
+  2. **RC puro como contrato, ciclos documentados como límite** (bando
+     Swift): el ciclo closure→env→closure ya está documentado; «los
+     ciclos son bug del programador — `weak` explícito cuando exista».
+  3. **Fase 2 opcional: ciclo-colector incremental y presupuestado** (si
+     los ciclos duelen): buffer de raíces + trial deletion, solo al
+     llenarse o por `gc_collect()` explícito (precedente CPython/PHP); la
+     cabecera `{rc,kind}` ya lleva el `kind` que el traverse necesita.
+  4. **Sin tracing GC** (propósito del lenguaje; opción 4 descartada).
+  5. **Arenas donde ya están**: el compilador (invariante 5) y — si se
+     quiere — allocators de frame para hot paths, nunca para el grafo de
+     datos de usuario con aliasing.
+- **Alternativas consideradas**: portar ARC a los VMs (3B — coste alto,
+  DEC-023 fija RT1 en M4); techo global único (falso rojo en 3 rutas).
+- **Coste aceptado**: la divergencia de memoria entre rutas sigue
+  documentada; el colector opcional se presupuesta solo si duele.
+- **Evidencia**: `zig/tests/llvm_mem.sh` (fase strings nueva, 128 MB) +
+  `research/040` §11; enmienda la **cifra** del techo de DEC-009, no su
+  criterio (el de loop_reuse queda en 64 MB).
+- **Spec**: pendiente de escribir en `ARCHITECTURE.md` §8.6 (memoria).

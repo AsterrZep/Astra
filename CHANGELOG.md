@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Decisiones DEC-037/038/039 — cierre del bloque D5/D6/D8 del inventario**:
+  strings = bytes como semántica primaria con capas Unicode por fases en
+  stdlib (DEC-037); S3/`spawn` scoped con canales por defecto, cancelación
+  por scope y RT1 en `send`/`recv` (DEC-038); gate RSS **por backend** —
+  `llvm_mem.sh` gana la sonda de 300 k strings (techo 128 MB, medida
+  2 MB) mientras seed/zig/C siguen como divergencia medida (DEC-039).
 - **Decisiones DEC-034/035/036 — cierre del bloque D3/D4 del inventario**:
   el valor de un bloque es su última expresión sin `;` (DEC-034, registro
   test-pinned del `last_expr`); el bytecode plano sigue interno y se
