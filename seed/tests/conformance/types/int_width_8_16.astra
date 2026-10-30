@@ -1,0 +1,17 @@
+// DEC-040: i8/i16/u8/u16 son CONTRATOS de tipo — el runtime sigue siendo
+// i64 en las cuatro rutas, igual que i32 no envuelve a 32 bits
+// (research/035 §13.2): `u8` + 1 da 256, no 0.
+// EXPECT: 256
+// EXPECT: -5
+// EXPECT: 65536
+// EXPECT: 300
+fn main() {
+    let a: u8 = 255;
+    print(a + 1);
+    let b: i8 = -5;
+    print(b);
+    let c: u16 = 65535;
+    print(c + 1);
+    let d: i16 = 300;
+    print(d);
+}

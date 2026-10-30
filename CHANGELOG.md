@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **DEC-040: `i8`/`i16`/`u8`/`u16` como contratos de tipo** — los cuatro
+  anchos se añaden al surface y a los dos typecheckers con las reglas de
+  `i32`: runtime i64 (`u8`+1 = 256), literal fuera de rango = error
+  compile-time (DEC-006) y sin promoción mixta. Pines:
+  `types/int_width_8_16.astra` + 3 `ui/` de rango/mezcla.
 - **Decisiones DEC-037/038/039 — cierre del bloque D5/D6/D8 del inventario**:
   strings = bytes como semántica primaria con capas Unicode por fases en
   stdlib (DEC-037); S3/`spawn` scoped con canales por defecto, cancelación

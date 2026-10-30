@@ -42,6 +42,8 @@ static Type *type_new_fn(Arena *a, Type **params, size_t param_count, Type *ret)
 static bool type_is_integer(Type *t) {
     return t && (t->kind == TYPE_INT || t->kind == TYPE_INT64 ||
                  t->kind == TYPE_UINT32 || t->kind == TYPE_UINT64 ||
+                 t->kind == TYPE_INT8 || t->kind == TYPE_INT16 ||
+                 t->kind == TYPE_UINT8 || t->kind == TYPE_UINT16 ||
                  t->kind == TYPE_INT_LITERAL);
 }
 
@@ -110,6 +112,10 @@ static const char *type_kind_name(TypeKind kind) {
     case TYPE_INT64:    return "i64";
     case TYPE_UINT32:   return "u32";
     case TYPE_UINT64:   return "u64";
+    case TYPE_INT8:     return "i8";
+    case TYPE_INT16:    return "i16";
+    case TYPE_UINT8:    return "u8";
+    case TYPE_UINT16:   return "u16";
     case TYPE_FLOAT:    return "f64";
     case TYPE_STRING:   return "string";
     case TYPE_OPTIONAL: return "optional";
@@ -135,6 +141,10 @@ void type_print(Type *t) {
     case TYPE_INT64:    printf("i64");      break;
     case TYPE_UINT32:   printf("u32");     break;
     case TYPE_UINT64:   printf("u64");     break;
+    case TYPE_INT8:     printf("i8");      break;
+    case TYPE_INT16:    printf("i16");     break;
+    case TYPE_UINT8:    printf("u8");      break;
+    case TYPE_UINT16:   printf("u16");     break;
     case TYPE_FLOAT:    printf("f64");      break;
     case TYPE_STRING:   printf("string");   break;
     case TYPE_OPTIONAL:
@@ -963,6 +973,12 @@ static Type *resolve_type_node(TypeChecker *tc, Node *node) {
         if (name.len == 3 && memcmp(name.str, "i64", 3) == 0) return type_new(tc->arena, TYPE_INT64);
         if (name.len == 3 && memcmp(name.str, "u32", 3) == 0) return type_new(tc->arena, TYPE_UINT32);
         if (name.len == 3 && memcmp(name.str, "u64", 3) == 0) return type_new(tc->arena, TYPE_UINT64);
+        /* DEC-040: los anchos 8/16 son contratos de tipo — el runtime sigue
+         * i64 (research/035 §13.2). */
+        if (name.len == 2 && memcmp(name.str, "i8", 2) == 0) return type_new(tc->arena, TYPE_INT8);
+        if (name.len == 3 && memcmp(name.str, "i16", 3) == 0) return type_new(tc->arena, TYPE_INT16);
+        if (name.len == 2 && memcmp(name.str, "u8", 2) == 0) return type_new(tc->arena, TYPE_UINT8);
+        if (name.len == 3 && memcmp(name.str, "u16", 3) == 0) return type_new(tc->arena, TYPE_UINT16);
         if (name.len == 3 && memcmp(name.str, "f64", 3) == 0) return type_new(tc->arena, TYPE_FLOAT);
         if (name.len == 6 && memcmp(name.str, "string", 6) == 0) return type_new(tc->arena, TYPE_STRING);
 
@@ -1360,6 +1376,10 @@ static void mangle_type_str(Type *t, char *buf, size_t cap, size_t *pos,
     case TYPE_INT64: PUTS("i64", 3); break;
     case TYPE_UINT32: PUTS("u32", 3); break;
     case TYPE_UINT64: PUTS("u64", 3); break;
+    case TYPE_INT8:   PUTS("i8", 2); break;
+    case TYPE_INT16:  PUTS("i16", 3); break;
+    case TYPE_UINT8:  PUTS("u8", 2); break;
+    case TYPE_UINT16: PUTS("u16", 3); break;
     case TYPE_FLOAT: PUTS("f64", 3); break;
     case TYPE_STRING: PUTS("string", 6); break;
     case TYPE_NIL:   PUTS("nil", 3); break;
@@ -2826,6 +2846,11 @@ static bool int_lit_fits(int64_t v, TypeKind k) {
     case TYPE_UINT32:  return v >= 0 && v <= (int64_t)UINT32_MAX;
     case TYPE_INT64:   return true;
     case TYPE_UINT64:  return v >= 0;
+    /* DEC-040: los anchos 8/16 — rango de su contrato, igual que i32. */
+    case TYPE_INT8:    return v >= INT8_MIN && v <= INT8_MAX;
+    case TYPE_INT16:   return v >= INT16_MIN && v <= INT16_MAX;
+    case TYPE_UINT8:   return v >= 0 && v <= (int64_t)UINT8_MAX;
+    case TYPE_UINT16:  return v >= 0 && v <= (int64_t)UINT16_MAX;
     default:           return true;
     }
 }

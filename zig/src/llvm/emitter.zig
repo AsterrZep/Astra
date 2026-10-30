@@ -5497,7 +5497,7 @@ pub const Emitter = struct {
     /// nodos de anotación). Null si el tipo no es representable.
     fn tyFromType(self: *Emitter, t: *const tc_types.Type) ?Annot {
         return switch (t.kind) {
-            .int, .int64, .uint32, .uint64, .int_literal => .{ .ty = .i64_ },
+            .int, .int64, .uint32, .uint64, .int8, .int16, .uint8, .uint16, .int_literal => .{ .ty = .i64_ },
             .bool_ => .{ .ty = .bool_ },
             .float => .{ .ty = .f64_ },
             .string => .{ .ty = .str_ },

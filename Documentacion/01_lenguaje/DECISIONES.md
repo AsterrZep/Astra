@@ -47,6 +47,7 @@
 | DEC-037 | **Strings = bytes como semántica primaria** (`len`/`s[i]`/`ord`/`chr`/`substr` miden bytes — reafirma DEC-013/018/020, no se reabren); las capas Unicode llegan **por fases en stdlib, no en el tipo**: `code_points(s)`/`graphemes(s)` como iteradores (UAX#29, protocolo del DEC de iteradores), `normalize(s, form)` opcional, `==` por bytes documentado + collation en librería, validación UTF-8 explícita (Result, no pánico) en la frontera de decodificación/FFI, anti-spoofing UTS#39 fuera del runtime; escapes `\u{...}` = candidato a DEC futura (hueco documentado) | Aceptada (doc) | 2026-10-30 | `research/038` §13; DEC-013/018/020 |
 | DEC-038 | **Concurrencia: `spawn` scoped + canales por defecto** (S3): `spawn` como sentencia con scope (bloque con join implícito al salir — modelo nursery/JEP 505, no «go libre»); cruzar fibras = **canales** (transportan ownership → el walk RT1 de DEC-023 se ejecuta en `send`/`recv`, no en cada acceso); cancelación por scope **idempotente** (falla una tarea → cancelar hermanos y esperar a todos); `transfer` sigue move-sin-copia con `.copy()`/`Atomic[T]` como escape (DEC-012/026); M:N con pilas dinámicas ~2 KB y **sin async/await** (plan ARCHITECTURE §3, targets spawn <150 ns / switch <100 ns) | Aceptada (doc) | 2026-10-30 | `research/039` §14; DEC-012/022/023/026; `ui/spawn_global_atomic.astra` queda para el PR de S3 (DEC-026 §5) |
 | DEC-039 | **RSS por backend** (D5, `research/040` Rec3): la ruta LLVM mantiene **techo plano** (`llvm_mem.sh` con dos fases: loop_reuse 64 MB + sonda de strings 128 MB); seed/zig/C siguen con arena **divergencia medida y documentada** (404/721/489 MB — cifra en la DEC, no gate falsamente rojo); **RC puro como contrato, ciclos documentados como bug del programador** (`weak` explícito cuando exista); Fase 2 opcional: colector de ciclos incremental (trial deletion, `gc_collect()` explícito — la cabecera `{rc,kind}` ya lo anticipa); **sin tracing GC**; arenas solo donde ya están (compilador, invariante 5) | Aceptada (gate) | 2026-10-30 | `zig/tests/llvm_mem.sh` (fase strings 128 MB) + `research/040` §11; enmienda el techo de DEC-009 solo en la cifra, no en el criterio |
+| DEC-040 | **`i8`/`i16`/`u8`/`u16` como contratos de tipo** (D10, `research/035` §13.2): se añaden al *surface* y a los dos typecheckers con las mismas reglas que `i32` — el runtime sigue siendo **i64 con wrap de dos complementos** en las 4 rutas (`u8`+1 = 256, no 0), literal fuera del rango anotado = **error compile-time** (DEC-006, rangos i8 [-128,127] · i16 · u8 [0,255] · u16), **sin promoción mixta** entre anchos; el techo de literales `u64` en `i64::MAX` queda como artefacto documentado del parser (candidato a DEC futura) | Aceptada (test-pinned) | 2026-10-30 | `types/int_width_8_16.astra` (EXPECT 256/-5/65536/300), `ui/int8_literal_range.astra`, `ui/uint8_literal_range.astra`, `ui/int_width_mix_rejected.astra` — primeras líneas idénticas seed↔zig |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1593,3 +1594,40 @@
   `research/040` §11; enmienda la **cifra** del techo de DEC-009, no su
   criterio (el de loop_reuse queda en 64 MB).
 - **Spec**: pendiente de escribir en `ARCHITECTURE.md` §8.6 (memoria).
+
+### DEC-040 — `i8`/`i16`/`u8`/`u16`: contratos de tipo, runtime i64
+- **Estado**: Aceptada (test-pinned) — implementada en los dos typecheckers
+  en este PR; cierra D10 del inventario.
+- **Fecha**: 2026-10-30.
+- **Decisión**: los anchos 8/16 se añaden al *surface* del lenguaje como
+  **contratos de tipo** (mismo mecanismo que `i32` hoy, que tampoco envuelve
+  a 32 bits — `research/035` §13.2): el runtime sigue siendo **i64 con wrap
+  de dos complementos definido** (DEC-007) en las cuatro rutas, de modo que
+  `let x: u8 = 255; print(x + 1)` imprime `256`. Reglas heredadas de los
+  anchos existentes:
+  - literal fuera del rango anotado = **error compile-time** (DEC-006):
+    i8 [-128, 127], i16 [-32768, 32767], u8 [0, 255], u16 [0, 65535]
+    (mensaje `integer literal N out of range for T`, primera línea
+    byte-idéntica seed↔zig);
+  - **sin promoción mixta**: `i8` + `i16` se rechaza (`type mismatch:
+    cannot apply '+' to i8 and i16`), igual que `i32` vs `i64`;
+  - el literal polimórfico adopta el ancho del contexto (regla de adopción
+    de DEC-006).
+  El techo de literales `u64` en `i64::MAX` (artefacto de representar
+  literales en el `i64` del host — `research/035` §13.2) queda **documentado
+  y sin tocar**: candidato a DEC futura.
+- **Alternativas consideradas**: añadirlos con wrap real a 8/16 bits
+  (cambia el modelo de runtime en 4 rutas — no es lo que hace `i32` hoy);
+  deferirlos (el hueco frente a todos los lenguajes de la tabla de 035 era
+  el más notable: binarios/texto/protocolos).
+- **Coste aceptado**: `u8`+1 = 256 confundirá a quien espere wrap a 8 bits —
+  es el MISMO contrato documentado de `u32`+1 = 4294967296 (DEC-007); el
+  typechecker self-hosteado (`typechecker.astra`) aún no resuelve estos
+  anchos (backlog M-T4, los fixtures nuevos no entran al corpus hasta que
+  lo hagan).
+- **Evidencia**: `types/int_width_8_16.astra` (EXPECT 256/-5/65536/300),
+  `ui/int8_literal_range.astra`, `ui/uint8_literal_range.astra`,
+  `ui/int_width_mix_rejected.astra` — primera línea idéntica seed↔zig
+  (`ui_message_parity.sh`).
+- **Spec**: pendiente de escribir en `ARCHITECTURE.md` §8 (enteros); DEC-006
+  (rango) y DEC-007 (wrap) cubren las reglas heredadas.
