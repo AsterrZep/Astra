@@ -1,0 +1,13 @@
+// Sonda RSS de strings (DEC-039): 300 k allocs de string en un bucle
+// sostenido. La ruta LLVM los libera por RC en cada iteración y debe
+// quedarse plana (techo 128 MB en llvm_mem.sh); las rutas de arena
+// (seed/zig VM, C) crecen — divergencia medida y documentada en la DEC
+// (404/721/489 MB, research/040 §12), sin gate.
+fn main() {
+    let mut i = 0;
+    while i < 300000 {
+        let s = to_string(i);
+        i = i + 1;
+    }
+    print(i);
+}
