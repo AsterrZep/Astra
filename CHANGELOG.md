@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **DEC-043: retención del backend C** (D13, cierra App. B #5 y el
+  presupuesto de decisiones del ciclo al 20,5 %): `--emit-c` se conserva
+  indefinidamente como ruta de verificación de bootstrap — segunda
+  implementación independiente del bytecode, presente en cada gate de
+  paridad y necesario para la Fase 3 de DEC-041; revisable por DEC
+  futura si una doble compilación lo reemplaza.
 - **DEC-021 implementada — la CLI `astraea` existe** (D1): driver estilo
   Cargo en `cli/` (`run`/`build`/`init`/`version`) que invoca a `astra-zig`;
   `build` hace `--emit-obj` + link con cc (runtime instalado como hermano

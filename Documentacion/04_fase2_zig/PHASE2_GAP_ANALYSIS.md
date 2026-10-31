@@ -797,7 +797,14 @@ Because the toolchain is ours, debugging can go further than C++:
    `ui/struct_nominal_rejected.astra`. Véase §7.3 (texto corregido).
 3. **Generics implementation:** Monomorphization (C++-style) or type erasure (Go-style)?
 4. **Async model:** Stackful fibers (Go-style) or stackless (Rust-style)?
-5. **C backend retention:** Keep as bootstrap tool, or replace once native backend works?
+5. **C backend retention:** ~~Keep as bootstrap tool, or replace once
+   native backend works?~~
+   **Resolved (2026-10-30, DEC-043):** se conserva **indefinidamente como
+   ruta de verificación** (no como destino distribuible) — segunda
+   implementación independiente del bytecode, presente en cada gate de
+   paridad (`sweep_emit_c`, ruta C del `typechecker_gate`, `llvm_parity`)
+   y necesario para la Fase 3 de DEC-041; una doble compilación futura que
+   lo reemplaze lo superscribirá con su propia DEC.
 6. **Module path syntax:** ~~`use std.io` (dot-separated) or `use "std/io"` (path string)?~~
    **Resolved (Phase 2.2, 2026-09-28): dot-separated.**
    Dot-separated segments — the form every module example in the repository

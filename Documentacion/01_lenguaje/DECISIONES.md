@@ -50,6 +50,7 @@
 | DEC-040 | **`i8`/`i16`/`u8`/`u16` como contratos de tipo** (D10, `research/035` §13.2): se añaden al *surface* y a los dos typecheckers con las mismas reglas que `i32` — el runtime sigue siendo **i64 con wrap de dos complementos** en las 4 rutas (`u8`+1 = 256, no 0), literal fuera del rango anotado = **error compile-time** (DEC-006, rangos i8 [-128,127] · i16 · u8 [0,255] · u16), **sin promoción mixta** entre anchos; el techo de literales `u64` en `i64::MAX` queda como artefacto documentado del parser (candidato a DEC futura) | Aceptada (test-pinned) | 2026-10-30 | `types/int_width_8_16.astra` (EXPECT 256/-5/65536/300), `ui/int8_literal_range.astra`, `ui/uint8_literal_range.astra`, `ui/int_width_mix_rejected.astra` — primeras líneas idénticas seed↔zig |
 | DEC-041 | **Alcance de la Fase 3** (D2): los componentes self-hosted siguen **single-file** hasta el emitter inclusive (lexer ✅ → parser ✅ → typechecker ✅ → **emitter en Astra-0 es el siguiente y último** — «codegen va el último», `research/028` §5); el árbol multi-fichero `src/compiler/` y la doble compilación llegan **con la CLI** (Step 4 de DEC-032, D1/DEC-021); la Fase 3 se gatilla con: emitter gateado por paridad de bytecode contra el seed + `std/…` real + árbol — entonces astra-zig compila el compilador Astra y ese binario se compila a sí mismo (doble compilación, `COMPILER_STRATEGY` §6.3); la retención del seed tras la primera doble compilación es D13, no esta DEC | Aceptada (doc) | 2026-10-30 | `research/028` §5; DEC-032 (Step 4 con la CLI); `COMPILER_STRATEGY` §6 |
 | DEC-042 | **Límites del VM: `VM_STACK_SIZE` 1024 → 8192 y `VM_CALL_DEPTH` 256 → 1024** (espejos C `ASTRA_FRAME_SIZE`/`ASTRA_CALL_DEPTH` y zig VM alineados): el parser self-hosteado tiene que poder recorrer los 256 niveles de `PARSER_MAX_DEPTH` — medido (issue #91): ~20 slots por enlace `else if` (≈5120) y ~2.5 frames por nivel de paréntesis (≈640); los techos nuevos los cubren con margen. Los fixtures que pineaban el techo viejo se **crecen** en el mismo PR (array 1100 → 8300 elementos; `countdown(2000)` ya dispara > 1024). Con esto `ui/deep_elseif` (260:15) y `ui/nesting_too_deep` (5:273) entran al corpus con paridad de primer error **byte-idéntica en las 4 rutas** | Aceptada (test-pinned) | 2026-10-30 | `expressions/{stack_overflow_limit,recursion_depth_limit,deep_recursion}.astra`, `codegen/{stack_overflow_limit,frame_overflow}.astra` (crecidos), corpus 258 → 260 (`typechecker_gate.sh` ×4 rutas), issue #91 |
+| DEC-043 | **Retención del backend C** (D13, App. B #5): `--emit-c` se conserva **indefinidamente como ruta de verificación de bootstrap** — no como destino distribuible: es la SEGUNDA implementación independiente del bytecode (emitter → C → gcc), así que cada gate diferencia C contra el VM y viceversa (`sweep_emit_c` en `make test`, la ruta C del `typechecker_gate` 260/260, `llvm_parity` VM↔C↔zig↔LLVM); la Fase 3 lo necesita además (DEC-041: el seed compila el árbol y el C prueba el bytecode sin depender de los VMs). Si una doble compilación futura lo reemplaza, una nueva DEC superscribirá este registro — es revisable, como toda Aceptada | Aceptada (doc) | 2026-10-30 | App. B #5 resuelta citando esta DEC; gates `sweep_emit_c` (164), `typechecker_gate` C 260/260, `llvm_parity` 225/225 |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1713,3 +1714,34 @@
   rutas** (verificación en el PR), issue #91 cerrado.
 - **Spec**: `ARCHITECTURE.md` §11 (VM) — actualizar los números si citan
   los techos.
+
+### DEC-043 — Retención del backend C: verificación de bootstrap indefinida
+- **Estado**: Aceptada (doc) — cierra D13 (App. B #5) y **el presupuesto
+  de decisiones del ciclo** (31/151 = 20,5 % ≥ 20 %).
+- **Fecha**: 2026-10-30.
+- **Decisión**: `--emit-c` (`seed/src/codegen.c` + `codegen_runtime.h`) se
+  conserva **indefinidamente como ruta de verificación de bootstrap** — no
+  como destino distribuible. Razones: (a) es la **segunda implementación
+  independiente** del bytecode (emitter → C → gcc), así que toda paridad
+  diferencia dos implementaciones reales, no el VM contra sí mismo:
+  `sweep_emit_c` (164 ficheros en `make test`), la ruta C del
+  `typechecker_gate` (260/260) y `llvm_parity` (VM↔C↔zig↔LLVM, 225/225);
+  (b) la **Fase 3 lo necesita** (DEC-041): el seed compila el árbol Astra
+  y el C prueba el bytecode sin depender de los VMs; (c) `research/028` §5
+  y el patrón bootstrap medido (C/Rust/Go/Zig) no exigen retirarlo nunca.
+- **Lo que NO significa**: no es un destino de distribución (sin cross, sin
+  empaquetado — eso es el backend LLVM y la futura CLI); no crece con
+  features nuevas del lenguaje más allá de lo que el bytecode expone
+  (cada gap ya es una divergencia documentada de los issues de
+  `research/034`).
+- **Alternativas consideradas**: retirarlo cuando el backend nativo
+  funcionase (pierde la segunda implementación — los gates se volverían
+  auto-referenciales); mantenerlo solo hasta Fase 3 (se crea un apagón
+  intermedio que nadie gobierna).
+- **Coste aceptado**: mantener `codegen.c` vivo (ya obligatorio en cada
+  `make test`); si una doble compilación futura lo reemplaza, una nueva
+  DEC superscribirá este registro — es revisable, como toda Aceptada.
+- **Evidencia**: App. B #5 resuelta citando esta DEC; gates
+  `sweep_emit_c` (164/0), `typechecker_gate` ruta C (260/260),
+  `llvm_parity` (225/225 ×2).
+- **Spec**: pendiente de escribir en `COMPILER_STRATEGY` §4 (backends).
