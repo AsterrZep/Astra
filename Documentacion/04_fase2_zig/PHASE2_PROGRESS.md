@@ -31,7 +31,7 @@ verificado: compila y ejecuta la suite del seed con salida idéntica.**
 | VM (`src/vm/vm.zig`) | ✅ | 54 opcodes, frames de llamada, globals, builtins (`print`), `Option`/`Result` y `?`; **closures** (`closure` clona el FnObj plantilla con el env capturado; `get_capture` lee `stack[base]`, que guarda el callee durante toda la llamada); mismos textos de error que el seed; salida de floats con `%g` de C |
 | Driver (`src/main.zig`) | ✅ | Por defecto compila **y ejecuta**; `--dump-tokens`, `--dump-ast`, `--dump-modules`, `--dump-bytecode`, `--debug` (depurador de bytecode) y, con `-Dllvm`, los modos `--emit-llvm`/`--emit-llvm-stdout`/`--emit-obj`/`--jit`; salida 1 ante error de compilación o de runtime. Diagnósticos por fase ruteados a un sink único (`src/diagnostics.zig`, §7.4) |
 | Diagnósticos (`src/diagnostics.zig`) | ✅ | Registro `Diagnostic{file, span, msg}` con un único formato `file:line:col: error: msg` (degrada a `file:line:` / `file:` / `error:`); parser, type checker, emitter y loader emiten a través de él; las fases sin sink imprime directo con el mismo formato |
-| Módulos (`src/modules/` + driver) | 🟡 | Carga, gating `pub` y compilación multi-módulo en el CLI Zig (§7.3): `import`/`from` resuelven (reglas 1–2), imports tipados contra los exports del módulo exportador, globals manglados y ejecución en orden de dependencias. `use` (re-exports) y valores de structs/enums foráneos quedaron cubiertos (2026-10-12, §7.3); la raíz `@/` se resuelve desde `astra.toml` (App. B #10 cerrado) y `std/…` se rechaza con diagnóstico hasta que exista stdlib |
+| Módulos (`src/modules/` + driver) | 🟡 | Carga, gating `pub` y compilación multi-módulo en el CLI Zig (§7.3): `import`/`from` resuelven (reglas 1–2), imports tipados contra los exports del módulo exportador, globals manglados y ejecución en orden de dependencias. `use` (re-exports) y valores de structs/enums foráneos quedaron cubiertos (2026-10-12, §7.3); la raíz `@/` se resuelve desde `astraea.toml` (App. B #10 cerrado) y `std/…` se rechaza con diagnóstico hasta que exista stdlib |
 
 ### Verificación medida
 
@@ -140,7 +140,7 @@ Ordenado por dependencia y valor para el bootstrap.
 | 6 | `--dump-tokens` / `--dump-ast` con paridad de formato | ✅ | byte-idénticos al seed: gate `zig/tests/dump_parity.sh` (job `parity` de CI) sobre conformance no-UI + codegen + `zig/tests/dump_probes/` (147 ficheros, 0 divergencias). `src/dump.zig` reimplementa el `%g` de C sin libc (tests contra gcc) y `Tag.seedName()` espeja `token_kind_name`. Mirrors lossy a propósito del seed, replicados: `Use` sin path, guard de match omitido, `CompoundAssign` sin hijos |
 | 7 | **Depurador de bytecode** (`--debug`) | ✅ | breakpoints por línea Astra, `step`, pila/locales/frames; resuelve la decisión §12.5-2 de `Documentacion/04_fase2_zig/PHASE2_GAP_ANALYSIS.md` (construirlo con la VM, sin esperar a LLVM) |
 | 8 | **Módulos (Fase 2.2) — paso 1**: `use`/`import`/`from` en lexer y parser | ✅ | rutas punteadas (`.`, no `::`); nodos `use_decl`/`import_decl`/`from_decl`/`import_item`; el seed reconoce ya las mismas tres formas; sin resolución todavía. Ver §7 |
-| 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | ✅ | Carga, exports `pub`, gating y compilación multi-módulo en el CLI (§7.3). Los re-exports (`use`) y los valores struct/enum foráneos quedaron cubiertos (2026-10-12); la raíz `@/` se resuelve contra el `astra.toml` del proyecto (App. B #10 cerrado 2026-10-12) y `std/…` se rechaza con diagnóstico hasta que exista stdlib |
+| 9 | **Módulos — paso 2**: resolución de rutas, tabla de módulos y cargador | ✅ | Carga, exports `pub`, gating y compilación multi-módulo en el CLI (§7.3). Los re-exports (`use`) y los valores struct/enum foráneos quedaron cubiertos (2026-10-12); la raíz `@/` se resuelve contra el `astraea.toml` del proyecto (App. B #10 cerrado 2026-10-12) y `std/…` se rechaza con diagnóstico hasta que exista stdlib |
 | 10 | **InternPool de tipos** (substrato de genéricos) | ✅ | `src/typechecker/types.zig`: pool hash-consed con identidad canónica (struct/enum por nombre); `typeEq` = fast-path de puntero + reglas de unificación del seed recursivas en compuestos (`array(int_literal)` ≡ `[]i32`); fn sin retorno anotado normalizado a `void` (paridad con `a.ret orelse voidType` del seed). 53/53 tests. Sustituye el diseño "un heap-node por ocurrencia" (`Documentacion/04_fase2_zig/PHASE2_ARCHITECTURE.md` §3.3) |
 | 11 | **Colección de declaraciones** (forward-refs de tipo) | ✅ | Pase 0 en ambos compiladores (`typecheck_module_pass`/`checkModule`): registra nombres de struct/enum con layout vacío antes de resolver firmas y fields, así las declaraciones se referencian en cualquier orden (incl. recursión mutua). Caso nuevo `types/forward_type_refs.astra`; suite 96/96 seed, 53/53 zig. Los structs anidados en cuerpos de función siguen sin funcionar (paridad — ya fallaban igual antes) |
 | 12 | **Traits y métodos (Fase 2.3) — pasos 1–5** | ✅ | `trait`/`impl` parsean en nodos, el type checker registra la tabla de métodos por tipo nominal y baja los cuerpos, `x.m()` hace dispatch estático al global `Type.method`/`Type.Trait.method`, y un `impl T for X` se valida contra las firmas del trait (sin defaults). Semántica y límites en §8; suites 123/123 seed, 73/73 zig, paridad 83/83 |
@@ -308,7 +308,7 @@ la paridad no dice nada de este terreno. Hace cuatro cosas y ninguna más.
 Identifier (("." | "/") Identifier)*`, App. B #10): las reglas 1 y 2 (relativa
 y sub-ruta) resuelven contra el directorio del fichero que importa — `mesh` →
 `mesh.astra`, `geometry.mesh` → `geometry/mesh.astra`; la regla 3 ancla `@/…`
-al directorio con `astra.toml` más cercano por encima del fichero de entrada,
+al directorio con `astraea.toml` más cercano por encima del fichero de entrada,
 descubierto una vez por `Loader.load` (**sólo se comprueba la existencia**:
 leer `[package]` y las dependencias es trabajo del package manager); la
 regla 4 rechaza `std/…` con un diagnóstico explícito (aún no hay stdlib),
@@ -470,7 +470,7 @@ Alcance y límites conocidos, todos documentados en el código:
   re-exportados se resuelven por registro, no por global. Lo que §10.5 pinta
   como re-export del **nombre de un módulo** (`utils.Logger.info`) sigue
   abierto (App. B #13).
-- La raíz `@/` (§7.1, regla 3) se resuelve desde el `astra.toml` que el
+- La raíz `@/` (§7.1, regla 3) se resuelve desde el `astraea.toml` que el
   loader descubre caminando hacia arriba desde el fichero de entrada, y
   `std/…` se rechaza con un diagnóstico explícito (App. B #10, resuelto
   2026-10-12); la stdlib en sí sigue sin existir.

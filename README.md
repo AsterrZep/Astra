@@ -195,7 +195,7 @@ States — never a bare `[x]`:
 | Memory model (ARC/ORC, cycle detection, fiber-aware) | **Specified — not implemented** | ARCHITECTURE §2; `vm.c` never frees (`grep -c 'free(' seed/src/vm.c` → 0, arena-only), no cycle detection, no fiber-awareness. Ref-counting exists only on the LLVM route (M4.e, no cycles) |
 | Concurrency model (green threads, channels, atomics) | **Specified — not implemented** | ARCHITECTURE §3/§35; `grep -riE "fiber\|scheduler\|spawn\|channel\|Atomic\[" seed/src zig/src` → **1** (a comment: «no fiber crossing yet»). Enforcement v1 exists *without* fibers: `transfer(x)` + S1/S2 + nil-red + `.copy()` (DEC-012/022/026/027, phases E1/E2 — `INDICE.md` «Enforcement entre fibras»); `spawn` and RT1 (DEC-023) → not started |
 | Standard library design (~64 modules) | **Specified** | `research/015`, ARCHITECTURE §32; `std/…` is rejected by the Zig CLI |
-| Package manager design | **Specified** | `research/016`, ARCHITECTURE §33; only `@/` root resolution from `astra.toml` |
+| Package manager design | **Specified** | `research/016`, ARCHITECTURE §33; only `@/` root resolution from `astraea.toml` |
 | Formal grammar (EBNF) | **Specified + gated** | `research/001` §12.1; `./astra-seed --check-constructs` → 47 constructs / 27 operators, registry⇔lexer⇔parser agree |
 | Compiler strategy (C → Zig → Astra bootstrapping) | **Specified** | `COMPILER_STRATEGY.md` §7.1 rewritten as-built (manual port + gates) — correction landed2026-10-27, `research/029` §1 |
 

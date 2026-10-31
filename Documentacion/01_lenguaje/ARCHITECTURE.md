@@ -521,7 +521,7 @@ import std/io                          // biblioteca estándar
 
 1. **Relativa:** `import mesh` → busca `mesh.astra` en el mismo directorio.
 2. **Sub-ruta:** `import geometry.mesh` → busca `geometry/mesh.astra`.
-3. **Absoluta desde raíz:** `import @/utils/logger` → desde el directorio de `astra.toml`.
+3. **Absoluta desde raíz:** `import @/utils/logger` → desde el directorio de `astraea.toml`.
 4. **Estándar:** `import std/io` → siempre resuelve a la stdlib.
 
 ### 10.5 Re-exports
@@ -549,7 +549,7 @@ sentencia; las cadenas componen en orden de dependencias).
 
 El compilador detecta ciclos en tiempo de compilación y reporta error con sugerencias de resolución (fusionar módulos o extraer tipos compartidos).
 
-### 10.7 Manifest del Proyecto: `astra.toml`
+### 10.7 Manifest del Proyecto: `astraea.toml`
 
 ```toml
 [package]
@@ -2092,12 +2092,12 @@ YAML, protobuf, linear algebra completa, statistics, image processing, database 
 > **Nombre del manifest (DEC-021, 2026-10-28)**: el nombre decidido de
 > destino es **`astraea.toml`** (+ `astraea.lock`, CLI `astraea`) — patrón
 > «nombre propio de la herramienta» (`Cargo.toml`). Hoy se sigue usando
-> `astra.toml` como marcador de raíz de proyecto (§10 / `modules.zig`); el
+> `astraea.toml` como marcador de raíz de proyecto (§10 / `modules.zig`); el
 > rename llega de una vez cuando exista la CLI unificada. Investigación y
 > mediciones de colisión en `DECISIONES.md` DEC-021.
 
 ```toml
-# astra.toml   (→ astraea.toml con la CLI, ver DEC-021)
+# astraea.toml   (→ astraea.toml con la CLI, ver DEC-021)
 [package]
 name = "myproject"
 version = "0.1.0"
@@ -2631,7 +2631,7 @@ Idea → Discussion → Proposal → Core Team Review → Accept/Reject
 ### 40.5 Backwards Compatibility: Edition System
 
 ```toml
-# astra.toml
+# astraea.toml
 [package]
 edition = "2025"  # opt-in, como Rust
 ```

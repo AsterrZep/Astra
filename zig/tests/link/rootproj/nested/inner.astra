@@ -1,4 +1,4 @@
-// Reached from a subdirectory: `@/` still anchors at astra.toml's directory,
+// Reached from a subdirectory: `@/` still anchors at astraea.toml's directory,
 // so this resolves to <root>/lib/util.astra, NOT to nested/lib/util.astra.
 from @/lib.util import twice
 

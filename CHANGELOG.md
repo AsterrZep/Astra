@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **DEC-021 implementada — la CLI `astraea` existe** (D1): driver estilo
+  Cargo en `cli/` (`run`/`build`/`init`/`version`) que invoca a `astra-zig`;
+  `build` hace `--emit-obj` + link con cc (runtime instalado como hermano
+  del binario, sin rutas del repo); **rename del marcador de raíz
+  `astra.toml` → `astraea.toml` de una vez** (resolver `modules.zig`,
+  mensaje `no astraea.toml found`, 3 fixtures + ejemplos del libro); gate
+  `cli/cli_gate.sh` (8/8) cableado en el job `llvm` de CI; DEC-021 pasa a
+  `Aceptada (test-pinned)`.
 - **DEC-042: límites del VM 8192/1024 — issue #91 cerrado, corpus 258 → 260**
   — `VM_STACK_SIZE` 1024 → 8192 y `VM_CALL_DEPTH` 256 → 1024 con los
   espejos C y zig alineados: el parser self-hosteado recorre ahora los

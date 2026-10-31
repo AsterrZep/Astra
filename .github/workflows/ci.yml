@@ -212,6 +212,11 @@ jobs:
       - name: Build zig with the LLVM backend
         run: zig build -Dllvm
         working-directory: zig
+      # CLI astraea (DEC-021): init/run/build + marcador de raíz
+      # `astraea.toml`. La fase build necesita este -Dllvm (astra-zig
+      # --emit-obj), por eso vive aquí y no en el job zig.
+      - name: CLI astraea (DEC-021)
+        run: ./cli/cli_gate.sh
       # Self-hosting gates with the LLVM routes enabled (DEC-017 + DEC-025):
       # this is the only job with a -Dllvm zig, so here lexer_gate and
       # parser_gate exercise zig VM, --jit, --emit-obj+link and (skipping

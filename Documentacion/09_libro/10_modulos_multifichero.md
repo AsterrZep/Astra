@@ -7,7 +7,7 @@ fichero nuevo, escribes `pub` en lo que quieras exportar, y otro fichero lo
 importa.
 
 Este capítulo describe el sistema **real**, no el plan de diseño: `use`,
-`pub`, rutas con punto (`DEC-003`), la raíz `@/` anclada en `astra.toml`, el
+`pub`, rutas con punto (`DEC-003`), la raíz `@/` anclada en `astraea.toml`, el
 orden de ejecución entre ficheros y —con la misma importancia— **quién puede
 compilar multi-fichero hoy y quién no**.
 
@@ -24,7 +24,7 @@ El ejemplo vive en `Documentacion/09_libro/ejemplos/10_multifichero/`:
 
 ```text
 10_multifichero/
-├── astra.toml            # marcador de raíz de proyecto (para `@/`)
+├── astraea.toml            # marcador de raíz de proyecto (para `@/`)
 ├── main.astra            # la raíz: declara imports y tiene `main`
 ├── lib/util.astra        # dependencia de nivel de proyecto
 └── geometry/shape.astra  # submódulo relativo a main.astra
@@ -63,7 +63,7 @@ fn helper() -> i32 {
 
 ```astra
 // Ejemplo del capítulo 10 — programa multi-fichero de verdad:
-//   astra.toml          raíz del proyecto (marca `@/`)
+//   astraea.toml          raíz del proyecto (marca `@/`)
 //   lib/util.astra      dependencia de nivel raíz
 //   geometry/shape.astra submódulo relativo a este fichero
 from @/lib.util import twice
@@ -172,15 +172,15 @@ importa_privado.astra:8:11: error: undefined variable 'private_diag'
 - **Relativo al fichero que importa**: desde `main.astra`,
   `geometry.shape` busca `geometry/shape.astra` al lado suyo. Un hermano se
   importa por su nombre suelto (`vector`), no por la ruta completa.
-- **`@/` se ancla en el `astra.toml`**: el cargador camina hacia arriba desde
-  el fichero de entrada hasta encontrar el primer directorio con `astra.toml`
+- **`@/` se ancla en el `astraea.toml`**: el cargador camina hacia arriba desde
+  el fichero de entrada hasta encontrar el primer directorio con `astraea.toml`
   y resuelve `@/lib.util` como `<raíz>/lib/util.astra` — por eso funciona
   igual desde `main.astra` que desde `nested/inner.astra`. **Sólo se comprueba
   la existencia** del manifest; leer `[package]` o `[dependencies]` es hoy
   trabajo del (futuro) package manager. Sin manifest:
 
 ```text
-sin_manifest.astra: error: cannot resolve '@/base': no astra.toml found (project root)
+sin_manifest.astra: error: cannot resolve '@/base': no astraea.toml found (project root)
 ```
 
 - **`std/...` (con barra) se rechaza**: no hay stdlib.
@@ -279,7 +279,7 @@ Todo esto está verificado hoy (fuentes: `PHASE2_PROGRESS.md` §7, tests
 |:-------|:----------|
 | El seed no resuelve módulos | `undefined variable` por cada nombre importado (parsea y descarta) |
 | No hay stdlib | `cannot resolve 'std/io': no standard library exists yet` |
-| `astra.toml` sólo es marcador | `[dependencies]` no se lee; no hay registry ni versiones |
+| `astraea.toml` sólo es marcador | `[dependencies]` no se lee; no hay registry ni versiones |
 | Los **structs/traits genéricos no se exportan** | `module 'x' does not export 'Box'` — los exports filtran las plantillas genéricas (cap. 9) |
 | Traits y `impl` **no cruzan módulos** | cada módulo tiene su tabla de métodos; `from dep import T` no trae traits |
 | `pub` no va en campos ni en `let` | `expected field name, got pub` / `'pub' can only precede...` |
@@ -289,7 +289,7 @@ Todo esto está verificado hoy (fuentes: `PHASE2_PROGRESS.md` §7, tests
 
 ## Aún no existe
 
-- **Package manager**: `astra.toml` con `[dependencies]` y registry —
+- **Package manager**: `astraea.toml` con `[dependencies]` y registry —
   `research/016` y `ARCHITECTURE.md` §10.7 son diseño, no código.
 - **stdlib** (`std/io`, `std/fs`, …): la gramática la admite, ningún módulo
   la trae.
@@ -306,7 +306,7 @@ Todo esto está verificado hoy (fuentes: `PHASE2_PROGRESS.md` §7, tests
   segmento como namespace), `import X as m` (alias); `use X` re-exporta un
   nivel.
 - **Rutas** con `.` (DEC-003, `::` rechazado), `/` intercambiable, relativas
-  al fichero importador, `@/` anclado en el `astra.toml` más cercano hacia
+  al fichero importador, `@/` anclado en el `astraea.toml` más cercano hacia
   arriba (sólo su existencia), `std/` rechazado por no existir stdlib.
 - **Ejecución post-order**: dependencias primero (su código de nivel módulo
   incluido), raíz la última; ciclos → `circular import: ...`.

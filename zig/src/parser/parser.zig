@@ -1750,7 +1750,7 @@ test "`::` is not a module path separator" {
 }
 
 // ARCHITECTURE §10.4 rules 3-4: `@/` anchors at the directory containing
-// astra.toml, `/` and `.` are equivalent segment separators, and the path is
+// astraea.toml, `/` and `.` are equivalent segment separators, and the path is
 // kept exactly as written (the seed stores the same source slice, so
 // --dump-ast agrees byte for byte).
 test "module paths accept the @/ root prefix and slash separators" {
