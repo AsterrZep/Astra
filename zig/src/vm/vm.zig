@@ -33,8 +33,11 @@ const EnumObj = bc.EnumObj;
 const StructDef = bc.StructDef;
 const EnumDef = bc.EnumDef;
 
-const VM_STACK_SIZE = 1024;
-const VM_CALL_DEPTH = 256;
+// DEC-042: espejo del seed (priv.h) — el parser self-hosteado recorre
+// 256 niveles de PARSER_MAX_DEPTH; issue #91 midió ~20 slots/enlace
+// else-if y ~2.5 frames/nivel de paréntesis.
+const VM_STACK_SIZE = 8192;
+const VM_CALL_DEPTH = 1024;
 const VM_MAX_GLOBALS = 256;
 const MAX_BREAKPOINTS = 64;
 

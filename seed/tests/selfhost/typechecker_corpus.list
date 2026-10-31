@@ -5,21 +5,14 @@
 # Directiva: (E) = EXPECT-ERROR → veredicto REJECT + paridad de la primera
 # línea; (P) = EXPECT y (R) = EXPECT-RUNTIME-ERROR → veredicto ACCEPT.
 #
-# Excluidos de los 98 (6 — capas ajenas al typechecker M-T2, nunca en
+# Excluidos de los 98 (4 — capas ajenas al typechecker M-T2, nunca en
 # silencio; cada uno con su motivo):
-#   ui/deep_elseif · ui/nesting_too_deep ->
-#   PARSER_MAX_DEPTH: el guard ya está en parser.astra (penter/pleave),
-#   pero la ruta VM no puede recurrir 256 niveles — VM_STACK_SIZE=1024 y
-#   VM_CALL_DEPTH=256 (pineados por recursion_depth_limit/stack_overflow_
-#   limit) desbordan antes (empírico: ~50 enlaces else-if, ~100 niveles de
-#   paréntesis); se desbloquean con la DEC de límites del VM (issue #91),
-#   que además los mete en el corpus. expr_chain_deep SÍ está en el corpus
-#   (cadena iterativa + chain_len).
 #   ui/break_outside_loop · ui/continue_outside_loop · ui/loop_nesting_deep ·
 #   ui/too_many_locals  -> mensajes del EMITTER (capa posterior)
 # Cerrados desde la clasificación inicial: break_value, var_keyword,
-# integer_literal_out_of_range, invalid_escape (parser/lexer) ya están EN
-# el corpus.
+# integer_literal_out_of_range, invalid_escape (parser/lexer) y los 3 de
+# PARSER_MAX_DEPTH (expr_chain_deep por chain_len; deep_elseif y
+# nesting_too_deep con la DEC-042 de límites del VM) ya están EN el corpus.
 arrays/bool_equality.astra
 arrays/len_array.astra
 arrays/literal_index.astra
@@ -93,6 +86,7 @@ ui/builtin_shadow_substr.astra
 ui/builtin_shadow_to_string.astra
 ui/builtin_shadow_transfer.astra
 ui/call_non_function.astra
+ui/deep_elseif.astra
 ui/duplicate_function.astra
 ui/elseif_tail_rejected.astra
 ui/expr_chain_deep.astra
@@ -102,6 +96,7 @@ ui/index_non_array.astra
 ui/int_literal_range.astra
 ui/int_literal_range_unsigned.astra
 ui/missing_return_value.astra
+ui/nesting_too_deep.astra
 ui/null_rejected.astra
 ui/reassign_function.astra
 ui/toplevel_return.astra

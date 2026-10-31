@@ -348,7 +348,7 @@ Asimetrías que quedan a propósito:
 
 | Asimetría | Por qué |
 |:----------|:--------|
-| El VM corta por **profundidad de llamada** (256 frames, `VM_CALL_DEPTH`) y el C por **ranuras de pila** (`ASTRA_FRAME_SIZE`) | El VM necesita un array fijo de metadatos por frame; el backend de C usa la pila de C como metadatos y solo tiene el presupuesto de operandos. Los dos topes son distintos en *tipo*, no en intención: ambos terminan con diagnóstico |
+| El VM corta por **profundidad de llamada** (1024 frames, `VM_CALL_DEPTH` — DEC-042) y el C por **ranuras de pila** (`ASTRA_FRAME_SIZE`) | El VM necesita un array fijo de metadatos por frame; el backend de C usa la pila de C como metadatos y solo tiene el presupuesto de operandos. Los dos topes son distintos en *tipo*, no en intención: ambos terminan con diagnóstico |
 
 ## 4. Pendiente para completar la Fase 1
 
@@ -831,13 +831,14 @@ terminador, sin escapes de string, sin hex.
      corpus con primer error idéntico (`7:524`).
    **Sigue (M-T4+)**: **genéricos** y **ownership/transfer** fuera del
    corpus; los mensajes del **emitter** (`ui/too_many_locals`,
-   `ui/capture_assign` — sin columna, familia ya documentada); los **2
+   `ui/capture_assign` — sin columna, familia ya documentada). Los **2
    límites de profundidad recursivos** (`ui/deep_elseif`,
-   `ui/nesting_too_deep`) siguen excluidos — la ruta VM no puede recurrir
-   256 niveles con `VM_STACK_SIZE=1024`/`VM_CALL_DEPTH=256` pineados por
-   conformance (empírico: ~50 enlaces else-if, ~100 paréntesis; issue
-   #91: DEC de límites del VM); después, el **emitter en Astra-0**
-   (`research/028` §5: codegen el último).
+   `ui/nesting_too_deep`) se cerraron con la **DEC-042** (los techos del
+   VM suben a `VM_STACK_SIZE=8192`/`VM_CALL_DEPTH=1024` — issue #91: la
+   ruta VM no podía recurrir 256 niveles con los viejos 1024/256,
+   empírico ~50 enlaces else-if / ~100 paréntesis) → corpus **258 → 260**
+   con paridad de primer error byte-idéntica en las 4 rutas; después, el
+   **emitter en Astra-0** (`research/028` §5: codegen el último).
 
 Hallazgos de lenguaje tocados al construirlo, ahora **pinneados por
 DEC-033** (2026-10-29): `else` en línea aparte del `}` →

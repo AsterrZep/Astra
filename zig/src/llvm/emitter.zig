@@ -374,9 +374,9 @@ const TAG_NONE: u32 = 3;
 /// mismo trap en el mismo orden de fuente.
 const VM_MAX_GLOBALS: u32 = 256;
 /// Límite de profundidad de llamada (vm.zig VM_CALL_DEPTH, espejo del
-/// ASTRA_CALL_DEPTH del backend C): la llamada 257 aborta con
-/// `call depth exceeded` en el sitio de llamada.
-const VM_CALL_DEPTH: u64 = 256;
+/// ASTRA_CALL_DEPTH del backend C): la llamada 1025 aborta con
+/// `call depth exceeded` en el sitio de llamada (DEC-042).
+const VM_CALL_DEPTH: u64 = 1024;
 const PTY_BOOL: u32 = 1;
 const PTY_I64: u32 = 2;
 const PTY_F64: u32 = 3;
@@ -416,9 +416,9 @@ const FN_OBJ_SIZE: i64 = 32;
 const ARR_HDR: i64 = 16;
 
 /// Espejo de VM_STACK_SIZE (vm.c) / ASTRA_FRAME_SIZE (codegen_runtime.h): el
-/// operand stack de la VM es único (1024 slots compartidos entre frames) y
-/// un literal con más elementos que el presupuesto lo desborda.
-const VM_STACK_SIZE: usize = 1024;
+/// operand stack de la VM es único (8192 slots compartidos entre frames —
+/// DEC-042) y un literal con más elementos que el presupuesto lo desborda.
+const VM_STACK_SIZE: usize = 8192;
 
 pub const Emitter = struct {
     a: std.mem.Allocator,
@@ -589,7 +589,7 @@ pub const Emitter = struct {
     /// Layouts por instancia de struct genérico (Phase 2.4 step 3b).
     struct_instances: []const StructInstance = &.{},
     /// Contador de llamadas de usuario anidadas (guard `VM_CALL_DEPTH`): el
-    /// VM rechaza la llamada 257 con `call depth exceeded` y el C backend
+    /// VM rechaza la llamada 1025 con `call depth exceeded` y el C backend
     /// replica el mismo límite (ASTRA_CALL_DEPTH); esta ruta también.
     depth_global: c.LLVMValueRef = undefined,
     /// Kind ID de la metadata `!prof` (pesos de rama de los traps).
@@ -1439,8 +1439,8 @@ pub const Emitter = struct {
             return null;
         }
         // Presupuesto del operand stack (VM_STACK_SIZE / ASTRA_FRAME_SIZE,
-        // 1024 compartidos): vm_push falla con `sp >= 1024` ANTES de pushar,
-        // o sea en el elemento 1025 → "stack overflow" en la línea 0
+        // 8192 compartidos — DEC-042): vm_push falla con `sp >= 8192` ANTES
+        // de pushar, o sea en el elemento 8193 → "stack overflow" en la línea 0
         // (expressions/stack_overflow_limit, que pinza el ASTRA_PUSH del
         // backend C). El emisor no modela el sp global de la VM, así que este
         // guard es exacto en profundidad de expresión 0 — la forma que el

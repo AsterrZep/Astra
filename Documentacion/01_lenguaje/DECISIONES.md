@@ -49,6 +49,7 @@
 | DEC-039 | **RSS por backend** (D5, `research/040` Rec3): la ruta LLVM mantiene **techo plano** (`llvm_mem.sh` con dos fases: loop_reuse 64 MB + sonda de strings 128 MB); seed/zig/C siguen con arena **divergencia medida y documentada** (404/721/489 MB — cifra en la DEC, no gate falsamente rojo); **RC puro como contrato, ciclos documentados como bug del programador** (`weak` explícito cuando exista); Fase 2 opcional: colector de ciclos incremental (trial deletion, `gc_collect()` explícito — la cabecera `{rc,kind}` ya lo anticipa); **sin tracing GC**; arenas solo donde ya están (compilador, invariante 5) | Aceptada (gate) | 2026-10-30 | `zig/tests/llvm_mem.sh` (fase strings 128 MB) + `research/040` §11; enmienda el techo de DEC-009 solo en la cifra, no en el criterio |
 | DEC-040 | **`i8`/`i16`/`u8`/`u16` como contratos de tipo** (D10, `research/035` §13.2): se añaden al *surface* y a los dos typecheckers con las mismas reglas que `i32` — el runtime sigue siendo **i64 con wrap de dos complementos** en las 4 rutas (`u8`+1 = 256, no 0), literal fuera del rango anotado = **error compile-time** (DEC-006, rangos i8 [-128,127] · i16 · u8 [0,255] · u16), **sin promoción mixta** entre anchos; el techo de literales `u64` en `i64::MAX` queda como artefacto documentado del parser (candidato a DEC futura) | Aceptada (test-pinned) | 2026-10-30 | `types/int_width_8_16.astra` (EXPECT 256/-5/65536/300), `ui/int8_literal_range.astra`, `ui/uint8_literal_range.astra`, `ui/int_width_mix_rejected.astra` — primeras líneas idénticas seed↔zig |
 | DEC-041 | **Alcance de la Fase 3** (D2): los componentes self-hosted siguen **single-file** hasta el emitter inclusive (lexer ✅ → parser ✅ → typechecker ✅ → **emitter en Astra-0 es el siguiente y último** — «codegen va el último», `research/028` §5); el árbol multi-fichero `src/compiler/` y la doble compilación llegan **con la CLI** (Step 4 de DEC-032, D1/DEC-021); la Fase 3 se gatilla con: emitter gateado por paridad de bytecode contra el seed + `std/…` real + árbol — entonces astra-zig compila el compilador Astra y ese binario se compila a sí mismo (doble compilación, `COMPILER_STRATEGY` §6.3); la retención del seed tras la primera doble compilación es D13, no esta DEC | Aceptada (doc) | 2026-10-30 | `research/028` §5; DEC-032 (Step 4 con la CLI); `COMPILER_STRATEGY` §6 |
+| DEC-042 | **Límites del VM: `VM_STACK_SIZE` 1024 → 8192 y `VM_CALL_DEPTH` 256 → 1024** (espejos C `ASTRA_FRAME_SIZE`/`ASTRA_CALL_DEPTH` y zig VM alineados): el parser self-hosteado tiene que poder recorrer los 256 niveles de `PARSER_MAX_DEPTH` — medido (issue #91): ~20 slots por enlace `else if` (≈5120) y ~2.5 frames por nivel de paréntesis (≈640); los techos nuevos los cubren con margen. Los fixtures que pineaban el techo viejo se **crecen** en el mismo PR (array 1100 → 8300 elementos; `countdown(2000)` ya dispara > 1024). Con esto `ui/deep_elseif` (260:15) y `ui/nesting_too_deep` (5:273) entran al corpus con paridad de primer error **byte-idéntica en las 4 rutas** | Aceptada (test-pinned) | 2026-10-30 | `expressions/{stack_overflow_limit,recursion_depth_limit,deep_recursion}.astra`, `codegen/{stack_overflow_limit,frame_overflow}.astra` (crecidos), corpus 258 → 260 (`typechecker_gate.sh` ×4 rutas), issue #91 |
 
 ### DEC-006 — Ancho de enteros: rango en compile-time, wrap en runtime
 - **Estado**: Aceptada (test-pinned) — fijada en el PR de fase B1 (2026-10-27)
@@ -1669,3 +1670,42 @@
   §5 (C/Rust/Go/Zig/Nim).
 - **Spec**: pendiente de escribir en `ARCHITECTURE.md` §41 (roadmap) /
   `COMPILER_STRATEGY` §6 (Fase 3).
+
+### DEC-042 — Límites del VM: `VM_STACK_SIZE` 8192, `VM_CALL_DEPTH` 1024
+- **Estado**: Aceptada (test-pinned) — implementada en este PR; cierra el
+  issue #91 y desbloquea los 2 casos de profundidad del corpus.
+- **Fecha**: 2026-10-30.
+- **Decisión**: los techos del VM suben a **`VM_STACK_SIZE` 1024 → 8192**
+  y **`VM_CALL_DEPTH` 256 → 1024**, con los espejos alineados en el mismo
+  PR: `ASTRA_FRAME_SIZE`/`ASTRA_CALL_DEPTH` (codegen C) y `VM_STACK_SIZE`/
+  `VM_CALL_DEPTH` de `zig/src/vm/vm.zig`. Justificación medida (issue #91):
+  el parser self-hosteado tiene que poder **recorrer 256 niveles**
+  (`PARSER_MAX_DEPTH`); en la ruta VM eso cuesta ~20 slots de pila de
+  valores por enlace `else if` (≈5120 con 256 enlaces) y ~2.5 frames por
+  nivel de paréntesis (≈640 con 256 niveles) — los techos nuevos los
+  cubren con margen, los viejos (1024/256) desbordaban antes (empírico:
+  ~50 enlaces / ~100 niveles, verificado en el issue).
+- **Los pins de los límites se conservan creciéndolos**: los fixtures que
+  pineaban el techo viejo se hacen más grandes que el nuevo (mismo
+  criterio que existían): `expressions/stack_overflow_limit.astra` y
+  `codegen/stack_overflow_limit.astra` (1100 → **8300** elementos >
+  8192), `codegen/frame_overflow.astra` y
+  `expressions/recursion_depth_limit.astra` (`countdown(2000)` > 1024, ya
+  eran mayores); `expressions/deep_recursion.astra` (200) sigue por
+  debajo y sigue imprimiendo 200. Los cuatro mensajes son los mismos.
+- **Consecuencia**: `ui/deep_elseif` (primer error `260:15`) y
+  `ui/nesting_too_deep` (`5:273`) entran al corpus del typechecker
+  self-hosted — paridad de primer error **byte-idéntica en las 4 rutas**
+  (verificado en la ruta VM antes de este PR).
+- **Alternativas consideradas**: parse iterativo de cadenas en
+  `parser.astra` (los paréntesis no se pueden hacer iterativos en un
+  Pratt — descartado); gate de ruta (los skips son fallos por doctrina);
+  dejar los casos excluidos (sigue roto en las rutas nativas donde el
+  guard SÍ dispara — divergencia de paridad).
+- **Coste aceptado**: cada programa de usuario gana ~112 KB de arrays
+  estáticos por VM instanciada (8192×16 B + 1024×frame) — sin efecto en
+  los gates RSS (DEC-039 midió 2 MB en la sonda de strings).
+- **Evidencia**: fixtures arriba + `typechecker_gate.sh` → **260/260 ×4
+  rutas** (verificación en el PR), issue #91 cerrado.
+- **Spec**: `ARCHITECTURE.md` §11 (VM) — actualizar los números si citan
+  los techos.

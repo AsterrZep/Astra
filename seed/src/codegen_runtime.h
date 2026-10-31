@@ -22,7 +22,7 @@
  * program wrote past this array (ASan-confirmed stack-buffer-overflow in
  * generated C), which is the same class of failure as the VM's 8-bit frame
  * base truncation fixed alongside it. */
-#define ASTRA_FRAME_SIZE 1024
+#define ASTRA_FRAME_SIZE 8192   /* DEC-042: espejo de VM_STACK_SIZE */
 
 /* ---------- Call depth ----------
  *
@@ -33,7 +33,7 @@
  * `countdown(300)` printed 300 on the compiled side while the VM stopped
  * with "call depth exceeded" (audit §1.1, PRE_LLVM_AUDIT.md). Builtins push
  * no frame on either side and do not count. Keep in sync with priv.h. */
-#define ASTRA_CALL_DEPTH 256
+#define ASTRA_CALL_DEPTH 1024  /* DEC-042: espejo de VM_CALL_DEPTH */
 
 /* ---------- Tag enum ---------- */
 typedef enum {
