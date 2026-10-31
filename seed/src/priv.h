@@ -216,8 +216,14 @@ struct Emitter {
  * VM (private)
  * ----------------------------------------------------------- */
 
-#define VM_STACK_SIZE  1024
-#define VM_CALL_DEPTH  256
+/* DEC-042: el parser self-hosteado tiene que poder recorrer 256 niveles
+ * (PARSER_MAX_DEPTH) — medido en issue #91: ~20 slots de pila por enlace
+ * else-if (≈5120) y ~2.5 frames por nivel de paréntesis (≈640). Los
+ * techos nuevos (8192/1024) los cubren con margen; los fixtures que
+ * pinean los límites (stack_overflow_limit, frame_overflow) se crecen
+ * en el mismo PR para seguir pineandolos en el nuevo techo. */
+#define VM_STACK_SIZE  8192
+#define VM_CALL_DEPTH  1024
 #define VM_MAX_GLOBALS 256
 
 typedef struct {

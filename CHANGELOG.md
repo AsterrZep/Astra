@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **DEC-042: límites del VM 8192/1024 — issue #91 cerrado, corpus 258 → 260**
+  — `VM_STACK_SIZE` 1024 → 8192 y `VM_CALL_DEPTH` 256 → 1024 con los
+  espejos C y zig alineados: el parser self-hosteado recorre ahora los
+  256 niveles de `PARSER_MAX_DEPTH` en la ruta VM (~20 slots/enlace
+  else-if, ~2.5 frames/nivel de paréntesis). Los fixtures que pineaban el
+  techo viejo se crecen (`stack_overflow_limit` 1100 → 8300 elementos;
+  `countdown(2000)` ya dispara >1024) y `ui/deep_elseif` (260:15) +
+  `ui/nesting_too_deep` (5:273) entran al corpus con paridad de primer
+  error byte-idéntica en las 4 rutas.
 - **DEC-041: alcance de la Fase 3** — los componentes self-hosted siguen
   single-file hasta el emitter inclusive (el siguiente y último, «codegen
   va el último»); árbol `src/compiler/` + doble compilación con la CLI

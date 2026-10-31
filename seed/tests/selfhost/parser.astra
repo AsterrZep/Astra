@@ -578,13 +578,12 @@ fn report_at(line: i64, col: i64, msg: string) {
 
 // parser_enter/leave del seed: la violación se reporta en el token
 // actual, se sella el parse y la función SIN recursión devuelve 0.
-// En la ruta VM este guard no llega a disparar para los 2 casos de
-// profundidad recursiva del corpus (ui/deep_elseif, ui/nesting_too_deep):
-// VM_STACK_SIZE=1024 y VM_CALL_DEPTH=256 (pineados por recursion_depth_
-// limit/stack_overflow_limit) desbordan antes (empírico: ~50 enlaces
-// else-if, ~100 niveles de paréntesis). En las rutas nativas (C, LLVM)
-// SÍ protege, que es el propósito del audit §2.2. Los 2 casos entran al
-// corpus cuando la DEC de límites del VM los desbloquee (issue #91).
+// DEC-042 (issue #91): con VM_STACK_SIZE=8192/VM_CALL_DEPTH=1024 el guard
+// YA llega a disparar en la ruta VM — los 2 casos de profundidad
+// recursiva (ui/deep_elseif 260:15, ui/nesting_too_deep 5:273) tienen
+// paridad de primer error byte-idéntica en las 4 rutas. Antes de la DEC
+// los techos 1024/256 desbordaban antes (empírico: ~50 enlaces else-if,
+// ~100 niveles de paréntesis).
 // La cadena plana de operadores es iterativa y se capa con chain_len en
 // parse_expr_raw (ui/expr_chain_deep ya está en el corpus).
 fn penter() -> bool {
