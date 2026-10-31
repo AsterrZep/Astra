@@ -1,4 +1,4 @@
-// No astra.toml exists above this file (up to the cwd): `@/` has no anchor
+// No astraea.toml exists above this file (up to the cwd): `@/` has no anchor
 // and must be reported, not resolved against the importing file.
 import @/lib
 fn main() { print(1) }

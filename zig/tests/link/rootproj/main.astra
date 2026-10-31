@@ -1,5 +1,5 @@
 // Project-root fixture (ARCHITECTURE §10.4 rule 3): `@/` anchors at the
-// directory containing astra.toml, not at this file's directory — and the
+// directory containing astraea.toml, not at this file's directory — and the
 // bare slash form (`nested/inner`) of rule 2 resolves relative, so both
 // separator spellings run end to end.
 from @/lib.util import twice

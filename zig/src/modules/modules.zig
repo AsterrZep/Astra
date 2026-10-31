@@ -9,7 +9,7 @@
 //!    → `geometry/mesh.astra`, with `.` and `/` equivalent separators (the
 //!    grammar accepts both, `ImportPath ::= ("@" "/")? …`). Rule 3 (`@/…`)
 //!    anchors at the project root: the nearest directory above the entry file
-//!    that contains an `astra.toml`, found by walking up from the entry
+//!    that contains an `astraea.toml`, found by walking up from the entry
 //!    (`Loader.load`). Only the manifest's existence is consulted — parsing
 //!    `[package]` and dependencies is the package manager's job
 //!    (`research/package-manager-design.md`). Rule 4 (`std/…`) is accepted by
@@ -54,7 +54,7 @@ const diagnostics_mod = @import("../diagnostics.zig");
 /// boundary: the caller passed something `ImportPath` cannot produce.
 ///
 /// `error.Reported` is the soft-failure signal of `resolve`: the problem was
-/// already turned into a user-facing diagnostic (no `astra.toml` for `@/`,
+/// already turned into a user-facing diagnostic (no `astraea.toml` for `@/`,
 /// no stdlib for `std/…`), and the caller only has to count it.
 pub const Error = error{ InvalidImportPath, Reported };
 
@@ -112,7 +112,7 @@ pub fn resolveFromFile(
 /// §10.4 that Astra-0 implements:
 ///
 /// - `@/…` (rule 3) anchors at `project_root`, the directory containing
-///   `astra.toml`. Without one the path cannot mean anything, so a diagnostic
+///   `astraea.toml`. Without one the path cannot mean anything, so a diagnostic
 ///   is emitted (naming the path and the file it was written in) and
 ///   `error.Reported` is returned — soft, already user-visible.
 /// - `std/…` (rule 4) is rejected the same way: the grammar accepts the
@@ -136,7 +136,7 @@ pub fn resolve(
     if (std.mem.startsWith(u8, path, "@/")) {
         const root = project_root orelse {
             diagnostics_mod.emit(diag, importing_file, diagnostics_mod.no_span,
-                "cannot resolve '{s}': no astra.toml found (project root)", .{path});
+                "cannot resolve '{s}': no astraea.toml found (project root)", .{path});
             return error.Reported;
         };
         const relative = try pathToFile(allocator, path[2..]);
@@ -235,7 +235,7 @@ pub const ModuleTable = struct {
 
 /// Extra resolution context for `collect`.
 ///
-/// `project_root` is the directory holding `astra.toml` (rule 3), discovered
+/// `project_root` is the directory holding `astraea.toml` (rule 3), discovered
 /// once per build by `Loader.load`. `diag` lets `resolve` report its soft
 /// failures (`@/` without a manifest, `std/…` without a stdlib) with the
 /// importing file's name; with no sink the message goes straight to stderr,
@@ -369,7 +369,7 @@ pub const Loader = struct {
     modules: std.ArrayListUnmanaged(LoadedModule) = .empty,
     /// Files being loaded right now, outermost first.
     visiting: std.ArrayListUnmanaged([]const u8) = .empty,
-    /// The directory holding `astra.toml`, or null when there is none — the
+    /// The directory holding `astraea.toml`, or null when there is none — the
     /// anchor of `@/…` paths (`ARCHITECTURE.md` §10.4 rule 3). Discovered once
     /// per `load` by walking up from the entry file's directory.
     project_root: ?[]const u8 = null,
@@ -399,7 +399,7 @@ pub const Loader = struct {
         return .{ .modules = self.modules.items };
     }
 
-    /// Nearest directory at or above `entry_file` containing an `astra.toml`
+    /// Nearest directory at or above `entry_file` containing an `astraea.toml`
     /// (rule 3's anchor), or null. Existence only: the manifest's contents are
     /// the package manager's to read. The walk climbs the *string* parents of
     /// the entry path (all CLI paths are cwd-relative), stops at the top of the
@@ -410,9 +410,9 @@ pub const Loader = struct {
         while (guard < 64) : (guard += 1) {
             const dir = dir_name orelse ""; // "" = the cwd itself
             const manifest = if (dir.len == 0)
-                "astra.toml"
+                "astraea.toml"
             else
-                std.fmt.allocPrint(self.a, "{s}/astra.toml", .{dir}) catch return null;
+                std.fmt.allocPrint(self.a, "{s}/astraea.toml", .{dir}) catch return null;
             if (self.dir.access(self.io, manifest, .{})) |_| {
                 return if (dir.len == 0) "" else dir;
             } else |_| {}
@@ -642,7 +642,7 @@ test "rule 3: @/ anchors at the project root, not the importing file" {
     }
 }
 
-test "rule 3 without an astra.toml is reported, not guessed" {
+test "rule 3 without an astraea.toml is reported, not guessed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -657,7 +657,7 @@ test "rule 3 without an astra.toml is reported, not guessed" {
     try std.testing.expectEqual(@as(usize, 1), sink.count());
     try std.testing.expect(sink.items.items[0].msg.len != 0);
     try std.testing.expect(
-        std.mem.indexOf(u8, sink.items.items[0].msg, "astra.toml") != null,
+        std.mem.indexOf(u8, sink.items.items[0].msg, "astraea.toml") != null,
     );
     // The diagnostic names the file the bad import was written in.
     try std.testing.expectEqualStrings("src/main.astra", sink.items.items[0].file);
@@ -939,7 +939,7 @@ test "the project root anchors @/ imports (rule 3)" {
     const graph = try loader.load(entry);
 
     try std.testing.expectEqual(@as(usize, 0), loader.error_count);
-    // The walk up from main.astra stopped at rootproj/ — its astra.toml.
+    // The walk up from main.astra stopped at rootproj/ — its astraea.toml.
     const proj = try fixture(a, root, "rootproj");
     try std.testing.expectEqualStrings(proj, loader.project_root.?);
     // lib/leaf (post-order), then main: `@/lib.leaf` resolved from the root,
@@ -950,7 +950,7 @@ test "the project root anchors @/ imports (rule 3)" {
     try std.testing.expectEqualStrings(entry, graph.modules[1].file);
 }
 
-test "@/ without an astra.toml anywhere is reported, not guessed" {
+test "@/ without an astraea.toml anywhere is reported, not guessed" {
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = std.Io.Dir.cwd();
     const root = try fixtureRoot(io, cwd);
@@ -974,7 +974,7 @@ test "@/ without an astra.toml anywhere is reported, not guessed" {
     try std.testing.expectEqual(@as(usize, 0), graph.modules.len);
     try std.testing.expectEqual(@as(usize, 1), sink.count());
     const msg = sink.items.items[0].msg;
-    try std.testing.expect(std.mem.indexOf(u8, msg, "astra.toml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "astraea.toml") != null);
     try std.testing.expect(std.mem.indexOf(u8, msg, "@/lib") != null);
 }
 

@@ -21,7 +21,9 @@ Astra tiene hoy **dos** compiladores de Astra-0:
   Frontend portado y verificado contra la suite del seed, VM propia, sistema de
   módulos real, y — si se construye con `-Dllvm` — el backend LLVM nativo.
 
-No hay (todavía) un único ejecutable `astra`. Ver «Aún no existe», al final.
+El driver unificado **`astraea`** (DEC-021) existe desde 2026-10-30 — no
+compila nada por sí mismo, invoca a `astra-zig` (patrón Cargo); los
+compiladores siguen siendo los dos. Véase «La CLI `astraea`», al final.
 
 > **Convención de comandos**: los comandos se ejecutan desde la **raíz del
 > repositorio**. Para acortar rutas, define una vez:
@@ -389,17 +391,31 @@ Y para los gates LLVM: `ASTRA_LLVM_OPT`, `ASTRA_LLVM_SAN`, `ASTRA_LLVM_CONFIG`,
 `ASTRA_WASM_LD`/`ASTRA_WASI_SYSROOT`/`ASTRA_WASM_NODE`/`ASTRA_WASM_CLANG` —
 todos documentados en la cabecera de su script.
 
-## Aún no existe
+## La CLI `astraea` (existe desde 2026-10-30)
 
-- **No hay CLI unificada `astra build` / `astra run`** — «Aún no existe». Hoy
-  cada ruta tiene su receta (capítulo 12) y cada compilador sus banderas. Un
-  driver que las envuelva está previsto para la Fase 3; mientras tanto, este
-  capítulo es el mapa de comandos.
-- **No hay `astra fmt`, `astra test`, `astra doc`**. El formateador y el
-  gestor de tests de proyecto no existen; la verificación se hace con los
-  scripts de gate tal cual.
-- **`astra-zig` no tiene `--help` ni `--version`** (el seed sí los tiene
-  ambos). Sin argumentos imprime el uso — la bandera `-h` da error, no ayuda.
+`astraea` es el driver unificado (DEC-021, gate `cli/cli_gate.sh`): no
+compila nada por sí mismo, invoca a `astra-zig` como subproceso — el mismo
+patrón que Cargo invoca a rustc.
+
+```bash
+zig build -C zig                # instala astraea (+ astra-zig) en zig/zig-out/bin
+A=zig/zig-out/bin/astraea
+
+$A run hello.astra              # compile y ejecute (= astra-zig hello.astra)
+$A build hello.astra            # --emit-obj + link con cc → ./a.out (necesita -Dllvm)
+$A init .                       # crea astraea.toml ([package] plantilla)
+$A version                      # astraea 0.1.0 (DEC-021)
+```
+
+El marcador de raíz del proyecto es **`astraea.toml`** (DEC-021: el rename
+desde `astra.toml` llegó de una vez con la CLI) — `@/` se ancla en el
+directorio que lo contiene (capítulo 10).
+
+**Todavía no existe**: `astraea fmt`, `astraea test`, `astraea doc` (el
+formateador y el gestor de tests de proyecto no existen; la verificación se
+hace con los scripts de gate tal cual) y `astra-zig` no tiene `--help` ni
+`--version` (sin argumentos imprime el uso — la bandera `-h` da error, no
+ayuda).
 
 ## Resumen
 
@@ -413,8 +429,8 @@ todos documentados en la cabecera de su script.
 - Los gates de selfhost (`io_gate.sh`, `lexer_gate.sh`, `parser_gate.sh`)
   son el patrón del proyecto: un comportamiento, muchas rutas, un golden,
   cero divergencias.
-- No hay `astra build`: las recetas de este capítulo y del 12 *son* la
-  toolchain de hoy.
+- `astraea build` cierra el camino a un binario (emit-obj + cc); las
+  recetas de este capítulo y del 12 siguen siendo el mapa completo.
 
 ## Ejercicios
 

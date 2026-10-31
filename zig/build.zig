@@ -143,6 +143,27 @@ pub fn build(b: *std.Build) void {
     }
     b.installArtifact(exe);
 
+    // ── CLI astraea (DEC-021) ── driver estilo Cargo que invoca a
+    // astra-zig como subproceso (run/build/init). Se instala junto a sus
+    // hermanos — el TU del runtime LLVM y codegen_runtime.h — para que
+    // `astraea build` compile y enlace sin rutas del repo embebidas
+    // (astraea.zig los localiza como archivos propios, en su bin dir).
+    const cli = b.addExecutable(.{
+        .name = "astraea",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("../cli/astraea.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(cli);
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(
+        b.path("src/llvm/runtime/astra_runtime_llvm.c"), .bin, "astraea_runtime.c",
+    ).step);
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(
+        b.path("../seed/src/codegen_runtime.h"), .bin, "codegen_runtime.h",
+    ).step);
+
     // ── Run command ──
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
